@@ -147,6 +147,8 @@ impl App {
     }
 
     pub fn run(&mut self) -> Result<()> {
+        // Sync initial loop range to transport
+        self.sync_loop_to_transport();
         terminal::enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen)?;
@@ -425,7 +427,8 @@ impl App {
             // Ensure this track is selected for MIDI
             self.nav.show_current_track_controls();
 
-            // Start loop recording (rewinds to loop start, enables loop+record+play)
+            // Sync loop range from editor to transport, then start
+            self.sync_loop_to_transport();
             self.engine.transport.start_loop_record();
             tracing::info!(
                 "Loop recording started: bars {}..{} (ticks {}..{})",
