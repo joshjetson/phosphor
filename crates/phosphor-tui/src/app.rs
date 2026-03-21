@@ -179,8 +179,8 @@ impl App {
             // Transport
             Action::PlayPause => {
                 if self.engine.transport.is_playing() {
-                    dbg::system("action: pause");
-                    self.engine.transport.pause();
+                    dbg::system("action: stop playback");
+                    self.stop_playback();
                 } else {
                     if self.nav.loop_editor.enabled {
                         let start = self.nav.loop_editor.start_ticks();
@@ -568,8 +568,8 @@ impl App {
             SpaceAction::PlayPause => {
                 use crate::debug_log as dbg;
                 if self.engine.transport.is_playing() {
-                    dbg::system("play/pause → pause");
-                    self.engine.transport.pause();
+                    dbg::system("play/pause → stop playback");
+                    self.stop_playback();
                 } else {
                     if self.nav.loop_editor.enabled {
                         let start = self.nav.loop_editor.start_ticks();
@@ -606,6 +606,13 @@ impl App {
             SpaceAction::NewTrack => { /* future */ }
         }
     }
+    /// Stop playback and silence all instruments. Called on pause, stop,
+    /// and stop-recording. Prevents notes from ringing after playback ends.
+    fn stop_playback(&self) {
+        self.engine.transport.pause();
+        self.engine.panic();
+    }
+
     fn sync_loop_to_transport(&self) {
         use crate::debug_log as dbg;
         let le = &self.nav.loop_editor;
@@ -637,9 +644,8 @@ impl App {
             && self.engine.transport.is_playing();
 
         if is_recording {
-            // Stop recording
             self.engine.transport.stop_loop_record();
-            tracing::info!("Loop recording stopped");
+            self.engine.panic(); // silence all notes
         } else {
             // Make sure current track is armed and has a synth
             if let Some(track) = self.nav.tracks.get(self.nav.track_cursor) {
