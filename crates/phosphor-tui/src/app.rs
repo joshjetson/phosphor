@@ -230,7 +230,7 @@ impl App {
 
         // Tab
         match key.code {
-            KeyCode::Tab if self.nav.fx_menu.open || self.nav.focused_pane == Pane::ClipView => {
+            KeyCode::Tab if self.nav.focused_pane == Pane::ClipView => {
                 self.nav.cycle_tab();
                 return;
             }

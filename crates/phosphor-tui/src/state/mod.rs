@@ -8,19 +8,17 @@
 //!   Enter    → select / activate / open menus
 //!   Esc      → back out one level
 
-use std::time::Instant;
+mod clip_view;
+mod input;
+mod menu;
+mod track;
 
-/// Actions that can be triggered from the space menu.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpaceAction {
-    PlayPause,
-    ToggleRecord,
-    ToggleLoop,
-    Panic,
-    Save,
-    AddInstrument,
-    NewTrack,
-}
+pub use clip_view::*;
+pub use input::*;
+pub use menu::*;
+pub use track::*;
+
+use phosphor_core::project::TrackKind;
 
 // ── Panes ──
 
@@ -61,571 +59,6 @@ impl Pane {
         match self {
             Self::Tracks => "tracks",
             Self::ClipView => "clip",
-        }
-    }
-}
-
-// ── Track Element Navigation ──
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TrackElement {
-    Label,
-    Fx,
-    Volume,
-    Mute,
-    Solo,
-    RecordArm,
-    Clip(usize),
-}
-
-impl TrackElement {
-    pub fn move_right(self, num_clips: usize) -> Self {
-        match self {
-            Self::Label => Self::Fx,
-            Self::Fx => Self::Volume,
-            Self::Volume => Self::Mute,
-            Self::Mute => Self::Solo,
-            Self::Solo => Self::RecordArm,
-            Self::RecordArm => {
-                if num_clips > 0 { Self::Clip(0) } else { Self::RecordArm }
-            }
-            Self::Clip(i) => {
-                if i + 1 < num_clips { Self::Clip(i + 1) } else { Self::Clip(i) }
-            }
-        }
-    }
-
-    pub fn move_left(self) -> Self {
-        match self {
-            Self::Label => Self::Label,
-            Self::Fx => Self::Label,
-            Self::Volume => Self::Fx,
-            Self::Mute => Self::Volume,
-            Self::Solo => Self::Mute,
-            Self::RecordArm => Self::Solo,
-            Self::Clip(0) => Self::RecordArm,
-            Self::Clip(i) => Self::Clip(i - 1),
-        }
-    }
-}
-
-// ── FX System ──
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FxType {
-    Reverb,
-    Delay,
-    Gate,
-    Eq,
-    Limiter,
-    Compressor,
-}
-
-impl FxType {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Reverb => "reverb",
-            Self::Delay => "delay",
-            Self::Gate => "gate",
-            Self::Eq => "eq",
-            Self::Limiter => "limiter",
-            Self::Compressor => "comp",
-        }
-    }
-
-    pub const ALL: &[FxType] = &[
-        Self::Reverb, Self::Delay, Self::Gate, Self::Eq, Self::Limiter, Self::Compressor,
-    ];
-}
-
-/// An FX instance on a track or clip.
-#[derive(Debug, Clone)]
-pub struct FxInstance {
-    pub fx_type: FxType,
-    pub enabled: bool,
-    /// Placeholder parameter values (0.0..1.0).
-    pub params: Vec<(String, f32)>,
-}
-
-impl FxInstance {
-    pub fn new(fx_type: FxType) -> Self {
-        let params = match fx_type {
-            FxType::Reverb => vec![
-                ("mix".into(), 0.3), ("decay".into(), 0.5), ("size".into(), 0.6),
-            ],
-            FxType::Delay => vec![
-                ("time".into(), 0.4), ("feedback".into(), 0.3), ("mix".into(), 0.25),
-            ],
-            FxType::Gate => vec![
-                ("thresh".into(), 0.5), ("attack".into(), 0.1), ("release".into(), 0.3),
-            ],
-            FxType::Eq => vec![
-                ("low".into(), 0.5), ("mid".into(), 0.5), ("high".into(), 0.5),
-            ],
-            FxType::Limiter => vec![
-                ("thresh".into(), 0.8), ("release".into(), 0.2),
-            ],
-            FxType::Compressor => vec![
-                ("thresh".into(), 0.6), ("ratio".into(), 0.4), ("attack".into(), 0.1),
-                ("release".into(), 0.3),
-            ],
-        };
-        Self { fx_type, enabled: true, params }
-    }
-}
-
-/// Where audio is routed to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AudioRoute {
-    Master,
-    SendA,
-    SendB,
-}
-
-impl AudioRoute {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Master => "master",
-            Self::SendA => "send A",
-            Self::SendB => "send B",
-        }
-    }
-}
-
-/// FX menu state (opened when pressing Enter on fx button).
-#[derive(Debug)]
-pub struct FxMenu {
-    pub open: bool,
-    pub cursor: usize,
-    /// Which tab: 0=add fx, 1=routing
-    pub tab: usize,
-}
-
-impl FxMenu {
-    pub fn new() -> Self {
-        Self { open: false, cursor: 0, tab: 0 }
-    }
-
-    pub fn item_count(&self) -> usize {
-        match self.tab {
-            0 => FxType::ALL.len(),
-            1 => 3, // master, send A, send B
-            _ => 0,
-        }
-    }
-
-    pub fn move_up(&mut self) {
-        if self.cursor > 0 { self.cursor -= 1; }
-    }
-
-    pub fn move_down(&mut self) {
-        if self.cursor + 1 < self.item_count() { self.cursor += 1; }
-    }
-
-    pub fn next_tab(&mut self) {
-        self.tab = (self.tab + 1) % 2;
-        self.cursor = 0;
-    }
-}
-
-// ── Instrument Selection Modal ──
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InstrumentType {
-    Synth,
-    DrumRack,
-    Sampler,
-}
-
-impl InstrumentType {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Synth => "Phosphor Synth",
-            Self::DrumRack => "Drum Rack",
-            Self::Sampler => "Sampler",
-        }
-    }
-
-    pub fn description(self) -> &'static str {
-        match self {
-            Self::Synth => "polyphonic subtractive synthesizer",
-            Self::DrumRack => "drum machine with sample pads",
-            Self::Sampler => "sample-based instrument",
-        }
-    }
-
-    pub const ALL: &[InstrumentType] = &[Self::Synth, Self::DrumRack, Self::Sampler];
-}
-
-#[derive(Debug)]
-pub struct InstrumentModal {
-    pub open: bool,
-    pub cursor: usize,
-}
-
-impl InstrumentModal {
-    pub fn new() -> Self {
-        Self { open: false, cursor: 0 }
-    }
-
-    pub fn move_up(&mut self) {
-        if self.cursor > 0 { self.cursor -= 1; }
-    }
-
-    pub fn move_down(&mut self) {
-        if self.cursor + 1 < InstrumentType::ALL.len() { self.cursor += 1; }
-    }
-
-    pub fn selected(&self) -> InstrumentType {
-        InstrumentType::ALL[self.cursor]
-    }
-}
-
-// ── Track Types ──
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TrackType {
-    Audio,
-    SendA,
-    SendB,
-    Master,
-}
-
-// ── Data Models ──
-
-#[derive(Debug, Clone)]
-pub struct Clip {
-    pub number: usize,
-    pub width: u16,
-    pub has_content: bool,
-    pub midi_notes: Vec<MidiNote>,
-    /// FX chain on this specific clip.
-    pub fx_chain: Vec<FxInstance>,
-    /// Volume envelope (placeholder).
-    pub volume: f32,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct MidiNote {
-    pub note: u8,
-    pub start: f64,
-    pub duration: f64,
-    pub velocity: u8,
-}
-
-#[derive(Debug, Clone)]
-pub struct TrackState {
-    pub name: String,
-    pub muted: bool,
-    pub soloed: bool,
-    pub armed: bool,
-    pub color_index: usize,
-    pub track_type: TrackType,
-    pub clips: Vec<Clip>,
-    /// Track-level FX chain.
-    pub fx_chain: Vec<FxInstance>,
-    /// Audio routing destination.
-    pub route: AudioRoute,
-    /// Track volume (0.0..1.0).
-    pub volume: f32,
-    /// Unique ID for this track (matches the mixer's track ID).
-    pub mixer_id: Option<usize>,
-    /// Handle to the audio engine's track state. When present, mute/solo/arm/volume
-    /// writes go directly to the audio thread via atomics.
-    pub handle: Option<std::sync::Arc<phosphor_core::project::TrackHandle>>,
-    /// Synth parameter values (mirrors the audio thread's plugin params).
-    /// Index matches phosphor_dsp::synth::P_* constants.
-    pub synth_params: Vec<f32>,
-}
-
-impl TrackState {
-    pub fn new(name: &str, color_index: usize, armed: bool, track_type: TrackType, clips: Vec<Clip>) -> Self {
-        Self {
-            name: name.to_string(),
-            muted: false,
-            soloed: false,
-            armed,
-            color_index,
-            track_type,
-            clips,
-            fx_chain: Vec::new(),
-            route: AudioRoute::Master,
-            volume: 0.75,
-            mixer_id: None,
-            handle: None,
-            synth_params: Vec::new(),
-        }
-    }
-
-    /// Sync mute/solo/arm/volume to the audio thread handle (if wired up).
-    pub fn sync_to_audio(&self) {
-        if let Some(ref h) = self.handle {
-            h.config.muted.store(self.muted, std::sync::atomic::Ordering::Relaxed);
-            h.config.soloed.store(self.soloed, std::sync::atomic::Ordering::Relaxed);
-            h.config.armed.store(self.armed, std::sync::atomic::Ordering::Relaxed);
-            h.config.set_volume(self.volume);
-        }
-    }
-
-    /// Read VU levels from the audio thread handle.
-    pub fn vu_levels(&self) -> (f32, f32) {
-        self.handle.as_ref().map(|h| h.vu.get()).unwrap_or((0.0, 0.0))
-    }
-
-    /// Whether this track is wired to the audio engine.
-    pub fn is_live(&self) -> bool {
-        self.handle.is_some()
-    }
-}
-
-// ── Clip View State ──
-
-/// Which sub-panel of the clip view has focus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClipViewFocus {
-    /// FX panel on the left.
-    FxPanel,
-    /// Piano roll / clip content on the right.
-    PianoRoll,
-}
-
-/// Tab in the FX panel (left side of clip view).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FxPanelTab {
-    /// Track-level FX chain.
-    TrackFx,
-    /// Synth / instrument controls.
-    Synth,
-    /// Clip-level FX.
-    ClipFx,
-}
-
-impl FxPanelTab {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::TrackFx => "trk fx",
-            Self::Synth => "synth",
-            Self::ClipFx => "clip fx",
-        }
-    }
-
-    pub fn next(self) -> Self {
-        match self {
-            Self::TrackFx => Self::Synth,
-            Self::Synth => Self::ClipFx,
-            Self::ClipFx => Self::TrackFx,
-        }
-    }
-}
-
-/// Tab in the piano roll / clip area (right side of clip view).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClipTab {
-    PianoRoll,
-    ClipFx,
-    Automation,
-}
-
-impl ClipTab {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::PianoRoll => "piano",
-            Self::ClipFx => "clip fx",
-            Self::Automation => "auto",
-        }
-    }
-
-    pub fn next(self) -> Self {
-        match self {
-            Self::PianoRoll => Self::ClipFx,
-            Self::ClipFx => Self::Automation,
-            Self::Automation => Self::PianoRoll,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct ClipViewState {
-    pub focus: ClipViewFocus,
-    pub fx_panel_tab: FxPanelTab,
-    pub clip_tab: ClipTab,
-    pub piano_roll: PianoRollState,
-    /// FX panel cursor (which fx in the chain).
-    pub fx_cursor: usize,
-    /// Synth parameter cursor (which param to adjust).
-    pub synth_param_cursor: usize,
-}
-
-impl ClipViewState {
-    pub fn new() -> Self {
-        Self {
-            focus: ClipViewFocus::PianoRoll,
-            fx_panel_tab: FxPanelTab::TrackFx,
-            clip_tab: ClipTab::PianoRoll,
-            piano_roll: PianoRollState::new(),
-            fx_cursor: 0,
-            synth_param_cursor: 0,
-        }
-    }
-}
-
-// ── Space Menu ──
-
-/// The space menu: press Space to open, Space again to close.
-/// Shows all Space+key shortcuts, actions, and help topics.
-#[derive(Debug)]
-pub struct SpaceMenu {
-    pub open: bool,
-    pub cursor: usize,
-    /// Which section is active.
-    pub section: SpaceMenuSection,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpaceMenuSection {
-    /// Main shortcuts list.
-    Actions,
-    /// Help topics.
-    Help,
-}
-
-impl SpaceMenu {
-    pub fn new() -> Self {
-        Self { open: false, cursor: 0, section: SpaceMenuSection::Actions }
-    }
-
-    pub fn toggle(&mut self) {
-        self.open = !self.open;
-        if self.open { self.cursor = 0; self.section = SpaceMenuSection::Actions; }
-    }
-
-    pub fn move_up(&mut self) {
-        if self.cursor > 0 { self.cursor -= 1; }
-    }
-
-    pub fn move_down(&mut self) {
-        let max = self.item_count();
-        if self.cursor + 1 < max { self.cursor += 1; }
-    }
-
-    pub fn switch_section(&mut self) {
-        self.section = match self.section {
-            SpaceMenuSection::Actions => SpaceMenuSection::Help,
-            SpaceMenuSection::Help => SpaceMenuSection::Actions,
-        };
-        self.cursor = 0;
-    }
-
-    fn item_count(&self) -> usize {
-        match self.section {
-            SpaceMenuSection::Actions => SPACE_ACTIONS.len(),
-            SpaceMenuSection::Help => HELP_TOPICS.len(),
-        }
-    }
-}
-
-/// Space menu action entries: (key, label, description).
-pub const SPACE_ACTIONS: &[(&str, &str, &str)] = &[
-    ("spc+1", "tracks",    "focus the tracks panel"),
-    ("spc+2", "clip view", "focus the clip / piano roll panel"),
-    ("spc+p", "play/pause","toggle transport playback"),
-    ("spc+r", "record",    "toggle global recording"),
-    ("spc+l", "loop",      "toggle loop mode"),
-    ("spc+!", "panic",     "kill all sound immediately"),
-    ("spc+a", "add instr", "add instrument track (synth, drums)"),
-    ("spc+s", "save",      "save project"),
-    ("spc+n", "new track", "add a new audio track"),
-    ("spc+h", "help",      "open help topics"),
-];
-
-/// Help topic entries: (title, short description).
-pub const HELP_TOPICS: &[(&str, &str)] = &[
-    ("navigation",  "moving between tracks, clips, and panes"),
-    ("transport",   "play, pause, stop, record, loop, BPM"),
-    ("tracks",      "mute, solo, arm, fx, volume, routing"),
-    ("clips",       "selecting, jumping, clip-level fx"),
-    ("piano roll",  "editing MIDI notes, velocity, quantize"),
-    ("fx & mixing", "adding effects, sends, master bus"),
-    ("shortcuts",   "full keyboard shortcut reference"),
-    ("plugins",     "loading and managing plugins"),
-];
-
-// ── Number Buffer ──
-
-#[derive(Debug)]
-pub struct NumberBuffer {
-    digits: String,
-    last_input: Option<Instant>,
-    timeout_ms: u128,
-}
-
-impl NumberBuffer {
-    pub fn new() -> Self { Self { digits: String::new(), last_input: None, timeout_ms: 500 } }
-
-    pub fn push_digit(&mut self, ch: char) -> Option<usize> {
-        if self.is_timed_out() { self.digits.clear(); }
-        self.digits.push(ch);
-        self.last_input = Some(Instant::now());
-        None
-    }
-
-    pub fn check_timeout(&mut self) -> Option<usize> {
-        if self.digits.is_empty() { return None; }
-        if self.is_timed_out() {
-            let num = self.digits.parse::<usize>().ok();
-            self.digits.clear();
-            self.last_input = None;
-            num
-        } else { None }
-    }
-
-    fn is_timed_out(&self) -> bool {
-        self.last_input.map(|t| t.elapsed().as_millis() >= self.timeout_ms).unwrap_or(true)
-    }
-
-    pub fn display(&self) -> &str {
-        if self.is_timed_out() { "" } else { &self.digits }
-    }
-
-    pub fn commit(&mut self) -> Option<usize> {
-        if self.digits.is_empty() { return None; }
-        let num = self.digits.parse::<usize>().ok();
-        self.digits.clear();
-        self.last_input = None;
-        num
-    }
-}
-
-// ── Piano Roll State ──
-
-#[derive(Debug)]
-pub struct PianoRollState {
-    pub cursor_note: u8,
-    pub scroll_x: usize,
-    pub view_bottom_note: u8,
-    pub view_height: u8,
-}
-
-impl PianoRollState {
-    pub fn new() -> Self {
-        Self { cursor_note: 60, scroll_x: 0, view_bottom_note: 48, view_height: 24 }
-    }
-
-    pub fn move_up(&mut self) {
-        if self.cursor_note < 127 {
-            self.cursor_note += 1;
-            if self.cursor_note >= self.view_bottom_note + self.view_height {
-                self.view_bottom_note = self.view_bottom_note.saturating_add(1);
-            }
-        }
-    }
-
-    pub fn move_down(&mut self) {
-        if self.cursor_note > 0 {
-            self.cursor_note -= 1;
-            if self.cursor_note < self.view_bottom_note {
-                self.view_bottom_note = self.view_bottom_note.saturating_sub(1);
-            }
         }
     }
 }
@@ -834,9 +267,24 @@ impl NavState {
     }
 
     pub fn enter(&mut self) -> Option<SpaceAction> {
-        // Space menu open → select item
+        // Space menu open → select item via space_menu_handle using the key from cursor position
         if self.space_menu.open {
-            return self.space_menu_select();
+            match self.space_menu.section {
+                SpaceMenuSection::Actions => {
+                    if let Some((key, _, _)) = SPACE_ACTIONS.get(self.space_menu.cursor) {
+                        // Extract the char after "spc+"
+                        if let Some(ch) = key.strip_prefix("spc+").and_then(|s| s.chars().next()) {
+                            return self.space_menu_handle(ch);
+                        }
+                    }
+                    self.space_menu.open = false;
+                    return None;
+                }
+                SpaceMenuSection::Help => {
+                    // Help topics just show info — no action
+                    return None;
+                }
+            }
         }
         // FX menu open → select item
         if self.fx_menu.open {
@@ -858,41 +306,6 @@ impl NavState {
             Pane::ClipView => {}
         }
         None
-    }
-
-    fn space_menu_select(&mut self) -> Option<SpaceAction> {
-        match self.space_menu.section {
-            SpaceMenuSection::Actions => {
-                let action = SPACE_ACTIONS.get(self.space_menu.cursor);
-                self.space_menu.open = false;
-                if let Some((key, _, _)) = action {
-                    // Parse the key and dispatch
-                    match *key {
-                        "spc+1" => { self.focus_pane(Pane::Tracks); None }
-                        "spc+2" => { self.focus_pane(Pane::ClipView); None }
-                        "spc+p" => Some(SpaceAction::PlayPause),
-                        "spc+r" => Some(SpaceAction::ToggleRecord),
-                        "spc+l" => Some(SpaceAction::ToggleLoop),
-                        "spc+!" => Some(SpaceAction::Panic),
-                        "spc+a" => Some(SpaceAction::AddInstrument),
-                        "spc+s" => Some(SpaceAction::Save),
-                        "spc+n" => Some(SpaceAction::NewTrack),
-                        "spc+h" => {
-                            self.space_menu.open = true;
-                            self.space_menu.section = SpaceMenuSection::Help;
-                            self.space_menu.cursor = 0;
-                            None
-                        }
-                        _ => None,
-                    }
-                } else { None }
-            }
-            SpaceMenuSection::Help => {
-                // For now, help topics just show info — no action
-                // Future: could open a detailed help pane
-                None
-            }
-        }
     }
 
     pub fn escape(&mut self) {
@@ -933,8 +346,6 @@ impl NavState {
                     self.clip_view.clip_tab = self.clip_view.clip_tab.next();
                 }
             }
-        } else if self.fx_menu.open {
-            self.fx_menu.next_tab();
         }
     }
 
@@ -988,7 +399,6 @@ impl NavState {
             TrackElement::Fx => {
                 self.fx_menu.open = true;
                 self.fx_menu.cursor = 0;
-                self.fx_menu.tab = 0;
             }
             TrackElement::Volume => { /* future: volume slider */ }
             TrackElement::Clip(idx) => {
@@ -1015,11 +425,11 @@ impl NavState {
 
         // Find insert position: before sends/master
         let insert_pos = self.tracks.iter().position(|t| {
-            matches!(t.track_type, TrackType::SendA | TrackType::SendB | TrackType::Master)
+            matches!(t.kind, TrackKind::SendA | TrackKind::SendB | TrackKind::Master)
         }).unwrap_or(self.tracks.len());
 
         let color = insert_pos % 8;
-        let mut track = TrackState::new(name, color, true, TrackType::Audio, vec![]);
+        let mut track = TrackState::new(name, color, true, TrackKind::Instrument, vec![]);
         track.mixer_id = Some(mixer_id);
         track.handle = Some(handle);
         track.synth_params = phosphor_dsp::synth::PARAM_DEFAULTS.to_vec();
@@ -1076,41 +486,20 @@ impl NavState {
     }
 
     fn fx_menu_select(&mut self) {
-        match self.fx_menu.tab {
-            0 => {
-                // Add FX
-                if let Some(fx_type) = FxType::ALL.get(self.fx_menu.cursor) {
-                    let inst = FxInstance::new(*fx_type);
-                    if let Some(t) = self.current_track_mut() {
-                        t.fx_chain.push(inst);
-                    }
-                }
-                self.fx_menu.open = false;
+        // Add FX
+        if let Some(fx_type) = FxType::ALL.get(self.fx_menu.cursor) {
+            let inst = FxInstance::new(*fx_type);
+            if let Some(t) = self.current_track_mut() {
+                t.fx_chain.push(inst);
             }
-            1 => {
-                // Routing
-                let route = match self.fx_menu.cursor {
-                    0 => AudioRoute::Master,
-                    1 => AudioRoute::SendA,
-                    2 => AudioRoute::SendB,
-                    _ => return,
-                };
-                if let Some(t) = self.current_track_mut() {
-                    t.route = route;
-                }
-                self.fx_menu.open = false;
-            }
-            _ => {}
         }
+        self.fx_menu.open = false;
     }
 
     fn active_fx_chain_len(&self) -> usize {
         match self.clip_view.fx_panel_tab {
             FxPanelTab::TrackFx | FxPanelTab::Synth => {
                 self.current_track().map(|t| t.fx_chain.len().max(1)).unwrap_or(1)
-            }
-            FxPanelTab::ClipFx => {
-                self.active_clip().map(|c| c.fx_chain.len().max(1)).unwrap_or(1)
             }
         }
     }
@@ -1150,9 +539,9 @@ impl NavState {
 /// Initial tracks: just the bus tracks. Instruments are added by the user via Space+A.
 pub fn initial_tracks() -> Vec<TrackState> {
     vec![
-        TrackState::new("snd a", 5, false, TrackType::SendA, vec![]),
-        TrackState::new("snd b", 6, false, TrackType::SendB, vec![]),
-        TrackState::new("mstr", 7, false, TrackType::Master, vec![]),
+        TrackState::new("snd a", 5, false, TrackKind::SendA, vec![]),
+        TrackState::new("snd b", 6, false, TrackKind::SendB, vec![]),
+        TrackState::new("mstr", 7, false, TrackKind::Master, vec![]),
     ]
 }
 
@@ -1199,9 +588,9 @@ mod tests {
     fn initial_tracks_has_sends_and_master() {
         let tracks = initial_tracks();
         assert_eq!(tracks.len(), 3); // send A + send B + master
-        assert_eq!(tracks[0].track_type, TrackType::SendA);
-        assert_eq!(tracks[1].track_type, TrackType::SendB);
-        assert_eq!(tracks[2].track_type, TrackType::Master);
+        assert_eq!(tracks[0].kind, TrackKind::SendA);
+        assert_eq!(tracks[1].kind, TrackKind::SendB);
+        assert_eq!(tracks[2].kind, TrackKind::Master);
     }
 
     #[test]
@@ -1210,7 +599,7 @@ mod tests {
         nav.move_down();
         nav.move_down();
         assert_eq!(nav.track_cursor, 2);
-        assert_eq!(nav.tracks[nav.track_cursor].track_type, TrackType::Master);
+        assert_eq!(nav.tracks[nav.track_cursor].kind, TrackKind::Master);
     }
 
     #[test]
@@ -1218,7 +607,7 @@ mod tests {
         let mut nav = NavState::new(initial_tracks());
         nav.enter(); // select track
         // Navigate to FX
-        nav.move_right(); // → Fx
+        nav.move_right(); // -> Fx
         assert_eq!(nav.track_element, TrackElement::Fx);
         nav.enter(); // open FX menu
         assert!(nav.fx_menu.open);
@@ -1232,25 +621,12 @@ mod tests {
         let mut nav = NavState::new(initial_tracks());
         let initial_count = nav.tracks[0].fx_chain.len();
         nav.enter();
-        nav.move_right(); // → Fx
+        nav.move_right(); // -> Fx
         nav.enter(); // open menu
         nav.enter(); // select first item (Reverb)
         assert!(!nav.fx_menu.open);
         assert_eq!(nav.tracks[0].fx_chain.len(), initial_count + 1);
         assert_eq!(nav.tracks[0].fx_chain.last().unwrap().fx_type, FxType::Reverb);
-    }
-
-    #[test]
-    fn fx_menu_routing() {
-        let mut nav = NavState::new(initial_tracks());
-        nav.enter();
-        nav.move_right(); // → Fx
-        nav.enter(); // open menu
-        nav.cycle_tab(); // switch to routing tab
-        assert_eq!(nav.fx_menu.tab, 1);
-        nav.move_down(); // → Send A
-        nav.enter(); // select
-        assert_eq!(nav.tracks[0].route, AudioRoute::SendA);
     }
 
     #[test]
@@ -1263,7 +639,7 @@ mod tests {
         nav.focus_pane(Pane::ClipView);
         assert_eq!(nav.clip_view.focus, ClipViewFocus::PianoRoll);
 
-        nav.move_left(); // → FxPanel
+        nav.move_left(); // -> FxPanel
         assert_eq!(nav.clip_view.focus, ClipViewFocus::FxPanel);
     }
 
@@ -1277,12 +653,12 @@ mod tests {
         nav.cycle_tab();
         assert_eq!(nav.clip_view.fx_panel_tab, FxPanelTab::Synth);
         nav.cycle_tab();
-        assert_eq!(nav.clip_view.fx_panel_tab, FxPanelTab::ClipFx);
+        assert_eq!(nav.clip_view.fx_panel_tab, FxPanelTab::TrackFx);
 
         nav.clip_view.focus = ClipViewFocus::PianoRoll;
         assert_eq!(nav.clip_view.clip_tab, ClipTab::PianoRoll);
         nav.cycle_tab();
-        assert_eq!(nav.clip_view.clip_tab, ClipTab::ClipFx);
+        assert_eq!(nav.clip_view.clip_tab, ClipTab::Automation);
     }
 
     #[test]

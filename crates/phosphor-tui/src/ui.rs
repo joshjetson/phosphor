@@ -6,6 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
+use phosphor_core::project::TrackKind;
 use phosphor_core::transport::{self, Transport, TransportSnapshot};
 
 use crate::state::*;
@@ -201,7 +202,7 @@ fn render_header(
     let h = area.height as usize;
     let id = (b'A' + ti as u8) as char;
     let nm: Vec<char> = track.name.to_uppercase().chars().collect();
-    let is_special = matches!(track.track_type, TrackType::SendA | TrackType::SendB | TrackType::Master);
+    let is_special = matches!(track.kind, TrackKind::SendA | TrackKind::SendB | TrackKind::Master);
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -211,19 +212,19 @@ fn render_header(
         // Accent bar
         let ac = if sel { "\u{2588}" } else { "\u{2590}" };
         let as_ = if cur || sel { Style::default().fg(tc).bg(theme::BG) }
-            else { Style::default().fg(dim_color(tc, if dim { 15 } else { 30 })).bg(theme::BG) };
+            else { Style::default().fg(theme::dim_color(tc, if dim { 15 } else { 30 })).bg(theme::BG) };
         sp.push(Span::styled(ac, as_));
 
         // ID
         sp.push(Span::styled(
             if row == 0 { format!("{id}") } else { " ".into() },
-            Style::default().fg(dim_color(tc, if dim { 20 } else { 40 })).bg(theme::BG)));
+            Style::default().fg(theme::dim_color(tc, if dim { 20 } else { 40 })).bg(theme::BG)));
 
         // Name vertical
         let ns = if cur {
-            Style::default().fg(if dim { dim_color(tc, 40) } else { tc }).bg(theme::BG).add_modifier(Modifier::BOLD)
+            Style::default().fg(if dim { theme::dim_color(tc, 40) } else { tc }).bg(theme::BG).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(dim_color(tc, if dim { 25 } else { 60 })).bg(theme::BG)
+            Style::default().fg(theme::dim_color(tc, if dim { 25 } else { 60 })).bg(theme::BG)
         };
         let nstart = h.saturating_sub(nm.len()) / 2;
         if row >= nstart && row < nstart + nm.len() {
@@ -237,7 +238,7 @@ fn render_header(
         let filled = ((h as f64) * vu) as usize;
         let fb = h - 1 - row;
         let (vc, vs) = if fb < filled {
-            ("\u{2588}", Style::default().fg(dim_color(tc, if dim { 20 } else { 55 })).bg(Color::Rgb(5,13,22)))
+            ("\u{2588}", Style::default().fg(theme::dim_color(tc, if dim { 20 } else { 55 })).bg(Color::Rgb(5,13,22)))
         } else {
             ("\u{2591}", Style::default().fg(Color::Rgb(12,24,36)).bg(Color::Rgb(5,13,22)))
         };
@@ -250,20 +251,20 @@ fn render_header(
                 let f = sel && nav.track_element == TrackElement::Fx;
                 let s = if !track.fx_chain.is_empty() {
                     let count = track.fx_chain.len();
-                    (format!("fx{count}"), btn_style(true, f, tc))
+                    (format!("fx{count}"), theme::btn_style(true, f, tc))
                 } else {
-                    ("fx ".into(), btn_style(false, f, tc))
+                    ("fx ".into(), theme::btn_style(false, f, tc))
                 };
                 Some(s)
             }
             1 if !is_special => {
                 let f = sel && nav.track_element == TrackElement::Volume;
                 let vol_pct = (track.volume * 100.0) as u8;
-                Some((format!("v{vol_pct}"), btn_style(false, f, tc)))
+                Some((format!("v{vol_pct}"), theme::btn_style(false, f, tc)))
             }
             2 => {
                 let f = sel && nav.track_element == TrackElement::Mute;
-                Some(("[m]".into(), btn_style(track.muted, f, tc)))
+                Some(("[m]".into(), theme::btn_style(track.muted, f, tc)))
             }
             3 => {
                 let f = sel && nav.track_element == TrackElement::Solo;
@@ -271,7 +272,7 @@ fn render_header(
                     Style::default().fg(Color::Rgb(84,148,46))
                         .bg(if f { Color::Rgb(20,38,18) } else { Color::Rgb(10,28,14) })
                         .add_modifier(Modifier::BOLD)
-                } else { btn_style(false, f, tc) };
+                } else { theme::btn_style(false, f, tc) };
                 Some(("[s]".into(), s))
             }
             4 if !is_special => {
@@ -280,7 +281,7 @@ fn render_header(
                     Style::default().fg(Color::Rgb(180,50,50))
                         .bg(if f { Color::Rgb(35,20,20) } else { theme::BG })
                         .add_modifier(Modifier::BOLD)
-                } else { btn_style(false, f, tc) };
+                } else { theme::btn_style(false, f, tc) };
                 let t = if track.armed { "\u{25CF}r " } else { " r " };
                 Some((t.into(), s))
             }
@@ -293,36 +294,19 @@ fn render_header(
 
         // Route indicator on row 0 for special tracks
         if is_special && row == 0 {
-            let label = match track.track_type {
-                TrackType::SendA => "snd",
-                TrackType::SendB => "snd",
-                TrackType::Master => "mst",
+            let label = match track.kind {
+                TrackKind::SendA => "snd",
+                TrackKind::SendB => "snd",
+                TrackKind::Master => "mst",
                 _ => "",
             };
             sp.push(Span::styled(label, theme::dim()));
-        }
-
-        // Routing indicator on last row for audio tracks
-        if !is_special && row == h - 1 {
-            // nothing for now, keeps it clean
         }
 
         lines.push(Line::from(sp));
     }
 
     frame.render_widget(Paragraph::new(lines), area);
-}
-
-fn btn_style(active: bool, focused: bool, tc: Color) -> Style {
-    if active {
-        Style::default().fg(dim_color(tc, 80))
-            .bg(if focused { Color::Rgb(25,40,50) } else { Color::Rgb(12,22,32) })
-            .add_modifier(Modifier::BOLD)
-    } else if focused {
-        Style::default().fg(theme::NORMAL).bg(Color::Rgb(25,40,50))
-    } else {
-        Style::default().fg(Color::Rgb(18,50,72)).bg(Color::Rgb(7,17,28))
-    }
 }
 
 // ── Clip Area ──
@@ -358,57 +342,36 @@ fn render_clips(
         let ce = (cx + cw).min(w);
         if cx >= w { break; }
 
-        let cbg = if focused { Color::Rgb((tc_r(tc) as u16*18/100+10) as u8, (tc_g(tc) as u16*18/100+12) as u8, (tc_b(tc) as u16*18/100+15) as u8) }
-            else if clip.has_content { Color::Rgb((tc_r(tc) as u16*8/100+8) as u8, (tc_g(tc) as u16*8/100+10) as u8, (tc_b(tc) as u16*8/100+13) as u8) }
+        let cbg = if focused { Color::Rgb((theme::tc_r(tc) as u16*18/100+10) as u8, (theme::tc_g(tc) as u16*18/100+12) as u8, (theme::tc_b(tc) as u16*18/100+15) as u8) }
+            else if clip.has_content { Color::Rgb((theme::tc_r(tc) as u16*8/100+8) as u8, (theme::tc_g(tc) as u16*8/100+10) as u8, (theme::tc_b(tc) as u16*8/100+13) as u8) }
             else { theme::BG };
-        let cfg = if dim { dim_color(tc,18) } else if focused { tc } else if clip.has_content { dim_color(tc,55) } else { dim_color(tc,20) };
+        let cfg = if dim { theme::dim_color(tc,18) } else if focused { tc } else if clip.has_content { theme::dim_color(tc,55) } else { theme::dim_color(tc,20) };
 
         if clip.has_content {
-            let afg = if dim { dim_color(tc,25) } else if focused { tc } else { dim_color(tc,65) };
+            let afg = if dim { theme::dim_color(tc,25) } else if focused { tc } else { theme::dim_color(tc,65) };
             for x in cx..ce { grid[0][x] = ('\u{2580}', Style::default().fg(afg).bg(cbg)); }
         }
 
-        let mid = h / 2;
+        // Clip body: empty block rendering for all clips
         for row in 1..h.saturating_sub(1) {
             for x in cx..ce {
-                if clip.has_content {
-                    let u = (x-cx) as f64 / cw.max(1) as f64;
-                    let v = simple_wave(track.color_index, u);
-                    let ch = if row == mid { if v > 0.3 { '\u{2588}' } else if v > 0.1 { '\u{2584}' } else { '\u{2581}' } }
-                        else if row == mid.saturating_sub(1) && v > 0.6 { '\u{2584}' }
-                        else if row == mid+1 && v > 0.5 { '\u{2580}' }
-                        else { ' ' };
-                    grid[row][x] = (ch, Style::default().fg(cfg).bg(cbg));
-                } else {
-                    let edge = x == cx || x == ce-1;
-                    grid[row][x] = (if edge { '\u{2502}' } else { ' ' }, Style::default().fg(dim_color(tc,15)).bg(cbg));
-                }
+                let edge = x == cx || x == ce-1;
+                grid[row][x] = (if edge { '\u{2502}' } else { ' ' }, Style::default().fg(theme::dim_color(tc,15)).bg(cbg));
             }
         }
 
         for x in cx..ce {
             if grid[h-1][x].0 == ' ' {
-                grid[h-1][x] = ('\u{2581}', Style::default().fg(if clip.has_content { cfg } else { dim_color(tc,12) }).bg(cbg));
+                grid[h-1][x] = ('\u{2581}', Style::default().fg(if clip.has_content { cfg } else { theme::dim_color(tc,12) }).bg(cbg));
             }
         }
 
-        // Clip number + fx/v indicators
+        // Clip number
         let ns = format!("{}", clip.number);
-        let n_s = Style::default().fg(if focused { theme::AMBER_BRIGHT } else { dim_color(tc, if dim { 20 } else { 40 }) }).bg(cbg);
+        let n_s = Style::default().fg(if focused { theme::AMBER_BRIGHT } else { theme::dim_color(tc, if dim { 20 } else { 40 }) }).bg(cbg);
         for (i, ch) in ns.chars().enumerate() {
             let x = cx+i+1;
             if x < ce && 1 < h { grid[1][x] = (ch, n_s); }
-        }
-
-        // Show clip fx count if any
-        if !clip.fx_chain.is_empty() && 1 < h {
-            let fx_s = format!("fx{}", clip.fx_chain.len());
-            let fx_style = Style::default().fg(dim_color(tc, 30)).bg(cbg);
-            let start = ce.saturating_sub(fx_s.len() + 1);
-            for (i, ch) in fx_s.chars().enumerate() {
-                let x = start + i;
-                if x >= cx && x < ce { grid[1][x] = (ch, fx_style); }
-            }
         }
     }
 
@@ -437,7 +400,7 @@ fn render_clip_view_tabs(frame: &mut Frame, area: Rect, nav: &NavState) {
     let mut spans: Vec<Span> = Vec::new();
     spans.push(Span::styled(" \u{00B2} ", if focused { theme::amber_bright() } else { theme::normal() }));
 
-    for tab in [FxPanelTab::TrackFx, FxPanelTab::Synth, FxPanelTab::ClipFx] {
+    for tab in [FxPanelTab::TrackFx, FxPanelTab::Synth] {
         let active = nav.clip_view.fx_panel_tab == tab && nav.clip_view.focus == ClipViewFocus::FxPanel;
         let s = if active { theme::amber_bright().add_modifier(Modifier::BOLD) }
             else if focused { theme::normal() }
@@ -449,7 +412,7 @@ fn render_clip_view_tabs(frame: &mut Frame, area: Rect, nav: &NavState) {
     spans.push(Span::styled(" \u{2502} ", theme::border_style()));
 
     // Right tabs (clip/piano)
-    for tab in [ClipTab::PianoRoll, ClipTab::ClipFx, ClipTab::Automation] {
+    for tab in [ClipTab::PianoRoll, ClipTab::Automation] {
         let active = nav.clip_view.clip_tab == tab && nav.clip_view.focus == ClipViewFocus::PianoRoll;
         let s = if active { theme::amber_bright().add_modifier(Modifier::BOLD) }
             else if focused { theme::normal() }
@@ -572,16 +535,10 @@ fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
             }
         }
     } else {
-        // TrackFx or ClipFx tab: show FX chain
-        let fx_chain: &[FxInstance] = match nav.clip_view.fx_panel_tab {
-            FxPanelTab::TrackFx => {
-                nav.active_clip_track().map(|t| t.fx_chain.as_slice()).unwrap_or(&[])
-            }
-            FxPanelTab::ClipFx => {
-                nav.active_clip().map(|c| c.fx_chain.as_slice()).unwrap_or(&[])
-            }
-            FxPanelTab::Synth => unreachable!(),
-        };
+        // TrackFx tab: show FX chain
+        let fx_chain: &[FxInstance] = nav.active_clip_track()
+            .map(|t| t.fx_chain.as_slice())
+            .unwrap_or(&[]);
 
         if fx_chain.is_empty() {
             lines.push(Line::from(Span::styled("  (no fx)", theme::dim())));
@@ -617,15 +574,6 @@ fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
         }
     }
 
-    // Route info at bottom
-    if let Some(track) = nav.active_clip_track() {
-        while lines.len() < h.saturating_sub(1) { lines.push(Line::from("")); }
-        lines.push(Line::from(vec![
-            Span::styled("  \u{2192} ", theme::dim()),
-            Span::styled(track.route.label(), theme::muted()),
-        ]));
-    }
-
     lines.truncate(h);
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -634,15 +582,11 @@ fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState) {
     let (w, h) = (area.width as usize, area.height as usize);
     if w == 0 || h == 0 { return; }
 
-    let (track, clip) = match (nav.active_clip_track(), nav.active_clip()) {
-        (Some(t), Some(c)) => (t, c),
-        _ => {
-            frame.render_widget(Paragraph::new(Span::styled("  select a clip", theme::dim())), area);
-            return;
-        }
-    };
+    if nav.active_clip_track().is_none() {
+        frame.render_widget(Paragraph::new(Span::styled("  select a clip", theme::dim())), area);
+        return;
+    }
 
-    let tc = theme::track_color(track.color_index);
     let pr = &nav.clip_view.piano_roll;
     let focused = nav.focused_pane == Pane::ClipView && nav.clip_view.focus == ClipViewFocus::PianoRoll;
     let key_w = 6usize;
@@ -679,18 +623,6 @@ fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState) {
             if x < note_w {
                 gr[x] = (if b%4==0 { '\u{2502}' } else { '\u{2506}' },
                     Style::default().fg(if b%4==0 { Color::Rgb(16,36,50) } else { Color::Rgb(10,24,36) }).bg(row_bg));
-            }
-        }
-
-        // MIDI notes
-        for mn in &clip.midi_notes {
-            if mn.note == note {
-                let sx = (mn.start * note_w as f64) as usize;
-                let ex = ((mn.start + mn.duration) * note_w as f64).min(note_w as f64) as usize;
-                let ns = Style::default().fg(tc)
-                    .bg(if is_cur { Color::Rgb(25,50,60) } else { row_bg })
-                    .add_modifier(Modifier::BOLD);
-                for x in sx..ex { if x < note_w { gr[x] = ('\u{2588}', ns); } }
             }
         }
 
@@ -841,7 +773,7 @@ fn render_fx_menu(frame: &mut Frame, nav: &NavState) {
     let area = frame.area();
     // Position menu near center
     let mw = 28u16;
-    let mh = 12u16;
+    let mh = 10u16;
     let mx = (area.width.saturating_sub(mw)) / 2;
     let my = (area.height.saturating_sub(mh)) / 2;
     let menu_area = Rect::new(mx, my, mw, mh);
@@ -852,32 +784,12 @@ fn render_fx_menu(frame: &mut Frame, nav: &NavState) {
         .style(Style::default().bg(Color::Rgb(10, 22, 34)))
         .borders(ratatui::widgets::Borders::ALL)
         .border_style(theme::border_style())
-        .title(Span::styled(
-            if nav.fx_menu.tab == 0 { " add fx " } else { " routing " },
-            theme::amber_bright()));
+        .title(Span::styled(" add fx ", theme::amber_bright()));
     frame.render_widget(block, menu_area);
 
     let inner = Rect::new(mx + 1, my + 1, mw - 2, mh - 2);
 
-    // Tab bar
-    let tab_line = Line::from(vec![
-        Span::styled("[fx] ", if nav.fx_menu.tab == 0 { theme::amber_bright() } else { theme::dim() }),
-        Span::styled("[route] ", if nav.fx_menu.tab == 1 { theme::amber_bright() } else { theme::dim() }),
-        Span::styled("tab\u{2192}", theme::dim()),
-    ]);
-    frame.render_widget(Paragraph::new(tab_line), Rect::new(inner.x, inner.y, inner.width, 1));
-
-    let list_area = Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1);
-
-    let items: Vec<(&str, bool)> = if nav.fx_menu.tab == 0 {
-        FxType::ALL.iter().map(|f| (f.label(), false)).collect()
-    } else {
-        vec![
-            ("master", nav.current_track().map(|t| t.route == AudioRoute::Master).unwrap_or(false)),
-            ("send A", nav.current_track().map(|t| t.route == AudioRoute::SendA).unwrap_or(false)),
-            ("send B", nav.current_track().map(|t| t.route == AudioRoute::SendB).unwrap_or(false)),
-        ]
-    };
+    let items: Vec<(&str, bool)> = FxType::ALL.iter().map(|f| (f.label(), false)).collect();
 
     let mut lines: Vec<Line> = Vec::new();
     for (i, (label, active)) in items.iter().enumerate() {
@@ -892,7 +804,7 @@ fn render_fx_menu(frame: &mut Frame, nav: &NavState) {
         ]));
     }
 
-    frame.render_widget(Paragraph::new(lines), list_area);
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 // ── Separator + Helpers ──
@@ -957,25 +869,6 @@ fn grid_to_lines(grid: Vec<Vec<(char, Style)>>) -> Vec<Line<'static>> {
         Line::from(spans)
     }).collect()
 }
-
-fn simple_wave(ti: usize, u: f64) -> f64 {
-    let pi = std::f64::consts::PI;
-    match ti % 5 {
-        0 => ((-((u*4.0)%1.0)*12.0).exp()*0.95).max(0.0),
-        1 => { let b=(u*8.0).floor() as usize; let p=(u*8.0)%1.0; if b%2==1 { ((-p*10.0).exp()*0.78).max(0.0) } else { 0.0 } }
-        2 => ((-((u*16.0)%1.0)*20.0).exp()*0.5).max(0.0),
-        3 => ((u*pi*4.0).sin().abs()*0.48+(u*pi*9.0).sin().abs()*0.18)*0.72+0.07,
-        4|_ => ((u*pi*2.0).sin().abs()*0.32+(u*pi*5.0).sin().abs()*0.14+0.17)*0.72,
-    }
-}
-
-fn dim_color(c: Color, pct: u16) -> Color {
-    Color::Rgb((tc_r(c) as u16*pct/100) as u8, (tc_g(c) as u16*pct/100) as u8, (tc_b(c) as u16*pct/100) as u8)
-}
-
-fn tc_r(c: Color) -> u8 { if let Color::Rgb(r,_,_) = c { r } else { 128 } }
-fn tc_g(c: Color) -> u8 { if let Color::Rgb(_,g,_) = c { g } else { 128 } }
-fn tc_b(c: Color) -> u8 { if let Color::Rgb(_,_,b) = c { b } else { 128 } }
 
 fn midi_note_name(n: u8) -> String {
     const N: [&str;12] = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
