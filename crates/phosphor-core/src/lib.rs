@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod clip;
 pub mod cpal_backend;
 pub mod engine;
 pub mod mixer;

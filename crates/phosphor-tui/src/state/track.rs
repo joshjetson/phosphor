@@ -53,6 +53,12 @@ pub struct Clip {
     pub number: usize,
     pub width: u16,
     pub has_content: bool,
+    /// Start position on the timeline (ticks).
+    pub start_tick: i64,
+    /// Length in ticks.
+    pub length_ticks: i64,
+    /// Notes for piano roll display (from ClipSnapshot).
+    pub notes: Vec<phosphor_core::clip::NoteSnapshot>,
 }
 
 #[derive(Debug, Clone)]

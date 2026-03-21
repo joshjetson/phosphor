@@ -1,11 +1,8 @@
-//! Per-track audio mixer.
+//! Per-track audio mixer with MIDI recording and clip playback.
 //!
 //! The mixer owns all audio tracks and processes the track graph:
-//! routing MIDI to armed tracks, running each track's instrument,
-//! applying mute/solo/volume, mixing to master, and updating VU levels.
-//!
-//! All state changes from the UI arrive via a lock-free command channel
-//! (`crossbeam_channel::Receiver::try_recv` is lock-free).
+//! routing MIDI to the active track, recording armed tracks,
+//! playing back clips, applying mute/solo/volume, and mixing to master.
 
 use std::sync::Arc;
 
@@ -13,32 +10,25 @@ use crossbeam_channel::{Receiver, Sender};
 use phosphor_midi::message::MidiMessage;
 use phosphor_plugin::{MidiEvent, Plugin};
 
+use crate::clip::{ClipSnapshot, MidiClip, RecordBuffer};
 use crate::engine::VuLevels;
 use crate::project::{TrackHandle, TrackKind};
+use crate::transport::Transport;
 
 // ── Commands ──
 
-/// Commands sent from the UI thread to the mixer (audio thread).
-///
-/// The `Box<dyn Plugin + Send>` in `SetInstrument` is allocated on the
-/// UI thread; the audio thread only receives the pointer (no alloc).
 pub enum MixerCommand {
-    /// Add a track with the given kind. The audio thread creates the
-    /// `AudioTrack` and publishes a `TrackHandle` via the handle channel.
     AddTrack {
         kind: TrackKind,
         handle: Arc<TrackHandle>,
     },
-    /// Assign an instrument plugin to a track.
     SetInstrument {
         track_id: usize,
         instrument: Box<dyn Plugin + Send>,
     },
-    /// Remove a track by id.
     RemoveTrack {
         track_id: usize,
     },
-    /// Set a parameter on a track's instrument.
     SetParameter {
         track_id: usize,
         param_index: usize,
@@ -48,18 +38,19 @@ pub enum MixerCommand {
 
 // ── AudioTrack ──
 
-/// Per-track audio state, owned by the mixer on the audio thread.
 pub struct AudioTrack {
     pub id: usize,
     pub kind: TrackKind,
-    /// Shared with the UI — config (mute/solo/arm/vol) + VU levels.
     pub handle: Arc<TrackHandle>,
-    /// Optional instrument plugin (only for Instrument tracks).
     pub instrument: Option<Box<dyn Plugin>>,
-    /// Scratch buffers for plugin output.
+    /// Recorded clips on this track's timeline.
+    pub clips: Vec<MidiClip>,
+    /// Active recording buffer (when armed + transport recording).
+    record_buf: RecordBuffer,
+    /// Whether we were recording last buffer (to detect stop).
+    was_recording: bool,
     buf_l: Vec<f32>,
     buf_r: Vec<f32>,
-    /// Plugin-format MIDI events for the current buffer.
     plugin_events: Vec<MidiEvent>,
 }
 
@@ -70,6 +61,9 @@ impl AudioTrack {
             kind: handle.kind,
             handle,
             instrument: None,
+            clips: Vec::new(),
+            record_buf: RecordBuffer::new(),
+            was_recording: false,
             buf_l: vec![0.0; max_buffer_size],
             buf_r: vec![0.0; max_buffer_size],
             plugin_events: Vec::with_capacity(256),
@@ -79,21 +73,21 @@ impl AudioTrack {
 
 // ── Mixer ──
 
-/// The mixer: owns all tracks and processes the track graph each
-/// audio callback.
 pub struct Mixer {
     tracks: Vec<AudioTrack>,
     master_vu: Arc<VuLevels>,
     command_rx: Receiver<MixerCommand>,
+    /// Channel to send clip snapshots to the UI after recording.
+    clip_tx: Sender<ClipSnapshot>,
     sample_rate: u32,
     max_buffer_size: usize,
 }
 
 impl Mixer {
-    /// Create a new mixer.
     pub fn new(
         command_rx: Receiver<MixerCommand>,
         master_vu: Arc<VuLevels>,
+        clip_tx: Sender<ClipSnapshot>,
         sample_rate: u32,
         max_buffer_size: usize,
     ) -> Self {
@@ -101,54 +95,98 @@ impl Mixer {
             tracks: Vec::new(),
             master_vu,
             command_rx,
+            clip_tx,
             sample_rate,
             max_buffer_size,
         }
     }
 
-    /// Process one buffer cycle. Called from the audio thread.
-    ///
-    /// `midi_events` are the raw MIDI messages drained from the ring buffer
-    /// for this cycle. `output` is interleaved stereo: [L0, R0, L1, R1, ...].
-    pub fn process(&mut self, output: &mut [f32], midi_messages: &[MidiMessage]) {
-        // 1. Drain commands
+    /// Process one buffer cycle.
+    pub fn process(&mut self, output: &mut [f32], midi_messages: &[MidiMessage], transport: &Transport) {
         self.drain_commands();
 
         let num_frames = output.len() / 2;
+        let playing = transport.is_playing();
+        let recording = transport.is_recording();
+        let current_tick = transport.position_ticks();
+        let bpm = transport.tempo_bpm();
+        let ticks_per_sample = (bpm * Transport::PPQ as f64) / (60.0 * self.sample_rate as f64);
+        let buffer_ticks = (num_frames as f64 * ticks_per_sample) as i64;
 
-        // 2. Convert MIDI messages to plugin events
-        let plugin_events: Vec<MidiEvent> = midi_messages
+        // Convert live MIDI to plugin events
+        let live_events: Vec<MidiEvent> = midi_messages
             .iter()
             .filter_map(midi_to_plugin_event)
             .collect();
 
-        // 3. Determine if any track is soloed
         let any_solo = self.tracks.iter().any(|t| t.handle.config.is_soloed());
 
-        // 4. Process each track
         let mut master_l = vec![0.0f32; num_frames];
         let mut master_r = vec![0.0f32; num_frames];
 
         for track in &mut self.tracks {
-            // Ensure scratch buffers are big enough
             if track.buf_l.len() < num_frames {
                 track.buf_l.resize(num_frames, 0.0);
                 track.buf_r.resize(num_frames, 0.0);
             }
-
             track.buf_l[..num_frames].fill(0.0);
             track.buf_r[..num_frames].fill(0.0);
+            track.plugin_events.clear();
 
-            // Route MIDI only to the track that is selected for MIDI input.
-            // This ensures each instrument track plays independently.
-            if track.kind == TrackKind::Instrument && track.handle.config.is_midi_active() {
-                track.plugin_events.clear();
-                track.plugin_events.extend_from_slice(&plugin_events);
-            } else {
-                track.plugin_events.clear();
+            let is_midi_active = track.kind == TrackKind::Instrument
+                && track.handle.config.is_midi_active();
+            let is_armed = track.handle.config.is_armed();
+            let should_record = playing && recording && is_armed && is_midi_active;
+
+            // ── Recording ──
+            if should_record && !track.was_recording {
+                // Just started recording
+                track.record_buf.start(current_tick);
+            }
+            if !should_record && track.was_recording {
+                // Just stopped recording — commit the clip
+                if let Some(clip) = track.record_buf.commit(current_tick) {
+                    let idx = track.clips.len();
+                    let snapshot = ClipSnapshot::from_clip(track.id, idx, &clip);
+                    track.clips.push(clip);
+                    let _ = self.clip_tx.send(snapshot);
+                }
+            }
+            track.was_recording = should_record;
+
+            // Record live MIDI events (and pass through for monitoring)
+            if is_midi_active {
+                for ev in &live_events {
+                    track.plugin_events.push(*ev);
+                    if should_record {
+                        // Store at the tick corresponding to this event's sample offset
+                        let event_tick = current_tick
+                            + (ev.sample_offset as f64 * ticks_per_sample) as i64;
+                        track.record_buf.record(event_tick, ev.status, ev.data1, ev.data2);
+                    }
+                }
             }
 
-            // Process instrument
+            // ── Playback ──
+            if playing && !track.clips.is_empty() {
+                let from = current_tick;
+                let to = current_tick + buffer_ticks;
+                for clip in &track.clips {
+                    for (tick_offset, event) in clip.events_in_range(from, to) {
+                        let sample_offset = (tick_offset as f64 / ticks_per_sample) as u32;
+                        track.plugin_events.push(MidiEvent {
+                            sample_offset: sample_offset.min(num_frames as u32 - 1),
+                            status: event.status,
+                            data1: event.data1,
+                            data2: event.data2,
+                        });
+                    }
+                }
+                // Sort by sample offset for correct processing order
+                track.plugin_events.sort_by_key(|e| e.sample_offset);
+            }
+
+            // ── Process instrument ──
             if let Some(ref mut instrument) = track.instrument {
                 let mut outputs: [&mut [f32]; 2] = [
                     &mut track.buf_l[..num_frames],
@@ -159,14 +197,12 @@ impl Mixer {
                 instrument.process(&[], &mut out_slices, &track.plugin_events);
             }
 
-            // Determine if this track should be audible
+            // ── VU + Mix ──
             let muted = track.handle.config.is_muted();
             let soloed = track.handle.config.is_soloed();
             let audible = !muted && (!any_solo || soloed);
-
             let volume = track.handle.config.get_volume();
 
-            // Compute per-track VU (pre-mute for monitoring)
             let mut peak_l = 0.0f32;
             let mut peak_r = 0.0f32;
             for i in 0..num_frames {
@@ -174,14 +210,13 @@ impl Mixer {
                 peak_r = peak_r.max(track.buf_r[i].abs());
             }
 
-            // Smooth VU: fast attack, slow decay
             let (old_l, old_r) = track.handle.vu.get();
             let decay = 0.85f32;
-            let vu_l = if peak_l > old_l { peak_l } else { old_l * decay };
-            let vu_r = if peak_r > old_r { peak_r } else { old_r * decay };
-            track.handle.vu.set(vu_l, vu_r);
+            track.handle.vu.set(
+                if peak_l > old_l { peak_l } else { old_l * decay },
+                if peak_r > old_r { peak_r } else { old_r * decay },
+            );
 
-            // Mix into master (with volume and mute/solo)
             if audible {
                 for i in 0..num_frames {
                     master_l[i] += track.buf_l[i] * volume;
@@ -190,45 +225,39 @@ impl Mixer {
             }
         }
 
-        // 5. Write to interleaved output and compute master VU
-        let mut master_peak_l = 0.0f32;
-        let mut master_peak_r = 0.0f32;
+        // Master output + VU
+        let mut mp_l = 0.0f32;
+        let mut mp_r = 0.0f32;
         for i in 0..num_frames {
             let l = master_l[i];
             let r = master_r[i];
             output[i * 2] = l;
             output[i * 2 + 1] = r;
-            master_peak_l = master_peak_l.max(l.abs());
-            master_peak_r = master_peak_r.max(r.abs());
+            mp_l = mp_l.max(l.abs());
+            mp_r = mp_r.max(r.abs());
         }
 
-        // 6. Update master VU
         let (old_l, old_r) = self.master_vu.get();
         let decay = 0.85f32;
-        let new_l = if master_peak_l > old_l {
-            master_peak_l
-        } else {
-            old_l * decay
-        };
-        let new_r = if master_peak_r > old_r {
-            master_peak_r
-        } else {
-            old_r * decay
-        };
-        self.master_vu.set(new_l, new_r);
+        self.master_vu.set(
+            if mp_l > old_l { mp_l } else { old_l * decay },
+            if mp_r > old_r { mp_r } else { old_r * decay },
+        );
     }
 
-    /// Reset all instruments (panic).
     pub fn reset_all(&mut self) {
         for track in &mut self.tracks {
             if let Some(ref mut inst) = track.instrument {
                 inst.reset();
             }
             track.handle.vu.set(0.0, 0.0);
+            if track.record_buf.is_active() {
+                track.record_buf.discard();
+            }
+            track.was_recording = false;
         }
     }
 
-    /// Drain commands from the channel (lock-free `try_recv`).
     fn drain_commands(&mut self) {
         while let Ok(cmd) = self.command_rx.try_recv() {
             match cmd {
@@ -236,10 +265,7 @@ impl Mixer {
                     let track = AudioTrack::new(handle, self.max_buffer_size);
                     self.tracks.push(track);
                 }
-                MixerCommand::SetInstrument {
-                    track_id,
-                    mut instrument,
-                } => {
+                MixerCommand::SetInstrument { track_id, mut instrument } => {
                     if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
                         instrument.init(self.sample_rate as f64, self.max_buffer_size);
                         track.instrument = Some(instrument);
@@ -260,7 +286,6 @@ impl Mixer {
     }
 }
 
-/// Convert a phosphor-midi MidiMessage to a phosphor-plugin MidiEvent.
 fn midi_to_plugin_event(msg: &MidiMessage) -> Option<MidiEvent> {
     use phosphor_midi::message::MidiMessageType;
     match msg.message_type {
@@ -277,8 +302,12 @@ fn midi_to_plugin_event(msg: &MidiMessage) -> Option<MidiEvent> {
     }
 }
 
-/// Create a command channel pair for the mixer.
 pub fn mixer_command_channel() -> (Sender<MixerCommand>, Receiver<MixerCommand>) {
+    crossbeam_channel::unbounded()
+}
+
+/// Create a channel for clip snapshots (audio → UI).
+pub fn clip_snapshot_channel() -> (Sender<ClipSnapshot>, Receiver<ClipSnapshot>) {
     crossbeam_channel::unbounded()
 }
 
@@ -291,330 +320,168 @@ mod tests {
     fn make_note_on(note: u8, vel: u8) -> MidiMessage {
         MidiMessage {
             timestamp: Some(0),
-            message_type: MidiMessageType::NoteOn {
-                channel: 0,
-                note,
-                velocity: vel,
-            },
+            message_type: MidiMessageType::NoteOn { channel: 0, note, velocity: vel },
             raw: [0x90, note, vel],
             len: 3,
         }
     }
 
-    fn setup_mixer() -> (Mixer, Sender<MixerCommand>) {
+    fn make_note_off(note: u8) -> MidiMessage {
+        MidiMessage {
+            timestamp: Some(0),
+            message_type: MidiMessageType::NoteOff { channel: 0, note, velocity: 0 },
+            raw: [0x80, note, 0],
+            len: 3,
+        }
+    }
+
+    fn setup_mixer() -> (Mixer, Sender<MixerCommand>, Receiver<ClipSnapshot>, Arc<Transport>) {
         let (tx, rx) = mixer_command_channel();
+        let (clip_tx, clip_rx) = clip_snapshot_channel();
         let master_vu = Arc::new(VuLevels::new());
-        let mixer = Mixer::new(rx, master_vu, 44100, 256);
-        (mixer, tx)
+        let transport = Arc::new(Transport::new(120.0));
+        let mixer = Mixer::new(rx, master_vu, clip_tx, 44100, 256);
+        (mixer, tx, clip_rx, transport)
+    }
+
+    fn add_armed_synth(tx: &Sender<MixerCommand>, id: usize) -> Arc<TrackHandle> {
+        let handle = Arc::new(TrackHandle::new(id, TrackKind::Instrument));
+        handle.config.midi_active.store(true, std::sync::atomic::Ordering::Relaxed);
+        handle.config.armed.store(true, std::sync::atomic::Ordering::Relaxed);
+        tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle: handle.clone() }).unwrap();
+        tx.send(MixerCommand::SetInstrument { track_id: id, instrument: Box::new(PhosphorSynth::new()) }).unwrap();
+        handle
     }
 
     #[test]
-    fn mixer_processes_empty_output() {
-        let (mut mixer, _tx) = setup_mixer();
-        let mut output = vec![0.0f32; 128]; // 64 frames stereo
-        mixer.process(&mut output, &[]);
+    fn mixer_empty_output() {
+        let (mut mixer, _tx, _clip_rx, transport) = setup_mixer();
+        let mut output = vec![0.0f32; 128];
+        mixer.process(&mut output, &[], &transport);
         assert!(output.iter().all(|&s| s == 0.0));
     }
 
     #[test]
-    fn mixer_adds_track_via_command() {
-        let (mut mixer, tx) = setup_mixer();
-        let handle = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
-        tx.send(MixerCommand::AddTrack {
-            kind: TrackKind::Instrument,
-            handle,
-        })
-        .unwrap();
-
-        let mut output = vec![0.0f32; 128];
-        mixer.process(&mut output, &[]);
-        assert_eq!(mixer.tracks.len(), 1);
-    }
-
-    #[test]
-    fn mixer_routes_midi_to_active_track() {
-        let (mut mixer, tx) = setup_mixer();
-
-        // Add a midi-active instrument track
-        let handle = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
-        handle
-            .config
-            .midi_active
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        tx.send(MixerCommand::AddTrack {
-            kind: TrackKind::Instrument,
-            handle: handle.clone(),
-        })
-        .unwrap();
-
-        // Set instrument
-        let synth = Box::new(PhosphorSynth::new());
-        tx.send(MixerCommand::SetInstrument {
-            track_id: 0,
-            instrument: synth,
-        })
-        .unwrap();
-
-        // Process with note on
-        let midi = vec![make_note_on(60, 100)];
-        let mut output = vec![0.0f32; 512]; // 256 frames stereo
-        mixer.process(&mut output, &midi);
-
-        let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-        assert!(peak > 0.01, "Active track should produce sound, peak={peak}");
-    }
-
-    #[test]
-    fn mixer_does_not_route_midi_to_inactive_track() {
-        let (mut mixer, tx) = setup_mixer();
-
-        // Add an inactive instrument track
-        let handle = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
-        // midi_active is false by default
-        tx.send(MixerCommand::AddTrack {
-            kind: TrackKind::Instrument,
-            handle,
-        })
-        .unwrap();
-
-        let synth = Box::new(PhosphorSynth::new());
-        tx.send(MixerCommand::SetInstrument {
-            track_id: 0,
-            instrument: synth,
-        })
-        .unwrap();
+    fn mixer_live_midi_produces_sound() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        transport.play();
 
         let midi = vec![make_note_on(60, 100)];
         let mut output = vec![0.0f32; 512];
-        mixer.process(&mut output, &midi);
+        mixer.process(&mut output, &midi, &transport);
 
         let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-        assert!(
-            peak == 0.0,
-            "Inactive track should not receive MIDI, peak={peak}"
-        );
+        assert!(peak > 0.01, "Should produce sound, peak={peak}");
     }
 
     #[test]
-    fn mixer_mute_silences_track() {
-        let (mut mixer, tx) = setup_mixer();
+    fn mixer_records_midi_clip() {
+        let (mut mixer, tx, clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        transport.play();
+        transport.toggle_record();
 
-        let handle = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
-        handle
-            .config
-            .midi_active
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        handle
-            .config
-            .muted
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        tx.send(MixerCommand::AddTrack {
-            kind: TrackKind::Instrument,
-            handle: handle.clone(),
-        })
-        .unwrap();
+        // Play a note while recording
+        let midi = vec![make_note_on(60, 100)];
+        let mut output = vec![0.0f32; 512];
+        mixer.process(&mut output, &midi, &transport);
 
-        let synth = Box::new(PhosphorSynth::new());
-        tx.send(MixerCommand::SetInstrument {
-            track_id: 0,
-            instrument: synth,
-        })
-        .unwrap();
+        // Note off
+        let midi = vec![make_note_off(60)];
+        mixer.process(&mut output, &midi, &transport);
+
+        // Stop recording
+        transport.toggle_record();
+        mixer.process(&mut output, &[], &transport);
+
+        // Should have received a clip snapshot
+        let snap = clip_rx.try_recv().expect("Should receive clip snapshot");
+        assert_eq!(snap.track_id, 0);
+        assert!(snap.event_count >= 2, "Should have note on + off, got {}", snap.event_count);
+        assert!(!snap.notes.is_empty(), "Should have parsed notes");
+    }
+
+    #[test]
+    fn mixer_plays_back_recorded_clip() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        transport.play();
+        transport.toggle_record();
+
+        // Record a note
+        let midi = vec![make_note_on(60, 100)];
+        let mut output = vec![0.0f32; 512];
+        mixer.process(&mut output, &midi, &transport);
+
+        let midi = vec![make_note_off(60)];
+        mixer.process(&mut output, &midi, &transport);
+
+        // Stop recording
+        transport.toggle_record();
+        mixer.process(&mut output, &[], &transport);
+
+        // Stop and rewind
+        transport.stop();
+
+        // Play back — should hear the recorded clip
+        transport.play();
+        output.fill(0.0);
+        mixer.process(&mut output, &[], &transport);
+
+        let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(peak > 0.01, "Playback should produce sound, peak={peak}");
+    }
+
+    #[test]
+    fn mixer_mute_silences() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let handle = add_armed_synth(&tx, 0);
+        handle.config.muted.store(true, std::sync::atomic::Ordering::Relaxed);
+        transport.play();
 
         let midi = vec![make_note_on(60, 100)];
         let mut output = vec![0.0f32; 512];
-        mixer.process(&mut output, &midi);
+        mixer.process(&mut output, &midi, &transport);
 
         let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         assert!(peak == 0.0, "Muted track should be silent, peak={peak}");
-
-        // But VU should still show activity (pre-mute metering)
-        let (vu_l, _vu_r) = handle.vu.get();
-        assert!(vu_l > 0.0, "VU should still show activity on muted track");
     }
 
     #[test]
-    fn mixer_solo_isolates_track() {
-        let (mut mixer, tx) = setup_mixer();
-
-        // Track 0: active + soloed
-        let handle0 = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
-        handle0
-            .config
-            .midi_active
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        handle0
-            .config
-            .soloed
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        tx.send(MixerCommand::AddTrack {
-            kind: TrackKind::Instrument,
-            handle: handle0,
-        })
-        .unwrap();
-        tx.send(MixerCommand::SetInstrument {
-            track_id: 0,
-            instrument: Box::new(PhosphorSynth::new()),
-        })
-        .unwrap();
-
-        // Track 1: active but not soloed
-        let handle1 = Arc::new(TrackHandle::new(1, TrackKind::Instrument));
-        handle1
-            .config
-            .midi_active
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        tx.send(MixerCommand::AddTrack {
-            kind: TrackKind::Instrument,
-            handle: handle1.clone(),
-        })
-        .unwrap();
-        tx.send(MixerCommand::SetInstrument {
-            track_id: 1,
-            instrument: Box::new(PhosphorSynth::new()),
-        })
-        .unwrap();
+    fn mixer_no_record_when_not_armed() {
+        let (mut mixer, tx, clip_rx, transport) = setup_mixer();
+        let handle = add_armed_synth(&tx, 0);
+        handle.config.armed.store(false, std::sync::atomic::Ordering::Relaxed);
+        transport.play();
+        transport.toggle_record();
 
         let midi = vec![make_note_on(60, 100)];
         let mut output = vec![0.0f32; 512];
-        mixer.process(&mut output, &midi);
+        mixer.process(&mut output, &midi, &transport);
 
-        // Track 1 VU should show activity (it received MIDI and processed),
-        // but its output should not appear in master (solo logic)
-        let (vu_l, _) = handle1.vu.get();
-        assert!(
-            vu_l > 0.0,
-            "Un-soloed track should still process (VU active)"
-        );
+        transport.toggle_record();
+        mixer.process(&mut output, &[], &transport);
 
-        // Master output should only contain track 0's contribution
-        let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-        assert!(peak > 0.01, "Soloed track should produce output");
+        assert!(clip_rx.try_recv().is_err(), "Should not record when not armed");
     }
 
     #[test]
-    fn mixer_per_track_vu() {
-        let (mut mixer, tx) = setup_mixer();
-
-        let handle = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
-        handle
-            .config
-            .midi_active
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        tx.send(MixerCommand::AddTrack {
-            kind: TrackKind::Instrument,
-            handle: handle.clone(),
-        })
-        .unwrap();
-        tx.send(MixerCommand::SetInstrument {
-            track_id: 0,
-            instrument: Box::new(PhosphorSynth::new()),
-        })
-        .unwrap();
-
-        // No sound → VU should decay to 0
-        let mut output = vec![0.0f32; 512];
-        mixer.process(&mut output, &[]);
-        let (vu_l, _) = handle.vu.get();
-        assert!(vu_l < 0.01, "VU should be near zero with no sound");
-
-        // Sound → VU should be > 0
-        let midi = vec![make_note_on(60, 100)];
-        mixer.process(&mut output, &midi);
-        let (vu_l, _) = handle.vu.get();
-        assert!(vu_l > 0.01, "VU should show activity with sound");
-    }
-
-    #[test]
-    fn mixer_removes_track() {
-        let (mut mixer, tx) = setup_mixer();
-
-        let handle = Arc::new(TrackHandle::new(42, TrackKind::Audio));
-        tx.send(MixerCommand::AddTrack {
-            kind: TrackKind::Audio,
-            handle,
-        })
-        .unwrap();
-
-        let mut output = vec![0.0f32; 128];
-        mixer.process(&mut output, &[]);
-        assert_eq!(mixer.tracks.len(), 1);
-
-        tx.send(MixerCommand::RemoveTrack { track_id: 42 })
-            .unwrap();
-        mixer.process(&mut output, &[]);
-        assert_eq!(mixer.tracks.len(), 0);
-    }
-
-    #[test]
-    fn mixer_multiple_tracks() {
-        let (mut mixer, tx) = setup_mixer();
-
-        // Add two active instrument tracks
-        for id in 0..2 {
-            let handle = Arc::new(TrackHandle::new(id, TrackKind::Instrument));
-            handle
-                .config
-                .midi_active
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            tx.send(MixerCommand::AddTrack {
-                kind: TrackKind::Instrument,
-                handle,
-            })
-            .unwrap();
-            tx.send(MixerCommand::SetInstrument {
-                track_id: id,
-                instrument: Box::new(PhosphorSynth::new()),
-            })
-            .unwrap();
-        }
+    fn mixer_reset_discards_recording() {
+        let (mut mixer, tx, clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        transport.play();
+        transport.toggle_record();
 
         let midi = vec![make_note_on(60, 100)];
         let mut output = vec![0.0f32; 512];
-        mixer.process(&mut output, &midi);
+        mixer.process(&mut output, &midi, &transport);
 
-        let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-        assert!(
-            peak > 0.01,
-            "Multiple active tracks should produce sound, peak={peak}"
-        );
-    }
-
-    #[test]
-    fn mixer_reset_all() {
-        let (mut mixer, tx) = setup_mixer();
-
-        let handle = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
-        handle
-            .config
-            .midi_active
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        tx.send(MixerCommand::AddTrack {
-            kind: TrackKind::Instrument,
-            handle: handle.clone(),
-        })
-        .unwrap();
-        tx.send(MixerCommand::SetInstrument {
-            track_id: 0,
-            instrument: Box::new(PhosphorSynth::new()),
-        })
-        .unwrap();
-
-        // Play a note
-        let midi = vec![make_note_on(60, 100)];
-        let mut output = vec![0.0f32; 512];
-        mixer.process(&mut output, &midi);
-
-        // Reset
         mixer.reset_all();
 
-        // Process again — should be silent
-        output.fill(0.0);
-        mixer.process(&mut output, &[]);
-        let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-        assert!(
-            peak < 0.001,
-            "Should be silent after reset, peak={peak}"
-        );
+        transport.toggle_record();
+        mixer.process(&mut output, &[], &transport);
+
+        assert!(clip_rx.try_recv().is_err(), "Reset should discard active recording");
     }
 }

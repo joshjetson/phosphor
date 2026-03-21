@@ -226,8 +226,8 @@ impl EngineAudio {
 
         // If we have a mixer, delegate to it
         if let Some(ref mut mixer) = self.mixer {
-            mixer.process(output, &self.midi_scratch);
-            // Advance transport
+            mixer.process(output, &self.midi_scratch, transport);
+            // Advance transport after processing (so playback reads the pre-advance position)
             transport.advance(num_frames as u32, self.sample_rate);
             return;
         }

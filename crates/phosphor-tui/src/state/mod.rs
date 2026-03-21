@@ -532,9 +532,31 @@ impl NavState {
         let (ti, _) = self.clip_view_target?;
         self.tracks.get(ti)
     }
+
+    /// Receive a clip snapshot from the audio thread and add it to the
+    /// corresponding TUI track's clip list.
+    pub fn receive_clip_snapshot(&mut self, snap: phosphor_core::clip::ClipSnapshot) {
+        // Find the TUI track with matching mixer_id
+        if let Some(track) = self.tracks.iter_mut().find(|t| t.mixer_id == Some(snap.track_id)) {
+            let ppq = phosphor_core::transport::Transport::PPQ;
+            // Width in cells: roughly 1 cell per beat (PPQ ticks)
+            let beats = (snap.length_ticks as f64 / ppq as f64).ceil() as u16;
+            let width = beats.max(2); // minimum 2 cells wide
+
+            let clip_number = track.clips.len() + 1;
+            track.clips.push(Clip {
+                number: clip_number,
+                width,
+                has_content: true,
+                start_tick: snap.start_tick,
+                length_ticks: snap.length_ticks,
+                notes: snap.notes,
+            });
+        }
+    }
 }
 
-// ── Placeholder Data ──
+// ── Initial Data ──
 
 /// Initial tracks: just the bus tracks. Instruments are added by the user via Space+A.
 pub fn initial_tracks() -> Vec<TrackState> {

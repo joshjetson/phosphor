@@ -12,9 +12,10 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
+use phosphor_core::clip::ClipSnapshot;
 use phosphor_core::cpal_backend::CpalBackend;
 use phosphor_core::engine::{Engine, EngineAudio};
-use phosphor_core::mixer::{Mixer, MixerCommand, mixer_command_channel};
+use phosphor_core::mixer::{Mixer, MixerCommand, clip_snapshot_channel, mixer_command_channel};
 use phosphor_core::project::{TrackHandle, TrackKind};
 use phosphor_core::EngineConfig;
 use phosphor_dsp::synth::PhosphorSynth;
@@ -50,21 +51,19 @@ pub struct App {
     _audio_backend: Option<CpalBackend>,
     _midi_status: Arc<MidiStatus>,
     _midi_connection: Option<midir::MidiInputConnection<()>>,
-    /// Next track ID for mixer tracks.
     next_track_id: usize,
+    clip_rx: crossbeam_channel::Receiver<ClipSnapshot>,
 }
 
 impl App {
     pub fn new(config: EngineConfig, enable_audio: bool, enable_midi: bool) -> Self {
-        // Create mixer command channel
         let (mixer_tx, mixer_rx) = mixer_command_channel();
+        let (clip_tx, clip_rx) = clip_snapshot_channel();
 
         let engine = Arc::new(Engine::with_command_tx(config, mixer_tx.clone()));
         let transport = engine.transport.clone();
 
         let midi_status = Arc::new(MidiStatus::new());
-
-        // Set up MIDI ring buffer
         let (midi_tx, midi_rx) = midi_ring_buffer();
 
         // Start MIDI input FIRST so the controller can finish its init burst
@@ -90,6 +89,7 @@ impl App {
             let mixer = Mixer::new(
                 mixer_rx,
                 vu_levels.clone(),
+                clip_tx,
                 config.sample_rate,
                 config.buffer_size as usize,
             );
@@ -117,6 +117,7 @@ impl App {
                         _midi_status: midi_status,
                         _midi_connection: midi_connection,
                         next_track_id: 0,
+                        clip_rx,
                     };
                 }
             };
@@ -140,6 +141,7 @@ impl App {
             _midi_status: midi_status,
             _midi_connection: midi_connection,
             next_track_id: 0,
+            clip_rx,
         }
     }
 
@@ -158,9 +160,13 @@ impl App {
     fn main_loop(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
         while self.running {
             self.nav.tick();
-            // Sync each track's mute/solo/arm/volume → audio atomics
             for track in &self.nav.tracks {
                 track.sync_to_audio();
+            }
+
+            // Poll for recorded clip snapshots from the audio thread
+            while let Ok(snap) = self.clip_rx.try_recv() {
+                self.nav.receive_clip_snapshot(snap);
             }
 
             let snapshot = self.engine.transport.snapshot();

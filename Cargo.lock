@@ -3202,6 +3202,7 @@ name = "phosphor-tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "crossbeam-channel",
  "crossterm",
  "midir",
  "phosphor-core",
