@@ -156,6 +156,7 @@ impl NavState {
     pub fn focus_pane(&mut self, pane: Pane) {
         if self.focused_pane == Pane::Tracks { self.track_selected = false; }
         self.focused_pane = pane;
+        crate::debug_log::system(&format!("focused pane: {:?}", pane));
     }
 
     pub fn focus_next_pane(&mut self) {

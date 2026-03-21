@@ -126,10 +126,18 @@ fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap: &Transpor
         Span::styled("\u{266A}", theme::dim())
     };
 
+    let transport_focused = nav.focused_pane == Pane::Transport;
+    let bpm_style = if transport_focused {
+        Style::default().fg(Color::Rgb(255, 200, 50)).bg(Color::Rgb(30, 30, 10)).add_modifier(Modifier::BOLD)
+    } else {
+        theme::amber_bright()
+    };
+    let bpm_label = if transport_focused { "+bpm-" } else { "bpm:" };
+
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            seq, Span::styled("  bpm:", theme::normal()),
-            Span::styled(format!("{:.0}", snap.tempo_bpm), theme::amber_bright()),
+            seq, Span::styled(format!("  {bpm_label}"), theme::normal()),
+            Span::styled(format!("{:.0}", snap.tempo_bpm), bpm_style),
             Span::styled("  4/4  ", theme::normal()), rec,
             Span::styled("  ", theme::bg()), lp,
             Span::styled("  ", theme::bg()), met,

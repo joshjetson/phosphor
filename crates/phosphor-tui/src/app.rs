@@ -467,7 +467,7 @@ impl App {
             _ => {}
         }
 
-        // Global BPM adjustment
+        // Global BPM adjustment (+/- always work)
         match key.code {
             KeyCode::Char('+') | KeyCode::Char('=') => {
                 let bpm = self.engine.transport.tempo_bpm() + 1.0;
@@ -475,7 +475,7 @@ impl App {
                 dbg::system(&format!("bpm={:.0}", bpm));
                 return;
             }
-            KeyCode::Char('-') if !self.nav.track_selected => {
+            KeyCode::Char('-') => {
                 let bpm = (self.engine.transport.tempo_bpm() - 1.0).max(20.0);
                 self.engine.transport.set_tempo(bpm);
                 dbg::system(&format!("bpm={:.0}", bpm));
