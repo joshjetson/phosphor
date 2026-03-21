@@ -549,7 +549,11 @@ impl NavState {
     /// Receive a clip snapshot from the audio thread and add it to the
     /// corresponding TUI track's clip list.
     pub fn receive_clip_snapshot(&mut self, snap: phosphor_core::clip::ClipSnapshot) {
-        // Find the TUI track with matching mixer_id
+        crate::debug_log::system(&format!(
+            "clip received: track={} events={} notes={} ticks={}..{}",
+            snap.track_id, snap.event_count, snap.notes.len(),
+            snap.start_tick, snap.start_tick + snap.length_ticks,
+        ));
         if let Some(track) = self.tracks.iter_mut().find(|t| t.mixer_id == Some(snap.track_id)) {
             let ppq = phosphor_core::transport::Transport::PPQ;
             // Width in cells: roughly 1 cell per beat (PPQ ticks)

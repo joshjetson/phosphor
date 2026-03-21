@@ -731,9 +731,8 @@ fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState) {
 
 fn render_space_menu(frame: &mut Frame, nav: &NavState) {
     let area = frame.area();
-    // Menu anchored to the bottom, full width, ~12 rows tall
-    let mh = 14u16.min(area.height.saturating_sub(2));
-    let my = area.height.saturating_sub(mh + 1); // above the bottom bar
+    let mh = 10u16.min(area.height.saturating_sub(2));
+    let my = area.height.saturating_sub(mh + 1);
     let menu_area = Rect::new(0, my, area.width, mh);
 
     frame.render_widget(Clear, menu_area);
@@ -746,21 +745,12 @@ fn render_space_menu(frame: &mut Frame, nav: &NavState) {
 
     let inner = Rect::new(1, my + 1, area.width.saturating_sub(2), mh.saturating_sub(2));
 
-    // Tab bar
     let tab_line = Line::from(vec![
-        Span::styled(
-            " [actions] ",
-            if nav.space_menu.section == SpaceMenuSection::Actions {
-                theme::amber_bright().add_modifier(Modifier::BOLD)
-            } else { theme::dim() },
-        ),
-        Span::styled(
-            " [help] ",
-            if nav.space_menu.section == SpaceMenuSection::Help {
-                theme::amber_bright().add_modifier(Modifier::BOLD)
-            } else { theme::dim() },
-        ),
-        Span::styled("  tab\u{2192}switch  esc\u{2192}close  ", theme::dim()),
+        Span::styled(" [actions] ",
+            if nav.space_menu.section == SpaceMenuSection::Actions { theme::amber_bright().add_modifier(Modifier::BOLD) } else { theme::dim() }),
+        Span::styled(" [help] ",
+            if nav.space_menu.section == SpaceMenuSection::Help { theme::amber_bright().add_modifier(Modifier::BOLD) } else { theme::dim() }),
+        Span::styled("  tab\u{2192}switch  esc\u{2192}close  +/-\u{2192}bpm", theme::dim()),
     ]);
     frame.render_widget(Paragraph::new(tab_line), Rect::new(inner.x, inner.y, inner.width, 1));
 
@@ -768,23 +758,39 @@ fn render_space_menu(frame: &mut Frame, nav: &NavState) {
 
     match nav.space_menu.section {
         SpaceMenuSection::Actions => {
-            let mut lines: Vec<Line> = Vec::new();
-            for (i, (key, label, desc)) in SPACE_ACTIONS.iter().enumerate() {
-                let is_cur = nav.space_menu.cursor == i;
-                let indicator = if is_cur { "\u{25B6} " } else { "  " };
-                let key_s = if is_cur {
-                    theme::amber_bright().add_modifier(Modifier::BOLD)
-                } else { theme::amber() };
-                let label_s = if is_cur {
-                    Style::default().fg(theme::HIGHLIGHT).bg(Color::Rgb(8, 18, 28)).add_modifier(Modifier::BOLD)
-                } else { theme::normal() };
+            // Render in columns: fill top-to-bottom, left-to-right
+            let items = SPACE_ACTIONS;
+            let col_w = 30usize; // width per column
+            let rows = list_area.height as usize;
+            let cols = if rows > 0 { (items.len() + rows - 1) / rows } else { 1 };
 
-                lines.push(Line::from(vec![
-                    Span::styled(indicator, label_s),
-                    Span::styled(format!("{:<7}", key), key_s),
-                    Span::styled(format!("{:<12}", label), label_s),
-                    Span::styled(*desc, theme::dim()),
-                ]));
+            let mut lines: Vec<Line> = Vec::new();
+            for row in 0..rows {
+                let mut spans: Vec<Span> = Vec::new();
+                for col in 0..cols {
+                    let idx = col * rows + row;
+                    if idx < items.len() {
+                        let (key, label, _desc) = items[idx];
+                        let is_cur = nav.space_menu.cursor == idx;
+                        let indicator = if is_cur { "\u{25B6}" } else { " " };
+                        let key_s = if is_cur { theme::amber_bright().add_modifier(Modifier::BOLD) } else { theme::amber() };
+                        let label_s = if is_cur {
+                            Style::default().fg(theme::HIGHLIGHT).bg(Color::Rgb(8, 18, 28)).add_modifier(Modifier::BOLD)
+                        } else { theme::normal() };
+
+                        spans.push(Span::styled(format!("{indicator} "), label_s));
+                        spans.push(Span::styled(format!("{:<7}", key), key_s));
+                        spans.push(Span::styled(format!("{:<12}", label), label_s));
+                        // pad to column width
+                        let used = 2 + 7 + 12;
+                        if col_w > used {
+                            spans.push(Span::styled(" ".repeat(col_w - used), Style::default().bg(Color::Rgb(8, 18, 28))));
+                        }
+                    }
+                }
+                if !spans.is_empty() {
+                    lines.push(Line::from(spans));
+                }
             }
             frame.render_widget(Paragraph::new(lines), list_area);
         }

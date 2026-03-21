@@ -467,6 +467,23 @@ impl App {
             _ => {}
         }
 
+        // Global BPM adjustment
+        match key.code {
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                let bpm = self.engine.transport.tempo_bpm() + 1.0;
+                self.engine.transport.set_tempo(bpm);
+                dbg::system(&format!("bpm={:.0}", bpm));
+                return;
+            }
+            KeyCode::Char('-') if !self.nav.track_selected => {
+                let bpm = (self.engine.transport.tempo_bpm() - 1.0).max(20.0);
+                self.engine.transport.set_tempo(bpm);
+                dbg::system(&format!("bpm={:.0}", bpm));
+                return;
+            }
+            _ => {}
+        }
+
         match self.nav.focused_pane {
             Pane::Tracks => self.handle_tracks_keys(key),
             Pane::ClipView => self.handle_clip_view_keys(key),
@@ -518,12 +535,6 @@ impl App {
             }
             KeyCode::Char(ch @ '0'..='9') if self.nav.track_selected && !self.nav.fx_menu.open => {
                 self.nav.digit_input(ch);
-            }
-            KeyCode::Char('+') | KeyCode::Char('=') => {
-                self.engine.transport.set_tempo(self.engine.transport.tempo_bpm() + 1.0);
-            }
-            KeyCode::Char('-') => {
-                self.engine.transport.set_tempo((self.engine.transport.tempo_bpm() - 1.0).max(20.0));
             }
             _ => {}
         }
