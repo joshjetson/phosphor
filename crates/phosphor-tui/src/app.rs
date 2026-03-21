@@ -186,9 +186,12 @@ impl App {
     }
 
     fn handle_event(&mut self, event: Event) {
+        use crate::debug_log as dbg;
+
         let Event::Key(key) = event else { return };
 
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            dbg::user("Ctrl+C → quit");
             self.running = false;
             return;
         }
@@ -197,37 +200,53 @@ impl App {
         if self.nav.loop_editor.active {
             let shift = key.modifiers.contains(KeyModifiers::SHIFT);
             match key.code {
-                KeyCode::Esc => self.nav.loop_editor.unfocus(),
+                KeyCode::Esc => {
+                    dbg::user("loop editor: Esc → unfocus");
+                    self.nav.loop_editor.unfocus();
+                }
                 KeyCode::Enter => {
-                    // Toggle loop activation
                     self.nav.loop_editor.toggle_enabled();
+                    dbg::user(&format!("loop editor: Enter → enabled={}", self.nav.loop_editor.enabled));
                     self.sync_loop_to_transport();
+                    self.log_transport_state();
                 }
                 KeyCode::Char('h') | KeyCode::Left => {
                     if shift {
+                        dbg::user("loop editor: Shift+h → move end left");
                         self.nav.loop_editor.move_end_left();
                     } else {
+                        dbg::user("loop editor: h → move start left");
                         self.nav.loop_editor.move_start_left();
                     }
+                    dbg::system(&format!("loop range: {}", self.nav.loop_editor.display()));
                     self.sync_loop_to_transport();
                 }
                 KeyCode::Char('l') | KeyCode::Right => {
                     if shift {
+                        dbg::user("loop editor: Shift+l → move end right");
                         self.nav.loop_editor.move_end_right();
                     } else {
+                        dbg::user("loop editor: l → move start right");
                         self.nav.loop_editor.move_start_right();
                     }
+                    dbg::system(&format!("loop range: {}", self.nav.loop_editor.display()));
                     self.sync_loop_to_transport();
                 }
                 KeyCode::Char('H') => {
+                    dbg::user("loop editor: H → move end left");
                     self.nav.loop_editor.move_end_left();
+                    dbg::system(&format!("loop range: {}", self.nav.loop_editor.display()));
                     self.sync_loop_to_transport();
                 }
                 KeyCode::Char('L') => {
+                    dbg::user("loop editor: L → move end right");
                     self.nav.loop_editor.move_end_right();
+                    dbg::system(&format!("loop range: {}", self.nav.loop_editor.display()));
                     self.sync_loop_to_transport();
                 }
-                _ => {}
+                _ => {
+                    dbg::user(&format!("loop editor: ignored key {:?}", key.code));
+                }
             }
             return;
         }
@@ -235,11 +254,15 @@ impl App {
         // Instrument modal open
         if self.nav.instrument_modal.open {
             match key.code {
-                KeyCode::Esc => self.nav.escape(),
+                KeyCode::Esc => {
+                    dbg::user("instrument modal: Esc → close");
+                    self.nav.escape();
+                }
                 KeyCode::Char('j') | KeyCode::Down => self.nav.move_down(),
                 KeyCode::Char('k') | KeyCode::Up => self.nav.move_up(),
                 KeyCode::Enter => {
                     let instrument = self.nav.instrument_modal.selected();
+                    dbg::user(&format!("instrument modal: Enter → selected {:?}", instrument));
                     self.nav.instrument_modal.open = false;
                     self.create_instrument_track(instrument);
                 }
@@ -251,17 +274,23 @@ impl App {
         // Space menu open
         if self.nav.space_menu.open {
             match key.code {
-                KeyCode::Char(' ') | KeyCode::Esc => { self.nav.space_menu.open = false; }
+                KeyCode::Char(' ') | KeyCode::Esc => {
+                    dbg::user("space menu: close");
+                    self.nav.space_menu.open = false;
+                }
                 KeyCode::Char('j') | KeyCode::Down => self.nav.move_down(),
                 KeyCode::Char('k') | KeyCode::Up => self.nav.move_up(),
                 KeyCode::Tab => self.nav.space_menu.switch_section(),
                 KeyCode::Enter => {
                     if let Some(action) = self.nav.enter() {
+                        dbg::user(&format!("space menu: Enter → {:?}", action));
                         self.handle_space_action(action);
                     }
                 }
                 KeyCode::Char(ch) => {
+                    dbg::user(&format!("space menu: '{ch}'"));
                     if let Some(action) = self.nav.space_menu_handle(ch) {
+                        dbg::system(&format!("space action: {:?}", action));
                         self.handle_space_action(action);
                     }
                 }
@@ -272,6 +301,7 @@ impl App {
 
         // Space → open space menu
         if key.code == KeyCode::Char(' ') {
+            dbg::user("Space → open space menu");
             self.nav.toggle_space_menu();
             return;
         }
@@ -279,11 +309,20 @@ impl App {
         // Tab
         match key.code {
             KeyCode::Tab if self.nav.focused_pane == Pane::ClipView => {
+                dbg::user("Tab → cycle clip view tab");
                 self.nav.cycle_tab();
                 return;
             }
-            KeyCode::Tab => { self.nav.focus_next_pane(); return; }
-            KeyCode::BackTab => { self.nav.focus_pane(self.nav.focused_pane.prev()); return; }
+            KeyCode::Tab => {
+                dbg::user("Tab → next pane");
+                self.nav.focus_next_pane();
+                return;
+            }
+            KeyCode::BackTab => {
+                dbg::user("Shift+Tab → prev pane");
+                self.nav.focus_pane(self.nav.focused_pane.prev());
+                return;
+            }
             _ => {}
         }
 
@@ -294,22 +333,47 @@ impl App {
     }
 
     fn handle_tracks_keys(&mut self, key: crossterm::event::KeyEvent) {
+        use crate::debug_log as dbg;
+
         match key.code {
             KeyCode::Char('q') if !self.nav.track_selected && !self.nav.fx_menu.open => {
+                dbg::user("q → quit");
                 self.running = false;
             }
-            KeyCode::Esc => self.nav.escape(),
-            KeyCode::Char('j') | KeyCode::Down => self.nav.move_down(),
-            KeyCode::Char('k') | KeyCode::Up => self.nav.move_up(),
+            KeyCode::Esc => {
+                dbg::user("Esc → back");
+                self.nav.escape();
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                dbg::user(&format!("j/Down → move down (cursor was {})", self.nav.track_cursor));
+                self.nav.move_down();
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                dbg::user(&format!("k/Up → move up (cursor was {})", self.nav.track_cursor));
+                self.nav.move_up();
+            }
             KeyCode::Char('h') | KeyCode::Left => self.nav.move_left(),
             KeyCode::Char('l') | KeyCode::Right => self.nav.move_right(),
-            KeyCode::Enter => { self.nav.enter(); }
-            KeyCode::Char('m') if !self.nav.fx_menu.open => self.nav.toggle_mute(),
-            KeyCode::Char('s') if !self.nav.fx_menu.open => self.nav.toggle_solo(),
-            KeyCode::Char('r') if !self.nav.fx_menu.open => self.nav.toggle_arm(),
-            // R (shift+r) = toggle loop recording on the selected track
+            KeyCode::Enter => {
+                dbg::user(&format!("Enter → select (track_selected={})", self.nav.track_selected));
+                self.nav.enter();
+            }
+            KeyCode::Char('m') if !self.nav.fx_menu.open => {
+                dbg::user("m → toggle mute");
+                self.nav.toggle_mute();
+            }
+            KeyCode::Char('s') if !self.nav.fx_menu.open => {
+                dbg::user("s → toggle solo");
+                self.nav.toggle_solo();
+            }
+            KeyCode::Char('r') if !self.nav.fx_menu.open => {
+                dbg::user("r → toggle arm");
+                self.nav.toggle_arm();
+            }
             KeyCode::Char('R') if !self.nav.fx_menu.open => {
+                dbg::user("R → toggle loop record");
                 self.toggle_loop_record();
+                self.log_transport_state();
             }
             KeyCode::Char(ch @ '0'..='9') if self.nav.track_selected && !self.nav.fx_menu.open => {
                 self.nav.digit_input(ch);
@@ -364,21 +428,32 @@ impl App {
     fn handle_space_action(&mut self, action: SpaceAction) {
         match action {
             SpaceAction::PlayPause => {
+                use crate::debug_log as dbg;
                 if self.engine.transport.is_playing() {
+                    dbg::system("play/pause → pause");
                     self.engine.transport.pause();
                 } else {
-                    // If loop is enabled, start from loop start
                     if self.nav.loop_editor.enabled {
-                        self.engine.transport.set_position(
-                            self.nav.loop_editor.start_ticks()
-                        );
+                        let start = self.nav.loop_editor.start_ticks();
+                        dbg::system(&format!("play/pause → play from loop start (tick {start})"));
+                        self.engine.transport.set_position(start);
+                    } else {
+                        dbg::system("play/pause → play from current position");
                     }
+                    self.sync_loop_to_transport();
                     self.engine.transport.play();
                 }
+                self.log_transport_state();
             }
-            SpaceAction::ToggleRecord => self.engine.transport.toggle_record(),
+            SpaceAction::ToggleRecord => {
+                use crate::debug_log as dbg;
+                self.engine.transport.toggle_record();
+                dbg::system(&format!("toggle record → recording={}", self.engine.transport.is_recording()));
+                self.log_transport_state();
+            }
             SpaceAction::ToggleLoop => {
-                // Space+l: focus the loop editor for marker adjustment
+                use crate::debug_log as dbg;
+                dbg::user("Space+l → focus loop editor");
                 self.nav.loop_editor.focus();
             }
             SpaceAction::Panic => {
@@ -393,13 +468,27 @@ impl App {
             SpaceAction::NewTrack => { /* future */ }
         }
     }
-    /// Sync the loop editor state to the transport.
     fn sync_loop_to_transport(&self) {
+        use crate::debug_log as dbg;
         let le = &self.nav.loop_editor;
         self.engine.transport.set_loop_range(le.start_ticks(), le.end_ticks());
         if le.enabled != self.engine.transport.is_looping() {
             self.engine.transport.toggle_loop();
         }
+        dbg::system(&format!(
+            "loop sync: editor_enabled={} transport_looping={} range={}..{} ticks (bars {})",
+            le.enabled, self.engine.transport.is_looping(),
+            le.start_ticks(), le.end_ticks(), le.display(),
+        ));
+    }
+
+    fn log_transport_state(&self) {
+        use crate::debug_log as dbg;
+        let t = &self.engine.transport;
+        dbg::transport(
+            t.is_playing(), t.is_recording(), t.is_looping(),
+            t.position_ticks(), t.loop_start(), t.loop_end(),
+        );
     }
 
     /// Toggle loop recording on the current track.

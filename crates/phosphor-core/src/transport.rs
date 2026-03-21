@@ -320,4 +320,26 @@ mod tests {
         assert_eq!(snap.position_ticks, 500);
         assert!((snap.tempo_bpm - 130.0).abs() < 0.01);
     }
+
+
+    #[test]
+    fn loop_wraps_at_boundary() {
+        let t = Transport::new(120.0);
+        t.set_loop_range(0, 7680); // 2 bars
+        t.toggle_loop();
+        t.play();
+
+        // At 120bpm, 44100Hz, 256 samples/buffer: ~11 ticks/buffer
+        // 7680 / 11 ≈ 698 buffers needed
+        let mut wrapped = false;
+        for _ in 0..800 {
+            let before = t.position_ticks();
+            t.advance(256, 44100);
+            if t.position_ticks() < before {
+                wrapped = true;
+                break;
+            }
+        }
+        assert!(wrapped, "Loop should have wrapped. pos={}", t.position_ticks());
+    }
 }
