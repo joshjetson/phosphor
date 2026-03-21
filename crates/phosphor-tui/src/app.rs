@@ -485,8 +485,18 @@ impl App {
         }
 
         match self.nav.focused_pane {
+            Pane::Transport => self.handle_transport_keys(key),
             Pane::Tracks => self.handle_tracks_keys(key),
             Pane::ClipView => self.handle_clip_view_keys(key),
+        }
+    }
+
+    fn handle_transport_keys(&mut self, key: crossterm::event::KeyEvent) {
+        use crate::debug_log as dbg;
+        match key.code {
+            KeyCode::Char('q') => { self.running = false; }
+            KeyCode::Esc => { dbg::user("transport: Esc"); }
+            _ => {}
         }
     }
 

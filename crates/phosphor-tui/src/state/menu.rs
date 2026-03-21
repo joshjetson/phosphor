@@ -225,16 +225,16 @@ impl SpaceMenu {
 
 /// Space menu action entries: (key, label, description).
 pub const SPACE_ACTIONS: &[(&str, &str, &str)] = &[
-    ("spc+1", "tracks",    "focus the tracks panel"),
-    ("spc+2", "clip view", "focus the clip / piano roll panel"),
+    ("spc+1", "transport", "focus transport controls"),
+    ("spc+2", "tracks",    "focus the tracks panel"),
+    ("spc+3", "clip view", "focus clip / piano roll panel"),
     ("spc+p", "play/pause","toggle transport playback"),
     ("spc+r", "record",    "toggle global recording"),
     ("spc+l", "loop",      "edit loop region"),
     ("spc+m", "metronome", "toggle click track"),
     ("spc+!", "panic",     "kill all sound immediately"),
-    ("spc+a", "add instr", "add instrument track (synth, drums)"),
+    ("spc+a", "add instr", "add instrument track"),
     ("spc+s", "save",      "save project"),
-    ("spc+n", "new track", "add a new audio track"),
     ("spc+h", "help",      "open help topics"),
 ];
 

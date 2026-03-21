@@ -910,6 +910,8 @@ fn render_bottom_bar(frame: &mut Frame, area: Rect, nav: &NavState) {
 
     let (mt, ms) = if nav.loop_editor.active {
         ("-- LOOP --", Style::default().fg(Color::Rgb(80, 180, 80)).bg(theme::BG))
+    } else if nav.focused_pane == Pane::Transport {
+        ("-- TRANSPORT --", theme::amber_bright())
     } else if nav.track_selected {
         ("-- SELECT --", theme::amber())
     } else {
@@ -923,9 +925,10 @@ fn render_bottom_bar(frame: &mut Frame, area: Rect, nav: &NavState) {
         vec![("hl","start"),("H/L","end"),("enter", toggle),("esc","done")]
     } else {
         match nav.focused_pane {
+            Pane::Transport => vec![("tab","next"),("spc","menu"),("+/-","bpm")],
             Pane::Tracks if nav.track_selected => vec![("hl","clip"),("m","mute"),("s","solo"),("r","arm"),("R","rec"),("esc","back")],
             Pane::Tracks => vec![("jk","track"),("enter","sel"),("m","mute"),("s","solo"),("r","arm"),("R","rec")],
-            Pane::ClipView => vec![("jk","nav"),("hl","panel"),("tab","tabs"),("esc","back"),("spc","play")],
+            Pane::ClipView => vec![("jk","nav"),("hl","panel"),("tab","tabs"),("esc","back")],
         }
     };
     let ks: Vec<Span> = keys.iter().flat_map(|(k,v)| vec![
@@ -935,7 +938,7 @@ fn render_bottom_bar(frame: &mut Frame, area: Rect, nav: &NavState) {
     frame.render_widget(Paragraph::new(Line::from(ks)), cols[1]);
 
     let mut right: Vec<Span> = Vec::new();
-    for p in [Pane::Tracks, Pane::ClipView] {
+    for p in [Pane::Transport, Pane::Tracks, Pane::ClipView] {
         let a = nav.focused_pane == p;
         let s = if a { theme::amber_bright().add_modifier(Modifier::BOLD) } else { theme::dim() };
         right.push(Span::styled(format!("spc+{}", p.number()), s));

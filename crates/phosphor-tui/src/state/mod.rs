@@ -26,39 +26,48 @@ use phosphor_core::project::TrackKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
+    Transport,
     Tracks,
-    ClipView, // combined: FX panel (left) + piano roll/clip (right)
+    ClipView,
 }
 
 impl Pane {
     pub fn number(self) -> u8 {
         match self {
-            Self::Tracks => 1,
-            Self::ClipView => 2,
+            Self::Transport => 1,
+            Self::Tracks => 2,
+            Self::ClipView => 3,
         }
     }
 
     pub fn from_number(n: u8) -> Option<Self> {
         match n {
-            1 => Some(Self::Tracks),
-            2 => Some(Self::ClipView),
+            1 => Some(Self::Transport),
+            2 => Some(Self::Tracks),
+            3 => Some(Self::ClipView),
             _ => None,
         }
     }
 
     pub fn next(self) -> Self {
         match self {
+            Self::Transport => Self::Tracks,
             Self::Tracks => Self::ClipView,
-            Self::ClipView => Self::Tracks,
+            Self::ClipView => Self::Transport,
         }
     }
 
     pub fn prev(self) -> Self {
-        self.next()
+        match self {
+            Self::Transport => Self::ClipView,
+            Self::Tracks => Self::Transport,
+            Self::ClipView => Self::Tracks,
+        }
     }
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Transport => "transport",
             Self::Tracks => "tracks",
             Self::ClipView => "clip",
         }
@@ -121,8 +130,9 @@ impl NavState {
     pub fn space_menu_handle(&mut self, ch: char) -> Option<SpaceAction> {
         self.space_menu.open = false;
         match ch {
-            '1' => { self.focus_pane(Pane::Tracks); None }
-            '2' => { self.focus_pane(Pane::ClipView); None }
+            '1' => { self.focus_pane(Pane::Transport); None }
+            '2' => { self.focus_pane(Pane::Tracks); None }
+            '3' => { self.focus_pane(Pane::ClipView); None }
             'p' => Some(SpaceAction::PlayPause),
             'r' => Some(SpaceAction::ToggleRecord),
             'l' => Some(SpaceAction::ToggleLoop),
@@ -159,6 +169,7 @@ impl NavState {
         if self.space_menu.open { self.space_menu.move_up(); return; }
         if self.fx_menu.open { self.fx_menu.move_up(); return; }
         match self.focused_pane {
+            Pane::Transport => {} // no vertical nav in transport
             Pane::Tracks => {
                 if self.track_cursor > 0 {
                     self.track_cursor -= 1;
@@ -190,6 +201,7 @@ impl NavState {
         if self.space_menu.open { self.space_menu.move_down(); return; }
         if self.fx_menu.open { self.fx_menu.move_down(); return; }
         match self.focused_pane {
+            Pane::Transport => {}
             Pane::Tracks => {
                 if self.track_cursor + 1 < self.tracks.len() {
                     self.track_cursor += 1;
@@ -298,11 +310,11 @@ impl NavState {
         }
 
         match self.focused_pane {
+            Pane::Transport => {} // transport elements handled by app
             Pane::Tracks => {
                 if !self.track_selected {
                     self.track_selected = true;
                     self.track_element = TrackElement::Label;
-                    // If this is a live instrument track, show its synth controls
                     self.show_current_track_controls();
                 } else {
                     self.activate_element();
@@ -327,6 +339,7 @@ impl NavState {
             return;
         }
         match self.focused_pane {
+            Pane::Transport => {} // no escape action in transport
             Pane::Tracks => {
                 if self.track_selected {
                     self.track_selected = false;
@@ -593,10 +606,12 @@ mod tests {
 
     #[test]
     fn pane_numbers() {
-        assert_eq!(Pane::Tracks.number(), 1);
-        assert_eq!(Pane::ClipView.number(), 2);
-        assert_eq!(Pane::from_number(1), Some(Pane::Tracks));
-        assert_eq!(Pane::from_number(2), Some(Pane::ClipView));
+        assert_eq!(Pane::Transport.number(), 1);
+        assert_eq!(Pane::Tracks.number(), 2);
+        assert_eq!(Pane::ClipView.number(), 3);
+        assert_eq!(Pane::from_number(1), Some(Pane::Transport));
+        assert_eq!(Pane::from_number(2), Some(Pane::Tracks));
+        assert_eq!(Pane::from_number(3), Some(Pane::ClipView));
         assert_eq!(Pane::from_number(9), None);
     }
 
@@ -725,9 +740,14 @@ mod tests {
         let mut nav = NavState::new(initial_tracks());
         nav.toggle_space_menu();
         let action = nav.space_menu_handle('2');
-        assert_eq!(nav.focused_pane, Pane::ClipView);
-        assert!(action.is_none()); // pane jump, no transport action
+        assert_eq!(nav.focused_pane, Pane::Tracks);
+        assert!(action.is_none());
         assert!(!nav.space_menu.open);
+
+        nav.toggle_space_menu();
+        let action = nav.space_menu_handle('1');
+        assert_eq!(nav.focused_pane, Pane::Transport);
+        assert!(action.is_none());
     }
 
     #[test]
