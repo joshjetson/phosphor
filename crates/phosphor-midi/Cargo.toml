@@ -2,6 +2,9 @@
 name = "phosphor-midi"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MIDI I/O and message routing for the Phosphor DAW"
 
 [dependencies]
 midir.workspace = true

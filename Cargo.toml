@@ -14,6 +14,11 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 rust-version = "1.75"
+repository = "https://github.com/joshjetson/phosphor"
+homepage = "https://github.com/joshjetson/phosphor"
+description = "A terminal-native DAW with built-in synthesizers and MIDI support"
+keywords = ["daw", "audio", "synthesizer", "midi", "tui"]
+categories = ["multimedia::audio", "command-line-utilities"]
 
 [workspace.dependencies]
 # Audio
@@ -51,27 +56,30 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # CLI
 clap = { version = "4", features = ["derive"] }
 
-# Plugin loading
-libloading = "0.8"
-
 # Testing
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1"
 assert_no_alloc = "1.1"
 
 # Internal crates
-phosphor-core = { path = "crates/phosphor-core" }
-phosphor-dsp = { path = "crates/phosphor-dsp" }
-phosphor-midi = { path = "crates/phosphor-midi" }
-phosphor-plugin = { path = "crates/phosphor-plugin" }
-phosphor-tui = { path = "crates/phosphor-tui" }
-phosphor-gui = { path = "crates/phosphor-gui" }
+phosphor-core = { path = "crates/phosphor-core", version = "0.1.0" }
+phosphor-dsp = { path = "crates/phosphor-dsp", version = "0.1.0" }
+phosphor-midi = { path = "crates/phosphor-midi", version = "0.1.0" }
+phosphor-plugin = { path = "crates/phosphor-plugin", version = "0.1.0" }
+phosphor-tui = { path = "crates/phosphor-tui", version = "0.1.0" }
+phosphor-gui = { path = "crates/phosphor-gui", version = "0.1.0" }
 
 # Root binary
 [package]
 name = "phosphor"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "A terminal-native DAW with built-in synthesizers and MIDI support"
+keywords = ["daw", "audio", "synthesizer", "midi", "tui"]
+categories = ["multimedia::audio", "command-line-utilities"]
 
 [dependencies]
 phosphor-core.workspace = true
