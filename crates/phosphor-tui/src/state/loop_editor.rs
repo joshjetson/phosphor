@@ -11,8 +11,10 @@ const TICKS_PER_BAR: i64 = Transport::PPQ * 4;
 
 #[derive(Debug)]
 pub struct LoopEditor {
-    /// Whether the loop editor is active (controls are locked to it).
+    /// Whether the loop editor is focused (controls locked to markers).
     pub active: bool,
+    /// Whether the loop is enabled (playhead loops within the region).
+    pub enabled: bool,
     /// Start bar (1-based).
     pub start_bar: u32,
     /// End bar (1-based, exclusive — loop plays bars start..end).
@@ -27,19 +29,25 @@ impl LoopEditor {
     pub fn new() -> Self {
         Self {
             active: false,
+            enabled: false,
             start_bar: 1,
-            end_bar: 5, // default: 4 bars (1..5 means bars 1,2,3,4)
+            end_bar: 5,
         }
     }
 
-    /// Activate the editor (lock controls to loop markers).
-    pub fn enter(&mut self) {
+    /// Focus the editor (lock controls to loop markers).
+    pub fn focus(&mut self) {
         self.active = true;
     }
 
-    /// Deactivate the editor (release controls).
-    pub fn escape(&mut self) {
+    /// Unfocus the editor (release controls).
+    pub fn unfocus(&mut self) {
         self.active = false;
+    }
+
+    /// Toggle the loop on/off. Called when user presses Enter on the loop.
+    pub fn toggle_enabled(&mut self) {
+        self.enabled = !self.enabled;
     }
 
     /// Move the left (start) marker left by one bar.
@@ -152,12 +160,30 @@ mod tests {
     }
 
     #[test]
-    fn enter_escape() {
+    fn focus_unfocus() {
         let mut le = LoopEditor::new();
         assert!(!le.active);
-        le.enter();
+        le.focus();
         assert!(le.active);
-        le.escape();
+        le.unfocus();
         assert!(!le.active);
+    }
+
+    #[test]
+    fn enabled_toggle() {
+        let mut le = LoopEditor::new();
+        assert!(!le.enabled);
+        le.toggle_enabled();
+        assert!(le.enabled);
+        le.toggle_enabled();
+        assert!(!le.enabled);
+    }
+
+    #[test]
+    fn focus_does_not_enable() {
+        let mut le = LoopEditor::new();
+        le.focus();
+        assert!(le.active);
+        assert!(!le.enabled);
     }
 }

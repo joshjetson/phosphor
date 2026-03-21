@@ -195,7 +195,12 @@ impl App {
         if self.nav.loop_editor.active {
             let shift = key.modifiers.contains(KeyModifiers::SHIFT);
             match key.code {
-                KeyCode::Esc => self.nav.loop_editor.escape(),
+                KeyCode::Esc => self.nav.loop_editor.unfocus(),
+                KeyCode::Enter => {
+                    // Toggle loop activation
+                    self.nav.loop_editor.toggle_enabled();
+                    self.sync_loop_to_transport();
+                }
                 KeyCode::Char('h') | KeyCode::Left => {
                     if shift {
                         self.nav.loop_editor.move_end_left();
@@ -220,7 +225,7 @@ impl App {
                     self.nav.loop_editor.move_end_right();
                     self.sync_loop_to_transport();
                 }
-                _ => {} // all other keys ignored while loop editor is active
+                _ => {}
             }
             return;
         }
@@ -365,13 +370,8 @@ impl App {
             }
             SpaceAction::ToggleRecord => self.engine.transport.toggle_record(),
             SpaceAction::ToggleLoop => {
-                // Space+l: activate the loop editor (enter it)
-                self.nav.loop_editor.enter();
-                // Enable looping on the transport
-                if !self.engine.transport.is_looping() {
-                    self.engine.transport.toggle_loop();
-                }
-                self.sync_loop_to_transport();
+                // Space+l: focus the loop editor for marker adjustment
+                self.nav.loop_editor.focus();
             }
             SpaceAction::Panic => {
                 self.engine.panic();
@@ -385,12 +385,13 @@ impl App {
             SpaceAction::NewTrack => { /* future */ }
         }
     }
-    /// Push the loop editor's bar range to the transport.
+    /// Sync the loop editor state to the transport.
     fn sync_loop_to_transport(&self) {
-        self.engine.transport.set_loop_range(
-            self.nav.loop_editor.start_ticks(),
-            self.nav.loop_editor.end_ticks(),
-        );
+        let le = &self.nav.loop_editor;
+        self.engine.transport.set_loop_range(le.start_ticks(), le.end_ticks());
+        if le.enabled != self.engine.transport.is_looping() {
+            self.engine.transport.toggle_loop();
+        }
     }
 
     /// Toggle loop recording on the current track.

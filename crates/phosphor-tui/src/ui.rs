@@ -101,19 +101,23 @@ fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap: &Transpor
 
     let seq = if snap.playing { Span::styled("seq:on", theme::normal()) } else { Span::styled("seq:off", theme::dim()) };
     let rec = if snap.recording { Span::styled("\u{25CF} rec", theme::rec_active()) } else { Span::styled("\u{25CF} rec", theme::rec_dim()) };
-    let loop_active = nav.loop_editor.active;
-    let lp = if loop_active {
+    let loop_focused = nav.loop_editor.active;
+    let loop_enabled = nav.loop_editor.enabled;
+    let lp = if loop_focused {
+        // Editing markers — show current range, bold
+        let label = if loop_enabled { "loop" } else { "loop?" };
         Span::styled(
-            format!("loop[{}]", nav.loop_editor.display()),
+            format!("{label}[{}]", nav.loop_editor.display()),
             theme::amber_bright().add_modifier(Modifier::BOLD),
         )
-    } else if snap.looping {
+    } else if loop_enabled {
+        // Loop is on
         Span::styled(
             format!("loop:{}", nav.loop_editor.display()),
             theme::amber(),
         )
     } else {
-        Span::styled("loop", theme::dim())
+        Span::styled("loop:off", theme::dim())
     };
 
     frame.render_widget(
@@ -151,21 +155,19 @@ fn render_ruler(frame: &mut Frame, area: Rect, nav: &NavState, snap: &TransportS
     let ph = snap.position_ticks as f64 / (Transport::PPQ * 4) as f64;
     let loop_start = nav.loop_editor.start_bar as usize;
     let loop_end = nav.loop_editor.end_bar as usize; // exclusive
-    let loop_active = nav.loop_editor.active;
-    let looping = snap.looping;
+    let loop_focused = nav.loop_editor.active;
+    let loop_enabled = nav.loop_editor.enabled;
 
     let spans: Vec<Span> = (0..VISIBLE_BARS).map(|b| {
         let bar_num = b + 1; // 1-based
         let is_ph = snap.playing && ph >= b as f64 && ph < (b + 1) as f64;
-        let in_loop = looping && bar_num >= loop_start && bar_num < loop_end;
+        let in_loop = (loop_enabled || loop_focused) && bar_num >= loop_start && bar_num < loop_end;
 
         let s = if is_ph {
             theme::amber()
-        } else if loop_active && bar_num == loop_start {
-            // Left marker — bright when editing
+        } else if loop_focused && bar_num == loop_start {
             Style::default().fg(Color::Rgb(80, 180, 80)).bg(theme::BG).add_modifier(Modifier::BOLD)
-        } else if loop_active && bar_num == loop_end - 1 {
-            // Right marker (last bar in loop) — bright when editing
+        } else if loop_focused && bar_num == loop_end - 1 {
             Style::default().fg(Color::Rgb(180, 80, 80)).bg(theme::BG).add_modifier(Modifier::BOLD)
         } else if in_loop {
             Style::default().fg(Color::Rgb(50, 100, 110)).bg(theme::BG)
@@ -883,7 +885,8 @@ fn render_bottom_bar(frame: &mut Frame, area: Rect, nav: &NavState) {
 
     let d = "\u{00B7}";
     let keys: Vec<(&str, &str)> = if nav.loop_editor.active {
-        vec![("hl","start"),("H/L","end"),("esc","done")]
+        let toggle = if nav.loop_editor.enabled { "off" } else { "on" };
+        vec![("hl","start"),("H/L","end"),("enter", toggle),("esc","done")]
     } else {
         match nav.focused_pane {
             Pane::Tracks if nav.track_selected => vec![("hl","clip"),("m","mute"),("s","solo"),("r","arm"),("R","rec"),("esc","back")],
