@@ -81,6 +81,7 @@ impl RecordBuffer {
     }
 
     pub fn is_active(&self) -> bool { self.active }
+    pub fn start_tick(&self) -> i64 { self.start_tick }
 
     /// Stop recording and return the completed clip.
     /// Returns None if nothing was recorded.

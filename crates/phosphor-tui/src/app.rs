@@ -16,6 +16,7 @@ use phosphor_core::clip::ClipSnapshot;
 use phosphor_core::cpal_backend::CpalBackend;
 use phosphor_core::engine::{Engine, EngineAudio};
 use phosphor_core::mixer::{Mixer, MixerCommand, clip_snapshot_channel, mixer_command_channel};
+use phosphor_core::transport::Transport;
 use phosphor_core::project::{TrackHandle, TrackKind};
 use phosphor_core::EngineConfig;
 use phosphor_dsp::synth::PhosphorSynth;
@@ -265,6 +266,10 @@ impl App {
             KeyCode::Char('m') if !self.nav.fx_menu.open => self.nav.toggle_mute(),
             KeyCode::Char('s') if !self.nav.fx_menu.open => self.nav.toggle_solo(),
             KeyCode::Char('r') if !self.nav.fx_menu.open => self.nav.toggle_arm(),
+            // R (shift+r) = toggle loop recording on the selected track
+            KeyCode::Char('R') if !self.nav.fx_menu.open => {
+                self.toggle_loop_record();
+            }
             KeyCode::Char(ch @ '0'..='9') if self.nav.track_selected && !self.nav.fx_menu.open => {
                 self.nav.digit_input(ch);
             }
@@ -339,6 +344,49 @@ impl App {
             SpaceAction::NewTrack => { /* future */ }
         }
     }
+    /// Toggle loop recording on the current track.
+    /// First press: arms track, sets loop range, rewinds, starts record+play.
+    /// Second press: stops recording, commits clip.
+    fn toggle_loop_record(&mut self) {
+        let is_recording = self.engine.transport.is_recording()
+            && self.engine.transport.is_playing();
+
+        if is_recording {
+            // Stop recording
+            self.engine.transport.stop_loop_record();
+            tracing::info!("Loop recording stopped");
+        } else {
+            // Make sure current track is armed and has a synth
+            if let Some(track) = self.nav.tracks.get(self.nav.track_cursor) {
+                if !track.is_live() {
+                    tracing::info!("Cannot record on a non-instrument track");
+                    return;
+                }
+            } else {
+                return;
+            }
+
+            // Arm the track if not already
+            if let Some(track) = self.nav.tracks.get_mut(self.nav.track_cursor) {
+                track.armed = true;
+                track.sync_to_audio();
+            }
+
+            // Ensure this track is selected for MIDI
+            self.nav.show_current_track_controls();
+
+            // Start loop recording (rewinds to loop start, enables loop+record+play)
+            self.engine.transport.start_loop_record();
+            tracing::info!(
+                "Loop recording started: bars {}..{} (ticks {}..{})",
+                self.engine.transport.loop_start() / (Transport::PPQ * 4) + 1,
+                self.engine.transport.loop_end() / (Transport::PPQ * 4),
+                self.engine.transport.loop_start(),
+                self.engine.transport.loop_end(),
+            );
+        }
+    }
+
     /// Create an instrument track in both the audio mixer and the TUI.
     fn create_instrument_track(&mut self, instrument: InstrumentType) {
         let track_id = self.next_track_id;

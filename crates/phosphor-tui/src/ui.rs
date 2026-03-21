@@ -826,8 +826,8 @@ fn render_bottom_bar(frame: &mut Frame, area: Rect, nav: &NavState) {
 
     let d = "\u{00B7}";
     let keys: Vec<(&str, &str)> = match nav.focused_pane {
-        Pane::Tracks if nav.track_selected => vec![("hl","clip"),("m","mute"),("s","solo"),("r","arm"),("1-9","jump"),("esc","back")],
-        Pane::Tracks => vec![("jk","track"),("enter","sel"),("m","mute"),("s","solo"),("r","arm"),("spc","play")],
+        Pane::Tracks if nav.track_selected => vec![("hl","clip"),("m","mute"),("s","solo"),("r","arm"),("R","rec"),("esc","back")],
+        Pane::Tracks => vec![("jk","track"),("enter","sel"),("m","mute"),("s","solo"),("r","arm"),("R","rec")],
         Pane::ClipView => vec![("jk","nav"),("hl","panel"),("tab","tabs"),("esc","back"),("spc","play")],
     };
     let ks: Vec<Span> = keys.iter().flat_map(|(k,v)| vec![

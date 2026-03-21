@@ -458,7 +458,7 @@ impl NavState {
     /// Show controls for the currently selected track and route MIDI to it.
     /// For instrument tracks: opens clip view with Synth tab, activates MIDI input.
     /// For bus tracks: no clip view, deactivates MIDI.
-    fn show_current_track_controls(&mut self) {
+    pub fn show_current_track_controls(&mut self) {
         // Deactivate MIDI on ALL tracks first
         for track in &self.tracks {
             if let Some(ref h) = track.handle {

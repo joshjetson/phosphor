@@ -49,6 +49,8 @@ pub struct AudioTrack {
     record_buf: RecordBuffer,
     /// Whether we were recording last buffer (to detect stop).
     was_recording: bool,
+    /// Last tick position seen during recording (to detect loop wraps).
+    last_record_tick: i64,
     buf_l: Vec<f32>,
     buf_r: Vec<f32>,
     plugin_events: Vec<MidiEvent>,
@@ -64,6 +66,7 @@ impl AudioTrack {
             clips: Vec::new(),
             record_buf: RecordBuffer::new(),
             was_recording: false,
+            last_record_tick: -1,
             buf_l: vec![0.0; max_buffer_size],
             buf_r: vec![0.0; max_buffer_size],
             plugin_events: Vec::with_capacity(256),
@@ -108,10 +111,12 @@ impl Mixer {
         let num_frames = output.len() / 2;
         let playing = transport.is_playing();
         let recording = transport.is_recording();
+        let looping = transport.is_looping();
         let current_tick = transport.position_ticks();
         let bpm = transport.tempo_bpm();
         let ticks_per_sample = (bpm * Transport::PPQ as f64) / (60.0 * self.sample_rate as f64);
         let buffer_ticks = (num_frames as f64 * ticks_per_sample) as i64;
+        let loop_end = transport.loop_end();
 
         // Convert live MIDI to plugin events
         let live_events: Vec<MidiEvent> = midi_messages
@@ -140,16 +145,47 @@ impl Mixer {
 
             // ── Recording ──
             if should_record && !track.was_recording {
-                // Just started recording
                 track.record_buf.start(current_tick);
+                tracing::info!("REC START track={} tick={}", track.id, current_tick);
             }
+
+            // Detect loop wrap: if we were recording and current tick is earlier
+            // than last seen tick, the transport looped. Commit the recording.
+            if should_record && track.was_recording && looping
+                && track.record_buf.is_active() && track.last_record_tick >= 0
+            {
+                if current_tick < track.last_record_tick {
+                    if let Some(clip) = track.record_buf.commit(loop_end) {
+                        let idx = track.clips.len();
+                        tracing::info!(
+                            "REC LOOP COMMIT track={}: {} events, ticks {}..{}",
+                            track.id, clip.events.len(), clip.start_tick, clip.end_tick()
+                        );
+                        let snapshot = ClipSnapshot::from_clip(track.id, idx, &clip);
+                        track.clips.push(clip);
+                        let _ = self.clip_tx.send(snapshot);
+                    }
+                    // Start new recording pass
+                    track.record_buf.start(current_tick);
+                }
+            }
+            if should_record {
+                track.last_record_tick = current_tick;
+            }
+
+            // Commit recording when recording stops (user pressed stop)
             if !should_record && track.was_recording {
-                // Just stopped recording — commit the clip
                 if let Some(clip) = track.record_buf.commit(current_tick) {
                     let idx = track.clips.len();
+                    tracing::info!(
+                        "REC COMMIT track={}: {} events, ticks {}..{}",
+                        track.id, clip.events.len(), clip.start_tick, clip.end_tick()
+                    );
                     let snapshot = ClipSnapshot::from_clip(track.id, idx, &clip);
                     track.clips.push(clip);
                     let _ = self.clip_tx.send(snapshot);
+                } else {
+                    tracing::info!("REC DISCARD track={} (no events)", track.id);
                 }
             }
             track.was_recording = should_record;
@@ -159,10 +195,10 @@ impl Mixer {
                 for ev in &live_events {
                     track.plugin_events.push(*ev);
                     if should_record {
-                        // Store at the tick corresponding to this event's sample offset
                         let event_tick = current_tick
                             + (ev.sample_offset as f64 * ticks_per_sample) as i64;
                         track.record_buf.record(event_tick, ev.status, ev.data1, ev.data2);
+                        tracing::info!("REC EVENT track={} status={:#x} note={} tick={}", track.id, ev.status, ev.data1, event_tick);
                     }
                 }
             }
@@ -483,5 +519,172 @@ mod tests {
         mixer.process(&mut output, &[], &transport);
 
         assert!(clip_rx.try_recv().is_err(), "Reset should discard active recording");
+    }
+
+    #[test]
+    fn end_to_end_record_and_playback() {
+        // Simulates exact app flow: add track, arm, record, play notes,
+        // stop, rewind, play back — with transport.advance() each buffer.
+        let (mut mixer, tx, clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        let sr = 44100u32;
+        let buf_frames = 256;
+        let buf_samples = buf_frames * 2; // stereo
+
+        // 1. Enable recording, then play
+        transport.toggle_record();
+        transport.play();
+
+        // 2. Process a few empty buffers (advance transport)
+        let mut output = vec![0.0f32; buf_samples];
+        for _ in 0..4 {
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(buf_frames as u32, sr);
+        }
+
+        // 3. Play a note (should be recorded)
+        let midi = vec![make_note_on(60, 100)];
+        mixer.process(&mut output, &midi, &transport);
+        let peak_during = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(peak_during > 0.01, "Should hear note during recording (monitoring)");
+        transport.advance(buf_frames as u32, sr);
+
+        // 4. A few more buffers of sustain
+        for _ in 0..8 {
+            output.fill(0.0);
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(buf_frames as u32, sr);
+        }
+
+        // 5. Note off
+        let midi = vec![make_note_off(60)];
+        mixer.process(&mut output, &midi, &transport);
+        transport.advance(buf_frames as u32, sr);
+
+        // 6. A few more buffers
+        for _ in 0..4 {
+            output.fill(0.0);
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(buf_frames as u32, sr);
+        }
+
+        // 7. Stop recording (commit clip)
+        transport.toggle_record();
+        mixer.process(&mut output, &[], &transport);
+        transport.advance(buf_frames as u32, sr);
+
+        // 8. Check we got a clip snapshot
+        let snap = clip_rx.try_recv().expect("Should receive clip snapshot after stopping record");
+        assert!(snap.event_count >= 2, "Clip should have note on + off");
+        assert!(!snap.notes.is_empty(), "Clip should have parsed notes");
+
+        // 9. Stop transport and rewind to 0
+        transport.stop();
+
+        // 10. Play back — the synth should be reset (no stuck notes from recording)
+        transport.play();
+
+        // 11. Process enough buffers to reach the recorded note position
+        // The note was recorded after 4 initial buffers, so roughly at that tick position
+        for _ in 0..4 {
+            output.fill(0.0);
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(buf_frames as u32, sr);
+        }
+
+        // 12. The next buffer should contain the played-back note
+        output.fill(0.0);
+        mixer.process(&mut output, &[], &transport);
+        let peak_playback = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(peak_playback > 0.001, "Playback should produce sound at the recorded position, peak={peak_playback}");
+    }
+
+    #[test]
+    fn loop_record_commits_on_wrap() {
+        let (mut mixer, tx, clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        let sr = 44100u32;
+        let buf_frames = 256u32;
+
+        // Set loop to 1 bar (3840 ticks at 120bpm ≈ 346 buffers of 256 samples)
+        transport.set_loop_bars(1, 1);
+        transport.start_loop_record();
+
+        let mut output = vec![0.0f32; buf_frames as usize * 2];
+
+        // Play a note early in the loop
+        let midi = vec![make_note_on(60, 100)];
+        mixer.process(&mut output, &midi, &transport);
+        transport.advance(buf_frames, sr);
+
+        // Note off a few buffers later
+        for _ in 0..5 {
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(buf_frames, sr);
+        }
+        let midi = vec![make_note_off(60)];
+        mixer.process(&mut output, &midi, &transport);
+        transport.advance(buf_frames, sr);
+
+        // Continue until we cross the loop boundary
+        // 1 bar at 120bpm, 256 frames, 44100Hz ≈ 346 buffers
+        for _ in 0..400 {
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(buf_frames, sr);
+
+            if let Ok(snap) = clip_rx.try_recv() {
+                assert!(snap.event_count >= 2, "Clip should have events, got {}", snap.event_count);
+                assert!(!snap.notes.is_empty(), "Clip should have notes");
+                // Recording committed on loop wrap — success
+                transport.stop_loop_record();
+                return;
+            }
+        }
+
+        panic!("Recording should have committed when the loop wrapped");
+    }
+
+    #[test]
+    fn loop_playback_after_record() {
+        let (mut mixer, tx, clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        let sr = 44100u32;
+        let bf = 256u32;
+
+        // Set loop to 1 bar, start recording
+        transport.set_loop_bars(1, 1);
+        transport.start_loop_record();
+
+        let mut output = vec![0.0f32; bf as usize * 2];
+
+        // Record a note
+        mixer.process(&mut output, &[make_note_on(60, 100)], &transport);
+        transport.advance(bf, sr);
+        for _ in 0..3 {
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(bf, sr);
+        }
+        mixer.process(&mut output, &[make_note_off(60)], &transport);
+        transport.advance(bf, sr);
+
+        // Run until loop wraps and clip commits
+        for _ in 0..200 {
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(bf, sr);
+            if clip_rx.try_recv().is_ok() { break; }
+        }
+
+        // Stop recording, rewind
+        transport.stop_loop_record();
+        transport.set_position(0);
+
+        // Play back with looping on
+        transport.toggle_loop(); // enable looping
+        transport.play();
+
+        output.fill(0.0);
+        mixer.process(&mut output, &[], &transport);
+        let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(peak > 0.001, "Should hear playback, peak={peak}");
     }
 }

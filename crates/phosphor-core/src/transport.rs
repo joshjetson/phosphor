@@ -89,6 +89,34 @@ impl Transport {
         self.loop_end_ticks.store(end_ticks, ORD);
     }
 
+    /// Set loop range by bar numbers (1-based, in 4/4 time).
+    /// E.g., bars 1-4 = ticks 0..3840.
+    pub fn set_loop_bars(&self, start_bar: u32, end_bar: u32) {
+        let ticks_per_bar = Self::PPQ * 4; // 4/4 time
+        self.set_loop_range(
+            (start_bar.saturating_sub(1) as i64) * ticks_per_bar,
+            (end_bar as i64) * ticks_per_bar,
+        );
+    }
+
+    pub fn loop_start(&self) -> i64 { self.loop_start_ticks.load(ORD) }
+    pub fn loop_end(&self) -> i64 { self.loop_end_ticks.load(ORD) }
+
+    /// Start recording within the loop range.
+    /// Sets up loop, rewinds to loop start, enables record + play.
+    pub fn start_loop_record(&self) {
+        self.looping.store(true, ORD);
+        self.position_ticks.store(self.loop_start_ticks.load(ORD), ORD);
+        self.recording.store(true, ORD);
+        self.playing.store(true, ORD);
+    }
+
+    /// Stop loop recording. Disables record, stops playback.
+    pub fn stop_loop_record(&self) {
+        self.recording.store(false, ORD);
+        self.playing.store(false, ORD);
+    }
+
     // -- Reads (called from audio thread — lock-free) --
 
     pub fn is_playing(&self) -> bool {
