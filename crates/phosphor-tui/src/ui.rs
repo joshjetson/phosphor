@@ -42,20 +42,18 @@ pub fn render(
     let tracks_h = (MAX_VISIBLE_TRACKS as u16) * TRACK_H;
 
     let mut constraints = vec![
-        Constraint::Length(1),       // top bar
-        Constraint::Length(1),       // separator
+        Constraint::Length(1),       // top bar (buffer 1)
         Constraint::Length(1),       // ruler
-        Constraint::Length(tracks_h), // tracks
+        Constraint::Length(tracks_h), // tracks (buffer 2)
     ];
 
     if nav.clip_view_visible {
-        constraints.push(Constraint::Length(1)); // clip view tabs/label
-        constraints.push(Constraint::Min(8));    // clip view content
+        constraints.push(Constraint::Length(1)); // clip view tabs (buffer 3 header)
+        constraints.push(Constraint::Min(8));    // clip view content (buffer 3)
     } else {
-        constraints.push(Constraint::Min(0));    // spacer
+        constraints.push(Constraint::Min(0));
     }
 
-    constraints.push(Constraint::Length(1)); // separator
     constraints.push(Constraint::Length(1)); // bottom bar
 
     let chunks = Layout::default()
@@ -65,7 +63,6 @@ pub fn render(
 
     let mut ci = 0;
     render_top_bar(frame, chunks[ci], nav, transport); ci += 1;
-    render_sep(frame, chunks[ci]); ci += 1;
     render_ruler(frame, chunks[ci], nav, transport); ci += 1;
     render_tracks(frame, chunks[ci], nav, transport); ci += 1;
 
@@ -75,8 +72,6 @@ pub fn render(
     } else {
         ci += 1;
     }
-
-    render_sep(frame, chunks[ci]); ci += 1;
     render_bottom_bar(frame, chunks[ci], nav);
 
     // Overlays
@@ -97,7 +92,14 @@ fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap: &Transpor
         .constraints([Constraint::Length(12), Constraint::Min(20), Constraint::Length(30)])
         .split(area);
 
-    frame.render_widget(Paragraph::new(Span::styled(" phosphor", theme::branding())), cols[0]);
+    let buf1_style = if nav.focused_pane == Pane::Transport { theme::amber() } else { theme::dim() };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("\u{00B9}", buf1_style), // superscript 1
+            Span::styled("phosphor", theme::branding()),
+        ])),
+        cols[0],
+    );
 
     let tp = nav.focused_pane == Pane::Transport;
     let te = nav.transport_ui.element;
@@ -184,7 +186,14 @@ fn render_ruler(frame: &mut Frame, area: Rect, nav: &NavState, snap: &TransportS
         .constraints([Constraint::Length(HEADER_W), Constraint::Length(1), Constraint::Min(4)])
         .split(area);
 
-    frame.render_widget(Paragraph::new(Span::styled("  trk", theme::dim())).alignment(Alignment::Center), cols[0]);
+    let buf2_style = if nav.focused_pane == Pane::Tracks { theme::amber() } else { theme::dim() };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("\u{00B2}", buf2_style), // superscript 2
+            Span::styled("trk", theme::dim()),
+        ])),
+        cols[0],
+    );
     frame.render_widget(Paragraph::new(Span::styled("\u{2502}", theme::border_style())), cols[1]);
 
     let w = cols[2].width as usize;
@@ -492,7 +501,9 @@ fn render_clip_view_tabs(frame: &mut Frame, area: Rect, nav: &NavState) {
 
     // Left tabs (FX panel)
     let mut spans: Vec<Span> = Vec::new();
-    spans.push(Span::styled(" \u{00B2} ", if focused { theme::amber_bright() } else { theme::normal() }));
+    let buf3_style = if focused { theme::amber_bright() } else { theme::dim() };
+    spans.push(Span::styled("\u{00B3}", buf3_style)); // superscript 3
+    spans.push(Span::styled(" ", theme::bg()));
 
     for tab in [FxPanelTab::TrackFx, FxPanelTab::Synth] {
         let active = nav.clip_view.fx_panel_tab == tab && nav.clip_view.focus == ClipViewFocus::FxPanel;
@@ -928,11 +939,6 @@ fn render_fx_menu(frame: &mut Frame, nav: &NavState) {
 
 // ── Separator + Helpers ──
 
-fn render_sep(frame: &mut Frame, area: Rect) {
-    frame.render_widget(
-        Paragraph::new(Span::styled("\u{2500}".repeat(area.width as usize), theme::border_style())),
-        area);
-}
 
 fn render_bottom_bar(frame: &mut Frame, area: Rect, nav: &NavState) {
     let cols = Layout::default()
