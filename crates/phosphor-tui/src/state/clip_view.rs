@@ -100,8 +100,10 @@ impl PianoRollState {
     pub fn move_up(&mut self) {
         if self.cursor_note < 127 {
             self.cursor_note += 1;
-            if self.cursor_note >= self.view_bottom_note + self.view_height {
-                self.view_bottom_note = self.view_bottom_note.saturating_add(1);
+            // Scroll up if cursor goes above visible area
+            let top = self.view_bottom_note.saturating_add(self.view_height);
+            if self.cursor_note >= top {
+                self.view_bottom_note = self.cursor_note - self.view_height + 1;
             }
         }
     }
@@ -109,9 +111,15 @@ impl PianoRollState {
     pub fn move_down(&mut self) {
         if self.cursor_note > 0 {
             self.cursor_note -= 1;
+            // Scroll down if cursor goes below visible area
             if self.cursor_note < self.view_bottom_note {
-                self.view_bottom_note = self.view_bottom_note.saturating_sub(1);
+                self.view_bottom_note = self.cursor_note;
             }
         }
+    }
+
+    /// Set the actual visible height (called from the renderer).
+    pub fn set_view_height(&mut self, h: u8) {
+        self.view_height = h.max(1);
     }
 }

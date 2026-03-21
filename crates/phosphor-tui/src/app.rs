@@ -314,6 +314,11 @@ impl App {
 
             let snapshot = self.engine.transport.snapshot();
 
+            // Update piano roll view height to match terminal size
+            let term_h = terminal.size()?.height;
+            let piano_h = term_h.saturating_sub(30).max(6) as u8;
+            self.nav.clip_view.piano_roll.set_view_height(piano_h);
+
             terminal.draw(|frame| {
                 ui::render(frame, &snapshot, &self.nav);
             })?;
@@ -338,7 +343,11 @@ impl App {
 
         // Loop editor active — controls locked to loop markers
         // BUT Space passes through to open the space menu (so user can play/pause)
-        if self.nav.loop_editor.active && key.code != KeyCode::Char(' ') {
+        if self.nav.loop_editor.active
+            && key.code != KeyCode::Char(' ')
+            && key.code != KeyCode::Tab
+            && key.code != KeyCode::BackTab
+        {
             let shift = key.modifiers.contains(KeyModifiers::SHIFT);
             match key.code {
                 KeyCode::Esc => {
