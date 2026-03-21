@@ -64,9 +64,9 @@ pub fn render(
         .split(area);
 
     let mut ci = 0;
-    render_top_bar(frame, chunks[ci], transport); ci += 1;
+    render_top_bar(frame, chunks[ci], nav, transport); ci += 1;
     render_sep(frame, chunks[ci]); ci += 1;
-    render_ruler(frame, chunks[ci], transport); ci += 1;
+    render_ruler(frame, chunks[ci], nav, transport); ci += 1;
     render_tracks(frame, chunks[ci], nav, transport); ci += 1;
 
     if nav.clip_view_visible {
@@ -91,7 +91,7 @@ pub fn render(
 
 // ── Top Bar ──
 
-fn render_top_bar(frame: &mut Frame, area: Rect, snap: &TransportSnapshot) {
+fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap: &TransportSnapshot) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(12), Constraint::Min(20), Constraint::Length(30)])
@@ -101,7 +101,20 @@ fn render_top_bar(frame: &mut Frame, area: Rect, snap: &TransportSnapshot) {
 
     let seq = if snap.playing { Span::styled("seq:on", theme::normal()) } else { Span::styled("seq:off", theme::dim()) };
     let rec = if snap.recording { Span::styled("\u{25CF} rec", theme::rec_active()) } else { Span::styled("\u{25CF} rec", theme::rec_dim()) };
-    let lp = if snap.looping { Span::styled("loop", theme::amber()) } else { Span::styled("loop", theme::dim()) };
+    let loop_active = nav.loop_editor.active;
+    let lp = if loop_active {
+        Span::styled(
+            format!("loop[{}]", nav.loop_editor.display()),
+            theme::amber_bright().add_modifier(Modifier::BOLD),
+        )
+    } else if snap.looping {
+        Span::styled(
+            format!("loop:{}", nav.loop_editor.display()),
+            theme::amber(),
+        )
+    } else {
+        Span::styled("loop", theme::dim())
+    };
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -122,7 +135,7 @@ fn render_top_bar(frame: &mut Frame, area: Rect, snap: &TransportSnapshot) {
 
 // ── Ruler ──
 
-fn render_ruler(frame: &mut Frame, area: Rect, snap: &TransportSnapshot) {
+fn render_ruler(frame: &mut Frame, area: Rect, nav: &NavState, snap: &TransportSnapshot) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(HEADER_W), Constraint::Length(1), Constraint::Min(4)])
@@ -136,10 +149,33 @@ fn render_ruler(frame: &mut Frame, area: Rect, snap: &TransportSnapshot) {
     if bw == 0 { return; }
 
     let ph = snap.position_ticks as f64 / (Transport::PPQ * 4) as f64;
+    let loop_start = nav.loop_editor.start_bar as usize;
+    let loop_end = nav.loop_editor.end_bar as usize; // exclusive
+    let loop_active = nav.loop_editor.active;
+    let looping = snap.looping;
+
     let spans: Vec<Span> = (0..VISIBLE_BARS).map(|b| {
-        let is_ph = snap.playing && ph >= b as f64 && ph < (b+1) as f64;
-        let s = if is_ph { theme::amber() } else if b % 4 == 0 { theme::normal() } else { theme::dim() };
-        Span::styled(format!("{:<w$}", b+1, w=bw), s)
+        let bar_num = b + 1; // 1-based
+        let is_ph = snap.playing && ph >= b as f64 && ph < (b + 1) as f64;
+        let in_loop = looping && bar_num >= loop_start && bar_num < loop_end;
+
+        let s = if is_ph {
+            theme::amber()
+        } else if loop_active && bar_num == loop_start {
+            // Left marker — bright when editing
+            Style::default().fg(Color::Rgb(80, 180, 80)).bg(theme::BG).add_modifier(Modifier::BOLD)
+        } else if loop_active && bar_num == loop_end - 1 {
+            // Right marker (last bar in loop) — bright when editing
+            Style::default().fg(Color::Rgb(180, 80, 80)).bg(theme::BG).add_modifier(Modifier::BOLD)
+        } else if in_loop {
+            Style::default().fg(Color::Rgb(50, 100, 110)).bg(theme::BG)
+        } else if b % 4 == 0 {
+            theme::normal()
+        } else {
+            theme::dim()
+        };
+
+        Span::styled(format!("{:<w$}", bar_num, w = bw), s)
     }).collect();
     frame.render_widget(Paragraph::new(Line::from(spans)), cols[2]);
 }
@@ -836,14 +872,24 @@ fn render_bottom_bar(frame: &mut Frame, area: Rect, nav: &NavState) {
         .constraints([Constraint::Length(16), Constraint::Min(20), Constraint::Length(42)])
         .split(area);
 
-    let (mt, ms) = if nav.track_selected { ("-- SELECT --", theme::amber()) } else { ("-- NORMAL --", theme::normal()) };
+    let (mt, ms) = if nav.loop_editor.active {
+        ("-- LOOP --", Style::default().fg(Color::Rgb(80, 180, 80)).bg(theme::BG))
+    } else if nav.track_selected {
+        ("-- SELECT --", theme::amber())
+    } else {
+        ("-- NORMAL --", theme::normal())
+    };
     frame.render_widget(Paragraph::new(Span::styled(format!(" {mt} "), ms)), cols[0]);
 
     let d = "\u{00B7}";
-    let keys: Vec<(&str, &str)> = match nav.focused_pane {
-        Pane::Tracks if nav.track_selected => vec![("hl","clip"),("m","mute"),("s","solo"),("r","arm"),("R","rec"),("esc","back")],
-        Pane::Tracks => vec![("jk","track"),("enter","sel"),("m","mute"),("s","solo"),("r","arm"),("R","rec")],
-        Pane::ClipView => vec![("jk","nav"),("hl","panel"),("tab","tabs"),("esc","back"),("spc","play")],
+    let keys: Vec<(&str, &str)> = if nav.loop_editor.active {
+        vec![("hl","start"),("H/L","end"),("esc","done")]
+    } else {
+        match nav.focused_pane {
+            Pane::Tracks if nav.track_selected => vec![("hl","clip"),("m","mute"),("s","solo"),("r","arm"),("R","rec"),("esc","back")],
+            Pane::Tracks => vec![("jk","track"),("enter","sel"),("m","mute"),("s","solo"),("r","arm"),("R","rec")],
+            Pane::ClipView => vec![("jk","nav"),("hl","panel"),("tab","tabs"),("esc","back"),("spc","play")],
+        }
     };
     let ks: Vec<Span> = keys.iter().flat_map(|(k,v)| vec![
         Span::styled(*k, theme::dim()),

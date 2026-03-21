@@ -10,11 +10,13 @@
 
 mod clip_view;
 mod input;
+mod loop_editor;
 mod menu;
 mod track;
 
 pub use clip_view::*;
 pub use input::*;
+pub use loop_editor::*;
 pub use menu::*;
 pub use track::*;
 
@@ -83,6 +85,7 @@ pub struct NavState {
     /// FX menu state (per-track fx button).
     pub fx_menu: FxMenu,
     pub instrument_modal: InstrumentModal,
+    pub loop_editor: LoopEditor,
     pub tracks: Vec<TrackState>,
 }
 
@@ -101,6 +104,7 @@ impl NavState {
             clip_view_target: None,
             fx_menu: FxMenu::new(),
             instrument_modal: InstrumentModal::new(),
+            loop_editor: LoopEditor::new(),
             tracks,
         }
     }

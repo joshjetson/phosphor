@@ -191,6 +191,40 @@ impl App {
             return;
         }
 
+        // Loop editor active — controls locked to loop markers
+        if self.nav.loop_editor.active {
+            let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+            match key.code {
+                KeyCode::Esc => self.nav.loop_editor.escape(),
+                KeyCode::Char('h') | KeyCode::Left => {
+                    if shift {
+                        self.nav.loop_editor.move_end_left();
+                    } else {
+                        self.nav.loop_editor.move_start_left();
+                    }
+                    self.sync_loop_to_transport();
+                }
+                KeyCode::Char('l') | KeyCode::Right => {
+                    if shift {
+                        self.nav.loop_editor.move_end_right();
+                    } else {
+                        self.nav.loop_editor.move_start_right();
+                    }
+                    self.sync_loop_to_transport();
+                }
+                KeyCode::Char('H') => {
+                    self.nav.loop_editor.move_end_left();
+                    self.sync_loop_to_transport();
+                }
+                KeyCode::Char('L') => {
+                    self.nav.loop_editor.move_end_right();
+                    self.sync_loop_to_transport();
+                }
+                _ => {} // all other keys ignored while loop editor is active
+            }
+            return;
+        }
+
         // Instrument modal open
         if self.nav.instrument_modal.open {
             match key.code {
@@ -330,7 +364,15 @@ impl App {
                 }
             }
             SpaceAction::ToggleRecord => self.engine.transport.toggle_record(),
-            SpaceAction::ToggleLoop => self.engine.transport.toggle_loop(),
+            SpaceAction::ToggleLoop => {
+                // Space+l: activate the loop editor (enter it)
+                self.nav.loop_editor.enter();
+                // Enable looping on the transport
+                if !self.engine.transport.is_looping() {
+                    self.engine.transport.toggle_loop();
+                }
+                self.sync_loop_to_transport();
+            }
             SpaceAction::Panic => {
                 self.engine.panic();
                 tracing::info!("PANIC: all sound killed");
@@ -343,6 +385,14 @@ impl App {
             SpaceAction::NewTrack => { /* future */ }
         }
     }
+    /// Push the loop editor's bar range to the transport.
+    fn sync_loop_to_transport(&self) {
+        self.engine.transport.set_loop_range(
+            self.nav.loop_editor.start_ticks(),
+            self.nav.loop_editor.end_ticks(),
+        );
+    }
+
     /// Toggle loop recording on the current track.
     /// First press: arms track, sets loop range, rewinds, starts record+play.
     /// Second press: stops recording, commits clip.
