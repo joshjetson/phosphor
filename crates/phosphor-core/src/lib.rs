@@ -2,6 +2,7 @@ pub mod audio;
 pub mod clip;
 pub mod cpal_backend;
 pub mod engine;
+pub mod metronome;
 pub mod mixer;
 pub mod project;
 pub mod transport;

@@ -12,6 +12,7 @@ use phosphor_plugin::{MidiEvent, Plugin};
 
 use crate::clip::{ClipSnapshot, MidiClip, RecordBuffer};
 use crate::engine::VuLevels;
+use crate::metronome::Metronome;
 use crate::project::{TrackHandle, TrackKind};
 use crate::transport::Transport;
 
@@ -80,8 +81,8 @@ pub struct Mixer {
     tracks: Vec<AudioTrack>,
     master_vu: Arc<VuLevels>,
     command_rx: Receiver<MixerCommand>,
-    /// Channel to send clip snapshots to the UI after recording.
     clip_tx: Sender<ClipSnapshot>,
+    metronome: Metronome,
     sample_rate: u32,
     max_buffer_size: usize,
 }
@@ -99,6 +100,7 @@ impl Mixer {
             master_vu,
             command_rx,
             clip_tx,
+            metronome: Metronome::new(sample_rate as f64),
             sample_rate,
             max_buffer_size,
         }
@@ -238,16 +240,21 @@ impl Mixer {
             }
         }
 
-        // Master output + VU
+        // Write tracks to interleaved output
+        for i in 0..num_frames {
+            output[i * 2] = master_l[i];
+            output[i * 2 + 1] = master_r[i];
+        }
+
+        // Mix metronome click into output (after tracks, so it's always audible)
+        self.metronome.process(output, transport);
+
+        // Master VU (includes metronome)
         let mut mp_l = 0.0f32;
         let mut mp_r = 0.0f32;
         for i in 0..num_frames {
-            let l = master_l[i];
-            let r = master_r[i];
-            output[i * 2] = l;
-            output[i * 2 + 1] = r;
-            mp_l = mp_l.max(l.abs());
-            mp_r = mp_r.max(r.abs());
+            mp_l = mp_l.max(output[i * 2].abs());
+            mp_r = mp_r.max(output[i * 2 + 1].abs());
         }
 
         let (old_l, old_r) = self.master_vu.get();
@@ -269,6 +276,7 @@ impl Mixer {
             }
             track.was_recording = false;
         }
+        self.metronome.reset();
     }
 
     fn drain_commands(&mut self) {

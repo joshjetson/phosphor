@@ -126,6 +126,7 @@ impl NavState {
             'p' => Some(SpaceAction::PlayPause),
             'r' => Some(SpaceAction::ToggleRecord),
             'l' => Some(SpaceAction::ToggleLoop),
+            'm' => Some(SpaceAction::ToggleMetronome),
             '!' => Some(SpaceAction::Panic),
             'a' => Some(SpaceAction::AddInstrument),
             's' => Some(SpaceAction::Save),

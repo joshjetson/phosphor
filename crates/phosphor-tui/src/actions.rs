@@ -24,6 +24,7 @@ pub enum Action {
     // ── Transport (via space menu) ──
     PlayPause,
     ToggleRecord,
+    ToggleMetronome,
     Panic,
     Save,
 

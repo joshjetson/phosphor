@@ -120,12 +120,19 @@ fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap: &Transpor
         Span::styled("loop:off", theme::dim())
     };
 
+    let met = if snap.metronome {
+        Span::styled("\u{266A}", theme::amber()) // musical note symbol
+    } else {
+        Span::styled("\u{266A}", theme::dim())
+    };
+
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             seq, Span::styled("  bpm:", theme::normal()),
             Span::styled(format!("{:.0}", snap.tempo_bpm), theme::amber_bright()),
             Span::styled("  4/4  ", theme::normal()), rec,
             Span::styled("  ", theme::bg()), lp,
+            Span::styled("  ", theme::bg()), met,
         ])).alignment(Alignment::Center), cols[1]);
 
     let pos = transport::ticks_to_position_string(snap.position_ticks, Transport::PPQ);

@@ -15,6 +15,7 @@ pub struct Transport {
     playing: AtomicBool,
     recording: AtomicBool,
     looping: AtomicBool,
+    metronome: AtomicBool,
     /// Current position in ticks (960 PPQ).
     position_ticks: AtomicI64,
     /// Tempo in BPM × 100 (e.g., 12000 = 120.00 BPM). Integer atomics avoid f64 issues.
@@ -31,6 +32,7 @@ pub struct TransportSnapshot {
     pub playing: bool,
     pub recording: bool,
     pub looping: bool,
+    pub metronome: bool,
     pub position_ticks: i64,
     pub tempo_bpm: f64,
     pub loop_start_ticks: i64,
@@ -46,6 +48,7 @@ impl Transport {
             playing: AtomicBool::new(false),
             recording: AtomicBool::new(false),
             looping: AtomicBool::new(false),
+            metronome: AtomicBool::new(false),
             position_ticks: AtomicI64::new(0),
             tempo_centibpm: AtomicU32::new((bpm * 100.0) as u32),
             loop_start_ticks: AtomicI64::new(0),
@@ -74,6 +77,14 @@ impl Transport {
 
     pub fn toggle_loop(&self) {
         self.looping.fetch_xor(true, ORD);
+    }
+
+    pub fn toggle_metronome(&self) {
+        self.metronome.fetch_xor(true, ORD);
+    }
+
+    pub fn is_metronome_on(&self) -> bool {
+        self.metronome.load(ORD)
     }
 
     pub fn set_tempo(&self, bpm: f64) {
@@ -169,6 +180,7 @@ impl Transport {
             playing: self.playing.load(ORD),
             recording: self.recording.load(ORD),
             looping: self.looping.load(ORD),
+            metronome: self.metronome.load(ORD),
             position_ticks: self.position_ticks.load(ORD),
             tempo_bpm: self.tempo_bpm(),
             loop_start_ticks: self.loop_start_ticks.load(ORD),

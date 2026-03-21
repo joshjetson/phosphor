@@ -196,6 +196,9 @@ impl App {
                 self.engine.transport.toggle_record();
                 self.log_transport_state();
             }
+            Action::ToggleMetronome => {
+                self.engine.transport.toggle_metronome();
+            }
             Action::Panic => {
                 self.engine.panic();
             }
@@ -593,6 +596,11 @@ impl App {
                 use crate::debug_log as dbg;
                 dbg::user("Space+l → focus loop editor");
                 self.nav.loop_editor.focus();
+            }
+            SpaceAction::ToggleMetronome => {
+                use crate::debug_log as dbg;
+                self.engine.transport.toggle_metronome();
+                dbg::system(&format!("metronome={}", self.engine.transport.is_metronome_on()));
             }
             SpaceAction::Panic => {
                 self.engine.panic();
