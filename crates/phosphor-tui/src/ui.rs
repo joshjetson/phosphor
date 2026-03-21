@@ -18,6 +18,18 @@ const VISIBLE_BARS: usize = 16;
 const FX_PANEL_W: u16 = 24;
 const CLIP_MEASURES: usize = 32;
 
+/// Rendering context for a single track row. Bundles all the per-track
+/// state needed by render_header and render_clips so we don't pass 9 args.
+struct TrackCtx<'a> {
+    track: &'a TrackState,
+    index: usize,
+    is_cursor: bool,
+    is_selected: bool,
+    is_dimmed: bool,
+    vu_level: f32,
+    nav: &'a NavState,
+}
+
 pub fn render(
     frame: &mut Frame,
     transport: &TransportSnapshot,
@@ -143,15 +155,25 @@ fn render_tracks(frame: &mut Frame, area: Rect, nav: &NavState, snap: &Transport
             Rect::new(area.x, area.y, HEADER_W, 1));
     }
 
+    let solo_on = nav.tracks.iter().any(|t| t.soloed);
+
     for (vi, track) in vis.iter().enumerate() {
         let ai = nav.track_scroll + vi;
         let y = area.y + vi as u16 * TRACK_H;
         if y + TRACK_H > area.y + area.height { break; }
 
-        let r = Rect::new(area.x, y, area.width, TRACK_H);
         let cur = nav.focused_pane == Pane::Tracks && nav.track_cursor == ai;
         let sel = cur && nav.track_selected;
-        render_track_row(frame, r, track, ai, cur, sel, nav, snap);
+        let dim = track.muted || (solo_on && !track.soloed);
+        let (vu_l, _) = track.vu_levels();
+
+        let ctx = TrackCtx {
+            track, index: ai, is_cursor: cur, is_selected: sel,
+            is_dimmed: dim, vu_level: if dim { 0.0 } else { vu_l }, nav,
+        };
+
+        let r = Rect::new(area.x, y, area.width, TRACK_H);
+        render_track_row(frame, r, &ctx, snap);
 
         let dy = y + TRACK_H - 1;
         if dy < area.y + area.height {
@@ -169,38 +191,29 @@ fn render_tracks(frame: &mut Frame, area: Rect, nav: &NavState, snap: &Transport
     }
 }
 
-fn render_track_row(
-    frame: &mut Frame, area: Rect, track: &TrackState, ti: usize,
-    cur: bool, sel: bool, nav: &NavState, snap: &TransportSnapshot,
-) {
-    let solo_on = nav.tracks.iter().any(|t| t.soloed);
-    let dim = track.muted || (solo_on && !track.soloed);
-
+fn render_track_row(frame: &mut Frame, area: Rect, ctx: &TrackCtx, snap: &TransportSnapshot) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(HEADER_W), Constraint::Length(1), Constraint::Min(4)])
         .split(area);
 
-    // Read VU from the track's audio handle (real-time)
-    let (vu_l, _vu_r) = track.vu_levels();
-    let track_vu = if dim { 0.0 } else { vu_l };
-    render_header(frame, cols[0], track, ti, cur, sel, nav, dim, track_vu);
+    render_header(frame, cols[0], ctx);
 
-    let sep: Vec<Line> = (0..area.height).map(|_| Line::from(Span::styled("\u{2502}", theme::border_style()))).collect();
+    let sep: Vec<Line> = (0..area.height)
+        .map(|_| Line::from(Span::styled("\u{2502}", theme::border_style())))
+        .collect();
     frame.render_widget(Paragraph::new(sep), cols[1]);
 
-    render_clips(frame, cols[2], track, sel, nav, snap, dim);
+    render_clips(frame, cols[2], ctx, snap);
 }
 
 // ── Track Header ──
 
-fn render_header(
-    frame: &mut Frame, area: Rect, track: &TrackState, ti: usize,
-    cur: bool, sel: bool, nav: &NavState, dim: bool, vu_level: f32,
-) {
+fn render_header(frame: &mut Frame, area: Rect, ctx: &TrackCtx) {
+    let TrackCtx { track, index, is_cursor: cur, is_selected: sel, is_dimmed: dim, vu_level, nav, .. } = *ctx;
     let tc = theme::track_color(track.color_index);
     let h = area.height as usize;
-    let id = (b'A' + ti as u8) as char;
+    let id = (b'A' + index as u8) as char;
     let nm: Vec<char> = track.name.to_uppercase().chars().collect();
     let is_special = matches!(track.kind, TrackKind::SendA | TrackKind::SendB | TrackKind::Master);
 
@@ -311,10 +324,8 @@ fn render_header(
 
 // ── Clip Area ──
 
-fn render_clips(
-    frame: &mut Frame, area: Rect, track: &TrackState,
-    sel: bool, nav: &NavState, snap: &TransportSnapshot, dim: bool,
-) {
+fn render_clips(frame: &mut Frame, area: Rect, ctx: &TrackCtx, snap: &TransportSnapshot) {
+    let TrackCtx { track, is_selected: sel, is_dimmed: dim, nav, .. } = *ctx;
     let tc = theme::track_color(track.color_index);
     let (w, h) = (area.width as usize, area.height as usize);
     if w == 0 || h == 0 { return; }
@@ -327,10 +338,12 @@ fn render_clips(
     for b in 1..VISIBLE_BARS {
         let x = b * bw;
         if x < w {
+            let major = b % 4 == 0;
             let s = Style::default()
-                .fg(if b%4==0 { Color::Rgb(13,32,50) } else { Color::Rgb(9,21,34) })
+                .fg(if major { Color::Rgb(13,32,50) } else { Color::Rgb(9,21,34) })
                 .bg(theme::BG);
-            for r in 0..h { grid[r][x] = (if b%4==0 { '\u{2502}' } else { '\u{2506}' }, s); }
+            let ch = if major { '\u{2502}' } else { '\u{2506}' };
+            for row in &mut grid { row[x] = (ch, s); }
         }
     }
 
@@ -353,10 +366,14 @@ fn render_clips(
         }
 
         // Clip body: empty block rendering for all clips
-        for row in 1..h.saturating_sub(1) {
-            for x in cx..ce {
-                let edge = x == cx || x == ce-1;
-                grid[row][x] = (if edge { '\u{2502}' } else { ' ' }, Style::default().fg(theme::dim_color(tc,15)).bg(cbg));
+        let body_style = Style::default().fg(theme::dim_color(tc, 15)).bg(cbg);
+        for row in grid.iter_mut().take(h.saturating_sub(1)).skip(1) {
+            if let Some(cells) = row.get_mut(cx..ce) {
+                let len = cells.len();
+                for (j, cell) in cells.iter_mut().enumerate() {
+                    let edge = j == 0 || j == len - 1;
+                    *cell = (if edge { '\u{2502}' } else { ' ' }, body_style);
+                }
             }
         }
 
@@ -380,9 +397,9 @@ fn render_clips(
         let ph = snap.position_ticks as f64 / (Transport::PPQ * 4) as f64;
         let px = (ph * bw as f64) as usize;
         if px < w {
-            for r in 0..h {
-                let bg = grid[r][px].1.bg.unwrap_or(theme::BG);
-                grid[r][px] = ('\u{2502}', Style::default().fg(Color::Rgb(96,74,10)).bg(bg));
+            for row in &mut grid {
+                let bg = row[px].1.bg.unwrap_or(theme::BG);
+                row[px] = ('\u{2502}', Style::default().fg(Color::Rgb(96,74,10)).bg(bg));
             }
         }
     }
@@ -481,11 +498,9 @@ fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                 0
             };
 
-            for i in scroll_offset..param_count {
-                if lines.len() >= visible_rows { break; }
+            for (i, &val) in params[..param_count].iter().enumerate().skip(scroll_offset).take(visible_rows) {
                 let is_cur = focused && nav.clip_view.synth_param_cursor == i;
                 let name = PARAM_NAMES.get(i).copied().unwrap_or("?");
-                let val = params[i];
 
                 let indicator = if is_cur { "\u{25B6}" } else { " " };
                 let name_s = if is_cur { theme::amber_bright().add_modifier(Modifier::BOLD) } else { theme::normal() };
@@ -596,7 +611,7 @@ fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState) {
 
     for row in 0..h {
         let note_i = pr.view_bottom_note as i16 + (h as i16 - 1 - row as i16);
-        if note_i < 0 || note_i > 127 {
+        if !(0..=127).contains(&note_i) {
             lines.push(Line::from(Span::styled(" ".repeat(w), theme::bg())));
             continue;
         }
