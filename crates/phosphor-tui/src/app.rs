@@ -46,9 +46,9 @@ impl MidiStatus {
 }
 
 pub struct App {
-    engine: Arc<Engine>,
-    nav: NavState,
-    running: bool,
+    pub(crate) engine: Arc<Engine>,
+    pub(crate) nav: NavState,
+    pub(crate) running: bool,
     _audio_backend: Option<CpalBackend>,
     _midi_status: Arc<MidiStatus>,
     _midi_connection: Option<midir::MidiInputConnection<()>>,
@@ -143,6 +143,143 @@ impl App {
             _midi_connection: midi_connection,
             next_track_id: 0,
             clip_rx,
+        }
+    }
+
+    /// Execute a single action. Used by the test harness.
+    /// Future: the key handler should map keys→actions then call this.
+    #[allow(dead_code)]
+    pub(crate) fn execute_action(&mut self, action: crate::actions::Action) {
+        use crate::actions::Action;
+        use crate::debug_log as dbg;
+
+        match action {
+            // Global
+            Action::Quit => { self.running = false; }
+            Action::OpenSpaceMenu => { self.nav.toggle_space_menu(); }
+            Action::CloseSpaceMenu => { self.nav.space_menu.open = false; }
+            Action::NextPane => { self.nav.focus_next_pane(); }
+            Action::PrevPane => { self.nav.focus_pane(self.nav.focused_pane.prev()); }
+
+            // Space menu
+            Action::SpaceMenuUp => { self.nav.move_up(); }
+            Action::SpaceMenuDown => { self.nav.move_down(); }
+            Action::SpaceMenuSelect => {
+                if let Some(sa) = self.nav.enter() {
+                    self.handle_space_action(sa);
+                }
+            }
+            Action::SpaceMenuSwitchTab => { self.nav.space_menu.switch_section(); }
+            Action::SpaceMenuKey(ch) => {
+                if let Some(sa) = self.nav.space_menu_handle(ch) {
+                    self.handle_space_action(sa);
+                }
+            }
+
+            // Transport
+            Action::PlayPause => {
+                if self.engine.transport.is_playing() {
+                    dbg::system("action: pause");
+                    self.engine.transport.pause();
+                } else {
+                    if self.nav.loop_editor.enabled {
+                        let start = self.nav.loop_editor.start_ticks();
+                        dbg::system(&format!("action: play from loop start (tick {start})"));
+                        self.engine.transport.set_position(start);
+                    }
+                    self.sync_loop_to_transport();
+                    self.engine.transport.play();
+                }
+                self.log_transport_state();
+            }
+            Action::ToggleRecord => {
+                self.engine.transport.toggle_record();
+                self.log_transport_state();
+            }
+            Action::Panic => {
+                self.engine.panic();
+            }
+            Action::Save => { /* future */ }
+
+            // Loop editor
+            Action::FocusLoopEditor => {
+                self.nav.loop_editor.focus();
+            }
+            Action::LoopToggleEnabled => {
+                self.nav.loop_editor.toggle_enabled();
+                self.sync_loop_to_transport();
+                self.log_transport_state();
+            }
+            Action::LoopStartLeft => {
+                self.nav.loop_editor.move_start_left();
+                self.sync_loop_to_transport();
+            }
+            Action::LoopStartRight => {
+                self.nav.loop_editor.move_start_right();
+                self.sync_loop_to_transport();
+            }
+            Action::LoopEndLeft => {
+                self.nav.loop_editor.move_end_left();
+                self.sync_loop_to_transport();
+            }
+            Action::LoopEndRight => {
+                self.nav.loop_editor.move_end_right();
+                self.sync_loop_to_transport();
+            }
+            Action::LoopUnfocus => {
+                self.nav.loop_editor.unfocus();
+            }
+
+            // Track navigation
+            Action::MoveUp => { self.nav.move_up(); }
+            Action::MoveDown => { self.nav.move_down(); }
+            Action::MoveLeft => {
+                self.nav.move_left();
+                self.send_synth_param_update();
+            }
+            Action::MoveRight => {
+                self.nav.move_right();
+                self.send_synth_param_update();
+            }
+            Action::Select => { self.nav.enter(); }
+            Action::Back => { self.nav.escape(); }
+
+            // Track controls
+            Action::ToggleMute => { self.nav.toggle_mute(); }
+            Action::ToggleSolo => { self.nav.toggle_solo(); }
+            Action::ToggleArm => { self.nav.toggle_arm(); }
+            Action::ToggleLoopRecord => { self.toggle_loop_record(); }
+
+            // Instrument
+            Action::AddInstrument => {
+                self.nav.instrument_modal.open = true;
+                self.nav.instrument_modal.cursor = 0;
+            }
+            Action::InstrumentSelect => {
+                let instrument = self.nav.instrument_modal.selected();
+                self.nav.instrument_modal.open = false;
+                self.create_instrument_track(instrument);
+            }
+            Action::InstrumentCancel => {
+                self.nav.instrument_modal.open = false;
+            }
+
+            // Clip view
+            Action::CycleTab => { self.nav.cycle_tab(); }
+
+            // Synth params
+            Action::ParamUp => { self.nav.move_up(); }
+            Action::ParamDown => { self.nav.move_down(); }
+            Action::ParamDecrease => {
+                self.nav.move_left();
+                self.send_synth_param_update();
+            }
+            Action::ParamIncrease => {
+                self.nav.move_right();
+                self.send_synth_param_update();
+            }
+
+            Action::None => {}
         }
     }
 

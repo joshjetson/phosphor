@@ -1,8 +1,11 @@
 //! Terminal UI frontend for Phosphor.
 
+pub mod actions;
 mod app;
 pub mod debug_log;
 pub mod state;
+#[cfg(test)]
+mod test_harness;
 mod theme;
 mod ui;
 
