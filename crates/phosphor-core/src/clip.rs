@@ -57,6 +57,10 @@ pub struct RecordBuffer {
     active: bool,
 }
 
+impl Default for RecordBuffer {
+    fn default() -> Self { Self::new() }
+}
+
 impl RecordBuffer {
     pub fn new() -> Self {
         Self { start_tick: 0, events: Vec::with_capacity(1024), active: false }

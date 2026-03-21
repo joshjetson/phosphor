@@ -23,6 +23,10 @@ pub struct VuLevels {
     pub peak_r: AtomicU32,
 }
 
+impl Default for VuLevels {
+    fn default() -> Self { Self::new() }
+}
+
 impl VuLevels {
     pub fn new() -> Self {
         Self {

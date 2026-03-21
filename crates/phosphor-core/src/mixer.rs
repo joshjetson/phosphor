@@ -124,6 +124,7 @@ impl Mixer {
             .filter_map(midi_to_plugin_event)
             .collect();
 
+        let clip_tx = &self.clip_tx;
         let any_solo = self.tracks.iter().any(|t| t.handle.config.is_soloed());
 
         let mut master_l = vec![0.0f32; num_frames];
@@ -146,47 +147,24 @@ impl Mixer {
             // ── Recording ──
             if should_record && !track.was_recording {
                 track.record_buf.start(current_tick);
-                tracing::info!("REC START track={} tick={}", track.id, current_tick);
+                tracing::debug!("rec start track={} tick={}", track.id, current_tick);
             }
 
-            // Detect loop wrap: if we were recording and current tick is earlier
-            // than last seen tick, the transport looped. Commit the recording.
+            // Detect loop wrap: current tick jumped backward means transport looped.
             if should_record && track.was_recording && looping
                 && track.record_buf.is_active() && track.last_record_tick >= 0
+                && current_tick < track.last_record_tick
             {
-                if current_tick < track.last_record_tick {
-                    if let Some(clip) = track.record_buf.commit(loop_end) {
-                        let idx = track.clips.len();
-                        tracing::info!(
-                            "REC LOOP COMMIT track={}: {} events, ticks {}..{}",
-                            track.id, clip.events.len(), clip.start_tick, clip.end_tick()
-                        );
-                        let snapshot = ClipSnapshot::from_clip(track.id, idx, &clip);
-                        track.clips.push(clip);
-                        let _ = self.clip_tx.send(snapshot);
-                    }
-                    // Start new recording pass
-                    track.record_buf.start(current_tick);
-                }
+                commit_recording(track, loop_end, clip_tx);
+                track.record_buf.start(current_tick);
             }
             if should_record {
                 track.last_record_tick = current_tick;
             }
 
-            // Commit recording when recording stops (user pressed stop)
+            // Commit when recording stops (user pressed stop)
             if !should_record && track.was_recording {
-                if let Some(clip) = track.record_buf.commit(current_tick) {
-                    let idx = track.clips.len();
-                    tracing::info!(
-                        "REC COMMIT track={}: {} events, ticks {}..{}",
-                        track.id, clip.events.len(), clip.start_tick, clip.end_tick()
-                    );
-                    let snapshot = ClipSnapshot::from_clip(track.id, idx, &clip);
-                    track.clips.push(clip);
-                    let _ = self.clip_tx.send(snapshot);
-                } else {
-                    tracing::info!("REC DISCARD track={} (no events)", track.id);
-                }
+                commit_recording(track, current_tick, clip_tx);
             }
             track.was_recording = should_record;
 
@@ -198,7 +176,6 @@ impl Mixer {
                         let event_tick = current_tick
                             + (ev.sample_offset as f64 * ticks_per_sample) as i64;
                         track.record_buf.record(event_tick, ev.status, ev.data1, ev.data2);
-                        tracing::info!("REC EVENT track={} status={:#x} note={} tick={}", track.id, ev.status, ev.data1, event_tick);
                     }
                 }
             }
@@ -319,6 +296,20 @@ impl Mixer {
                 }
             }
         }
+    }
+}
+
+/// Commit a recording buffer into a clip and send snapshot to UI.
+fn commit_recording(track: &mut AudioTrack, end_tick: i64, clip_tx: &Sender<ClipSnapshot>) {
+    if let Some(clip) = track.record_buf.commit(end_tick) {
+        let idx = track.clips.len();
+        tracing::debug!(
+            "rec commit track={}: {} events, ticks {}..{}",
+            track.id, clip.events.len(), clip.start_tick, clip.end_tick()
+        );
+        let snapshot = ClipSnapshot::from_clip(track.id, idx, &clip);
+        track.clips.push(clip);
+        let _ = clip_tx.send(snapshot);
     }
 }
 

@@ -338,7 +338,6 @@ impl App {
             SpaceAction::AddInstrument => {
                 self.nav.instrument_modal.open = true;
                 self.nav.instrument_modal.cursor = 0;
-                return; // Don't send mixer commands yet — wait for modal selection
             }
             SpaceAction::Save => { /* future */ }
             SpaceAction::NewTrack => { /* future */ }

@@ -3,18 +3,14 @@
 /// Which sub-panel of the clip view has focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipViewFocus {
-    /// FX panel on the left.
     FxPanel,
-    /// Piano roll / clip content on the right.
     PianoRoll,
 }
 
 /// Tab in the FX panel (left side of clip view).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FxPanelTab {
-    /// Track-level FX chain.
     TrackFx,
-    /// Synth / instrument controls.
     Synth,
 }
 
@@ -63,10 +59,12 @@ pub struct ClipViewState {
     pub fx_panel_tab: FxPanelTab,
     pub clip_tab: ClipTab,
     pub piano_roll: PianoRollState,
-    /// FX panel cursor (which fx in the chain).
     pub fx_cursor: usize,
-    /// Synth parameter cursor (which param to adjust).
     pub synth_param_cursor: usize,
+}
+
+impl Default for ClipViewState {
+    fn default() -> Self { Self::new() }
 }
 
 impl ClipViewState {
@@ -82,14 +80,16 @@ impl ClipViewState {
     }
 }
 
-// ── Piano Roll State ──
-
 #[derive(Debug)]
 pub struct PianoRollState {
     pub cursor_note: u8,
     pub scroll_x: usize,
     pub view_bottom_note: u8,
     pub view_height: u8,
+}
+
+impl Default for PianoRollState {
+    fn default() -> Self { Self::new() }
 }
 
 impl PianoRollState {

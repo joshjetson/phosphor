@@ -72,6 +72,10 @@ pub struct FxMenu {
     pub cursor: usize,
 }
 
+impl Default for FxMenu {
+    fn default() -> Self { Self::new() }
+}
+
 impl FxMenu {
     pub fn new() -> Self {
         Self { open: false, cursor: 0 }
@@ -125,6 +129,10 @@ pub struct InstrumentModal {
     pub cursor: usize,
 }
 
+impl Default for InstrumentModal {
+    fn default() -> Self { Self::new() }
+}
+
 impl InstrumentModal {
     pub fn new() -> Self {
         Self { open: false, cursor: 0 }
@@ -173,6 +181,10 @@ pub enum SpaceMenuSection {
     Actions,
     /// Help topics.
     Help,
+}
+
+impl Default for SpaceMenu {
+    fn default() -> Self { Self::new() }
 }
 
 impl SpaceMenu {

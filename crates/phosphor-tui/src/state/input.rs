@@ -9,6 +9,10 @@ pub struct NumberBuffer {
     timeout_ms: u128,
 }
 
+impl Default for NumberBuffer {
+    fn default() -> Self { Self::new() }
+}
+
 impl NumberBuffer {
     pub fn new() -> Self { Self { digits: String::new(), last_input: None, timeout_ms: 500 } }
 
