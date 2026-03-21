@@ -334,7 +334,8 @@ impl App {
         }
 
         // Loop editor active — controls locked to loop markers
-        if self.nav.loop_editor.active {
+        // BUT Space passes through to open the space menu (so user can play/pause)
+        if self.nav.loop_editor.active && key.code != KeyCode::Char(' ') {
             let shift = key.modifiers.contains(KeyModifiers::SHIFT);
             match key.code {
                 KeyCode::Esc => {

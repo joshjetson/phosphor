@@ -84,8 +84,9 @@ impl LoopEditor {
     }
 
     /// End tick for the transport.
+    /// end_bar is exclusive, so bars 1-2 (end_bar=3) ends at the start of bar 3.
     pub fn end_ticks(&self) -> i64 {
-        self.end_bar as i64 * TICKS_PER_BAR
+        (self.end_bar as i64 - 1) * TICKS_PER_BAR
     }
 
     /// Number of bars in the loop region.
@@ -155,8 +156,19 @@ mod tests {
     #[test]
     fn ticks_correct() {
         let le = LoopEditor::new();
+        // Default: bars 1-4 (start_bar=1, end_bar=5)
         assert_eq!(le.start_ticks(), 0);
-        assert_eq!(le.end_ticks(), 5 * TICKS_PER_BAR);
+        assert_eq!(le.end_ticks(), 4 * TICKS_PER_BAR); // 4 bars
+    }
+
+    #[test]
+    fn ticks_for_two_bars() {
+        let mut le = LoopEditor::new();
+        // Move end to bar 3 (display "1-2" = bars 1 and 2)
+        le.end_bar = 3;
+        assert_eq!(le.display(), "1-2");
+        assert_eq!(le.start_ticks(), 0);
+        assert_eq!(le.end_ticks(), 2 * TICKS_PER_BAR); // 2 bars exactly
     }
 
     #[test]

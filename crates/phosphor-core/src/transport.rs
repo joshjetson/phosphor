@@ -49,7 +49,7 @@ impl Transport {
             position_ticks: AtomicI64::new(0),
             tempo_centibpm: AtomicU32::new((bpm * 100.0) as u32),
             loop_start_ticks: AtomicI64::new(0),
-            loop_end_ticks: AtomicI64::new(Self::PPQ * 4 * 5), // default bars 1-4 (end_bar=5 exclusive)
+            loop_end_ticks: AtomicI64::new(Self::PPQ * 4 * 4), // default 4 bars
         }
     }
 
