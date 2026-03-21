@@ -71,7 +71,7 @@ phosphor-gui = { path = "crates/phosphor-gui", version = "0.1.0" }
 
 # Root binary
 [package]
-name = "phosphor"
+name = "phosphor-studio"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -80,6 +80,10 @@ homepage.workspace = true
 description = "A terminal-native DAW with built-in synthesizers and MIDI support"
 keywords = ["daw", "audio", "synthesizer", "midi", "tui"]
 categories = ["multimedia::audio", "command-line-utilities"]
+
+[[bin]]
+name = "phosphor"
+path = "src/main.rs"
 
 [dependencies]
 phosphor-core.workspace = true

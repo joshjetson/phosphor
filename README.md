@@ -42,7 +42,10 @@ Phosphor is in active early development. The current beta includes a fully playa
 ## Quick Start
 
 ```bash
-# Clone and build
+# Install from crates.io
+cargo install phosphor-studio
+
+# Or clone and build
 git clone https://github.com/joshjetson/phosphor.git
 cd phosphor
 cargo build --release

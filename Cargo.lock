@@ -3124,19 +3124,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
-name = "phosphor"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "phosphor-core",
- "phosphor-gui",
- "phosphor-tui",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "phosphor-core"
 version = "0.1.0"
 dependencies = [
@@ -3195,6 +3182,19 @@ version = "0.1.0"
 dependencies = [
  "proptest",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "phosphor-studio"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "phosphor-core",
+ "phosphor-gui",
+ "phosphor-tui",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
