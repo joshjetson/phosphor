@@ -367,6 +367,12 @@ impl App {
                 if self.engine.transport.is_playing() {
                     self.engine.transport.pause();
                 } else {
+                    // If loop is enabled, start from loop start
+                    if self.nav.loop_editor.enabled {
+                        self.engine.transport.set_position(
+                            self.nav.loop_editor.start_ticks()
+                        );
+                    }
                     self.engine.transport.play();
                 }
             }
