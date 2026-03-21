@@ -407,6 +407,8 @@ impl NavState {
             TrackElement::Volume => { /* future: volume slider */ }
             TrackElement::Clip(idx) => {
                 self.open_clip_view(self.track_cursor, idx);
+                self.clip_view.clip_tab = ClipTab::PianoRoll;
+                self.clip_view.focus = ClipViewFocus::PianoRoll;
             }
             _ => {}
         }
@@ -472,15 +474,21 @@ impl NavState {
 
         if let Some(track) = self.tracks.get(self.track_cursor) {
             if track.is_live() {
-                // Activate MIDI on this track
                 if let Some(ref h) = track.handle {
                     h.config.midi_active.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 self.clip_view_visible = true;
                 self.clip_view_target = Some((self.track_cursor, 0));
-                self.clip_view.fx_panel_tab = FxPanelTab::Synth;
-                self.clip_view.focus = ClipViewFocus::FxPanel;
-                self.clip_view.synth_param_cursor = 0;
+
+                // If track has recorded clips, show piano roll. Otherwise show synth.
+                if !track.clips.is_empty() {
+                    self.clip_view.clip_tab = ClipTab::PianoRoll;
+                    self.clip_view.focus = ClipViewFocus::PianoRoll;
+                } else {
+                    self.clip_view.fx_panel_tab = FxPanelTab::Synth;
+                    self.clip_view.focus = ClipViewFocus::FxPanel;
+                    self.clip_view.synth_param_cursor = 0;
+                }
             } else {
                 // Bus track — hide clip view
                 self.clip_view_visible = false;

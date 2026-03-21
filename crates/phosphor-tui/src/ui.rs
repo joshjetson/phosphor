@@ -635,10 +635,16 @@ fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState) {
     let (w, h) = (area.width as usize, area.height as usize);
     if w == 0 || h == 0 { return; }
 
-    if nav.active_clip_track().is_none() {
-        frame.render_widget(Paragraph::new(Span::styled("  select a clip", theme::dim())), area);
-        return;
-    }
+    let track = match nav.active_clip_track() {
+        Some(t) => t,
+        None => {
+            frame.render_widget(Paragraph::new(Span::styled("  select a track", theme::dim())), area);
+            return;
+        }
+    };
+    let clip = nav.active_clip();
+    let notes = clip.map(|c| c.notes.as_slice()).unwrap_or(&[]);
+    let tc = theme::track_color(track.color_index);
 
     let pr = &nav.clip_view.piano_roll;
     let focused = nav.focused_pane == Pane::ClipView && nav.clip_view.focus == ClipViewFocus::PianoRoll;
@@ -679,7 +685,22 @@ fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState) {
             }
         }
 
-        // Merge
+        // Draw MIDI notes from the active clip
+        let note_style = Style::default().fg(tc).bg(
+            if is_cur { Color::Rgb(25, 50, 60) } else { row_bg }
+        ).add_modifier(Modifier::BOLD);
+        for n in notes {
+            if n.note == note {
+                let sx = (n.start_frac * note_w as f64) as usize;
+                let ex = ((n.start_frac + n.duration_frac) * note_w as f64) as usize;
+                let ex = ex.max(sx + 1).min(note_w); // at least 1 cell wide
+                for cell in gr.iter_mut().take(ex).skip(sx) {
+                    *cell = ('\u{2588}', note_style);
+                }
+            }
+        }
+
+        // Merge grid cells into spans
         let mut text = String::new();
         let mut cur_s = Style::default().fg(theme::DIM).bg(row_bg);
         for (ch, s) in gr {
