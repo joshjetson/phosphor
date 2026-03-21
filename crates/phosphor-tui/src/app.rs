@@ -22,7 +22,7 @@ use phosphor_core::EngineConfig;
 use phosphor_dsp::synth::PhosphorSynth;
 use phosphor_midi::ring::midi_ring_buffer;
 
-use crate::state::{self, ClipViewFocus, FxPanelTab, InstrumentType, NavState, Pane, SpaceAction};
+use crate::state::{self, ClipViewFocus, FxPanelTab, InstrumentType, NavState, Pane, SpaceAction, TransportElement};
 use crate::ui;
 
 /// Shared MIDI status for the UI to display.
@@ -502,9 +502,78 @@ impl App {
 
     fn handle_transport_keys(&mut self, key: crossterm::event::KeyEvent) {
         use crate::debug_log as dbg;
+        let tu = &mut self.nav.transport_ui;
+
+        if tu.editing {
+            // Controls locked to the current element
+            match tu.element {
+                TransportElement::Bpm => match key.code {
+                    KeyCode::Char('l') | KeyCode::Right => {
+                        let bpm = self.engine.transport.tempo_bpm() + 1.0;
+                        self.engine.transport.set_tempo(bpm);
+                        dbg::system(&format!("bpm={:.0}", bpm));
+                    }
+                    KeyCode::Char('h') | KeyCode::Left => {
+                        let bpm = (self.engine.transport.tempo_bpm() - 1.0).max(20.0);
+                        self.engine.transport.set_tempo(bpm);
+                        dbg::system(&format!("bpm={:.0}", bpm));
+                    }
+                    KeyCode::Esc | KeyCode::Enter => {
+                        dbg::user("transport: release BPM edit");
+                        tu.editing = false;
+                    }
+                    _ => {}
+                },
+                TransportElement::Loop => {
+                    // Delegate to loop editor
+                    // Enter on loop when already editing → just unfocus
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Enter => {
+                            tu.editing = false;
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {
+                    // Record and Metronome don't have editing mode, just release
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Enter => { tu.editing = false; }
+                        _ => {}
+                    }
+                }
+            }
+            return;
+        }
+
+        // Not editing — navigate between elements
         match key.code {
+            KeyCode::Char('h') | KeyCode::Left => {
+                tu.element = tu.element.move_left();
+                dbg::user(&format!("transport: → {}", tu.element.label()));
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                tu.element = tu.element.move_right();
+                dbg::user(&format!("transport: → {}", tu.element.label()));
+            }
+            KeyCode::Enter => {
+                dbg::user(&format!("transport: Enter on {}", tu.element.label()));
+                match tu.element {
+                    TransportElement::Bpm => { tu.editing = true; }
+                    TransportElement::Record => {
+                        self.engine.transport.toggle_record();
+                        dbg::system(&format!("recording={}", self.engine.transport.is_recording()));
+                    }
+                    TransportElement::Loop => {
+                        self.nav.loop_editor.focus();
+                    }
+                    TransportElement::Metronome => {
+                        self.engine.transport.toggle_metronome();
+                        dbg::system(&format!("metronome={}", self.engine.transport.is_metronome_on()));
+                    }
+                }
+            }
             KeyCode::Char('q') => { self.running = false; }
-            KeyCode::Esc => { dbg::user("transport: Esc"); }
+            KeyCode::Esc => { dbg::user("transport: Esc → deselect"); }
             _ => {}
         }
     }

@@ -80,15 +80,6 @@ pub fn branding() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-pub fn rec_dim() -> Style {
-    Style::default().fg(REC_DIM).bg(BG)
-}
-
-pub fn rec_active() -> Style {
-    Style::default().fg(REC_ACTIVE).bg(BG)
-}
-
-
 pub fn border_style() -> Style {
     Style::default().fg(BORDER).bg(BG)
 }

@@ -99,45 +99,69 @@ fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap: &Transpor
 
     frame.render_widget(Paragraph::new(Span::styled(" phosphor", theme::branding())), cols[0]);
 
-    let seq = if snap.playing { Span::styled("seq:on", theme::normal()) } else { Span::styled("seq:off", theme::dim()) };
-    let rec = if snap.recording { Span::styled("\u{25CF} rec", theme::rec_active()) } else { Span::styled("\u{25CF} rec", theme::rec_dim()) };
+    let tp = nav.focused_pane == Pane::Transport;
+    let te = nav.transport_ui.element;
+    let editing = nav.transport_ui.editing;
+    let hi = Color::Rgb(30, 45, 55); // highlight background
+
+    // BPM
+    let bpm_sel = tp && te == TransportElement::Bpm;
+    let bpm_bg = if bpm_sel { hi } else { theme::BG };
+    let bpm_fg = if editing && bpm_sel {
+        Color::Rgb(255, 200, 50)
+    } else if bpm_sel {
+        theme::AMBER_BRIGHT
+    } else {
+        theme::AMBER_BRIGHT
+    };
+    let bpm_label = if editing && bpm_sel { "\u{2190}bpm\u{2192}" } else { "bpm:" };
+
+    // Record
+    let rec_sel = tp && te == TransportElement::Record;
+    let rec = if snap.recording {
+        Span::styled("\u{25CF} rec", Style::default()
+            .fg(theme::REC_ACTIVE)
+            .bg(if rec_sel { hi } else { theme::BG }))
+    } else {
+        Span::styled("\u{25CF} rec", Style::default()
+            .fg(if rec_sel { theme::NORMAL } else { theme::REC_DIM })
+            .bg(if rec_sel { hi } else { theme::BG }))
+    };
+
+    // Loop
+    let loop_sel = tp && te == TransportElement::Loop;
     let loop_focused = nav.loop_editor.active;
     let loop_enabled = nav.loop_editor.enabled;
     let lp = if loop_focused {
-        // Editing markers — show current range, bold
         let label = if loop_enabled { "loop" } else { "loop?" };
         Span::styled(
             format!("{label}[{}]", nav.loop_editor.display()),
             theme::amber_bright().add_modifier(Modifier::BOLD),
         )
     } else if loop_enabled {
-        // Loop is on
         Span::styled(
             format!("loop:{}", nav.loop_editor.display()),
-            theme::amber(),
+            Style::default().fg(theme::AMBER).bg(if loop_sel { hi } else { theme::BG }),
         )
     } else {
-        Span::styled("loop:off", theme::dim())
+        Span::styled("loop:off", Style::default()
+            .fg(if loop_sel { theme::NORMAL } else { theme::DIM })
+            .bg(if loop_sel { hi } else { theme::BG }))
     };
 
-    let met = if snap.metronome {
-        Span::styled("\u{266A}", theme::amber()) // musical note symbol
-    } else {
-        Span::styled("\u{266A}", theme::dim())
-    };
+    // Metronome
+    let met_sel = tp && te == TransportElement::Metronome;
+    let met = Span::styled("\u{266A}", Style::default()
+        .fg(if snap.metronome { theme::AMBER } else { theme::DIM })
+        .bg(if met_sel { hi } else { theme::BG }));
 
-    let transport_focused = nav.focused_pane == Pane::Transport;
-    let bpm_style = if transport_focused {
-        Style::default().fg(Color::Rgb(255, 200, 50)).bg(Color::Rgb(30, 30, 10)).add_modifier(Modifier::BOLD)
-    } else {
-        theme::amber_bright()
-    };
-    let bpm_label = if transport_focused { "+bpm-" } else { "bpm:" };
+    // Seq
+    let seq = if snap.playing { Span::styled("seq:on", theme::normal()) } else { Span::styled("seq:off", theme::dim()) };
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             seq, Span::styled(format!("  {bpm_label}"), theme::normal()),
-            Span::styled(format!("{:.0}", snap.tempo_bpm), bpm_style),
+            Span::styled(format!("{:.0}", snap.tempo_bpm), Style::default().fg(bpm_fg).bg(bpm_bg)),
             Span::styled("  4/4  ", theme::normal()), rec,
             Span::styled("  ", theme::bg()), lp,
             Span::styled("  ", theme::bg()), met,
@@ -918,6 +942,8 @@ fn render_bottom_bar(frame: &mut Frame, area: Rect, nav: &NavState) {
 
     let (mt, ms) = if nav.loop_editor.active {
         ("-- LOOP --", Style::default().fg(Color::Rgb(80, 180, 80)).bg(theme::BG))
+    } else if nav.focused_pane == Pane::Transport && nav.transport_ui.editing {
+        ("-- EDIT --", theme::amber_bright())
     } else if nav.focused_pane == Pane::Transport {
         ("-- TRANSPORT --", theme::amber_bright())
     } else if nav.track_selected {
@@ -933,7 +959,8 @@ fn render_bottom_bar(frame: &mut Frame, area: Rect, nav: &NavState) {
         vec![("hl","start"),("H/L","end"),("enter", toggle),("esc","done")]
     } else {
         match nav.focused_pane {
-            Pane::Transport => vec![("tab","next"),("spc","menu"),("+/-","bpm")],
+            Pane::Transport if nav.transport_ui.editing => vec![("hl","adjust"),("enter","done"),("esc","done")],
+            Pane::Transport => vec![("hl","nav"),("enter","sel"),("+/-","bpm"),("tab","pane")],
             Pane::Tracks if nav.track_selected => vec![("hl","clip"),("m","mute"),("s","solo"),("r","arm"),("R","rec"),("esc","back")],
             Pane::Tracks => vec![("jk","track"),("enter","sel"),("m","mute"),("s","solo"),("r","arm"),("R","rec")],
             Pane::ClipView => vec![("jk","nav"),("hl","panel"),("tab","tabs"),("esc","back")],

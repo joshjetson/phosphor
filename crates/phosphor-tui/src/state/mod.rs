@@ -13,12 +13,14 @@ mod input;
 mod loop_editor;
 mod menu;
 mod track;
+mod transport_ui;
 
 pub use clip_view::*;
 pub use input::*;
 pub use loop_editor::*;
 pub use menu::*;
 pub use track::*;
+pub use transport_ui::*;
 
 use phosphor_core::project::TrackKind;
 
@@ -95,6 +97,7 @@ pub struct NavState {
     pub fx_menu: FxMenu,
     pub instrument_modal: InstrumentModal,
     pub loop_editor: LoopEditor,
+    pub transport_ui: TransportUiState,
     pub tracks: Vec<TrackState>,
 }
 
@@ -114,6 +117,7 @@ impl NavState {
             fx_menu: FxMenu::new(),
             instrument_modal: InstrumentModal::new(),
             loop_editor: LoopEditor::new(),
+            transport_ui: TransportUiState::new(),
             tracks,
         }
     }
