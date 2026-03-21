@@ -1,0 +1,213 @@
+
+<div style="font-family:'Courier New',monospace;background:#0b1d28;line-height:1;overflow:hidden">
+  <div style="padding:5px 14px 4px;border-bottom:1px solid #0e2434;display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#1c4660;letter-spacing:.04em;white-space:nowrap">
+    <span style="color:#2e6e82;letter-spacing:.08em">phosphor</span>
+    <span style="color:#1c4256">seq:on&nbsp;&nbsp;bpm:<span style="color:#60500c">124</span>&nbsp;&nbsp;C maj&nbsp;&nbsp;4/4&nbsp;&nbsp;<span style="color:#4e1414">●</span>&thinsp;rec</span>
+    <span style="color:#14283a">bar 5 · 00:01:42.3 · trk A/5</span>
+  </div>
+  <canvas id="daw" style="display:block;width:100%"></canvas>
+  <div style="padding:4px 14px;border-top:1px solid #0e2434;display:flex;gap:14px;font-size:10px;color:#101e2e">
+    <span style="color:#1a4258">-- NORMAL --</span>
+    <span style="color:#0e1c2c">jk·track&nbsp;&nbsp;hl·clip&nbsp;&nbsp;m·mute&nbsp;&nbsp;s·solo&nbsp;&nbsp;r·arm&nbsp;&nbsp;space·play&nbsp;&nbsp;dd·delete&nbsp;&nbsp;R·record</span>
+    <span style="margin-left:auto;color:#0c1828">:w :q</span>
+  </div>
+</div>
+<script>
+(function(){
+const cv=document.getElementById('daw');
+const ctx=cv.getContext('2d');
+const W=680,H=402;
+cv.width=W; cv.height=H;
+
+const BG='#0b1d28';
+const HW=92,RH=22,TH=76,BARS=16;
+const CW=W-HW, BW=CW/BARS;
+
+ctx.fillStyle=BG; ctx.fillRect(0,0,W,H);
+for(let y=2;y<H;y+=4){ctx.fillStyle='rgba(0,0,0,0.012)';ctx.fillRect(0,y,W,2);}
+
+const T=[
+  {id:'A',name:'KICK',  m:false,s:false,arm:true, c:[54,124,142],cl:[{s:0,e:4},{s:8,e:12}]},
+  {id:'B',name:'SNARE', m:false,s:false,arm:false,c:[48,108,80], cl:[{s:0,e:4},{s:8,e:12}]},
+  {id:'C',name:'HH',    m:true, s:false,arm:false,c:[52,84,98],  cl:[{s:0,e:8}]},
+  {id:'D',name:'BASS',  m:false,s:false,arm:false,c:[40,72,118], cl:[{s:0,e:16}]},
+  {id:'E',name:'SYN·A', m:false,s:true, arm:false,c:[66,52,100], cl:[{s:0,e:6},{s:8,e:14}]},
+];
+
+function pr(x,y,w,h,r){
+  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y);
+  ctx.arcTo(x+w,y,x+w,y+r,r); ctx.lineTo(x+w,y+h-r);
+  ctx.arcTo(x+w,y+h,x+w-r,y+h,r); ctx.lineTo(x+r,y+h);
+  ctx.arcTo(x,y+h,x,y+h-r,r); ctx.lineTo(x,y+r);
+  ctx.arcTo(x,y,x+r,y,r); ctx.closePath();
+}
+
+function wv(i,u){
+  switch(i){
+    case 0:{const p=(u*4)%1;return Math.max(0,Math.exp(-p*30)*0.95);}
+    case 1:{const b=Math.floor(u*16),p=(u*16)%1;return b%2===1?Math.max(0,Math.exp(-p*22)*0.78):0;}
+    case 2:{const p=(u*16)%1;return Math.max(0,Math.exp(-p*54)*0.5);}
+    case 3:{return Math.abs(Math.sin(u*Math.PI*4)*0.48+Math.sin(u*Math.PI*9)*0.18)*0.72+0.07;}
+    case 4:{return(Math.abs(Math.sin(u*Math.PI*2)*0.32+Math.sin(u*Math.PI*5)*0.14)+0.17)*0.72;}
+  }
+  return 0;
+}
+
+// ── RULER ──
+ctx.fillStyle='#0c1e2e'; ctx.fillRect(0,0,W,RH);
+ctx.fillStyle='#09192a'; ctx.fillRect(0,0,HW,RH);
+for(let b=0;b<=BARS;b++){
+  const bx=HW+b*BW,maj=b%4===0;
+  ctx.strokeStyle=maj?'rgba(50,118,138,0.4)':'rgba(14,40,60,0.5)';
+  ctx.lineWidth=maj?0.65:0.28;
+  ctx.beginPath();ctx.moveTo(bx,maj?6:13);ctx.lineTo(bx,21);ctx.stroke();
+  if(maj&&b<BARS){
+    ctx.fillStyle='rgba(32,80,102,0.72)';
+    ctx.font='8px "Courier New",monospace';
+    ctx.textAlign='left';
+    ctx.fillText(b+1,bx+2,16);
+  }
+}
+for(let b=0;b<BARS;b++){for(let bt=1;bt<4;bt++){
+  ctx.strokeStyle='rgba(9,22,36,0.4)';ctx.lineWidth=0.18;
+  ctx.beginPath();ctx.moveTo(HW+(b+bt/4)*BW,16);ctx.lineTo(HW+(b+bt/4)*BW,21);ctx.stroke();
+}}
+ctx.fillStyle='rgba(18,48,68,0.5)';
+ctx.font='8px "Courier New",monospace';ctx.textAlign='center';
+ctx.fillText('trk',HW/2,RH-5);
+ctx.strokeStyle='rgba(7,18,30,1)';ctx.lineWidth=1;
+ctx.beginPath();ctx.moveTo(0,RH);ctx.lineTo(W,RH);ctx.stroke();
+
+// ── TRACKS ──
+const soloOn=T.some(t=>t.s);
+T.forEach((tr,i)=>{
+  const ty=RH+i*TH;
+  const [r,g,b]=tr.c;
+  const dim=tr.m||(soloOn&&!tr.s);
+
+  // Header BG
+  ctx.fillStyle=tr.s?'#0b2018':'#091a2c';
+  ctx.fillRect(0,ty,HW,TH);
+
+  // Accent bar
+  ctx.fillStyle=`rgba(${r},${g},${b},${dim?0.2:0.58})`;
+  ctx.fillRect(0,ty,3,TH);
+
+  // Track ID — tiny, top-left
+  ctx.fillStyle=`rgba(${r},${g},${b},${dim?0.16:0.34})`;
+  ctx.font='7px "Courier New",monospace';
+  ctx.textAlign='left';
+  ctx.fillText(tr.id,6,ty+10);
+
+  // ── Track name: rotate(π/2) = 90° CW → each letter faces 3 o'clock ──
+  ctx.save();
+  ctx.translate(40,ty+TH/2);
+  ctx.rotate(Math.PI/2);
+  ctx.textAlign='center';
+  ctx.font='bold 11px "Courier New",monospace';
+  ctx.fillStyle=`rgba(${Math.min(r+14,255)},${Math.min(g+14,255)},${Math.min(b+14,255)},${dim?0.22:0.68})`;
+  ctx.fillText(tr.name,0,4);
+  ctx.restore();
+
+  // VU meter — thin vertical bar
+  const vx=68,vy=ty+14,vw=4,vh=46;
+  ctx.fillStyle='rgba(5,13,22,0.94)';ctx.fillRect(vx,vy,vw,vh);
+  const vls=[0.72,0.55,0,0.63,0.48];
+  const lv=dim?0:vls[i];
+  if(lv>0){
+    const fh=Math.round(vh*lv);
+    ctx.fillStyle=`rgba(${r},${g},${b},0.66)`;
+    ctx.fillRect(vx,vy+vh-fh,vw,fh);
+  }
+  // VU tick marks
+  for(let t=1;t<4;t++){ctx.fillStyle='rgba(5,13,22,0.72)';ctx.fillRect(vx,vy+t*vh/4,vw,1);}
+
+  // Armed indicator dot
+  if(tr.arm){
+    ctx.fillStyle='rgba(116,28,28,0.88)';
+    ctx.strokeStyle='rgba(160,48,48,0.45)';
+    ctx.lineWidth=0.7;
+    ctx.beginPath();ctx.arc(82,ty+13,4,0,Math.PI*2);ctx.fill();ctx.stroke();
+  }
+
+  // M button
+  const bx=76,mby=ty+33,bw=13,bh=11;
+  ctx.fillStyle=tr.m?`rgba(${r},${g+6},${b+36},0.28)`:'rgba(7,17,28,0.88)';
+  ctx.strokeStyle=tr.m?`rgba(${r+6},${g+16},${b+54},0.68)`:'rgba(12,36,56,0.5)';
+  ctx.lineWidth=0.5;
+  ctx.beginPath();pr(bx,mby,bw,bh,2);ctx.fill();ctx.stroke();
+  ctx.fillStyle=tr.m?`rgba(${r+18},${g+30},${b+64},0.94)`:'rgba(18,50,72,0.55)';
+  ctx.font='8px "Courier New",monospace';ctx.textAlign='center';
+  ctx.fillText('m',bx+bw/2,mby+bh-3);
+
+  // S button
+  const sby=ty+48;
+  ctx.fillStyle=tr.s?'rgba(40,94,20,0.3)':'rgba(7,17,28,0.88)';
+  ctx.strokeStyle=tr.s?'rgba(64,130,36,0.7)':'rgba(12,36,56,0.5)';
+  ctx.lineWidth=0.5;
+  ctx.beginPath();pr(bx,sby,bw,bh,2);ctx.fill();ctx.stroke();
+  ctx.fillStyle=tr.s?'rgba(84,148,46,0.94)':'rgba(18,50,72,0.55)';
+  ctx.font='8px "Courier New",monospace';ctx.textAlign='center';
+  ctx.fillText('s',bx+bw/2,sby+bh-3);
+
+  // Dividers
+  ctx.strokeStyle='rgba(7,16,28,1)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(0,ty+TH);ctx.lineTo(W,ty+TH);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(HW,ty);ctx.lineTo(HW,ty+TH);ctx.stroke();
+
+  // Content BG — subtle alternating shade
+  ctx.fillStyle=i%2===0?'rgba(8,18,28,1)':'rgba(7,16,25,1)';
+  ctx.fillRect(HW,ty,CW,TH);
+  if(tr.s){ctx.fillStyle='rgba(55,110,28,0.018)';ctx.fillRect(HW,ty,CW,TH);}
+
+  // Bar grid
+  for(let bk=1;bk<=BARS;bk++){
+    ctx.strokeStyle=bk%4===0?'rgba(13,32,50,0.88)':'rgba(9,21,34,0.4)';
+    ctx.lineWidth=bk%4===0?0.48:0.2;
+    ctx.beginPath();ctx.moveTo(HW+bk*BW,ty);ctx.lineTo(HW+bk*BW,ty+TH);ctx.stroke();
+  }
+
+  // ── Clips ──
+  tr.cl.forEach(clip=>{
+    const cx=HW+clip.s*BW, cw=(clip.e-clip.s)*BW;
+    const cy=ty+3, ch=TH-6;
+    const wPad=8, wH=ch-wPad*2, wM=cy+wPad+wH/2;
+    const STEPS=Math.max(72,Math.floor(cw));
+
+    // Clip BG + border
+    ctx.fillStyle=`rgba(${r},${g},${b},${dim?0.028:0.06})`;
+    ctx.strokeStyle=`rgba(${r},${g},${b},${dim?0.1:0.22})`;
+    ctx.lineWidth=0.5;
+    ctx.beginPath();pr(cx,cy,cw,ch,2);ctx.fill();ctx.stroke();
+
+    // Top accent strip
+    ctx.fillStyle=`rgba(${r},${g},${b},${dim?0.1:0.36})`;
+    ctx.fillRect(cx+1,cy,cw-2,2);
+
+    // Waveform — upper
+    ctx.strokeStyle=`rgba(${Math.min(r+18,255)},${Math.min(g+18,255)},${Math.min(b+18,255)},${dim?0.1:0.52})`;
+    ctx.lineWidth=0.78;
+    ctx.beginPath();
+    for(let p=0;p<=STEPS;p++){const u=p/STEPS,a=wv(i,u);const px=cx+u*cw,py=wM-a*(wH/2)*0.88;p?ctx.lineTo(px,py):ctx.moveTo(px,py);}
+    ctx.stroke();
+
+    // Waveform — lower mirror
+    ctx.strokeStyle=`rgba(${r},${g},${b},${dim?0.06:0.24})`;
+    ctx.lineWidth=0.42;
+    ctx.beginPath();
+    for(let p=0;p<=STEPS;p++){const u=p/STEPS,a=wv(i,u);const px=cx+u*cw,py=wM+a*(wH/2)*0.88;p?ctx.lineTo(px,py):ctx.moveTo(px,py);}
+    ctx.stroke();
+  });
+});
+
+// ── Playhead — bar 5 ──
+const phx=HW+(5/BARS)*CW;
+ctx.strokeStyle='rgba(86,66,10,0.32)';ctx.lineWidth=0.85;
+ctx.setLineDash([3,5]);
+ctx.beginPath();ctx.moveTo(phx,RH-4);ctx.lineTo(phx,H);ctx.stroke();
+ctx.setLineDash([]);
+ctx.fillStyle='rgba(96,74,10,0.58)';
+ctx.beginPath();ctx.moveTo(phx-4,RH-4);ctx.lineTo(phx+4,RH-4);ctx.lineTo(phx,RH+4);ctx.closePath();ctx.fill();
+
+})();
+</script>

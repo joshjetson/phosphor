@@ -1,0 +1,14 @@
+[package]
+name = "phosphor-tui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+phosphor-core.workspace = true
+phosphor-dsp.workspace = true
+phosphor-midi.workspace = true
+midir.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+anyhow.workspace = true
+tracing.workspace = true

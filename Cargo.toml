@@ -1,0 +1,83 @@
+[workspace]
+members = [
+    "crates/phosphor-core",
+    "crates/phosphor-dsp",
+    "crates/phosphor-midi",
+    "crates/phosphor-plugin",
+    "crates/phosphor-tui",
+    "crates/phosphor-gui",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Audio
+cpal = "0.15"
+dasp = { version = "0.11", features = ["signal", "interpolate", "ring_buffer"] }
+
+# MIDI
+midir = "0.10"
+wmidi = "4.0"
+
+# Lock-free communication
+ringbuf = "0.4"
+crossbeam-channel = "0.5"
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# GUI
+eframe = "0.29"
+egui = "0.29"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Plugin loading
+libloading = "0.8"
+
+# Testing
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1"
+assert_no_alloc = "1.1"
+
+# Internal crates
+phosphor-core = { path = "crates/phosphor-core" }
+phosphor-dsp = { path = "crates/phosphor-dsp" }
+phosphor-midi = { path = "crates/phosphor-midi" }
+phosphor-plugin = { path = "crates/phosphor-plugin" }
+phosphor-tui = { path = "crates/phosphor-tui" }
+phosphor-gui = { path = "crates/phosphor-gui" }
+
+# Root binary
+[package]
+name = "phosphor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+phosphor-core.workspace = true
+phosphor-tui.workspace = true
+phosphor-gui.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

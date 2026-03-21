@@ -1,0 +1,11 @@
+[package]
+name = "phosphor-gui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+phosphor-core.workspace = true
+eframe.workspace = true
+egui.workspace = true
+anyhow.workspace = true
+tracing.workspace = true

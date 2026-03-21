@@ -1,0 +1,205 @@
+
+<div style="font-family:'Courier New',monospace;background:#0b1d28;overflow:hidden;line-height:1">
+  <div style="padding:5px 14px 4px;border-bottom:1px solid #0f2535;display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#254e62;letter-spacing:.04em;white-space:nowrap">
+    <span style="color:#38717f;letter-spacing:.1em">phosphor</span>
+    <span>seq:on&nbsp;&nbsp;bpm:<span style="color:#72580e">124</span>&nbsp;&nbsp;C maj&nbsp;&nbsp;4/4&nbsp;&nbsp;<span style="color:#5a1a1a">●</span>&thinsp;rec</span>
+    <span style="color:#1a3a4c">00:01:42.3&nbsp;&nbsp;trk:2/4</span>
+  </div>
+  <canvas id="wc" style="display:block;width:100%"></canvas>
+  <div style="padding:4px 14px;border-top:1px solid #0f2535;display:flex;gap:18px;font-size:10px;color:#162e3c">
+    <span style="color:#254e62">-- NORMAL --</span>
+    <span>syn:1&nbsp;&nbsp;osc:saw+tri&nbsp;&nbsp;flt:lp24&nbsp;&nbsp;res:0.42&nbsp;&nbsp;env:adsr</span>
+    <span style="margin-left:auto;color:#122430">^s synth&nbsp;&nbsp;^t trk&nbsp;&nbsp;^q seq&nbsp;&nbsp;:w&nbsp;:q</span>
+  </div>
+</div>
+<script>
+(function(){
+  const cv = document.getElementById('wc');
+  const ctx = cv.getContext('2d');
+  const W = 680, H = 380;
+  cv.width = W; cv.height = H;
+
+  const BG = '#0b1d28';
+  ctx.fillStyle = BG;
+  ctx.fillRect(0,0,W,H);
+
+  // Barely-there scanline texture
+  for(let y=2;y<H;y+=4){
+    ctx.fillStyle='rgba(0,0,0,0.018)';
+    ctx.fillRect(0,y,W,2);
+  }
+
+  const lerp=(a,b,t)=>a+(b-a)*t;
+  const N=16, PT=130;
+
+  // Perspective geometry: front=close/bottom, back=far/top
+  const Fy=326, Fxl=44,  Fxr=636;
+  const By=98,  Bxl=193, Bxr=487;
+
+  // Faint receding guide lines
+  ctx.save();
+  ctx.setLineDash([1,14]);
+  ctx.lineWidth=0.3;
+  ctx.strokeStyle='rgba(14,34,46,0.9)';
+  for(let i=0;i<=8;i++){
+    const u=i/8;
+    ctx.beginPath();
+    ctx.moveTo(lerp(Fxl,Fxr,u),Fy);
+    ctx.lineTo(lerp(Bxl,Bxr,u),By);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // Left depth rail
+  ctx.beginPath();
+  ctx.moveTo(Fxl,Fy); ctx.lineTo(Bxl,By);
+  ctx.strokeStyle='rgba(18,46,60,0.4)';
+  ctx.lineWidth=0.4; ctx.stroke();
+
+  // Depth tick marks on left rail
+  ctx.save();
+  ctx.setLineDash([1,0]);
+  for(let i=0;i<N;i+=3){
+    const t=i/(N-1);
+    const yt=lerp(By,Fy,t);
+    const xt=lerp(Bxl,Fxl,t);
+    ctx.beginPath();
+    ctx.moveTo(xt,yt); ctx.lineTo(xt-6,yt);
+    ctx.strokeStyle='rgba(22,52,68,0.55)';
+    ctx.lineWidth=0.4; ctx.stroke();
+  }
+  ctx.restore();
+
+  // Waveform generator — composite harmonics, phase-shifted per slice
+  function wave(s){
+    const ph = s * 2.399;
+    const bands=[
+      [1.15,0.46],[2.7,0.27],[5.3,0.15],[9.8,0.08],[0.48,0.04]
+    ];
+    return u=>{
+      let v=0;
+      bands.forEach(([f,a],k)=>{
+        v+=a*Math.sin(2*Math.PI*f*u + ph*(k*0.65+0.28));
+      });
+      return v;
+    };
+  }
+
+  // Draw slices back → front
+  for(let s=0;s<N;s++){
+    const t =s/(N-1);
+    const yb=lerp(By,Fy,t);
+    const xl=lerp(Bxl,Fxl,t);
+    const xr=lerp(Bxr,Fxr,t);
+    const w =xr-xl;
+    // Amplitude eases in toward front (natural perspective + musical energy)
+    const amp=lerp(2,55,t*t*0.7+t*0.3);
+
+    const wfn=wave(s);
+    const pts=[];
+    for(let i=0;i<=PT;i++){
+      const u=i/PT;
+      pts.push([xl+u*w, yb-amp*wfn(u)]);
+    }
+
+    // ── Hidden-line removal: fill body with exact background ──
+    ctx.beginPath();
+    ctx.moveTo(xl,yb);
+    pts.forEach(([px,py])=>ctx.lineTo(px,py));
+    ctx.lineTo(xr,yb);
+    ctx.closePath();
+    ctx.fillStyle=BG;
+    ctx.fill();
+
+    // Faint diffused phosphor body glow (front slices only)
+    if(t>0.42){
+      ctx.beginPath();
+      ctx.moveTo(xl,yb);
+      pts.forEach(([px,py])=>ctx.lineTo(px,py));
+      ctx.lineTo(xr,yb);
+      ctx.closePath();
+      ctx.fillStyle=`rgba(54,124,142,${(t-0.42)/0.58*0.048})`;
+      ctx.fill();
+    }
+
+    // Waveform stroke — muted diffused palette
+    // Back: dark desaturated slate-teal → Front: soft luminous teal-cyan
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0],pts[0][1]);
+    for(let i=1;i<=PT;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+
+    let r,g,b,a,lw;
+    if(t<0.22){
+      const u=t/0.22;
+      r=lerp(10,20,u); g=lerp(34,54,u); b=lerp(46,70,u);
+      a=lerp(0.14,0.24,u); lw=0.35;
+    } else if(t<0.50){
+      const u=(t-0.22)/0.28;
+      r=lerp(20,40,u); g=lerp(54,100,u); b=lerp(70,118,u);
+      a=lerp(0.24,0.48,u); lw=lerp(0.35,0.68,u);
+    } else if(t<0.78){
+      const u=(t-0.50)/0.28;
+      r=lerp(40,64,u); g=lerp(100,150,u); b=lerp(118,168,u);
+      a=lerp(0.48,0.70,u); lw=lerp(0.68,1.1,u);
+    } else {
+      const u=(t-0.78)/0.22;
+      r=lerp(64,86,u); g=lerp(150,174,u); b=lerp(168,192,u);
+      a=lerp(0.70,0.86,u); lw=lerp(1.1,1.65,u);
+    }
+
+    ctx.strokeStyle=`rgba(${Math.round(r)},${Math.round(g)},${Math.round(b)},${a})`;
+    ctx.lineWidth=lw;
+    ctx.stroke();
+  }
+
+  // ── Baselines ──
+  ctx.beginPath();
+  ctx.moveTo(Fxl,Fy); ctx.lineTo(Fxr,Fy);
+  ctx.strokeStyle='rgba(54,124,142,0.26)';
+  ctx.lineWidth=0.7; ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(Bxl,By); ctx.lineTo(Bxr,By);
+  ctx.strokeStyle='rgba(16,42,56,0.55)';
+  ctx.lineWidth=0.4; ctx.stroke();
+
+  // Right rail (faint)
+  ctx.beginPath();
+  ctx.moveTo(Fxr,Fy); ctx.lineTo(Bxr,By);
+  ctx.strokeStyle='rgba(16,40,54,0.32)';
+  ctx.lineWidth=0.3; ctx.stroke();
+
+  // ── Axis labels ──
+  ctx.font='9px "Courier New",monospace';
+  ctx.fillStyle='rgba(32,72,90,0.65)';
+  ctx.textAlign='left';
+  ctx.fillText('amp',12,By+2);
+  ctx.fillText('↑',17,By+13);
+
+  ctx.fillStyle='rgba(26,58,74,0.5)';
+  ctx.fillText('20 Hz', Fxl, Fy+13);
+  ctx.fillText('20 kHz', Fxr-44, Fy+13);
+
+  const midX = Fxl+(Fxr-Fxl)/2;
+  ctx.textAlign='center';
+  ctx.fillText('← frequency →', midX, Fy+13);
+
+  ctx.textAlign='left';
+  ctx.fillStyle='rgba(24,54,68,0.5)';
+  ctx.fillText('now', Fxl-2, Fy-5);
+  ctx.fillText('t-16s', Bxl-2, By-4);
+
+  // Small amber playhead line on front slice
+  ctx.beginPath();
+  const phx = lerp(Fxl, Fxr, 0.62);
+  ctx.moveTo(phx, By-4);
+  ctx.lineTo(phx, Fy+2);
+  ctx.setLineDash([2,5]);
+  ctx.strokeStyle='rgba(110,84,14,0.35)';
+  ctx.lineWidth=0.6;
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle='rgba(110,84,14,0.45)';
+  ctx.fillText('▶',phx+3,By-4);
+})();
+</script>

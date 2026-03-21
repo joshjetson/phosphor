@@ -1,0 +1,24 @@
+[package]
+name = "phosphor-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+phosphor-midi.workspace = true
+phosphor-plugin.workspace = true
+cpal.workspace = true
+crossbeam-channel.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+phosphor-dsp.workspace = true
+criterion.workspace = true
+proptest.workspace = true
+assert_no_alloc.workspace = true
+
+[[bench]]
+name = "audio_engine"
+harness = false
