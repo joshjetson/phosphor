@@ -993,7 +993,7 @@ fn render_bottom_bar(frame: &mut Frame, area: Rect, nav: &NavState) {
             Pane::Tracks => vec![("jk","track"),("enter","sel"),("m","mute"),("s","solo"),("r","arm"),("R","rec")],
             Pane::ClipView if nav.clip_view.focus == ClipViewFocus::PianoRoll
                 && nav.clip_view.piano_roll.focus == PianoRollFocus::Row =>
-                vec![("hl","left\u{2194}"),("H/L","right\u{2194}"),("jk","note"),("esc","col")],
+                vec![("hl","left\u{2194}"),("H/L","right\u{2194}"),("jk","note"),("n","draw"),("esc","col")],
             Pane::ClipView if nav.clip_view.focus == ClipViewFocus::PianoRoll
                 && nav.clip_view.piano_roll.focus == PianoRollFocus::Selected =>
                 vec![("hl","left\u{2194}"),("H/L","right\u{2194}"),("jk","\u{2193}row"),("esc","nav")],

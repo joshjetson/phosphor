@@ -785,9 +785,31 @@ impl App {
                             dbg::user(&format!("piano roll: row → note {}", note));
                         }
                     }
+                    KeyCode::Char('n') => {
+                        self.draw_note(col, cursor_note);
+                        self.send_clip_update();
+                        dbg::user(&format!("piano roll: draw note {} at col {}", cursor_note, col + 1));
+                    }
                     _ => {}
                 }
             }
+        }
+    }
+
+    /// Draw a new note at the given column and pitch.
+    fn draw_note(&mut self, col: usize, note_num: u8) {
+        let col_count = self.nav.clip_view.piano_roll.column_count;
+        let col_w = 1.0 / col_count as f64;
+        let start_frac = col as f64 * col_w;
+        let duration_frac = col_w; // default: one column wide
+
+        if let Some(clip) = self.nav.active_clip_mut() {
+            clip.notes.push(phosphor_core::clip::NoteSnapshot {
+                note: note_num,
+                velocity: 100,
+                start_frac,
+                duration_frac,
+            });
         }
     }
 

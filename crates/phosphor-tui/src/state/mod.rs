@@ -369,16 +369,31 @@ impl NavState {
     }
 
     /// Cycle tabs in the clip view (FX panel or piano roll side).
+    /// Cycle through ALL tabs in buffer 3: trk fx → synth → piano → auto → trk fx...
     pub fn cycle_tab(&mut self) {
-        if self.focused_pane == Pane::ClipView {
-            match self.clip_view.focus {
-                ClipViewFocus::FxPanel => {
-                    self.clip_view.fx_panel_tab = self.clip_view.fx_panel_tab.next();
-                    self.clip_view.fx_cursor = 0;
-                }
-                ClipViewFocus::PianoRoll => {
-                    self.clip_view.clip_tab = self.clip_view.clip_tab.next();
-                }
+        if self.focused_pane != Pane::ClipView { return; }
+
+        match (self.clip_view.focus, self.clip_view.fx_panel_tab, self.clip_view.clip_tab) {
+            // FX panel: trk fx → synth
+            (ClipViewFocus::FxPanel, FxPanelTab::TrackFx, _) => {
+                self.clip_view.fx_panel_tab = FxPanelTab::Synth;
+            }
+            // FX panel: synth → piano roll
+            (ClipViewFocus::FxPanel, FxPanelTab::Synth, _) => {
+                self.clip_view.focus = ClipViewFocus::PianoRoll;
+                self.clip_view.clip_tab = ClipTab::PianoRoll;
+                self.clip_view.piano_roll.focus = PianoRollFocus::Navigation;
+                self.clip_view.piano_roll.column = 0;
+            }
+            // Piano roll: piano → auto
+            (ClipViewFocus::PianoRoll, _, ClipTab::PianoRoll) => {
+                self.clip_view.clip_tab = ClipTab::Automation;
+            }
+            // Piano roll: auto → back to trk fx
+            (ClipViewFocus::PianoRoll, _, ClipTab::Automation) => {
+                self.clip_view.focus = ClipViewFocus::FxPanel;
+                self.clip_view.fx_panel_tab = FxPanelTab::TrackFx;
+                self.clip_view.fx_cursor = 0;
             }
         }
     }
@@ -727,16 +742,20 @@ mod tests {
         nav.focused_pane = Pane::ClipView;
         nav.clip_view.focus = ClipViewFocus::FxPanel;
 
+        // Tab cycles: trk fx → synth → piano → auto → trk fx
         assert_eq!(nav.clip_view.fx_panel_tab, FxPanelTab::TrackFx);
         nav.cycle_tab();
         assert_eq!(nav.clip_view.fx_panel_tab, FxPanelTab::Synth);
         nav.cycle_tab();
-        assert_eq!(nav.clip_view.fx_panel_tab, FxPanelTab::TrackFx);
-
-        nav.clip_view.focus = ClipViewFocus::PianoRoll;
+        // Now switches to piano roll
+        assert_eq!(nav.clip_view.focus, ClipViewFocus::PianoRoll);
         assert_eq!(nav.clip_view.clip_tab, ClipTab::PianoRoll);
         nav.cycle_tab();
         assert_eq!(nav.clip_view.clip_tab, ClipTab::Automation);
+        nav.cycle_tab();
+        // Back to FX panel
+        assert_eq!(nav.clip_view.focus, ClipViewFocus::FxPanel);
+        assert_eq!(nav.clip_view.fx_panel_tab, FxPanelTab::TrackFx);
     }
 
     #[test]
