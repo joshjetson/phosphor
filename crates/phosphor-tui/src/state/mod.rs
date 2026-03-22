@@ -175,14 +175,17 @@ impl NavState {
         if self.fx_menu.open { self.fx_menu.move_up(); return; }
         match self.focused_pane {
             Pane::Transport => {} // no vertical nav in transport
-            Pane::Tracks => {
+            Pane::Tracks if !self.track_selected => {
                 if self.track_cursor > 0 {
                     self.track_cursor -= 1;
                     if self.track_cursor < self.track_scroll {
                         self.track_scroll = self.track_cursor;
                     }
-                    if self.track_selected { self.show_current_track_controls(); }
                 }
+            }
+            Pane::Tracks => {
+                // Track is selected — j/k locked, does nothing here
+                // (future: could navigate within track elements)
             }
             Pane::ClipView => {
                 match self.clip_view.focus {
@@ -207,14 +210,16 @@ impl NavState {
         if self.fx_menu.open { self.fx_menu.move_down(); return; }
         match self.focused_pane {
             Pane::Transport => {}
-            Pane::Tracks => {
+            Pane::Tracks if !self.track_selected => {
                 if self.track_cursor + 1 < self.tracks.len() {
                     self.track_cursor += 1;
                     if self.track_cursor >= self.track_scroll + MAX_VISIBLE_TRACKS {
                         self.track_scroll = self.track_cursor + 1 - MAX_VISIBLE_TRACKS;
                     }
-                    if self.track_selected { self.show_current_track_controls(); }
                 }
+            }
+            Pane::Tracks => {
+                // Track is selected — j/k locked
             }
             Pane::ClipView => {
                 match self.clip_view.focus {
