@@ -39,12 +39,13 @@ pub fn render(
     frame.render_widget(Clear, area);
     frame.render_widget(Block::default().style(theme::bg()), area);
 
-    let tracks_h = (MAX_VISIBLE_TRACKS as u16) * TRACK_H;
+    let actual_track_count = nav.visible_tracks().len().min(MAX_VISIBLE_TRACKS);
+    let tracks_h = (actual_track_count as u16) * TRACK_H;
 
     let mut constraints = vec![
         Constraint::Length(1),       // top bar (buffer 1)
         Constraint::Length(1),       // ruler
-        Constraint::Length(tracks_h), // tracks (buffer 2)
+        Constraint::Length(tracks_h), // tracks (buffer 2) — sized to actual content
     ];
 
     if nav.clip_view_visible {
