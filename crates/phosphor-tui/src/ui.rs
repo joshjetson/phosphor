@@ -261,13 +261,6 @@ fn render_tracks(frame: &mut Frame, area: Rect, nav: &NavState, snap: &Transport
 
         let r = Rect::new(area.x, y, area.width, TRACK_H);
         render_track_row(frame, r, &ctx, snap);
-
-        let dy = y + TRACK_H - 1;
-        if dy < area.y + area.height {
-            frame.render_widget(
-                Paragraph::new(Span::styled("\u{2500}".repeat(area.width as usize), theme::border_style())),
-                Rect::new(area.x, dy, area.width, 1));
-        }
     }
 
     if nav.can_scroll_down() {
