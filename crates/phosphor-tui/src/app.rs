@@ -629,19 +629,105 @@ impl App {
     }
 
     fn handle_clip_view_keys(&mut self, key: crossterm::event::KeyEvent) {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.nav.escape(),
-            KeyCode::Char('j') | KeyCode::Down => self.nav.move_down(),
-            KeyCode::Char('k') | KeyCode::Up => self.nav.move_up(),
-            KeyCode::Char('h') | KeyCode::Left => {
-                self.nav.move_left();
-                self.send_synth_param_update();
+        use crate::debug_log as dbg;
+        use crate::state::PianoRollFocus;
+
+        // If we're in the FX panel side, use the old synth/fx controls
+        if self.nav.clip_view.focus == ClipViewFocus::FxPanel {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => self.nav.escape(),
+                KeyCode::Char('j') | KeyCode::Down => self.nav.move_down(),
+                KeyCode::Char('k') | KeyCode::Up => self.nav.move_up(),
+                KeyCode::Char('h') | KeyCode::Left => {
+                    self.nav.move_left();
+                    self.send_synth_param_update();
+                }
+                KeyCode::Char('l') | KeyCode::Right => {
+                    self.nav.move_right();
+                    self.send_synth_param_update();
+                }
+                _ => {}
             }
-            KeyCode::Char('l') | KeyCode::Right => {
-                self.nav.move_right();
-                self.send_synth_param_update();
+            return;
+        }
+
+        // Piano roll side — route by focus level
+        let pr = &mut self.nav.clip_view.piano_roll;
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+        match pr.focus {
+            PianoRollFocus::Browsing => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.nav.escape(),
+                    KeyCode::Char('j') | KeyCode::Down => pr.move_down(),
+                    KeyCode::Char('k') | KeyCode::Up => pr.move_up(),
+                    KeyCode::Char('h') | KeyCode::Left => {
+                        // Switch to FX panel
+                        self.nav.clip_view.focus = ClipViewFocus::FxPanel;
+                    }
+                    KeyCode::Enter => {
+                        dbg::user("piano roll: Enter → column mode");
+                        pr.enter();
+                    }
+                    _ => {}
+                }
             }
-            _ => {}
+            PianoRollFocus::Column => {
+                match key.code {
+                    KeyCode::Esc => {
+                        dbg::user("piano roll: Esc → browsing");
+                        pr.escape();
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => pr.move_down(),
+                    KeyCode::Char('k') | KeyCode::Up => pr.move_up(),
+                    KeyCode::Char('h') | KeyCode::Left if !shift => {
+                        pr.move_column_left();
+                        dbg::user(&format!("piano roll: col {}", pr.column_display()));
+                    }
+                    KeyCode::Char('l') | KeyCode::Right if !shift => {
+                        pr.move_column_right();
+                        dbg::user(&format!("piano roll: col {}", pr.column_display()));
+                    }
+                    // Shift+h/l for adjusting note edges (column-wide) — future
+                    KeyCode::Char('H') | KeyCode::Char('h') | KeyCode::Left => {}
+                    KeyCode::Char('L') | KeyCode::Char('l') | KeyCode::Right => {}
+                    KeyCode::Enter => {
+                        dbg::user("piano roll: Enter → row mode");
+                        pr.enter();
+                    }
+                    KeyCode::Char(ch @ '0'..='9') => {
+                        if pr.type_digit(ch) {
+                            dbg::user(&format!("piano roll: jump to col {}", pr.column_display()));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            PianoRollFocus::Row => {
+                match key.code {
+                    KeyCode::Esc => {
+                        dbg::user("piano roll: Esc → column mode");
+                        pr.escape();
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => pr.move_down(),
+                    KeyCode::Char('k') | KeyCode::Up => pr.move_up(),
+                    // h/l adjusts left edge of note — future note editing
+                    // H/L adjusts right edge of note — future note editing
+                    KeyCode::Char('h') | KeyCode::Left => {
+                        dbg::user("piano roll: adjust note left edge (TODO)");
+                    }
+                    KeyCode::Char('l') | KeyCode::Right => {
+                        dbg::user("piano roll: adjust note left edge (TODO)");
+                    }
+                    KeyCode::Char('H') => {
+                        dbg::user("piano roll: adjust note right edge (TODO)");
+                    }
+                    KeyCode::Char('L') => {
+                        dbg::user("piano roll: adjust note right edge (TODO)");
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 

@@ -679,13 +679,39 @@ fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState) {
 
     let pr = &nav.clip_view.piano_roll;
     let focused = nav.focused_pane == Pane::ClipView && nav.clip_view.focus == ClipViewFocus::PianoRoll;
+    let in_col_mode = focused && pr.focus != PianoRollFocus::Browsing;
+    let in_row_mode = focused && pr.focus == PianoRollFocus::Row;
     let key_w = 6usize;
     let note_w = w.saturating_sub(key_w + 1);
 
+    // Column geometry
+    let col_count = CLIP_MEASURES.min(16);
+    let col_w = if note_w > 0 && col_count > 0 { note_w / col_count } else { 1 };
+
     let mut lines: Vec<Line> = Vec::new();
 
-    for row in 0..h {
-        let note_i = pr.view_bottom_note as i16 + (h as i16 - 1 - row as i16);
+    // Column number header row (only when in column/row mode)
+    if in_col_mode && h > 1 {
+        let mut hdr_spans: Vec<Span> = Vec::new();
+        hdr_spans.push(Span::styled("      ", theme::bg())); // key label width
+        hdr_spans.push(Span::styled("\u{2502}", theme::border_style()));
+        for c in 0..col_count {
+            let col_num = c + 1;
+            let is_sel = c == pr.column;
+            let s = if is_sel {
+                theme::amber_bright().add_modifier(Modifier::BOLD)
+            } else {
+                theme::dim()
+            };
+            hdr_spans.push(Span::styled(format!("{:<w$}", col_num, w = col_w), s));
+        }
+        lines.push(Line::from(hdr_spans));
+    }
+
+    let rows_for_notes = if in_col_mode && h > 1 { h - 1 } else { h };
+
+    for row in 0..rows_for_notes {
+        let note_i = pr.view_bottom_note as i16 + (rows_for_notes as i16 - 1 - row as i16);
         if !(0..=127).contains(&note_i) {
             lines.push(Line::from(Span::styled(" ".repeat(w), theme::bg())));
             continue;
@@ -707,12 +733,27 @@ fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState) {
         let mut gr = vec![(' ', Style::default().fg(theme::DIM).bg(row_bg)); note_w];
 
         // Beat gridlines
-        let beat_w = if note_w > 16 { note_w / CLIP_MEASURES.min(16) } else { 1 };
-        for b in 1..CLIP_MEASURES.min(16) {
-            let x = b * beat_w;
+        for b in 1..col_count {
+            let x = b * col_w;
             if x < note_w {
                 gr[x] = (if b%4==0 { '\u{2502}' } else { '\u{2506}' },
                     Style::default().fg(if b%4==0 { Color::Rgb(16,36,50) } else { Color::Rgb(10,24,36) }).bg(row_bg));
+            }
+        }
+
+        // Column highlight
+        if in_col_mode {
+            let col_start = pr.column * col_w;
+            let col_end = (col_start + col_w).min(note_w);
+            let col_bg = if in_row_mode && is_cur {
+                Color::Rgb(30, 55, 65) // row+column intersection
+            } else {
+                Color::Rgb(14, 28, 38) // column highlight
+            };
+            for x in col_start..col_end {
+                let (ch, old_s) = gr[x];
+                let fg = old_s.fg.unwrap_or(theme::DIM);
+                gr[x] = (ch, Style::default().fg(fg).bg(col_bg));
             }
         }
 
@@ -724,7 +765,7 @@ fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState) {
             if n.note == note {
                 let sx = (n.start_frac * note_w as f64) as usize;
                 let ex = ((n.start_frac + n.duration_frac) * note_w as f64) as usize;
-                let ex = ex.max(sx + 1).min(note_w); // at least 1 cell wide
+                let ex = ex.max(sx + 1).min(note_w);
                 for cell in gr.iter_mut().take(ex).skip(sx) {
                     *cell = ('\u{2588}', note_style);
                 }
@@ -950,7 +991,13 @@ fn render_bottom_bar(frame: &mut Frame, area: Rect, nav: &NavState) {
             Pane::Transport => vec![("hl","nav"),("enter","sel"),("+/-","bpm"),("tab","pane")],
             Pane::Tracks if nav.track_selected => vec![("hl","clip"),("m","mute"),("s","solo"),("r","arm"),("R","rec"),("esc","back")],
             Pane::Tracks => vec![("jk","track"),("enter","sel"),("m","mute"),("s","solo"),("r","arm"),("R","rec")],
-            Pane::ClipView => vec![("jk","nav"),("hl","panel"),("tab","tabs"),("esc","back")],
+            Pane::ClipView if nav.clip_view.focus == ClipViewFocus::PianoRoll
+                && nav.clip_view.piano_roll.focus == PianoRollFocus::Row =>
+                vec![("jk","note"),("hl","left"),("H/L","right"),("esc","col")],
+            Pane::ClipView if nav.clip_view.focus == ClipViewFocus::PianoRoll
+                && nav.clip_view.piano_roll.focus == PianoRollFocus::Column =>
+                vec![("hl","col"),("1-9","jump"),("jk","note"),("enter","row"),("esc","back")],
+            Pane::ClipView => vec![("jk","nav"),("enter","cols"),("hl","panel"),("tab","tabs"),("esc","back")],
         }
     };
     let ks: Vec<Span> = keys.iter().flat_map(|(k,v)| vec![
