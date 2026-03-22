@@ -658,27 +658,64 @@ impl App {
         let cursor_note = self.nav.clip_view.piano_roll.cursor_note;
 
         match focus {
+            // Browsing: h/l navigates columns, Enter selects a column
             PianoRollFocus::Browsing => {
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => self.nav.escape(),
                     KeyCode::Char('j') | KeyCode::Down => self.nav.clip_view.piano_roll.move_down(),
                     KeyCode::Char('k') | KeyCode::Up => self.nav.clip_view.piano_roll.move_up(),
                     KeyCode::Char('h') | KeyCode::Left => {
-                        self.nav.clip_view.focus = ClipViewFocus::FxPanel;
+                        self.nav.clip_view.piano_roll.move_column_left();
+                        dbg::user(&format!("piano roll: col {}", self.nav.clip_view.piano_roll.column_display()));
+                    }
+                    KeyCode::Char('l') | KeyCode::Right => {
+                        self.nav.clip_view.piano_roll.move_column_right();
+                        dbg::user(&format!("piano roll: col {}", self.nav.clip_view.piano_roll.column_display()));
                     }
                     KeyCode::Enter => {
-                        dbg::user("piano roll: Enter → column mode");
+                        dbg::user(&format!("piano roll: Enter → column {} selected", self.nav.clip_view.piano_roll.column_display()));
                         self.nav.clip_view.piano_roll.enter();
+                    }
+                    KeyCode::Char(ch @ '0'..='9') => {
+                        if self.nav.clip_view.piano_roll.type_digit(ch) {
+                            dbg::user(&format!("piano roll: jump to col {}", self.nav.clip_view.piano_roll.column_display()));
+                        }
                     }
                     _ => {}
                 }
             }
+
+            // Column selected (Right Left Trick):
+            //   h/l = adjust LEFT edge of ALL notes in column
+            //   H/L = adjust RIGHT edge of ALL notes in column
+            //   j/k = go deeper → individual note (Row mode)
+            //   Esc = back to Browsing
             PianoRollFocus::Column => {
                 let shift = key.modifiers.contains(KeyModifiers::SHIFT);
                 match key.code {
                     KeyCode::Esc => {
                         dbg::user("piano roll: Esc → browsing");
                         self.nav.clip_view.piano_roll.escape();
+                    }
+                    KeyCode::Char('h') | KeyCode::Left if !shift => {
+                        self.adjust_column_edges(col, -0.01, false);
+                        self.send_clip_update();
+                        dbg::user("piano roll: col left edge \u{2190}");
+                    }
+                    KeyCode::Char('l') | KeyCode::Right if !shift => {
+                        self.adjust_column_edges(col, 0.01, false);
+                        self.send_clip_update();
+                        dbg::user("piano roll: col left edge \u{2192}");
+                    }
+                    KeyCode::Char('H') | KeyCode::Char('h') | KeyCode::Left => {
+                        self.adjust_column_edges(col, -0.01, true);
+                        self.send_clip_update();
+                        dbg::user("piano roll: col right edge \u{2190}");
+                    }
+                    KeyCode::Char('L') | KeyCode::Char('l') | KeyCode::Right => {
+                        self.adjust_column_edges(col, 0.01, true);
+                        self.send_clip_update();
+                        dbg::user("piano roll: col right edge \u{2192}");
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
                         if let Some(note) = self.find_note_in_column(col, true) {
@@ -694,38 +731,41 @@ impl App {
                             dbg::user(&format!("piano roll: → row, note {}", note));
                         }
                     }
-                    KeyCode::Char('h') | KeyCode::Left if !shift => {
-                        self.nav.clip_view.piano_roll.move_column_left();
-                        dbg::user(&format!("piano roll: col {}", self.nav.clip_view.piano_roll.column_display()));
-                    }
-                    KeyCode::Char('l') | KeyCode::Right if !shift => {
-                        self.nav.clip_view.piano_roll.move_column_right();
-                        dbg::user(&format!("piano roll: col {}", self.nav.clip_view.piano_roll.column_display()));
-                    }
-                    // Shift+h/l = adjust ALL notes in column (left/right edge)
-                    KeyCode::Char('H') | KeyCode::Char('h') | KeyCode::Left => {
-                        self.adjust_column_edges(col, -0.01, false);
-                        self.send_clip_update();
-                        dbg::user("piano roll: col all left edge \u{2190}");
-                    }
-                    KeyCode::Char('L') | KeyCode::Char('l') | KeyCode::Right => {
-                        self.adjust_column_edges(col, 0.01, true);
-                        self.send_clip_update();
-                        dbg::user("piano roll: col all right edge \u{2192}");
-                    }
-                    KeyCode::Char(ch @ '0'..='9') => {
-                        if self.nav.clip_view.piano_roll.type_digit(ch) {
-                            dbg::user(&format!("piano roll: jump to col {}", self.nav.clip_view.piano_roll.column_display()));
-                        }
-                    }
                     _ => {}
                 }
             }
+
+            // Row selected (Right Left Trick on single note):
+            //   h/l = adjust LEFT edge of this note
+            //   H/L = adjust RIGHT edge of this note
+            //   j/k = move to next/prev note in column
+            //   Esc = back to Column (column-level control restored)
             PianoRollFocus::Row => {
+                let shift = key.modifiers.contains(KeyModifiers::SHIFT);
                 match key.code {
                     KeyCode::Esc => {
                         dbg::user("piano roll: Esc → column mode");
                         self.nav.clip_view.piano_roll.escape();
+                    }
+                    KeyCode::Char('h') | KeyCode::Left if !shift => {
+                        self.adjust_note_edge(col, cursor_note, -0.01, false);
+                        self.send_clip_update();
+                        dbg::user("piano roll: note left \u{2190}");
+                    }
+                    KeyCode::Char('l') | KeyCode::Right if !shift => {
+                        self.adjust_note_edge(col, cursor_note, 0.01, false);
+                        self.send_clip_update();
+                        dbg::user("piano roll: note left \u{2192}");
+                    }
+                    KeyCode::Char('H') | KeyCode::Char('h') | KeyCode::Left => {
+                        self.adjust_note_edge(col, cursor_note, -0.01, true);
+                        self.send_clip_update();
+                        dbg::user("piano roll: note right \u{2190}");
+                    }
+                    KeyCode::Char('L') | KeyCode::Char('l') | KeyCode::Right => {
+                        self.adjust_note_edge(col, cursor_note, 0.01, true);
+                        self.send_clip_update();
+                        dbg::user("piano roll: note right \u{2192}");
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
                         if let Some(note) = self.find_next_note_in_column(col, cursor_note, true) {
@@ -738,26 +778,6 @@ impl App {
                             self.nav.clip_view.piano_roll.cursor_note = note;
                             dbg::user(&format!("piano roll: row → note {}", note));
                         }
-                    }
-                    KeyCode::Char('h') | KeyCode::Left => {
-                        self.adjust_note_edge(col, cursor_note, -0.01, false);
-                        self.send_clip_update();
-                        dbg::user("piano roll: note left edge \u{2190}");
-                    }
-                    KeyCode::Char('l') | KeyCode::Right => {
-                        self.adjust_note_edge(col, cursor_note, 0.01, false);
-                        self.send_clip_update();
-                        dbg::user("piano roll: note left edge \u{2192}");
-                    }
-                    KeyCode::Char('H') => {
-                        self.adjust_note_edge(col, cursor_note, -0.01, true);
-                        self.send_clip_update();
-                        dbg::user("piano roll: note right edge \u{2190}");
-                    }
-                    KeyCode::Char('L') => {
-                        self.adjust_note_edge(col, cursor_note, 0.01, true);
-                        self.send_clip_update();
-                        dbg::user("piano roll: note right edge \u{2192}");
                     }
                     _ => {}
                 }

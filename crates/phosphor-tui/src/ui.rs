@@ -993,11 +993,13 @@ fn render_bottom_bar(frame: &mut Frame, area: Rect, nav: &NavState) {
             Pane::Tracks => vec![("jk","track"),("enter","sel"),("m","mute"),("s","solo"),("r","arm"),("R","rec")],
             Pane::ClipView if nav.clip_view.focus == ClipViewFocus::PianoRoll
                 && nav.clip_view.piano_roll.focus == PianoRollFocus::Row =>
-                vec![("jk","note"),("hl","left"),("H/L","right"),("esc","col")],
+                vec![("hl","left\u{2194}"),("H/L","right\u{2194}"),("jk","note"),("esc","col")],
             Pane::ClipView if nav.clip_view.focus == ClipViewFocus::PianoRoll
                 && nav.clip_view.piano_roll.focus == PianoRollFocus::Column =>
-                vec![("hl","col"),("1-9","jump"),("jk","note"),("enter","row"),("esc","back")],
-            Pane::ClipView => vec![("jk","nav"),("enter","cols"),("hl","panel"),("tab","tabs"),("esc","back")],
+                vec![("hl","left\u{2194}"),("H/L","right\u{2194}"),("jk","row"),("esc","nav")],
+            Pane::ClipView if nav.clip_view.focus == ClipViewFocus::PianoRoll =>
+                vec![("hl","col"),("1-9","jump"),("enter","sel"),("jk","scroll"),("esc","back")],
+            Pane::ClipView => vec![("jk","nav"),("hl","panel"),("tab","tabs"),("esc","back")],
         }
     };
     let ks: Vec<Span> = keys.iter().flat_map(|(k,v)| vec![
