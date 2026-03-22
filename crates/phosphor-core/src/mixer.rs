@@ -160,7 +160,10 @@ impl Mixer {
 
             // ── Recording ──
             if should_record && !track.was_recording {
-                track.record_buf.start(current_tick);
+                // Start recording at the loop start, not the current position,
+                // so the clip spans the full loop region
+                let rec_start = if looping { transport.loop_start() } else { current_tick };
+                track.record_buf.start(rec_start);
                 tracing::debug!("rec start track={} tick={}", track.id, current_tick);
             }
 
