@@ -12,8 +12,8 @@ use phosphor_core::transport::{self, Transport, TransportSnapshot};
 use crate::state::*;
 use crate::theme;
 
-const HEADER_W: u16 = 16;
-const TRACK_H: u16 = 5;
+const HEADER_W: u16 = 12;
+const TRACK_H: u16 = 3;
 const VISIBLE_BARS: usize = 16;
 const FX_PANEL_W: u16 = 24;
 const CLIP_MEASURES: usize = 32;
@@ -299,112 +299,78 @@ fn render_track_row(frame: &mut Frame, area: Rect, ctx: &TrackCtx, snap: &Transp
 fn render_header(frame: &mut Frame, area: Rect, ctx: &TrackCtx) {
     let TrackCtx { track, index, is_cursor: cur, is_selected: sel, is_dimmed: dim, vu_level, nav, .. } = *ctx;
     let tc = theme::track_color(track.color_index);
-    let h = area.height as usize;
     let id = (b'A' + index as u8) as char;
-    let nm: Vec<char> = track.name.to_uppercase().chars().collect();
     let is_special = matches!(track.kind, TrackKind::SendA | TrackKind::SendB | TrackKind::Master);
 
-    let mut lines: Vec<Line> = Vec::new();
+    // Accent bar style
+    let ac = if sel { "\u{2588}" } else { "\u{2590}" };
+    let ac_s = if cur || sel { Style::default().fg(tc).bg(theme::BG) }
+        else { Style::default().fg(theme::dim_color(tc, if dim { 15 } else { 30 })).bg(theme::BG) };
+    let id_s = Style::default().fg(theme::dim_color(tc, if dim { 20 } else { 40 })).bg(theme::BG);
 
-    for row in 0..h {
-        let mut sp: Vec<Span> = Vec::new();
+    // VU — horizontal bar on row 1
+    let vu_w = 3usize;
+    let vu_filled = (vu_w as f32 * vu_level) as usize;
 
-        // Accent bar
-        let ac = if sel { "\u{2588}" } else { "\u{2590}" };
-        let as_ = if cur || sel { Style::default().fg(tc).bg(theme::BG) }
-            else { Style::default().fg(theme::dim_color(tc, if dim { 15 } else { 30 })).bg(theme::BG) };
-        sp.push(Span::styled(ac, as_));
+    // Record arm dot
+    let arm_s = if track.armed {
+        Style::default().fg(Color::Rgb(180, 50, 50)).bg(theme::BG)
+    } else {
+        theme::dim()
+    };
 
-        // ID
-        sp.push(Span::styled(
-            if row == 0 { format!("{id}") } else { " ".into() },
-            Style::default().fg(theme::dim_color(tc, if dim { 20 } else { 40 })).bg(theme::BG)));
-
-        // Name vertical
-        let ns = if cur {
-            Style::default().fg(if dim { theme::dim_color(tc, 40) } else { tc }).bg(theme::BG).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme::dim_color(tc, if dim { 25 } else { 60 })).bg(theme::BG)
-        };
-        let nstart = h.saturating_sub(nm.len()) / 2;
-        if row >= nstart && row < nstart + nm.len() {
-            sp.push(Span::styled(format!(" {} ", nm[row - nstart]), ns));
-        } else {
-            sp.push(Span::styled("   ", theme::bg()));
-        }
-
-        // VU
-        let vu = vu_level as f64;
-        let filled = ((h as f64) * vu) as usize;
-        let fb = h - 1 - row;
-        let (vc, vs) = if fb < filled {
-            ("\u{2588}", Style::default().fg(theme::dim_color(tc, if dim { 20 } else { 55 })).bg(Color::Rgb(5,13,22)))
-        } else {
-            ("\u{2591}", Style::default().fg(Color::Rgb(12,24,36)).bg(Color::Rgb(5,13,22)))
-        };
-        sp.push(Span::styled(vc, vs));
-        sp.push(Span::styled(" ", theme::bg()));
-
-        // Buttons column: fx, v, m, s, r (one per row, skip if special track)
-        let btn = match row {
-            0 if !is_special => {
-                let f = sel && nav.track_element == TrackElement::Fx;
-                let s = if !track.fx_chain.is_empty() {
-                    let count = track.fx_chain.len();
-                    (format!("fx{count}"), theme::btn_style(true, f, tc))
-                } else {
-                    ("fx ".into(), theme::btn_style(false, f, tc))
-                };
-                Some(s)
-            }
-            1 if !is_special => {
-                let f = sel && nav.track_element == TrackElement::Volume;
-                let vol_pct = (track.volume * 100.0) as u8;
-                Some((format!("v{vol_pct}"), theme::btn_style(false, f, tc)))
-            }
-            2 => {
-                let f = sel && nav.track_element == TrackElement::Mute;
-                Some(("[m]".into(), theme::btn_style(track.muted, f, tc)))
-            }
-            3 => {
-                let f = sel && nav.track_element == TrackElement::Solo;
-                let s = if track.soloed {
-                    Style::default().fg(Color::Rgb(84,148,46))
-                        .bg(if f { Color::Rgb(20,38,18) } else { Color::Rgb(10,28,14) })
-                        .add_modifier(Modifier::BOLD)
-                } else { theme::btn_style(false, f, tc) };
-                Some(("[s]".into(), s))
-            }
-            4 if !is_special => {
-                let f = sel && nav.track_element == TrackElement::RecordArm;
-                let s = if track.armed {
-                    Style::default().fg(Color::Rgb(180,50,50))
-                        .bg(if f { Color::Rgb(35,20,20) } else { theme::BG })
-                        .add_modifier(Modifier::BOLD)
-                } else { theme::btn_style(false, f, tc) };
-                let t = if track.armed { "\u{25CF}r " } else { " r " };
-                Some((t.into(), s))
-            }
-            _ => None,
-        };
-
-        if let Some((text, style)) = btn {
-            sp.push(Span::styled(text, style));
-        }
-
-        // Route indicator on row 0 for special tracks
-        if is_special && row == 0 {
-            let label = match track.kind {
-                TrackKind::SendA => "snd",
-                TrackKind::SendB => "snd",
-                TrackKind::Master => "mst",
-                _ => "",
-            };
-            sp.push(Span::styled(label, theme::dim()));
-        }
-
-        lines.push(Line::from(sp));
+    // Row 0: [accent][ID] [fx][v] [r]
+    let mut r0: Vec<Span> = vec![
+        Span::styled(ac, ac_s),
+        Span::styled(format!("{id}"), id_s),
+        Span::styled(" ", theme::bg()),
+    ];
+    if !is_special {
+        let fx_f = sel && nav.track_element == TrackElement::Fx;
+        let v_f = sel && nav.track_element == TrackElement::Volume;
+        r0.push(Span::styled("fx", theme::btn_style(!track.fx_chain.is_empty(), fx_f, tc)));
+        r0.push(Span::styled(" ", theme::bg()));
+        r0.push(Span::styled(format!("v{:<2}", (track.volume * 99.0) as u8), theme::btn_style(false, v_f, tc)));
+        r0.push(Span::styled(if track.armed { " \u{25CF}" } else { "  " }, arm_s));
     }
+
+    // Row 1: [accent]  [m][s] [VU]
+    let m_f = sel && nav.track_element == TrackElement::Mute;
+    let s_f = sel && nav.track_element == TrackElement::Solo;
+    let solo_s = if track.soloed {
+        Style::default().fg(Color::Rgb(84, 148, 46))
+            .bg(if s_f { Color::Rgb(20, 38, 18) } else { Color::Rgb(10, 28, 14) })
+            .add_modifier(Modifier::BOLD)
+    } else {
+        theme::btn_style(false, s_f, tc)
+    };
+
+    let vu_bar: String = "\u{2588}".repeat(vu_filled) + &"\u{2591}".repeat(vu_w - vu_filled);
+    let vu_s = Style::default()
+        .fg(theme::dim_color(tc, if dim { 20 } else { 55 }))
+        .bg(Color::Rgb(5, 13, 22));
+
+    let r1: Vec<Span> = vec![
+        Span::styled(ac, ac_s),
+        Span::styled("  ", theme::bg()),
+        Span::styled("m", theme::btn_style(track.muted, m_f, tc)),
+        Span::styled(" ", theme::bg()),
+        Span::styled("s", solo_s),
+        Span::styled(" ", theme::bg()),
+        Span::styled(vu_bar, vu_s),
+    ];
+
+    // Row 2: [accent] (empty — space for track divider)
+    let r2 = Line::from(vec![
+        Span::styled(ac, ac_s),
+        Span::styled(" ".repeat(HEADER_W as usize - 1), theme::bg()),
+    ]);
+
+    let lines = vec![
+        Line::from(r0),
+        Line::from(r1),
+        r2,
+    ];
 
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -476,6 +442,18 @@ fn render_clips(frame: &mut Frame, area: Rect, ctx: &TrackCtx, snap: &TransportS
         for (i, ch) in ns.chars().enumerate() {
             let x = cx+i+1;
             if x < ce && 1 < h { grid[1][x] = (ch, n_s); }
+        }
+    }
+
+    // Track name at bottom-left of clip area
+    let name = track.name.to_uppercase();
+    let name_s = Style::default()
+        .fg(theme::dim_color(tc, if dim { 25 } else { 50 }))
+        .bg(theme::BG);
+    for (i, ch) in name.chars().enumerate() {
+        let x = i + 1;
+        if x < w && h > 0 {
+            grid[h - 1][x] = (ch, name_s);
         }
     }
 
