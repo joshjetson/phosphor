@@ -198,19 +198,45 @@ impl Mixer {
             if playing && !track.clips.is_empty() {
                 let from = current_tick;
                 let to = current_tick + buffer_ticks;
-                for clip in &track.clips {
-                    for (tick_offset, event) in clip.events_in_range(from, to) {
-                        let sample_offset = (tick_offset as f64 / ticks_per_sample) as u32;
-                        track.plugin_events.push(MidiEvent {
-                            sample_offset: sample_offset.min(num_frames as u32 - 1),
-                            status: event.status,
-                            data1: event.data1,
-                            data2: event.data2,
-                        });
+
+                // Check if we just wrapped (position jumped backward since last buffer)
+                // If so, we need to play events from the loop start that we skipped
+                let just_wrapped = looping && track.last_record_tick >= 0
+                    && current_tick < track.last_record_tick;
+
+                if just_wrapped {
+                    // Play events from loop_start to current position (the wrapped portion)
+                    let wrap_start = transport.loop_start();
+                    for clip in &track.clips {
+                        for (tick_offset, event) in clip.events_in_range(wrap_start, to) {
+                            let sample_offset = (tick_offset as f64 / ticks_per_sample) as u32;
+                            track.plugin_events.push(MidiEvent {
+                                sample_offset: sample_offset.min(num_frames as u32 - 1),
+                                status: event.status,
+                                data1: event.data1,
+                                data2: event.data2,
+                            });
+                        }
+                    }
+                } else {
+                    for clip in &track.clips {
+                        for (tick_offset, event) in clip.events_in_range(from, to) {
+                            let sample_offset = (tick_offset as f64 / ticks_per_sample) as u32;
+                            track.plugin_events.push(MidiEvent {
+                                sample_offset: sample_offset.min(num_frames as u32 - 1),
+                                status: event.status,
+                                data1: event.data1,
+                                data2: event.data2,
+                            });
+                        }
                     }
                 }
-                // Sort by sample offset for correct processing order
                 track.plugin_events.sort_by_key(|e| e.sample_offset);
+            }
+
+            // Track position for wrap detection (used by both recording and playback)
+            if playing {
+                track.last_record_tick = current_tick;
             }
 
             // ── Process instrument ──
