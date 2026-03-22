@@ -445,15 +445,17 @@ fn render_clips(frame: &mut Frame, area: Rect, ctx: &TrackCtx, snap: &TransportS
         }
     }
 
-    // Track name at bottom-left of clip area
+    // Track name inside the first bar, at the bottom row
     let name = track.name.to_uppercase();
     let name_s = Style::default()
-        .fg(theme::dim_color(tc, if dim { 25 } else { 50 }))
-        .bg(theme::BG);
+        .fg(if dim { theme::dim_color(tc, 35) } else { tc })
+        .bg(theme::BG)
+        .add_modifier(Modifier::BOLD);
+    let last_row = h - 1;
     for (i, ch) in name.chars().enumerate() {
         let x = i + 1;
-        if x < w && h > 0 {
-            grid[h - 1][x] = (ch, name_s);
+        if x < bw && x < w {
+            grid[last_row][x] = (ch, name_s);
         }
     }
 
