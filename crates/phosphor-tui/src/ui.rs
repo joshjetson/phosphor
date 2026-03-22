@@ -393,11 +393,16 @@ fn render_clips(frame: &mut Frame, area: Rect, ctx: &TrackCtx, snap: &TransportS
         }
     }
 
-    // Clips
+    // Clips — positioned by their start_tick relative to the timeline
+    let ticks_per_bar = Transport::PPQ * 4;
+    let total_visible_ticks = (VISIBLE_BARS as i64) * ticks_per_bar;
+
     for (ci, clip) in track.clips.iter().enumerate() {
         let focused = sel && matches!(nav.track_element, TrackElement::Clip(i) if i == ci);
-        let cx: usize = track.clips[..ci].iter().map(|c| c.width as usize).sum();
-        let cw = clip.width as usize;
+        // Position and width based on tick position, not stored width
+        let cx = ((clip.start_tick as f64 / total_visible_ticks as f64) * w as f64) as usize;
+        let cw = ((clip.length_ticks as f64 / total_visible_ticks as f64) * w as f64).ceil() as usize;
+        let cw = cw.max(1);
         let ce = (cx + cw).min(w);
         if cx >= w { break; }
 
