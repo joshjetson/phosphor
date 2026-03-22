@@ -22,7 +22,7 @@ use phosphor_core::EngineConfig;
 use phosphor_dsp::synth::PhosphorSynth;
 use phosphor_midi::ring::midi_ring_buffer;
 
-use crate::state::{self, ClipViewFocus, FxPanelTab, InstrumentType, NavState, Pane, SpaceAction, TransportElement};
+use crate::state::{self, ClipViewFocus, FxPanelTab, InstrumentType, NavState, Pane, PianoRollFocus, SpaceAction, TransportElement};
 use crate::ui;
 
 /// Shared MIDI status for the UI to display.
@@ -456,8 +456,13 @@ impl App {
             return;
         }
 
-        // Tab
+        // Tab — blocked while piano roll is in column/row editing mode
         match key.code {
+            KeyCode::Tab if self.nav.focused_pane == Pane::ClipView
+                && self.nav.clip_view.piano_roll.focus != PianoRollFocus::Browsing => {
+                // Tab blocked in column/row mode — controls are locked
+                return;
+            }
             KeyCode::Tab if self.nav.focused_pane == Pane::ClipView => {
                 dbg::user("Tab → cycle clip view tab");
                 self.nav.cycle_tab();
@@ -871,13 +876,19 @@ impl App {
     /// Adjust ALL notes in a column. Same edge logic applied to each note.
     fn adjust_column_edges(&mut self, col: usize, delta: f64, right_edge: bool) {
         let (col_start, col_end) = self.column_frac_range(col);
+        let mut count = 0;
         if let Some(clip) = self.nav.active_clip_mut() {
             for note in &mut clip.notes {
                 if note.start_frac >= col_start && note.start_frac < col_end {
                     Self::apply_edge_delta(note, delta, right_edge);
+                    count += 1;
                 }
             }
         }
+        crate::debug_log::system(&format!(
+            "adjust col {}: range {:.3}..{:.3}, {} notes affected",
+            col + 1, col_start, col_end, count
+        ));
     }
 
     /// Get the fractional range [start, end) for a column index.
