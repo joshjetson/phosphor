@@ -399,11 +399,11 @@ fn render_clips(frame: &mut Frame, area: Rect, ctx: &TrackCtx, snap: &TransportS
 
     for (ci, clip) in track.clips.iter().enumerate() {
         let focused = sel && matches!(nav.track_element, TrackElement::Clip(i) if i == ci);
-        // Position and width based on tick position, not stored width
-        let cx = ((clip.start_tick as f64 / total_visible_ticks as f64) * w as f64) as usize;
-        let cw = ((clip.length_ticks as f64 / total_visible_ticks as f64) * w as f64).ceil() as usize;
-        let cw = cw.max(1);
-        let ce = (cx + cw).min(w);
+        // Position start and end independently so they snap to the same grid as bar lines
+        let clip_end_tick = clip.start_tick + clip.length_ticks;
+        let cx = (clip.start_tick as usize * w) / total_visible_ticks as usize;
+        let ce = (clip_end_tick as usize * w) / total_visible_ticks as usize;
+        let ce = ce.max(cx + 1).min(w);
         if cx >= w { break; }
 
         let cbg = if focused { Color::Rgb((theme::tc_r(tc) as u16*18/100+10) as u8, (theme::tc_g(tc) as u16*18/100+12) as u8, (theme::tc_b(tc) as u16*18/100+15) as u8) }
