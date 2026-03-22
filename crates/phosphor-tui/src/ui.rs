@@ -447,12 +447,11 @@ fn render_clips(frame: &mut Frame, area: Rect, ctx: &TrackCtx, snap: &TransportS
         grid[last_row][x] = ('\u{2500}', div_s);
     }
 
-    // Track name in first bar (overwrites the empty first bar, not the divider)
-    let name = track.name.to_uppercase();
+    // Track name in first bar — lowercase, no bold, subtler presence
+    let name = track.name.to_lowercase();
     let name_s = Style::default()
-        .fg(if dim { theme::dim_color(tc, 35) } else { tc })
-        .bg(theme::BG)
-        .add_modifier(Modifier::BOLD);
+        .fg(if dim { theme::dim_color(tc, 30) } else { theme::dim_color(tc, 65) })
+        .bg(theme::BG);
     for (i, ch) in name.chars().enumerate() {
         let x = i + 1;
         if x < bw && x < w {
