@@ -792,11 +792,33 @@ impl App {
     }
 
     /// Draw a new note at the given column and pitch.
+    /// Creates a clip if none exists on the track.
     fn draw_note(&mut self, col: usize, note_num: u8) {
         let col_count = self.nav.clip_view.piano_roll.column_count;
         let col_w = 1.0 / col_count as f64;
         let start_frac = col as f64 * col_w;
-        let duration_frac = col_w; // default: one column wide
+        let duration_frac = col_w;
+
+        // If there's no clip yet, create one
+        if self.nav.active_clip().is_none() {
+            if let Some(track) = self.nav.tracks.get_mut(self.nav.track_cursor) {
+                let loop_len = self.nav.loop_editor.end_ticks() - self.nav.loop_editor.start_ticks();
+                let length_ticks = if loop_len > 0 { loop_len } else { phosphor_core::transport::Transport::PPQ * 4 * 4 };
+                let clip_number = track.clips.len() + 1;
+                // Width: 1 cell per beat
+                let beats = (length_ticks as f64 / phosphor_core::transport::Transport::PPQ as f64).ceil() as u16;
+                track.clips.push(crate::state::Clip {
+                    number: clip_number,
+                    width: beats.max(2),
+                    has_content: true,
+                    start_tick: self.nav.loop_editor.start_ticks(),
+                    length_ticks,
+                    notes: Vec::new(),
+                });
+                self.nav.clip_view_target = Some((self.nav.track_cursor, track.clips.len() - 1));
+                crate::debug_log::system(&format!("created clip: {} ticks", length_ticks));
+            }
+        }
 
         if let Some(clip) = self.nav.active_clip_mut() {
             clip.notes.push(phosphor_core::clip::NoteSnapshot {
