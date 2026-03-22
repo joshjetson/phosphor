@@ -724,18 +724,19 @@ impl App {
                         dbg::user("piano roll: col right \u{2192}");
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
-                        if let Some(note) = self.find_note_in_column(col, true) {
-                            self.nav.clip_view.piano_roll.cursor_note = note;
-                            self.nav.clip_view.piano_roll.enter_row();
-                            dbg::user(&format!("piano roll: → row, note {}", note));
-                        }
+                        // Enter row mode starting at the top of the visible area
+                        let pr = &mut self.nav.clip_view.piano_roll;
+                        let top = pr.view_bottom_note.saturating_add(pr.view_height).saturating_sub(1);
+                        pr.cursor_note = top.min(127);
+                        pr.enter_row();
+                        dbg::user(&format!("piano roll: → row at note {}", pr.cursor_note));
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
-                        if let Some(note) = self.find_note_in_column(col, false) {
-                            self.nav.clip_view.piano_roll.cursor_note = note;
-                            self.nav.clip_view.piano_roll.enter_row();
-                            dbg::user(&format!("piano roll: → row, note {}", note));
-                        }
+                        let pr = &mut self.nav.clip_view.piano_roll;
+                        let top = pr.view_bottom_note.saturating_add(pr.view_height).saturating_sub(1);
+                        pr.cursor_note = top.min(127);
+                        pr.enter_row();
+                        dbg::user(&format!("piano roll: → row at note {}", pr.cursor_note));
                     }
                     _ => {}
                 }
@@ -774,16 +775,10 @@ impl App {
                         dbg::user("piano roll: note right \u{2192}");
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
-                        if let Some(note) = self.find_next_note_in_column(col, cursor_note, true) {
-                            self.nav.clip_view.piano_roll.cursor_note = note;
-                            dbg::user(&format!("piano roll: row → note {}", note));
-                        }
+                        self.nav.clip_view.piano_roll.move_down();
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
-                        if let Some(note) = self.find_next_note_in_column(col, cursor_note, false) {
-                            self.nav.clip_view.piano_roll.cursor_note = note;
-                            dbg::user(&format!("piano roll: row → note {}", note));
-                        }
+                        self.nav.clip_view.piano_roll.move_up();
                     }
                     KeyCode::Char('n') => {
                         self.draw_note(col, cursor_note);
@@ -835,54 +830,6 @@ impl App {
     }
 
     /// Find the first note in a column, searching from cursor. `down` = search lower notes.
-    fn find_note_in_column(&self, col: usize, down: bool) -> Option<u8> {
-        let clip = self.nav.active_clip()?;
-        let col_count = self.nav.clip_view.piano_roll.column_count;
-        let col_w = 1.0 / col_count as f64;
-        let col_start = col as f64 * col_w;
-        let col_end = col_start + col_w;
-        let cursor = self.nav.clip_view.piano_roll.cursor_note;
-
-        let mut notes_in_col: Vec<u8> = clip.notes.iter()
-            .filter(|n| n.start_frac >= col_start && n.start_frac < col_end)
-            .map(|n| n.note)
-            .collect();
-        notes_in_col.sort();
-        notes_in_col.dedup();
-
-        if down {
-            // Find first note below or at cursor (descending pitch)
-            notes_in_col.iter().rev().find(|&&n| n <= cursor).copied()
-                .or_else(|| notes_in_col.last().copied())
-        } else {
-            // Find first note above cursor (ascending pitch)
-            notes_in_col.iter().find(|&&n| n >= cursor).copied()
-                .or_else(|| notes_in_col.first().copied())
-        }
-    }
-
-    /// Find the next note above/below the current one in the same column.
-    fn find_next_note_in_column(&self, col: usize, current_note: u8, down: bool) -> Option<u8> {
-        let clip = self.nav.active_clip()?;
-        let col_count = self.nav.clip_view.piano_roll.column_count;
-        let col_w = 1.0 / col_count as f64;
-        let col_start = col as f64 * col_w;
-        let col_end = col_start + col_w;
-
-        let mut notes_in_col: Vec<u8> = clip.notes.iter()
-            .filter(|n| n.start_frac >= col_start && n.start_frac < col_end)
-            .map(|n| n.note)
-            .collect();
-        notes_in_col.sort();
-        notes_in_col.dedup();
-
-        if down {
-            notes_in_col.iter().rev().find(|&&n| n < current_note).copied()
-        } else {
-            notes_in_col.iter().find(|&&n| n > current_note).copied()
-        }
-    }
-
     /// Adjust a single note's edge. `right_edge` = true adjusts duration, false adjusts start.
     fn adjust_note_edge(&mut self, col: usize, note_num: u8, delta: f64, right_edge: bool) {
         let (col_start, col_end) = self.column_frac_range(col);
