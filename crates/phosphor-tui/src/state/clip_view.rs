@@ -92,15 +92,18 @@ impl ClipViewState {
 // Row selected: same h/l/H/L but affects only the single note
 
 /// What level of the piano roll is focused.
+/// Follows the Right Left Trick Controls pattern:
+///   Navigation → Selected (column) → Row (individual note)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PianoRollFocus {
-    /// Browsing — j/k scrolls note rows, no column selected.
-    Browsing,
-    /// A column is highlighted. j/k navigates rows, h/l navigates columns.
-    /// Enter goes to row editing.
-    Column,
-    /// A specific note row within a column is selected for editing.
-    /// h/l adjusts left edge, H/L adjusts right edge.
+    /// h/l navigates columns, number keys jump, j/k scrolls view.
+    /// Enter selects the current column.
+    Navigation,
+    /// Column selected. h/l = left edge, H/L = right edge of ALL notes.
+    /// j/k drops to Row mode. Esc back to Navigation.
+    Selected,
+    /// Single note. h/l = left edge, H/L = right edge of ONE note.
+    /// j/k moves between notes. Esc back to Selected.
     Row,
 }
 
@@ -131,7 +134,7 @@ impl PianoRollState {
             scroll_x: 0,
             view_bottom_note: 48,
             view_height: 24,
-            focus: PianoRollFocus::Browsing,
+            focus: PianoRollFocus::Navigation,
             column: 0,
             column_count: 16,
             column_digits: String::new(),
@@ -142,10 +145,10 @@ impl PianoRollState {
 
     pub fn enter(&mut self) {
         match self.focus {
-            PianoRollFocus::Browsing => {
-                self.focus = PianoRollFocus::Column;
+            PianoRollFocus::Navigation => {
+                self.focus = PianoRollFocus::Selected;
             }
-            PianoRollFocus::Column => {
+            PianoRollFocus::Selected => {
                 // Column is already selected — Enter does nothing.
                 // Use j/k to navigate to a note within the column (enters Row mode).
             }
@@ -163,13 +166,13 @@ impl PianoRollState {
     pub fn escape(&mut self) {
         match self.focus {
             PianoRollFocus::Row => {
-                self.focus = PianoRollFocus::Column;
+                self.focus = PianoRollFocus::Selected;
             }
-            PianoRollFocus::Column => {
-                self.focus = PianoRollFocus::Browsing;
+            PianoRollFocus::Selected => {
+                self.focus = PianoRollFocus::Navigation;
                 self.column_digits.clear();
             }
-            PianoRollFocus::Browsing => {
+            PianoRollFocus::Navigation => {
                 // Handled by parent (exits clip view)
             }
         }
@@ -177,7 +180,7 @@ impl PianoRollState {
 
     /// Returns true if escape was handled internally.
     pub fn can_escape(&self) -> bool {
-        self.focus != PianoRollFocus::Browsing
+        self.focus != PianoRollFocus::Navigation
     }
 
     // ── Note scrolling (browsing + column mode) ──
@@ -277,24 +280,24 @@ mod tests {
     #[test]
     fn focus_hierarchy() {
         let mut pr = PianoRollState::new();
-        assert_eq!(pr.focus, PianoRollFocus::Browsing);
+        assert_eq!(pr.focus, PianoRollFocus::Navigation);
 
         pr.enter();
-        assert_eq!(pr.focus, PianoRollFocus::Column);
+        assert_eq!(pr.focus, PianoRollFocus::Selected);
 
         // Enter in column mode does nothing — j/k finds notes and enters row mode
         pr.enter();
-        assert_eq!(pr.focus, PianoRollFocus::Column);
+        assert_eq!(pr.focus, PianoRollFocus::Selected);
 
         // Manually enter row mode (simulating finding a note)
         pr.enter_row();
         assert_eq!(pr.focus, PianoRollFocus::Row);
 
         pr.escape();
-        assert_eq!(pr.focus, PianoRollFocus::Column);
+        assert_eq!(pr.focus, PianoRollFocus::Selected);
 
         pr.escape();
-        assert_eq!(pr.focus, PianoRollFocus::Browsing);
+        assert_eq!(pr.focus, PianoRollFocus::Navigation);
     }
 
     #[test]

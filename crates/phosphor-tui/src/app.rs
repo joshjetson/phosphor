@@ -459,7 +459,7 @@ impl App {
         // Tab — blocked while piano roll is in column/row editing mode
         match key.code {
             KeyCode::Tab if self.nav.focused_pane == Pane::ClipView
-                && self.nav.clip_view.piano_roll.focus != PianoRollFocus::Browsing => {
+                && self.nav.clip_view.piano_roll.focus != PianoRollFocus::Navigation => {
                 // Tab blocked in column/row mode — controls are locked
                 return;
             }
@@ -664,7 +664,7 @@ impl App {
 
         match focus {
             // Browsing: h/l navigates columns, Enter selects a column
-            PianoRollFocus::Browsing => {
+            PianoRollFocus::Navigation => {
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => self.nav.escape(),
                     KeyCode::Char('j') | KeyCode::Down => self.nav.clip_view.piano_roll.move_down(),
@@ -695,7 +695,7 @@ impl App {
             //   H/L = adjust RIGHT edge of ALL notes in column
             //   j/k = go deeper → individual note (Row mode)
             //   Esc = back to Browsing
-            PianoRollFocus::Column => {
+            PianoRollFocus::Selected => {
                 let shift = key.modifiers.contains(KeyModifiers::SHIFT);
                 match key.code {
                     KeyCode::Esc => {

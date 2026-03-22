@@ -679,7 +679,7 @@ fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState) {
 
     let pr = &nav.clip_view.piano_roll;
     let focused = nav.focused_pane == Pane::ClipView && nav.clip_view.focus == ClipViewFocus::PianoRoll;
-    let in_col_mode = focused && pr.focus != PianoRollFocus::Browsing;
+    let in_col_mode = focused; // columns always visible when piano roll is focused
     let in_row_mode = focused && pr.focus == PianoRollFocus::Row;
     let key_w = 6usize;
     let note_w = w.saturating_sub(key_w + 1);
@@ -995,10 +995,10 @@ fn render_bottom_bar(frame: &mut Frame, area: Rect, nav: &NavState) {
                 && nav.clip_view.piano_roll.focus == PianoRollFocus::Row =>
                 vec![("hl","left\u{2194}"),("H/L","right\u{2194}"),("jk","note"),("esc","col")],
             Pane::ClipView if nav.clip_view.focus == ClipViewFocus::PianoRoll
-                && nav.clip_view.piano_roll.focus == PianoRollFocus::Column =>
-                vec![("hl","left\u{2194}"),("H/L","right\u{2194}"),("jk","row"),("esc","nav")],
+                && nav.clip_view.piano_roll.focus == PianoRollFocus::Selected =>
+                vec![("hl","left\u{2194}"),("H/L","right\u{2194}"),("jk","\u{2193}row"),("esc","nav")],
             Pane::ClipView if nav.clip_view.focus == ClipViewFocus::PianoRoll =>
-                vec![("hl","col"),("1-9","jump"),("enter","sel"),("jk","scroll"),("esc","back")],
+                vec![("hl","col"),("1-9","jump"),("enter","sel"),("esc","back")],
             Pane::ClipView => vec![("jk","nav"),("hl","panel"),("tab","tabs"),("esc","back")],
         }
     };
