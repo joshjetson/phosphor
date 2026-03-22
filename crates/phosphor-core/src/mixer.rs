@@ -35,6 +35,12 @@ pub enum MixerCommand {
         param_index: usize,
         value: f32,
     },
+    /// Create a new empty clip on a track.
+    CreateClip {
+        track_id: usize,
+        start_tick: i64,
+        length_ticks: i64,
+    },
     /// Replace a clip's events with edited data from the UI.
     UpdateClip {
         track_id: usize,
@@ -306,6 +312,11 @@ impl Mixer {
                         if let Some(ref mut inst) = track.instrument {
                             inst.set_parameter(param_index, value);
                         }
+                    }
+                }
+                MixerCommand::CreateClip { track_id, start_tick, length_ticks } => {
+                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                        track.clips.push(MidiClip::new(start_tick, length_ticks, Vec::new()));
                     }
                 }
                 MixerCommand::UpdateClip { track_id, clip_index, events } => {

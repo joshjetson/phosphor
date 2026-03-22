@@ -799,24 +799,36 @@ impl App {
         let start_frac = col as f64 * col_w;
         let duration_frac = col_w;
 
-        // If there's no clip yet, create one
+        // If there's no clip yet, create one on both TUI and audio thread
         if self.nav.active_clip().is_none() {
+            let start_tick = self.nav.loop_editor.start_ticks();
+            let loop_len = self.nav.loop_editor.end_ticks() - start_tick;
+            let length_ticks = if loop_len > 0 { loop_len } else { Transport::PPQ * 4 * 4 };
+
             if let Some(track) = self.nav.tracks.get_mut(self.nav.track_cursor) {
-                let loop_len = self.nav.loop_editor.end_ticks() - self.nav.loop_editor.start_ticks();
-                let length_ticks = if loop_len > 0 { loop_len } else { phosphor_core::transport::Transport::PPQ * 4 * 4 };
                 let clip_number = track.clips.len() + 1;
-                // Width: 1 cell per beat
-                let beats = (length_ticks as f64 / phosphor_core::transport::Transport::PPQ as f64).ceil() as u16;
+                let beats = (length_ticks as f64 / Transport::PPQ as f64).ceil() as u16;
                 track.clips.push(crate::state::Clip {
                     number: clip_number,
                     width: beats.max(2),
                     has_content: true,
-                    start_tick: self.nav.loop_editor.start_ticks(),
+                    start_tick,
                     length_ticks,
                     notes: Vec::new(),
                 });
                 self.nav.clip_view_target = Some((self.nav.track_cursor, track.clips.len() - 1));
-                crate::debug_log::system(&format!("created clip: {} ticks", length_ticks));
+
+                // Also create the clip on the audio thread
+                if let Some(mixer_id) = track.mixer_id {
+                    let _ = self.engine.shared.mixer_command_tx.send(
+                        MixerCommand::CreateClip {
+                            track_id: mixer_id,
+                            start_tick,
+                            length_ticks,
+                        }
+                    );
+                }
+                crate::debug_log::system(&format!("created clip: {} ticks (TUI + audio)", length_ticks));
             }
         }
 
