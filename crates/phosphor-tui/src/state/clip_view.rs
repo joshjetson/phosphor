@@ -119,6 +119,9 @@ pub struct PianoRollState {
     pub column: usize,
     /// Total number of columns in the grid (set by renderer).
     pub column_count: usize,
+    /// Indices of notes that belong to the selected column (set on Enter).
+    /// Edits operate on these indices so notes don't "escape" the column.
+    pub selected_note_indices: Vec<usize>,
     /// Number input buffer for typing column numbers.
     column_digits: String,
 }
@@ -137,24 +140,22 @@ impl PianoRollState {
             focus: PianoRollFocus::Navigation,
             column: 0,
             column_count: 16,
+            selected_note_indices: Vec::new(),
             column_digits: String::new(),
         }
     }
 
     // ── Focus transitions ──
 
-    pub fn enter(&mut self) {
+    /// Enter the next focus level. `note_indices` are the indices of notes
+    /// in the current column (captured at selection time so they don't drift).
+    pub fn enter(&mut self, note_indices: Vec<usize>) {
         match self.focus {
             PianoRollFocus::Navigation => {
                 self.focus = PianoRollFocus::Selected;
+                self.selected_note_indices = note_indices;
             }
-            PianoRollFocus::Selected => {
-                // Column is already selected — Enter does nothing.
-                // Use j/k to navigate to a note within the column (enters Row mode).
-            }
-            PianoRollFocus::Row => {
-                // Already at deepest level — no-op
-            }
+            PianoRollFocus::Selected | PianoRollFocus::Row => {}
         }
     }
 
@@ -282,11 +283,11 @@ mod tests {
         let mut pr = PianoRollState::new();
         assert_eq!(pr.focus, PianoRollFocus::Navigation);
 
-        pr.enter();
+        pr.enter(vec![]);
         assert_eq!(pr.focus, PianoRollFocus::Selected);
 
         // Enter in column mode does nothing — j/k finds notes and enters row mode
-        pr.enter();
+        pr.enter(vec![]);
         assert_eq!(pr.focus, PianoRollFocus::Selected);
 
         // Manually enter row mode (simulating finding a note)
@@ -351,10 +352,10 @@ mod tests {
         let mut pr = PianoRollState::new();
         assert!(!pr.can_escape()); // browsing — parent handles esc
 
-        pr.enter();
+        pr.enter(vec![]);
         assert!(pr.can_escape()); // column mode — internal
 
-        pr.enter();
+        pr.enter(vec![]);
         assert!(pr.can_escape()); // row mode — internal
     }
 

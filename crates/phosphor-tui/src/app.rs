@@ -678,8 +678,9 @@ impl App {
                         dbg::user(&format!("piano roll: col {}", self.nav.clip_view.piano_roll.column_display()));
                     }
                     KeyCode::Enter => {
-                        dbg::user(&format!("piano roll: Enter → column {} selected", self.nav.clip_view.piano_roll.column_display()));
-                        self.nav.clip_view.piano_roll.enter();
+                        let indices = self.note_indices_in_column(col);
+                        dbg::user(&format!("piano roll: Enter → column {} selected ({} notes)", self.nav.clip_view.piano_roll.column_display(), indices.len()));
+                        self.nav.clip_view.piano_roll.enter(indices);
                     }
                     KeyCode::Char(ch @ '0'..='9') => {
                         if self.nav.clip_view.piano_roll.type_digit(ch) {
@@ -703,24 +704,24 @@ impl App {
                         self.nav.clip_view.piano_roll.escape();
                     }
                     KeyCode::Char('h') | KeyCode::Left if !shift => {
-                        self.adjust_column_edges(col, -0.01, false);
+                        self.adjust_column_edges(-0.01, false);
                         self.send_clip_update();
-                        dbg::user("piano roll: col left edge \u{2190}");
+                        dbg::user("piano roll: col left \u{2190}");
                     }
                     KeyCode::Char('l') | KeyCode::Right if !shift => {
-                        self.adjust_column_edges(col, 0.01, false);
+                        self.adjust_column_edges(0.01, false);
                         self.send_clip_update();
-                        dbg::user("piano roll: col left edge \u{2192}");
+                        dbg::user("piano roll: col left \u{2192}");
                     }
                     KeyCode::Char('H') | KeyCode::Char('h') | KeyCode::Left => {
-                        self.adjust_column_edges(col, -0.01, true);
+                        self.adjust_column_edges(-0.01, true);
                         self.send_clip_update();
-                        dbg::user("piano roll: col right edge \u{2190}");
+                        dbg::user("piano roll: col right \u{2190}");
                     }
                     KeyCode::Char('L') | KeyCode::Char('l') | KeyCode::Right => {
-                        self.adjust_column_edges(col, 0.01, true);
+                        self.adjust_column_edges(0.01, true);
                         self.send_clip_update();
-                        dbg::user("piano roll: col right edge \u{2192}");
+                        dbg::user("piano roll: col right \u{2192}");
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
                         if let Some(note) = self.find_note_in_column(col, true) {
@@ -873,22 +874,30 @@ impl App {
         }
     }
 
-    /// Adjust ALL notes in a column. Same edge logic applied to each note.
-    fn adjust_column_edges(&mut self, col: usize, delta: f64, right_edge: bool) {
+    /// Get indices of notes that fall within a column's time range.
+    fn note_indices_in_column(&self, col: usize) -> Vec<usize> {
         let (col_start, col_end) = self.column_frac_range(col);
-        let mut count = 0;
+        match self.nav.active_clip() {
+            Some(clip) => clip.notes.iter().enumerate()
+                .filter(|(_, n)| n.start_frac >= col_start && n.start_frac < col_end)
+                .map(|(i, _)| i)
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Adjust notes by their stored indices (captured when column was selected).
+    fn adjust_column_edges(&mut self, delta: f64, right_edge: bool) {
+        let indices = self.nav.clip_view.piano_roll.selected_note_indices.clone();
+        let count = indices.len();
         if let Some(clip) = self.nav.active_clip_mut() {
-            for note in &mut clip.notes {
-                if note.start_frac >= col_start && note.start_frac < col_end {
+            for &idx in &indices {
+                if let Some(note) = clip.notes.get_mut(idx) {
                     Self::apply_edge_delta(note, delta, right_edge);
-                    count += 1;
                 }
             }
         }
-        crate::debug_log::system(&format!(
-            "adjust col {}: range {:.3}..{:.3}, {} notes affected",
-            col + 1, col_start, col_end, count
-        ));
+        crate::debug_log::system(&format!("adjust {} notes", count));
     }
 
     /// Get the fractional range [start, end) for a column index.
