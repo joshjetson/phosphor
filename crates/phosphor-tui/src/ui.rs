@@ -353,10 +353,10 @@ fn render_header(frame: &mut Frame, area: Rect, ctx: &TrackCtx) {
         Span::styled(vu_bar, vu_s),
     ];
 
-    // Row 2: [accent] (empty — space for track divider)
+    // Row 2: divider line across header
     let r2 = Line::from(vec![
         Span::styled(ac, ac_s),
-        Span::styled(" ".repeat(HEADER_W as usize - 1), theme::bg()),
+        Span::styled("\u{2500}".repeat(HEADER_W as usize - 1), theme::border_style()),
     ]);
 
     let lines = vec![
@@ -438,13 +438,21 @@ fn render_clips(frame: &mut Frame, area: Rect, ctx: &TrackCtx, snap: &TransportS
         }
     }
 
-    // Track name inside the first bar, at the bottom row
+    // Bottom row: track name in first bar, divider line for remaining bars
+    let last_row = h - 1;
+    let div_s = theme::border_style();
+
+    // Divider from bar 2 onward
+    for x in bw..w {
+        grid[last_row][x] = ('\u{2500}', div_s);
+    }
+
+    // Track name in first bar (overwrites the empty first bar, not the divider)
     let name = track.name.to_uppercase();
     let name_s = Style::default()
         .fg(if dim { theme::dim_color(tc, 35) } else { tc })
         .bg(theme::BG)
         .add_modifier(Modifier::BOLD);
-    let last_row = h - 1;
     for (i, ch) in name.chars().enumerate() {
         let x = i + 1;
         if x < bw && x < w {
