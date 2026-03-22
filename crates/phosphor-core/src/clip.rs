@@ -129,6 +129,32 @@ pub struct NoteSnapshot {
     pub duration_frac: f64,
 }
 
+impl NoteSnapshot {
+    /// Convert edited NoteSnapshots back to ClipEvents for the audio thread.
+    /// Each note produces a note-on and note-off event.
+    pub fn to_clip_events(notes: &[NoteSnapshot], length_ticks: i64) -> Vec<ClipEvent> {
+        let mut events = Vec::with_capacity(notes.len() * 2);
+        for n in notes {
+            let on_tick = (n.start_frac * length_ticks as f64) as i64;
+            let off_tick = ((n.start_frac + n.duration_frac) * length_ticks as f64) as i64;
+            events.push(ClipEvent {
+                tick: on_tick,
+                status: 0x90,
+                data1: n.note,
+                data2: n.velocity,
+            });
+            events.push(ClipEvent {
+                tick: off_tick.min(length_ticks),
+                status: 0x80,
+                data1: n.note,
+                data2: 0,
+            });
+        }
+        events.sort_by_key(|e| e.tick);
+        events
+    }
+}
+
 impl ClipSnapshot {
     pub fn from_clip(track_id: usize, clip_index: usize, clip: &MidiClip) -> Self {
         let len = clip.length_ticks as f64;
@@ -293,5 +319,58 @@ mod tests {
         buf.discard();
         assert!(!buf.is_active());
         assert!(buf.commit(960).is_none());
+    }
+
+    #[test]
+    fn note_snapshot_to_clip_events_round_trip() {
+        // Record a clip
+        let clip = MidiClip::new(0, 960, vec![
+            ClipEvent { tick: 0,   status: 0x90, data1: 60, data2: 100 },
+            ClipEvent { tick: 240, status: 0x80, data1: 60, data2: 0 },
+            ClipEvent { tick: 480, status: 0x90, data1: 64, data2: 80 },
+            ClipEvent { tick: 720, status: 0x80, data1: 64, data2: 0 },
+        ]);
+
+        // Convert to snapshots (like the UI receives)
+        let snap = ClipSnapshot::from_clip(0, 0, &clip);
+        assert_eq!(snap.notes.len(), 2);
+
+        // Convert back to events (like the UI sends after editing)
+        let events = NoteSnapshot::to_clip_events(&snap.notes, 960);
+        assert_eq!(events.len(), 4); // 2 notes × 2 events each
+
+        // Verify the events are correct
+        let note_ons: Vec<_> = events.iter().filter(|e| e.status == 0x90).collect();
+        let note_offs: Vec<_> = events.iter().filter(|e| e.status == 0x80).collect();
+        assert_eq!(note_ons.len(), 2);
+        assert_eq!(note_offs.len(), 2);
+
+        // First note: tick 0, note 60
+        assert_eq!(note_ons[0].data1, 60);
+        assert_eq!(note_ons[0].tick, 0);
+        // Second note: tick ~480, note 64
+        assert_eq!(note_ons[1].data1, 64);
+        assert!((note_ons[1].tick - 480).abs() <= 1);
+    }
+
+    #[test]
+    fn edited_snapshot_produces_different_events() {
+        let mut notes = vec![
+            NoteSnapshot { note: 60, velocity: 100, start_frac: 0.0, duration_frac: 0.25 },
+        ];
+
+        let original = NoteSnapshot::to_clip_events(&notes, 960);
+        assert_eq!(original[0].tick, 0); // note on at tick 0
+
+        // Edit: move start to 0.5
+        notes[0].start_frac = 0.5;
+        let edited = NoteSnapshot::to_clip_events(&notes, 960);
+        assert_eq!(edited[0].tick, 480); // note on at tick 480 now
+
+        // Edit: make it shorter
+        notes[0].duration_frac = 0.1;
+        let shorter = NoteSnapshot::to_clip_events(&notes, 960);
+        let off_tick = shorter.iter().find(|e| e.status == 0x80).unwrap().tick;
+        assert_eq!(off_tick, 576); // 480 + 96 = 576
     }
 }

@@ -674,6 +674,7 @@ impl App {
                 }
             }
             PianoRollFocus::Column => {
+                let shift = key.modifiers.contains(KeyModifiers::SHIFT);
                 match key.code {
                     KeyCode::Esc => {
                         dbg::user("piano roll: Esc → browsing");
@@ -693,13 +694,24 @@ impl App {
                             dbg::user(&format!("piano roll: → row, note {}", note));
                         }
                     }
-                    KeyCode::Char('h') | KeyCode::Left => {
+                    KeyCode::Char('h') | KeyCode::Left if !shift => {
                         self.nav.clip_view.piano_roll.move_column_left();
                         dbg::user(&format!("piano roll: col {}", self.nav.clip_view.piano_roll.column_display()));
                     }
-                    KeyCode::Char('l') | KeyCode::Right => {
+                    KeyCode::Char('l') | KeyCode::Right if !shift => {
                         self.nav.clip_view.piano_roll.move_column_right();
                         dbg::user(&format!("piano roll: col {}", self.nav.clip_view.piano_roll.column_display()));
+                    }
+                    // Shift+h/l = adjust ALL notes in column (left/right edge)
+                    KeyCode::Char('H') | KeyCode::Char('h') | KeyCode::Left => {
+                        self.adjust_column_edges(col, -0.01, false);
+                        self.send_clip_update();
+                        dbg::user("piano roll: col all left edge \u{2190}");
+                    }
+                    KeyCode::Char('L') | KeyCode::Char('l') | KeyCode::Right => {
+                        self.adjust_column_edges(col, 0.01, true);
+                        self.send_clip_update();
+                        dbg::user("piano roll: col all right edge \u{2192}");
                     }
                     KeyCode::Char(ch @ '0'..='9') => {
                         if self.nav.clip_view.piano_roll.type_digit(ch) {
@@ -729,21 +741,46 @@ impl App {
                     }
                     KeyCode::Char('h') | KeyCode::Left => {
                         self.adjust_note_edge(col, cursor_note, -0.01, false);
+                        self.send_clip_update();
                         dbg::user("piano roll: note left edge \u{2190}");
                     }
                     KeyCode::Char('l') | KeyCode::Right => {
                         self.adjust_note_edge(col, cursor_note, 0.01, false);
+                        self.send_clip_update();
                         dbg::user("piano roll: note left edge \u{2192}");
                     }
                     KeyCode::Char('H') => {
                         self.adjust_note_edge(col, cursor_note, -0.01, true);
+                        self.send_clip_update();
                         dbg::user("piano roll: note right edge \u{2190}");
                     }
                     KeyCode::Char('L') => {
                         self.adjust_note_edge(col, cursor_note, 0.01, true);
+                        self.send_clip_update();
                         dbg::user("piano roll: note right edge \u{2192}");
                     }
                     _ => {}
+                }
+            }
+        }
+    }
+
+    /// Push edited note data from the TUI clip to the audio thread.
+    fn send_clip_update(&self) {
+        if let Some((track_idx, clip_idx)) = self.nav.clip_view_target {
+            if let Some(track) = self.nav.tracks.get(track_idx) {
+                if let (Some(mixer_id), Some(clip)) = (track.mixer_id, track.clips.get(clip_idx)) {
+                    let events = phosphor_core::clip::NoteSnapshot::to_clip_events(
+                        &clip.notes,
+                        clip.length_ticks,
+                    );
+                    let _ = self.engine.shared.mixer_command_tx.send(
+                        MixerCommand::UpdateClip {
+                            track_id: mixer_id,
+                            clip_index: clip_idx,
+                            events,
+                        }
+                    );
                 }
             }
         }
@@ -798,28 +835,46 @@ impl App {
         }
     }
 
-    /// Adjust a note's start or end edge. `right_edge` = true adjusts duration, false adjusts start.
+    /// Adjust a single note's edge. `right_edge` = true adjusts duration, false adjusts start.
     fn adjust_note_edge(&mut self, col: usize, note_num: u8, delta: f64, right_edge: bool) {
-        let col_count = self.nav.clip_view.piano_roll.column_count;
-        let col_w = 1.0 / col_count as f64;
-        let col_start = col as f64 * col_w;
-        let col_end = col_start + col_w;
-
+        let (col_start, col_end) = self.column_frac_range(col);
         if let Some(clip) = self.nav.active_clip_mut() {
             for note in &mut clip.notes {
                 if note.note == note_num && note.start_frac >= col_start && note.start_frac < col_end {
-                    if right_edge {
-                        // Adjust duration (right edge)
-                        note.duration_frac = (note.duration_frac + delta).clamp(0.005, 1.0 - note.start_frac);
-                    } else {
-                        // Adjust start (left edge) — move start, keep end fixed
-                        let end = note.start_frac + note.duration_frac;
-                        note.start_frac = (note.start_frac + delta).clamp(0.0, end - 0.005);
-                        note.duration_frac = end - note.start_frac;
-                    }
+                    Self::apply_edge_delta(note, delta, right_edge);
                     return;
                 }
             }
+        }
+    }
+
+    /// Adjust ALL notes in a column. Same edge logic applied to each note.
+    fn adjust_column_edges(&mut self, col: usize, delta: f64, right_edge: bool) {
+        let (col_start, col_end) = self.column_frac_range(col);
+        if let Some(clip) = self.nav.active_clip_mut() {
+            for note in &mut clip.notes {
+                if note.start_frac >= col_start && note.start_frac < col_end {
+                    Self::apply_edge_delta(note, delta, right_edge);
+                }
+            }
+        }
+    }
+
+    /// Get the fractional range [start, end) for a column index.
+    fn column_frac_range(&self, col: usize) -> (f64, f64) {
+        let col_count = self.nav.clip_view.piano_roll.column_count;
+        let col_w = 1.0 / col_count as f64;
+        (col as f64 * col_w, (col + 1) as f64 * col_w)
+    }
+
+    /// Apply a delta to a note's left or right edge.
+    fn apply_edge_delta(note: &mut phosphor_core::clip::NoteSnapshot, delta: f64, right_edge: bool) {
+        if right_edge {
+            note.duration_frac = (note.duration_frac + delta).clamp(0.005, 1.0 - note.start_frac);
+        } else {
+            let end = note.start_frac + note.duration_frac;
+            note.start_frac = (note.start_frac + delta).clamp(0.0, end - 0.005);
+            note.duration_frac = end - note.start_frac;
         }
     }
 

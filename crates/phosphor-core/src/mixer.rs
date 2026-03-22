@@ -10,7 +10,7 @@ use crossbeam_channel::{Receiver, Sender};
 use phosphor_midi::message::MidiMessage;
 use phosphor_plugin::{MidiEvent, Plugin};
 
-use crate::clip::{ClipSnapshot, MidiClip, RecordBuffer};
+use crate::clip::{ClipEvent, ClipSnapshot, MidiClip, RecordBuffer};
 use crate::engine::VuLevels;
 use crate::metronome::Metronome;
 use crate::project::{TrackHandle, TrackKind};
@@ -34,6 +34,12 @@ pub enum MixerCommand {
         track_id: usize,
         param_index: usize,
         value: f32,
+    },
+    /// Replace a clip's events with edited data from the UI.
+    UpdateClip {
+        track_id: usize,
+        clip_index: usize,
+        events: Vec<ClipEvent>,
     },
 }
 
@@ -299,6 +305,14 @@ impl Mixer {
                     if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
                         if let Some(ref mut inst) = track.instrument {
                             inst.set_parameter(param_index, value);
+                        }
+                    }
+                }
+                MixerCommand::UpdateClip { track_id, clip_index, events } => {
+                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                        if let Some(clip) = track.clips.get_mut(clip_index) {
+                            clip.events = events;
+                            clip.events.sort_by_key(|e| e.tick);
                         }
                     }
                 }
