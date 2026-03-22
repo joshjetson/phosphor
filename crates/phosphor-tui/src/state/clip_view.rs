@@ -146,12 +146,18 @@ impl PianoRollState {
                 self.focus = PianoRollFocus::Column;
             }
             PianoRollFocus::Column => {
-                self.focus = PianoRollFocus::Row;
+                // Column is already selected — Enter does nothing.
+                // Use j/k to navigate to a note within the column (enters Row mode).
             }
             PianoRollFocus::Row => {
                 // Already at deepest level — no-op
             }
         }
+    }
+
+    /// Enter row mode for the current cursor note (called when j/k finds a note).
+    pub fn enter_row(&mut self) {
+        self.focus = PianoRollFocus::Row;
     }
 
     pub fn escape(&mut self) {
@@ -276,7 +282,12 @@ mod tests {
         pr.enter();
         assert_eq!(pr.focus, PianoRollFocus::Column);
 
+        // Enter in column mode does nothing — j/k finds notes and enters row mode
         pr.enter();
+        assert_eq!(pr.focus, PianoRollFocus::Column);
+
+        // Manually enter row mode (simulating finding a note)
+        pr.enter_row();
         assert_eq!(pr.focus, PianoRollFocus::Row);
 
         pr.escape();

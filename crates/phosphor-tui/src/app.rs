@@ -652,22 +652,23 @@ impl App {
         }
 
         // Piano roll side — route by focus level
-        let pr = &mut self.nav.clip_view.piano_roll;
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        // Read focus level and state before any mutable borrows
+        let focus = self.nav.clip_view.piano_roll.focus;
+        let col = self.nav.clip_view.piano_roll.column;
+        let cursor_note = self.nav.clip_view.piano_roll.cursor_note;
 
-        match pr.focus {
+        match focus {
             PianoRollFocus::Browsing => {
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => self.nav.escape(),
-                    KeyCode::Char('j') | KeyCode::Down => pr.move_down(),
-                    KeyCode::Char('k') | KeyCode::Up => pr.move_up(),
+                    KeyCode::Char('j') | KeyCode::Down => self.nav.clip_view.piano_roll.move_down(),
+                    KeyCode::Char('k') | KeyCode::Up => self.nav.clip_view.piano_roll.move_up(),
                     KeyCode::Char('h') | KeyCode::Left => {
-                        // Switch to FX panel
                         self.nav.clip_view.focus = ClipViewFocus::FxPanel;
                     }
                     KeyCode::Enter => {
                         dbg::user("piano roll: Enter → column mode");
-                        pr.enter();
+                        self.nav.clip_view.piano_roll.enter();
                     }
                     _ => {}
                 }
@@ -676,28 +677,33 @@ impl App {
                 match key.code {
                     KeyCode::Esc => {
                         dbg::user("piano roll: Esc → browsing");
-                        pr.escape();
+                        self.nav.clip_view.piano_roll.escape();
                     }
-                    KeyCode::Char('j') | KeyCode::Down => pr.move_down(),
-                    KeyCode::Char('k') | KeyCode::Up => pr.move_up(),
-                    KeyCode::Char('h') | KeyCode::Left if !shift => {
-                        pr.move_column_left();
-                        dbg::user(&format!("piano roll: col {}", pr.column_display()));
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if let Some(note) = self.find_note_in_column(col, true) {
+                            self.nav.clip_view.piano_roll.cursor_note = note;
+                            self.nav.clip_view.piano_roll.enter_row();
+                            dbg::user(&format!("piano roll: → row, note {}", note));
+                        }
                     }
-                    KeyCode::Char('l') | KeyCode::Right if !shift => {
-                        pr.move_column_right();
-                        dbg::user(&format!("piano roll: col {}", pr.column_display()));
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        if let Some(note) = self.find_note_in_column(col, false) {
+                            self.nav.clip_view.piano_roll.cursor_note = note;
+                            self.nav.clip_view.piano_roll.enter_row();
+                            dbg::user(&format!("piano roll: → row, note {}", note));
+                        }
                     }
-                    // Shift+h/l for adjusting note edges (column-wide) — future
-                    KeyCode::Char('H') | KeyCode::Char('h') | KeyCode::Left => {}
-                    KeyCode::Char('L') | KeyCode::Char('l') | KeyCode::Right => {}
-                    KeyCode::Enter => {
-                        dbg::user("piano roll: Enter → row mode");
-                        pr.enter();
+                    KeyCode::Char('h') | KeyCode::Left => {
+                        self.nav.clip_view.piano_roll.move_column_left();
+                        dbg::user(&format!("piano roll: col {}", self.nav.clip_view.piano_roll.column_display()));
+                    }
+                    KeyCode::Char('l') | KeyCode::Right => {
+                        self.nav.clip_view.piano_roll.move_column_right();
+                        dbg::user(&format!("piano roll: col {}", self.nav.clip_view.piano_roll.column_display()));
                     }
                     KeyCode::Char(ch @ '0'..='9') => {
-                        if pr.type_digit(ch) {
-                            dbg::user(&format!("piano roll: jump to col {}", pr.column_display()));
+                        if self.nav.clip_view.piano_roll.type_digit(ch) {
+                            dbg::user(&format!("piano roll: jump to col {}", self.nav.clip_view.piano_roll.column_display()));
                         }
                     }
                     _ => {}
@@ -707,25 +713,111 @@ impl App {
                 match key.code {
                     KeyCode::Esc => {
                         dbg::user("piano roll: Esc → column mode");
-                        pr.escape();
+                        self.nav.clip_view.piano_roll.escape();
                     }
-                    KeyCode::Char('j') | KeyCode::Down => pr.move_down(),
-                    KeyCode::Char('k') | KeyCode::Up => pr.move_up(),
-                    // h/l adjusts left edge of note — future note editing
-                    // H/L adjusts right edge of note — future note editing
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if let Some(note) = self.find_next_note_in_column(col, cursor_note, true) {
+                            self.nav.clip_view.piano_roll.cursor_note = note;
+                            dbg::user(&format!("piano roll: row → note {}", note));
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        if let Some(note) = self.find_next_note_in_column(col, cursor_note, false) {
+                            self.nav.clip_view.piano_roll.cursor_note = note;
+                            dbg::user(&format!("piano roll: row → note {}", note));
+                        }
+                    }
                     KeyCode::Char('h') | KeyCode::Left => {
-                        dbg::user("piano roll: adjust note left edge (TODO)");
+                        self.adjust_note_edge(col, cursor_note, -0.01, false);
+                        dbg::user("piano roll: note left edge \u{2190}");
                     }
                     KeyCode::Char('l') | KeyCode::Right => {
-                        dbg::user("piano roll: adjust note left edge (TODO)");
+                        self.adjust_note_edge(col, cursor_note, 0.01, false);
+                        dbg::user("piano roll: note left edge \u{2192}");
                     }
                     KeyCode::Char('H') => {
-                        dbg::user("piano roll: adjust note right edge (TODO)");
+                        self.adjust_note_edge(col, cursor_note, -0.01, true);
+                        dbg::user("piano roll: note right edge \u{2190}");
                     }
                     KeyCode::Char('L') => {
-                        dbg::user("piano roll: adjust note right edge (TODO)");
+                        self.adjust_note_edge(col, cursor_note, 0.01, true);
+                        dbg::user("piano roll: note right edge \u{2192}");
                     }
                     _ => {}
+                }
+            }
+        }
+    }
+
+    /// Find the first note in a column, searching from cursor. `down` = search lower notes.
+    fn find_note_in_column(&self, col: usize, down: bool) -> Option<u8> {
+        let clip = self.nav.active_clip()?;
+        let col_count = self.nav.clip_view.piano_roll.column_count;
+        let col_w = 1.0 / col_count as f64;
+        let col_start = col as f64 * col_w;
+        let col_end = col_start + col_w;
+        let cursor = self.nav.clip_view.piano_roll.cursor_note;
+
+        let mut notes_in_col: Vec<u8> = clip.notes.iter()
+            .filter(|n| n.start_frac >= col_start && n.start_frac < col_end)
+            .map(|n| n.note)
+            .collect();
+        notes_in_col.sort();
+        notes_in_col.dedup();
+
+        if down {
+            // Find first note below or at cursor (descending pitch)
+            notes_in_col.iter().rev().find(|&&n| n <= cursor).copied()
+                .or_else(|| notes_in_col.last().copied())
+        } else {
+            // Find first note above cursor (ascending pitch)
+            notes_in_col.iter().find(|&&n| n >= cursor).copied()
+                .or_else(|| notes_in_col.first().copied())
+        }
+    }
+
+    /// Find the next note above/below the current one in the same column.
+    fn find_next_note_in_column(&self, col: usize, current_note: u8, down: bool) -> Option<u8> {
+        let clip = self.nav.active_clip()?;
+        let col_count = self.nav.clip_view.piano_roll.column_count;
+        let col_w = 1.0 / col_count as f64;
+        let col_start = col as f64 * col_w;
+        let col_end = col_start + col_w;
+
+        let mut notes_in_col: Vec<u8> = clip.notes.iter()
+            .filter(|n| n.start_frac >= col_start && n.start_frac < col_end)
+            .map(|n| n.note)
+            .collect();
+        notes_in_col.sort();
+        notes_in_col.dedup();
+
+        if down {
+            notes_in_col.iter().rev().find(|&&n| n < current_note).copied()
+        } else {
+            notes_in_col.iter().find(|&&n| n > current_note).copied()
+        }
+    }
+
+    /// Adjust a note's start or end edge. `right_edge` = true adjusts duration, false adjusts start.
+    fn adjust_note_edge(&mut self, col: usize, note_num: u8, delta: f64, right_edge: bool) {
+        let col_count = self.nav.clip_view.piano_roll.column_count;
+        let col_w = 1.0 / col_count as f64;
+        let col_start = col as f64 * col_w;
+        let col_end = col_start + col_w;
+
+        if let Some(clip) = self.nav.active_clip_mut() {
+            for note in &mut clip.notes {
+                if note.note == note_num && note.start_frac >= col_start && note.start_frac < col_end {
+                    if right_edge {
+                        // Adjust duration (right edge)
+                        note.duration_frac = (note.duration_frac + delta).clamp(0.005, 1.0 - note.start_frac);
+                    } else {
+                        // Adjust start (left edge) — move start, keep end fixed
+                        let end = note.start_frac + note.duration_frac;
+                        note.start_frac = (note.start_frac + delta).clamp(0.0, end - 0.005);
+                        note.duration_frac = end - note.start_frac;
+                    }
+                    return;
                 }
             }
         }

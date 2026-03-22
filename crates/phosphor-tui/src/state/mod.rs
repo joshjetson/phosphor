@@ -278,7 +278,13 @@ impl NavState {
         let idx = self.clip_view.synth_param_cursor;
         if let Some(track) = self.tracks.get_mut(self.track_cursor) {
             if idx < track.synth_params.len() {
-                let new_val = (track.synth_params[idx] + delta).clamp(0.0, 1.0);
+                // Waveform param (index 0) is a discrete 4-option selector — step by 0.25
+                let actual_delta = if idx == phosphor_dsp::synth::P_WAVEFORM {
+                    if delta > 0.0 { 0.25 } else { -0.25 }
+                } else {
+                    delta
+                };
+                let new_val = (track.synth_params[idx] + actual_delta).clamp(0.0, 1.0);
                 track.synth_params[idx] = new_val;
                 if let Some(mixer_id) = track.mixer_id {
                     return Some((mixer_id, idx, new_val));
@@ -557,6 +563,11 @@ impl NavState {
     pub fn active_clip(&self) -> Option<&Clip> {
         let (ti, ci) = self.clip_view_target?;
         self.tracks.get(ti)?.clips.get(ci)
+    }
+
+    pub fn active_clip_mut(&mut self) -> Option<&mut Clip> {
+        let (ti, ci) = self.clip_view_target?;
+        self.tracks.get_mut(ti)?.clips.get_mut(ci)
     }
 
     pub fn active_clip_track(&self) -> Option<&TrackState> {
