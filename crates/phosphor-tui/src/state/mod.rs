@@ -509,6 +509,9 @@ impl NavState {
                 if !track.clips.is_empty() {
                     self.clip_view.clip_tab = ClipTab::PianoRoll;
                     self.clip_view.focus = ClipViewFocus::PianoRoll;
+                    // Reset piano roll to browsing mode, column 1
+                    self.clip_view.piano_roll.focus = PianoRollFocus::Browsing;
+                    self.clip_view.piano_roll.column = 0;
                 } else {
                     self.clip_view.fx_panel_tab = FxPanelTab::Synth;
                     self.clip_view.focus = ClipViewFocus::FxPanel;
