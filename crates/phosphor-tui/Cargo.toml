@@ -10,6 +10,7 @@ description = "Terminal UI frontend for the Phosphor DAW"
 phosphor-core.workspace = true
 phosphor-dsp.workspace = true
 phosphor-midi.workspace = true
+phosphor-plugin.workspace = true
 midir.workspace = true
 crossbeam-channel.workspace = true
 ratatui.workspace = true

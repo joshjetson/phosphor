@@ -1077,11 +1077,14 @@ impl App {
             handle: handle.clone(),
         });
 
-        // Send SetInstrument command — for now all types use PhosphorSynth
-        let synth = Box::new(PhosphorSynth::new());
+        // Send SetInstrument command based on selection
+        let plugin: Box<dyn phosphor_plugin::Plugin + Send> = match instrument {
+            InstrumentType::Synth | InstrumentType::Sampler => Box::new(PhosphorSynth::new()),
+            InstrumentType::DrumRack => Box::new(phosphor_dsp::drum_rack::DrumRack::new()),
+        };
         let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::SetInstrument {
             track_id,
-            instrument: synth,
+            instrument: plugin,
         });
 
         // Add to TUI track list with the handle wired in

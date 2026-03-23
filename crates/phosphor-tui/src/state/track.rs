@@ -79,8 +79,9 @@ pub struct TrackState {
     /// Handle to the audio engine's track state. When present, mute/solo/arm/volume
     /// writes go directly to the audio thread via atomics.
     pub handle: Option<std::sync::Arc<phosphor_core::project::TrackHandle>>,
-    /// Synth parameter values (mirrors the audio thread's plugin params).
-    /// Index matches phosphor_dsp::synth::P_* constants.
+    /// What type of instrument this track has.
+    pub instrument_type: Option<super::InstrumentType>,
+    /// Parameter values (mirrors the audio thread's plugin params).
     pub synth_params: Vec<f32>,
 }
 
@@ -98,6 +99,7 @@ impl TrackState {
             volume: 0.75,
             mixer_id: None,
             handle: None,
+            instrument_type: None,
             synth_params: Vec::new(),
         }
     }

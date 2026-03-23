@@ -3208,6 +3208,7 @@ dependencies = [
  "phosphor-core",
  "phosphor-dsp",
  "phosphor-midi",
+ "phosphor-plugin",
  "ratatui",
  "tracing",
 ]

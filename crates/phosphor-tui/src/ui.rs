@@ -558,13 +558,19 @@ fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
         let params = track.map(|t| &t.synth_params).cloned().unwrap_or_default();
 
         if params.is_empty() {
-            lines.push(Line::from(Span::styled("  (no synth)", theme::dim())));
+            lines.push(Line::from(Span::styled("  (no instrument)", theme::dim())));
         } else {
-            use phosphor_dsp::synth::{PARAM_NAMES, P_WAVEFORM, PARAM_COUNT};
+            let is_drum = track.map(|t| t.instrument_type == Some(InstrumentType::DrumRack)).unwrap_or(false);
+            let param_names: &[&str] = if is_drum {
+                &phosphor_dsp::drum_rack::PARAM_NAMES
+            } else {
+                &phosphor_dsp::synth::PARAM_NAMES
+            };
+            let param_count = params.len().min(param_names.len());
+            // Index of the discrete selector param (waveform for synth, kit for drums)
+            let selector_idx = 0;
 
-            // Scroll: keep cursor visible within the panel height
-            let param_count = params.len().min(PARAM_COUNT);
-            let visible_rows = h.saturating_sub(2); // leave room for controls hint
+            let visible_rows = h.saturating_sub(2);
             let cursor = nav.clip_view.synth_param_cursor;
             let scroll_offset = if cursor >= visible_rows {
                 cursor - visible_rows + 1
@@ -574,21 +580,27 @@ fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
 
             for (i, &val) in params[..param_count].iter().enumerate().skip(scroll_offset).take(visible_rows) {
                 let is_cur = focused && nav.clip_view.synth_param_cursor == i;
-                let name = PARAM_NAMES.get(i).copied().unwrap_or("?");
+                let name = param_names.get(i).copied().unwrap_or("?");
 
                 let indicator = if is_cur { "\u{25B6}" } else { " " };
                 let name_s = if is_cur { theme::amber_bright().add_modifier(Modifier::BOLD) } else { theme::normal() };
                 let dim_s = if is_cur { theme::amber() } else { theme::dim() };
 
-                // Special display for waveform selector
-                if i == P_WAVEFORM {
-                    let wf = match (val * 4.0) as u8 {
-                        0 => "sine", 1 => "saw", 2 => "square", _ => "tri",
+                // Discrete selector (waveform for synth, kit for drums)
+                if i == selector_idx {
+                    let label = if is_drum {
+                        match (val * 4.0) as u8 {
+                            0 => "808", 1 => "909", 2 => "707", _ => "606",
+                        }
+                    } else {
+                        match (val * 4.0) as u8 {
+                            0 => "sine", 1 => "saw", 2 => "square", _ => "tri",
+                        }
                     };
                     lines.push(Line::from(vec![
                         Span::styled(format!(" {indicator} "), name_s),
                         Span::styled(format!("{name:<8}"), name_s),
-                        Span::styled(format!(" {wf}"), dim_s),
+                        Span::styled(format!(" {label}"), dim_s),
                     ]));
                 } else {
                     // Bar display

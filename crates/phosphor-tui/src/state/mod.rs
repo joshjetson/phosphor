@@ -483,7 +483,15 @@ impl NavState {
         let mut track = TrackState::new(name, color, true, TrackKind::Instrument, vec![]);
         track.mixer_id = Some(mixer_id);
         track.handle = Some(handle);
-        track.synth_params = phosphor_dsp::synth::PARAM_DEFAULTS.to_vec();
+        track.instrument_type = Some(instrument);
+        track.synth_params = match instrument {
+            InstrumentType::Synth | InstrumentType::Sampler => {
+                phosphor_dsp::synth::PARAM_DEFAULTS.to_vec()
+            }
+            InstrumentType::DrumRack => {
+                phosphor_dsp::drum_rack::PARAM_DEFAULTS.to_vec()
+            }
+        };
         // Sync the initial armed state to audio
         track.sync_to_audio();
         self.tracks.insert(insert_pos, track);
