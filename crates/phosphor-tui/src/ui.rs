@@ -36,6 +36,10 @@ pub fn render(
     nav: &NavState,
 ) {
     let area = frame.area();
+    crate::debug_log::log("RENDER", &format!(
+        "area={}x{} tracks={} clip_view={} pane={:?}",
+        area.width, area.height, nav.tracks.len(), nav.clip_view_visible, nav.focused_pane,
+    ));
     frame.render_widget(Clear, area);
     frame.render_widget(Block::default().style(theme::bg()), area);
 
@@ -338,6 +342,7 @@ fn render_header(frame: &mut Frame, area: Rect, ctx: &TrackCtx) {
         theme::btn_style(false, s_f, tc)
     };
 
+    let vu_filled = vu_filled.min(vu_w);
     let vu_bar: String = "\u{2588}".repeat(vu_filled) + &"\u{2591}".repeat(vu_w - vu_filled);
     let vu_s = Style::default()
         .fg(theme::dim_color(tc, if dim { 20 } else { 55 }))
@@ -377,6 +382,7 @@ fn render_clips(frame: &mut Frame, area: Rect, ctx: &TrackCtx, snap: &TransportS
     if w == 0 || h == 0 { return; }
     let bw = w / VISIBLE_BARS;
     if bw == 0 { return; }
+    crate::debug_log::log("CLIP_GRID", &format!("w={w} h={h} alloc={}bytes", w * h * std::mem::size_of::<(char, Style)>()));
 
     let mut grid: Vec<Vec<(char, Style)>> = vec![vec![(' ', theme::bg()); w]; h];
 
@@ -560,9 +566,13 @@ fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
         if params.is_empty() {
             lines.push(Line::from(Span::styled("  (no instrument)", theme::dim())));
         } else {
-            let is_drum = track.map(|t| t.instrument_type == Some(InstrumentType::DrumRack)).unwrap_or(false);
+            let instrument_type = track.and_then(|t| t.instrument_type);
+            let is_drum = instrument_type == Some(InstrumentType::DrumRack);
+            let is_dx7 = instrument_type == Some(InstrumentType::DX7);
             let param_names: &[&str] = if is_drum {
                 &phosphor_dsp::drum_rack::PARAM_NAMES
+            } else if is_dx7 {
+                &phosphor_dsp::dx7::PARAM_NAMES
             } else {
                 &phosphor_dsp::synth::PARAM_NAMES
             };
@@ -592,6 +602,9 @@ fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                         match (val * 4.0) as u8 {
                             0 => "808", 1 => "909", 2 => "707", 3 => "606", _ => "777",
                         }
+                    } else if is_dx7 {
+                        let idx = (val * (phosphor_dsp::dx7::PATCH_COUNT as f32 - 0.01)) as usize;
+                        phosphor_dsp::dx7::PATCH_NAMES[idx.min(phosphor_dsp::dx7::PATCH_COUNT - 1)]
                     } else {
                         match (val * 4.0) as u8 {
                             0 => "sine", 1 => "saw", 2 => "square", _ => "tri",
@@ -662,7 +675,7 @@ fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                 if is_cur {
                     for (name, val) in &fx.params {
                         let bar_w = 8;
-                        let filled = (val * bar_w as f32) as usize;
+                        let filled = ((val * bar_w as f32) as usize).min(bar_w);
                         let bar: String = "\u{2588}".repeat(filled) + &"\u{2591}".repeat(bar_w - filled);
                         lines.push(Line::from(vec![
                             Span::styled(format!("     {name:<6}"), theme::dim()),
@@ -682,6 +695,7 @@ fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
 fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState) {
     let (w, h) = (area.width as usize, area.height as usize);
     if w == 0 || h == 0 { return; }
+    crate::debug_log::log("PIANO", &format!("w={w} h={h} note_w={}", w.saturating_sub(7)));
 
     let track = match nav.active_clip_track() {
         Some(t) => t,

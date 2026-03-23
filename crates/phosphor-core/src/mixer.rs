@@ -97,6 +97,11 @@ pub struct Mixer {
     metronome: Metronome,
     sample_rate: u32,
     max_buffer_size: usize,
+    /// Pre-allocated scratch buffers for mix — avoids allocation in process().
+    scratch_l: Vec<f32>,
+    scratch_r: Vec<f32>,
+    /// Pre-allocated buffer for live MIDI conversion.
+    live_events: Vec<MidiEvent>,
 }
 
 impl Mixer {
@@ -115,6 +120,9 @@ impl Mixer {
             metronome: Metronome::new(sample_rate as f64),
             sample_rate,
             max_buffer_size,
+            scratch_l: vec![0.0; max_buffer_size],
+            scratch_r: vec![0.0; max_buffer_size],
+            live_events: Vec::with_capacity(256),
         }
     }
 
@@ -132,17 +140,29 @@ impl Mixer {
         let buffer_ticks = (num_frames as f64 * ticks_per_sample) as i64;
         let loop_end = transport.loop_end();
 
-        // Convert live MIDI to plugin events
-        let live_events: Vec<MidiEvent> = midi_messages
-            .iter()
-            .filter_map(midi_to_plugin_event)
-            .collect();
+        // Convert live MIDI to plugin events (reuse pre-allocated buffer)
+        self.live_events.clear();
+        for msg in midi_messages {
+            if let Some(ev) = midi_to_plugin_event(msg) {
+                self.live_events.push(ev);
+            }
+        }
 
-        let clip_tx = &self.clip_tx;
         let any_solo = self.tracks.iter().any(|t| t.handle.config.is_soloed());
 
-        let mut master_l = vec![0.0f32; num_frames];
-        let mut master_r = vec![0.0f32; num_frames];
+        // Reuse pre-allocated scratch buffers for master mix.
+        // Swap out of self to avoid borrow conflicts in the track loop.
+        let mut master_l = std::mem::take(&mut self.scratch_l);
+        let mut master_r = std::mem::take(&mut self.scratch_r);
+        let live_events = std::mem::take(&mut self.live_events);
+        if master_l.len() < num_frames {
+            master_l.resize(num_frames, 0.0);
+            master_r.resize(num_frames, 0.0);
+        }
+        master_l[..num_frames].fill(0.0);
+        master_r[..num_frames].fill(0.0);
+
+        let clip_tx = &self.clip_tx;
 
         for track in &mut self.tracks {
             if track.buf_l.len() < num_frames {
@@ -242,14 +262,11 @@ impl Mixer {
                 track.last_record_tick = current_tick;
             }
 
-            // ── Process instrument ──
+            // ── Process instrument (allocation-free) ──
             if let Some(ref mut instrument) = track.instrument {
-                let mut outputs: [&mut [f32]; 2] = [
-                    &mut track.buf_l[..num_frames],
-                    &mut track.buf_r[..num_frames],
-                ];
-                let mut out_slices: Vec<&mut [f32]> =
-                    outputs.iter_mut().map(|s| &mut **s).collect();
+                let out_l = &mut track.buf_l[..num_frames];
+                let out_r = &mut track.buf_r[..num_frames];
+                let mut out_slices: [&mut [f32]; 2] = [out_l, out_r];
                 instrument.process(&[], &mut out_slices, &track.plugin_events);
             }
 
@@ -286,6 +303,11 @@ impl Mixer {
             output[i * 2] = master_l[i];
             output[i * 2 + 1] = master_r[i];
         }
+
+        // Return scratch buffers to self (no allocation, just moves)
+        self.scratch_l = master_l;
+        self.scratch_r = master_r;
+        self.live_events = live_events;
 
         // Mix metronome click into output (after tracks, so it's always audible)
         self.metronome.process(output, transport);

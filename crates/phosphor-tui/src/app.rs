@@ -301,6 +301,8 @@ impl App {
     }
 
     fn main_loop(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
+        use crate::debug_log as dbg;
+        let mut frame_count: u64 = 0;
         while self.running {
             self.nav.tick();
             for track in &self.nav.tracks {
@@ -316,12 +318,24 @@ impl App {
 
             // Update piano roll view height to match terminal size
             let term_h = terminal.size()?.height;
+            let term_w = terminal.size()?.width;
             let piano_h = term_h.saturating_sub(30).max(6) as u8;
             self.nav.clip_view.piano_roll.set_view_height(piano_h);
+
+            // Log frame details periodically and on first frame after track creation
+            if frame_count < 3 || frame_count % 500 == 0 {
+                dbg::system(&format!(
+                    "frame={frame_count} term={}x{} tracks={} focused={:?} cursor={}",
+                    term_w, term_h, self.nav.tracks.len(),
+                    self.nav.focused_pane, self.nav.track_cursor,
+                ));
+            }
 
             terminal.draw(|frame| {
                 ui::render(frame, &snapshot, &self.nav);
             })?;
+
+            frame_count += 1;
 
             if event::poll(Duration::from_millis(16))? {
                 self.handle_event(event::read()?);
@@ -1064,8 +1078,10 @@ impl App {
 
     /// Create an instrument track in both the audio mixer and the TUI.
     fn create_instrument_track(&mut self, instrument: InstrumentType) {
+        use crate::debug_log as dbg;
         let track_id = self.next_track_id;
         self.next_track_id += 1;
+        dbg::system(&format!("create_instrument_track: id={track_id} type={:?}", instrument));
 
         // Create shared handle
         let handle = Arc::new(TrackHandle::new(track_id, TrackKind::Instrument));
@@ -1076,19 +1092,24 @@ impl App {
             kind: TrackKind::Instrument,
             handle: handle.clone(),
         });
+        dbg::system("  AddTrack sent");
 
         // Send SetInstrument command based on selection
         let plugin: Box<dyn phosphor_plugin::Plugin + Send> = match instrument {
             InstrumentType::Synth | InstrumentType::Sampler => Box::new(PhosphorSynth::new()),
             InstrumentType::DrumRack => Box::new(phosphor_dsp::drum_rack::DrumRack::new()),
+            InstrumentType::DX7 => Box::new(phosphor_dsp::dx7::Dx7Synth::new()),
         };
+        dbg::system("  plugin created");
         let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::SetInstrument {
             track_id,
             instrument: plugin,
         });
+        dbg::system("  SetInstrument sent");
 
         // Add to TUI track list with the handle wired in
         self.nav.add_instrument_track(instrument, track_id, handle);
+        dbg::system(&format!("  track added to TUI, params_len={}", self.nav.tracks[self.nav.track_cursor].synth_params.len()));
     }
 }
 

@@ -261,8 +261,7 @@ impl EngineAudio {
                 &mut self.plugin_buf_l[..num_frames],
                 &mut self.plugin_buf_r[..num_frames],
             ];
-            let mut out_slices: Vec<&mut [f32]> = outputs.iter_mut().map(|s| &mut **s).collect();
-            self.synth.process(&[], &mut out_slices, &self.plugin_events);
+            self.synth.process(&[], &mut outputs, &self.plugin_events);
         }
 
         // Interleave into output and compute peak levels

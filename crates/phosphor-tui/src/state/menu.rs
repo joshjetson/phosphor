@@ -100,6 +100,7 @@ impl FxMenu {
 pub enum InstrumentType {
     Synth,
     DrumRack,
+    DX7,
     Sampler,
 }
 
@@ -108,6 +109,7 @@ impl InstrumentType {
         match self {
             Self::Synth => "Phosphor Synth",
             Self::DrumRack => "Drum Rack",
+            Self::DX7 => "DX7",
             Self::Sampler => "Sampler",
         }
     }
@@ -116,11 +118,12 @@ impl InstrumentType {
         match self {
             Self::Synth => "polyphonic subtractive synthesizer",
             Self::DrumRack => "drum machine with sample pads",
+            Self::DX7 => "6-operator FM synthesizer",
             Self::Sampler => "sample-based instrument",
         }
     }
 
-    pub const ALL: &[InstrumentType] = &[Self::Synth, Self::DrumRack, Self::Sampler];
+    pub const ALL: &[InstrumentType] = &[Self::Synth, Self::DrumRack, Self::DX7, Self::Sampler];
 }
 
 #[derive(Debug)]

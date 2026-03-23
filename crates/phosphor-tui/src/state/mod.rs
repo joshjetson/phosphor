@@ -286,8 +286,11 @@ impl NavState {
                 // Index 0 is always a discrete selector (waveform for synth, kit for drums)
                 // Synth: 4 options → step 0.25. Drums: 5 kits → step 0.20
                 let actual_delta = if idx == 0 {
-                    let is_drum = track.instrument_type == Some(InstrumentType::DrumRack);
-                    let step = if is_drum { 0.20 } else { 0.25 };
+                    let step = match track.instrument_type {
+                        Some(InstrumentType::DrumRack) => 0.20, // 5 kits
+                        Some(InstrumentType::DX7) => 1.0 / (phosphor_dsp::dx7::PATCH_COUNT as f32 - 0.01), // 6 patches
+                        _ => 0.25, // 4 waveforms
+                    };
                     if delta > 0.0 { step } else { -step }
                 } else {
                     delta
@@ -474,6 +477,7 @@ impl NavState {
         let name = match instrument {
             InstrumentType::Synth => "synth",
             InstrumentType::DrumRack => "drums",
+            InstrumentType::DX7 => "dx7",
             InstrumentType::Sampler => "smplr",
         };
 
@@ -493,6 +497,9 @@ impl NavState {
             }
             InstrumentType::DrumRack => {
                 phosphor_dsp::drum_rack::PARAM_DEFAULTS.to_vec()
+            }
+            InstrumentType::DX7 => {
+                phosphor_dsp::dx7::PARAM_DEFAULTS.to_vec()
             }
         };
         // Sync the initial armed state to audio

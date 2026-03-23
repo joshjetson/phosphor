@@ -1734,13 +1734,22 @@ impl Plugin for DrumRack {
         let drive = self.params[P_DRIVE] as f64;
         let kit = self.kit;
 
-        let mut events: Vec<&MidiEvent> = midi_events.iter().collect();
-        events.sort_by_key(|e| e.sample_offset);
+        // Avoid heap allocation — use fixed-size index buffer for sorting
+        let mut event_indices: [usize; 256] = [0; 256];
+        let event_count = midi_events.len().min(256);
+        for idx in 0..event_count { event_indices[idx] = idx; }
+        for idx in 1..event_count {
+            let mut j = idx;
+            while j > 0 && midi_events[event_indices[j]].sample_offset < midi_events[event_indices[j-1]].sample_offset {
+                event_indices.swap(j, j - 1);
+                j -= 1;
+            }
+        }
         let mut ei = 0;
 
         for i in 0..buf_len {
-            while ei < events.len() && events[ei].sample_offset as usize <= i {
-                let ev = events[ei];
+            while ei < event_count && midi_events[event_indices[ei]].sample_offset as usize <= i {
+                let ev = &midi_events[event_indices[ei]];
                 if ev.status & 0xF0 == 0x90 && ev.data2 > 0 {
                     let sound = note_to_sound(ev.data1);
                     let voice = self.find_voice(ev.data1);

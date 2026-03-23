@@ -4,5 +4,6 @@
 //! These are the same plugins users can build — no special treatment.
 
 pub mod drum_rack;
+pub mod dx7;
 pub mod oscillator;
 pub mod synth;
