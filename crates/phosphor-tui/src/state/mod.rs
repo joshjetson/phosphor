@@ -283,9 +283,12 @@ impl NavState {
         let idx = self.clip_view.synth_param_cursor;
         if let Some(track) = self.tracks.get_mut(self.track_cursor) {
             if idx < track.synth_params.len() {
-                // Waveform param (index 0) is a discrete 4-option selector — step by 0.25
-                let actual_delta = if idx == phosphor_dsp::synth::P_WAVEFORM {
-                    if delta > 0.0 { 0.25 } else { -0.25 }
+                // Index 0 is always a discrete selector (waveform for synth, kit for drums)
+                // Synth: 4 options → step 0.25. Drums: 5 kits → step 0.20
+                let actual_delta = if idx == 0 {
+                    let is_drum = track.instrument_type == Some(InstrumentType::DrumRack);
+                    let step = if is_drum { 0.20 } else { 0.25 };
+                    if delta > 0.0 { step } else { -step }
                 } else {
                     delta
                 };

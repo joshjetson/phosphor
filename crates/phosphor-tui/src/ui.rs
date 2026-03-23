@@ -590,7 +590,7 @@ fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                 if i == selector_idx {
                     let label = if is_drum {
                         match (val * 4.0) as u8 {
-                            0 => "808", 1 => "909", 2 => "707", _ => "606",
+                            0 => "808", 1 => "909", 2 => "707", 3 => "606", _ => "777",
                         }
                     } else {
                         match (val * 4.0) as u8 {
