@@ -33,6 +33,7 @@ impl FxPanelTab {
 /// Tab in the piano roll / clip area (right side of clip view).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipTab {
+    InstConfig,
     PianoRoll,
     Automation,
 }
@@ -40,6 +41,7 @@ pub enum ClipTab {
 impl ClipTab {
     pub fn label(self) -> &'static str {
         match self {
+            Self::InstConfig => "inst",
             Self::PianoRoll => "piano",
             Self::Automation => "auto",
         }
@@ -47,10 +49,13 @@ impl ClipTab {
 
     pub fn next(self) -> Self {
         match self {
+            Self::InstConfig => Self::PianoRoll,
             Self::PianoRoll => Self::Automation,
-            Self::Automation => Self::PianoRoll,
+            Self::Automation => Self::InstConfig,
         }
     }
+
+    pub const ALL: &[ClipTab] = &[Self::InstConfig, Self::PianoRoll, Self::Automation];
 }
 
 #[derive(Debug)]
@@ -61,6 +66,8 @@ pub struct ClipViewState {
     pub piano_roll: PianoRollState,
     pub fx_cursor: usize,
     pub synth_param_cursor: usize,
+    /// Cursor position within the inst config panel.
+    pub inst_config_cursor: usize,
 }
 
 impl Default for ClipViewState {
@@ -76,6 +83,7 @@ impl ClipViewState {
             piano_roll: PianoRollState::new(),
             fx_cursor: 0,
             synth_param_cursor: 0,
+            inst_config_cursor: 0,
         }
     }
 }

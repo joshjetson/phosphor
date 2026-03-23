@@ -936,6 +936,7 @@ impl App {
     }
 
     /// If a synth param was just adjusted, send the update to the audio thread.
+    /// When the patch selector (index 0) changes, sends ALL params to sync preset.
     fn send_synth_param_update(&self) {
         if self.nav.focused_pane != Pane::ClipView
             || self.nav.clip_view.focus != ClipViewFocus::FxPanel
@@ -945,12 +946,23 @@ impl App {
         }
         let idx = self.nav.clip_view.synth_param_cursor;
         if let Some(track) = self.nav.tracks.get(self.nav.track_cursor) {
-            if let (Some(mixer_id), Some(&val)) = (track.mixer_id, track.synth_params.get(idx)) {
-                let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::SetParameter {
-                    track_id: mixer_id,
-                    param_index: idx,
-                    value: val,
-                });
+            if let Some(mixer_id) = track.mixer_id {
+                if idx == 0 {
+                    // Patch changed — send ALL params to audio thread
+                    for (i, &val) in track.synth_params.iter().enumerate() {
+                        let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::SetParameter {
+                            track_id: mixer_id,
+                            param_index: i,
+                            value: val,
+                        });
+                    }
+                } else if let Some(&val) = track.synth_params.get(idx) {
+                    let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::SetParameter {
+                        track_id: mixer_id,
+                        param_index: idx,
+                        value: val,
+                    });
+                }
             }
         }
     }
@@ -1099,6 +1111,8 @@ impl App {
             InstrumentType::Synth | InstrumentType::Sampler => Box::new(PhosphorSynth::new()),
             InstrumentType::DrumRack => Box::new(phosphor_dsp::drum_rack::DrumRack::new()),
             InstrumentType::DX7 => Box::new(phosphor_dsp::dx7::Dx7Synth::new()),
+            InstrumentType::Jupiter8 => Box::new(phosphor_dsp::jupiter::Jupiter8Synth::new()),
+            InstrumentType::Odyssey => Box::new(phosphor_dsp::odyssey::OdysseySynth::new()),
         };
         dbg::system("  plugin created");
         let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::SetInstrument {

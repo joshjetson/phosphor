@@ -508,9 +508,9 @@ fn render_clip_view_tabs(frame: &mut Frame, area: Rect, nav: &NavState) {
 
     spans.push(Span::styled(" \u{2502} ", theme::border_style()));
 
-    // Right tabs (clip/piano)
-    for tab in [ClipTab::PianoRoll, ClipTab::Automation] {
-        let active = nav.clip_view.clip_tab == tab && nav.clip_view.focus == ClipViewFocus::PianoRoll;
+    // Right tabs (inst config / piano / auto)
+    for tab in ClipTab::ALL {
+        let active = nav.clip_view.clip_tab == *tab && nav.clip_view.focus == ClipViewFocus::PianoRoll;
         let s = if active { theme::amber_bright().add_modifier(Modifier::BOLD) }
             else if focused { theme::normal() }
             else { theme::dim() };
@@ -546,7 +546,10 @@ fn render_clip_view(frame: &mut Frame, area: Rect, nav: &NavState) {
         .collect();
     frame.render_widget(Paragraph::new(sep), cols[1]);
 
-    render_piano_roll(frame, cols[2], nav);
+    match nav.clip_view.clip_tab {
+        ClipTab::InstConfig => render_inst_config(frame, cols[2], nav),
+        _ => render_piano_roll(frame, cols[2], nav),
+    }
 }
 
 fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
@@ -569,16 +572,20 @@ fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
             let instrument_type = track.and_then(|t| t.instrument_type);
             let is_drum = instrument_type == Some(InstrumentType::DrumRack);
             let is_dx7 = instrument_type == Some(InstrumentType::DX7);
+            let is_jupiter = instrument_type == Some(InstrumentType::Jupiter8);
+            let is_odyssey = instrument_type == Some(InstrumentType::Odyssey);
             let param_names: &[&str] = if is_drum {
                 &phosphor_dsp::drum_rack::PARAM_NAMES
             } else if is_dx7 {
                 &phosphor_dsp::dx7::PARAM_NAMES
+            } else if is_jupiter {
+                &phosphor_dsp::jupiter::PARAM_NAMES
+            } else if is_odyssey {
+                &phosphor_dsp::odyssey::PARAM_NAMES
             } else {
                 &phosphor_dsp::synth::PARAM_NAMES
             };
             let param_count = params.len().min(param_names.len());
-            // Index of the discrete selector param (waveform for synth, kit for drums)
-            let selector_idx = 0;
 
             let visible_rows = h.saturating_sub(2);
             let cursor = nav.clip_view.synth_param_cursor;
@@ -596,9 +603,14 @@ fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                 let name_s = if is_cur { theme::amber_bright().add_modifier(Modifier::BOLD) } else { theme::normal() };
                 let dim_s = if is_cur { theme::amber() } else { theme::dim() };
 
-                // Discrete selector (waveform for synth, kit for drums)
-                if i == selector_idx {
-                    let label = if is_drum {
+                // Discrete selector (waveform, kit, patch, mode, etc.)
+                let discrete_label = if is_jupiter {
+                    phosphor_dsp::jupiter::discrete_label(i, val)
+                } else if is_odyssey {
+                    phosphor_dsp::odyssey::discrete_label(i, val)
+                } else if i == 0 {
+                    // Index 0 is always a discrete selector for non-Jupiter instruments
+                    Some(if is_drum {
                         match (val * 4.0) as u8 {
                             0 => "808", 1 => "909", 2 => "707", 3 => "606", _ => "777",
                         }
@@ -609,7 +621,11 @@ fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                         match (val * 4.0) as u8 {
                             0 => "sine", 1 => "saw", 2 => "square", _ => "tri",
                         }
-                    };
+                    })
+                } else {
+                    None
+                };
+                if let Some(label) = discrete_label {
                     lines.push(Line::from(vec![
                         Span::styled(format!(" {indicator} "), name_s),
                         Span::styled(format!("{name:<8}"), name_s),
@@ -689,6 +705,88 @@ fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
     }
 
     lines.truncate(h);
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn render_inst_config(frame: &mut Frame, area: Rect, nav: &NavState) {
+    let (w, h) = (area.width as usize, area.height as usize);
+    if w == 0 || h == 0 { return; }
+
+    let focused = nav.focused_pane == Pane::ClipView
+        && nav.clip_view.focus == ClipViewFocus::PianoRoll
+        && nav.clip_view.clip_tab == ClipTab::InstConfig;
+
+    let track = match nav.active_clip_track().or_else(|| nav.current_track()) {
+        Some(t) => t,
+        None => {
+            frame.render_widget(Paragraph::new(Span::styled("  select a track", theme::dim())), area);
+            return;
+        }
+    };
+
+    let inst_label = track.instrument_type.map(|i| i.label()).unwrap_or("—");
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Header
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {inst_label}"), theme::amber_bright().add_modifier(Modifier::BOLD)),
+        Span::styled(" instrument config", theme::dim()),
+    ]));
+    lines.push(Line::from(""));
+
+    // Sections — placeholder structure for future parameters
+    let sections = [
+        ("LFO", &["rate", "depth", "wave", "target"][..]),
+        ("Filter", &["type", "cutoff", "reso", "env amt"]),
+        ("Envelope", &["attack", "decay", "sustain", "release"]),
+        ("Pitch", &["bend range", "portamento", "detune"]),
+    ];
+
+    let cursor = nav.clip_view.inst_config_cursor;
+    let mut param_idx = 0;
+
+    for (section_name, params) in &sections {
+        lines.push(Line::from(Span::styled(
+            format!("  {section_name}"),
+            theme::normal().add_modifier(Modifier::BOLD),
+        )));
+
+        for &param_name in *params {
+            let is_cur = focused && cursor == param_idx;
+            let indicator = if is_cur { "\u{25B6}" } else { " " };
+            let name_s = if is_cur { theme::amber_bright().add_modifier(Modifier::BOLD) } else { theme::normal() };
+            let dim_s = if is_cur { theme::amber() } else { theme::dim() };
+
+            let bar_w = (w.saturating_sub(20)).min(12);
+            let val = 0.0f32; // placeholder — will be wired to real params
+            let filled = ((val * bar_w as f32) as usize).min(bar_w);
+            let bar: String = "\u{2588}".repeat(filled)
+                + &"\u{2591}".repeat(bar_w - filled);
+
+            lines.push(Line::from(vec![
+                Span::styled(format!("   {indicator} "), name_s),
+                Span::styled(format!("{param_name:<12}"), name_s),
+                Span::styled(bar, if is_cur { theme::amber() } else { theme::muted() }),
+                Span::styled(format!(" {:.0}%", val * 100.0), dim_s),
+            ]));
+
+            param_idx += 1;
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Controls hint
+    if focused {
+        lines.push(Line::from(vec![
+            Span::styled("  jk", theme::dim()),
+            Span::styled(" select  ", theme::muted()),
+            Span::styled("hl", theme::dim()),
+            Span::styled(" adjust  ", theme::muted()),
+            Span::styled("tab", theme::dim()),
+            Span::styled(" next panel", theme::muted()),
+        ]));
+    }
+
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -913,7 +1011,8 @@ fn render_space_menu(frame: &mut Frame, nav: &NavState) {
 fn render_instrument_modal(frame: &mut Frame, nav: &NavState) {
     let area = frame.area();
     let mw = 40u16;
-    let mh = 10u16;
+    // 3 lines per instrument (name + desc + blank) + 3 for border/padding
+    let mh = ((InstrumentType::ALL.len() as u16) * 3 + 3).min(area.height.saturating_sub(2));
     let mx = (area.width.saturating_sub(mw)) / 2;
     let my = (area.height.saturating_sub(mh)) / 2;
     let menu_area = Rect::new(mx, my, mw, mh);
@@ -1022,6 +1121,9 @@ fn render_bottom_bar(frame: &mut Frame, area: Rect, nav: &NavState) {
             Pane::Transport => vec![("hl","nav"),("enter","sel"),("+/-","bpm"),("tab","pane")],
             Pane::Tracks if nav.track_selected => vec![("hl","clip"),("m","mute"),("s","solo"),("r","arm"),("R","rec"),("esc","back")],
             Pane::Tracks => vec![("jk","track"),("enter","sel"),("m","mute"),("s","solo"),("r","arm"),("R","rec")],
+            Pane::ClipView if nav.clip_view.focus == ClipViewFocus::PianoRoll
+                && nav.clip_view.clip_tab == ClipTab::InstConfig =>
+                vec![("jk","select"),("hl","adjust"),("tab","next"),("esc","back")],
             Pane::ClipView if nav.clip_view.focus == ClipViewFocus::PianoRoll
                 && nav.clip_view.piano_roll.focus == PianoRollFocus::Row =>
                 vec![("hl","left\u{2194}"),("H/L","right\u{2194}"),("jk","note"),("n","draw"),("esc","col")],

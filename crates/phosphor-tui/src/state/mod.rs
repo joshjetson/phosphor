@@ -79,6 +79,8 @@ impl Pane {
 // ── Full Nav State ──
 
 pub const MAX_VISIBLE_TRACKS: usize = 5;
+/// Total number of parameters in the inst config panel (LFO:4 + Filter:4 + Envelope:4 + Pitch:3).
+pub const INST_CONFIG_PARAM_COUNT: usize = 15;
 
 #[derive(Debug)]
 pub struct NavState {
@@ -189,6 +191,11 @@ impl NavState {
             }
             Pane::ClipView => {
                 match self.clip_view.focus {
+                    ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::InstConfig => {
+                        if self.clip_view.inst_config_cursor > 0 {
+                            self.clip_view.inst_config_cursor -= 1;
+                        }
+                    }
                     ClipViewFocus::PianoRoll => self.clip_view.piano_roll.move_up(),
                     ClipViewFocus::FxPanel => {
                         if self.clip_view.fx_panel_tab == FxPanelTab::Synth {
@@ -223,6 +230,11 @@ impl NavState {
             }
             Pane::ClipView => {
                 match self.clip_view.focus {
+                    ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::InstConfig => {
+                        if self.clip_view.inst_config_cursor + 1 < INST_CONFIG_PARAM_COUNT {
+                            self.clip_view.inst_config_cursor += 1;
+                        }
+                    }
                     ClipViewFocus::PianoRoll => self.clip_view.piano_roll.move_down(),
                     ClipViewFocus::FxPanel => {
                         if self.clip_view.fx_panel_tab == FxPanelTab::Synth {
@@ -247,6 +259,9 @@ impl NavState {
             self.track_element = self.track_element.move_left();
         } else if self.focused_pane == Pane::ClipView {
             match self.clip_view.focus {
+                ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::InstConfig => {
+                    // h = placeholder for future inst config param adjustment
+                }
                 ClipViewFocus::PianoRoll => {
                     self.clip_view.focus = ClipViewFocus::FxPanel;
                 }
@@ -265,6 +280,9 @@ impl NavState {
             self.track_element = self.track_element.move_right(num_clips);
         } else if self.focused_pane == Pane::ClipView {
             match self.clip_view.focus {
+                ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::InstConfig => {
+                    // l = placeholder for future inst config param adjustment
+                }
                 ClipViewFocus::FxPanel if self.clip_view.fx_panel_tab == FxPanelTab::Synth => {
                     // l = increase parameter value
                     self.adjust_synth_param(0.05);
@@ -285,11 +303,33 @@ impl NavState {
             if idx < track.synth_params.len() {
                 // Index 0 is always a discrete selector (waveform for synth, kit for drums)
                 // Synth: 4 options → step 0.25. Drums: 5 kits → step 0.20
-                let actual_delta = if idx == 0 {
-                    let step = match track.instrument_type {
-                        Some(InstrumentType::DrumRack) => 0.20, // 5 kits
-                        Some(InstrumentType::DX7) => 1.0 / (phosphor_dsp::dx7::PATCH_COUNT as f32 - 0.01), // 6 patches
-                        _ => 0.25, // 4 waveforms
+                let is_jupiter = track.instrument_type == Some(InstrumentType::Jupiter8);
+                let is_odyssey = track.instrument_type == Some(InstrumentType::Odyssey);
+                let is_discrete = if is_jupiter {
+                    phosphor_dsp::jupiter::is_discrete(idx)
+                } else if is_odyssey {
+                    phosphor_dsp::odyssey::is_discrete(idx)
+                } else {
+                    idx == 0
+                };
+                let actual_delta = if is_discrete {
+                    let step = if is_jupiter {
+                        match idx {
+                            0 => 1.0 / (phosphor_dsp::jupiter::PATCH_COUNT as f32 - 0.01),
+                            _ => 0.25, // 4 options
+                        }
+                    } else if is_odyssey {
+                        match idx {
+                            0 => 1.0 / (phosphor_dsp::odyssey::PATCH_COUNT as f32 - 0.01), // 7 patches
+                            6 => 0.34, // 3 filter types
+                            _ => 0.5, // 2 options (saw/pulse, on/off)
+                        }
+                    } else {
+                        match track.instrument_type {
+                            Some(InstrumentType::DrumRack) => 0.20,
+                            Some(InstrumentType::DX7) => 1.0 / (phosphor_dsp::dx7::PATCH_COUNT as f32 - 0.01),
+                            _ => 0.25,
+                        }
                     };
                     if delta > 0.0 { step } else { -step }
                 } else {
@@ -297,6 +337,25 @@ impl NavState {
                 };
                 let new_val = (track.synth_params[idx] + actual_delta).clamp(0.0, 1.0);
                 track.synth_params[idx] = new_val;
+
+                // When patch selector changes, sync all params from preset
+                if idx == 0 {
+                    let new_params = match track.instrument_type {
+                        Some(InstrumentType::Jupiter8) => {
+                            Some(phosphor_dsp::jupiter::Jupiter8Synth::params_for_patch(new_val))
+                        }
+                        Some(InstrumentType::Odyssey) => {
+                            Some(phosphor_dsp::odyssey::OdysseySynth::params_for_patch(new_val))
+                        }
+                        _ => None,
+                    };
+                    if let Some(preset_params) = new_params {
+                        for (i, &v) in preset_params.iter().enumerate() {
+                            track.synth_params[i] = v;
+                        }
+                    }
+                }
+
                 if let Some(mixer_id) = track.mixer_id {
                     return Some((mixer_id, idx, new_val));
                 }
@@ -375,7 +434,7 @@ impl NavState {
     }
 
     /// Cycle tabs in the clip view (FX panel or piano roll side).
-    /// Cycle through ALL tabs in buffer 3: trk fx → synth → piano → auto → trk fx...
+    /// Cycle through ALL tabs in buffer 3: trk fx → synth → inst config → piano → auto → trk fx...
     pub fn cycle_tab(&mut self) {
         if self.focused_pane != Pane::ClipView { return; }
 
@@ -384,9 +443,14 @@ impl NavState {
             (ClipViewFocus::FxPanel, FxPanelTab::TrackFx, _) => {
                 self.clip_view.fx_panel_tab = FxPanelTab::Synth;
             }
-            // FX panel: synth → piano roll
+            // FX panel: synth → inst config
             (ClipViewFocus::FxPanel, FxPanelTab::Synth, _) => {
                 self.clip_view.focus = ClipViewFocus::PianoRoll;
+                self.clip_view.clip_tab = ClipTab::InstConfig;
+                self.clip_view.inst_config_cursor = 0;
+            }
+            // Inst config → piano roll
+            (ClipViewFocus::PianoRoll, _, ClipTab::InstConfig) => {
                 self.clip_view.clip_tab = ClipTab::PianoRoll;
                 self.clip_view.piano_roll.focus = PianoRollFocus::Navigation;
                 self.clip_view.piano_roll.column = 0;
@@ -478,6 +542,8 @@ impl NavState {
             InstrumentType::Synth => "synth",
             InstrumentType::DrumRack => "drums",
             InstrumentType::DX7 => "dx7",
+            InstrumentType::Jupiter8 => "jup8",
+            InstrumentType::Odyssey => "odyss",
             InstrumentType::Sampler => "smplr",
         };
 
@@ -500,6 +566,12 @@ impl NavState {
             }
             InstrumentType::DX7 => {
                 phosphor_dsp::dx7::PARAM_DEFAULTS.to_vec()
+            }
+            InstrumentType::Jupiter8 => {
+                phosphor_dsp::jupiter::PARAM_DEFAULTS.to_vec()
+            }
+            InstrumentType::Odyssey => {
+                phosphor_dsp::odyssey::PARAM_DEFAULTS.to_vec()
             }
         };
         // Sync the initial armed state to audio
@@ -760,13 +832,16 @@ mod tests {
         nav.focused_pane = Pane::ClipView;
         nav.clip_view.focus = ClipViewFocus::FxPanel;
 
-        // Tab cycles: trk fx → synth → piano → auto → trk fx
+        // Tab cycles: trk fx → synth → inst config → piano → auto → trk fx
         assert_eq!(nav.clip_view.fx_panel_tab, FxPanelTab::TrackFx);
         nav.cycle_tab();
         assert_eq!(nav.clip_view.fx_panel_tab, FxPanelTab::Synth);
         nav.cycle_tab();
-        // Now switches to piano roll
+        // Now switches to inst config
         assert_eq!(nav.clip_view.focus, ClipViewFocus::PianoRoll);
+        assert_eq!(nav.clip_view.clip_tab, ClipTab::InstConfig);
+        nav.cycle_tab();
+        // Now switches to piano roll
         assert_eq!(nav.clip_view.clip_tab, ClipTab::PianoRoll);
         nav.cycle_tab();
         assert_eq!(nav.clip_view.clip_tab, ClipTab::Automation);

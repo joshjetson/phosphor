@@ -5,5 +5,7 @@
 
 pub mod drum_rack;
 pub mod dx7;
+pub mod jupiter;
+pub mod odyssey;
 pub mod oscillator;
 pub mod synth;
