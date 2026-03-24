@@ -56,10 +56,17 @@ pub const PARAM_DEFAULTS: [f32; PARAM_COUNT] = [
 
 // ── Patches ──
 
-pub const PATCH_COUNT: usize = 14;
+pub const PATCH_COUNT: usize = 42;
 pub const PATCH_NAMES: [&str; PATCH_COUNT] = [
     "Pad", "Brass", "Bass", "SyncLd", "String", "Init",
     "ElecPno", "Pluck", "Bell", "Organ", "PWMPad", "UniLead", "KeyBass", "Ambient",
+    "Sweep", "Stab", "Harp", "SynBass", "SubBass", "Acid",
+    "Choir", "Vox", "Whstle", "PWMLd", "XMBell", "Seq",
+    "Reso", "Dtune",
+    // ── new patches ──
+    "Clav", "HlwPad", "PwrPlk", "LoStr", "Flute", "Tuba",
+    "SawPad", "Clrnet", "Cello", "Xylo", "FnkBas", "WrmLd",
+    "Noise", "CarSyn",
 ];
 
 /// Discrete parameter labels for the UI.
@@ -289,6 +296,408 @@ fn presets() -> [JupiterPatch; PATCH_COUNT] {
             env2_a: 2.0, env2_d: 1.5, env2_s: 0.7, env2_r: 3.0,
             lfo_rate: 0.15, lfo_wave: 0, lfo_to_pitch: 0.0, lfo_to_filter: 0.3, lfo_delay: 0.5,
             voice_mode: 3, portamento: 0.15,
+        },
+        // ── NEW PATCHES ──
+        // Sweep — slow resonant filter sweep (Tangerine Dream / Jarre sequencer territory)
+        JupiterPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: 6.0,
+            vco1_level: 0.7, vco2_level: 0.7,
+            pulse_width: 0.5, sync: false, xmod: 0.0,
+            cutoff: 0.15, resonance: 0.65, hpf_cutoff: 0.0, slope_24: true,
+            env_mod: 0.7, env_polarity: 1.0, key_follow: 0.3,
+            env1_a: 2.0, env1_d: 3.0, env1_s: 0.3, env1_r: 1.5,
+            env2_a: 0.01, env2_d: 0.0, env2_s: 1.0, env2_r: 0.5,
+            lfo_rate: 0.08, lfo_wave: 0, lfo_to_pitch: 0.0, lfo_to_filter: 0.15, lfo_delay: 0.0,
+            voice_mode: 2, portamento: 0.0,
+        },
+        // Stab — short rhythmic brass stab (Duran Duran "Rio" style)
+        JupiterPatch {
+            vco1_wave: 1, vco2_wave: 2, detune_cents: 5.0,
+            vco1_level: 0.8, vco2_level: 0.7,
+            pulse_width: 0.4, sync: false, xmod: 0.0,
+            cutoff: 0.3, resonance: 0.2, hpf_cutoff: 0.08, slope_24: true,
+            env_mod: 0.8, env_polarity: 1.0, key_follow: 0.5,
+            env1_a: 0.001, env1_d: 0.12, env1_s: 0.0, env1_r: 0.08,
+            env2_a: 0.001, env2_d: 0.15, env2_s: 0.0, env2_r: 0.06,
+            lfo_rate: 1.0, lfo_wave: 0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_delay: 0.0,
+            voice_mode: 2, portamento: 0.0,
+        },
+        // Harp — ethereal plucked harp (Howard Jones style)
+        JupiterPatch {
+            vco1_wave: 0, vco2_wave: 1, detune_cents: 3.0,
+            vco1_level: 0.5, vco2_level: 0.7,
+            pulse_width: 0.5, sync: false, xmod: 0.0,
+            cutoff: 0.45, resonance: 0.15, hpf_cutoff: 0.15, slope_24: false,
+            env_mod: 0.4, env_polarity: 1.0, key_follow: 0.8,
+            env1_a: 0.001, env1_d: 0.6, env1_s: 0.0, env1_r: 0.8,
+            env2_a: 0.001, env2_d: 0.8, env2_s: 0.0, env2_r: 1.0,
+            lfo_rate: 1.0, lfo_wave: 0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_delay: 0.0,
+            voice_mode: 2, portamento: 0.0,
+        },
+        // SynBass — sync bass (Thompson Twins style growl bass)
+        JupiterPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: 0.0,
+            vco1_level: 0.6, vco2_level: 0.9,
+            pulse_width: 0.5, sync: true, xmod: 0.0,
+            cutoff: 0.25, resonance: 0.35, hpf_cutoff: 0.0, slope_24: true,
+            env_mod: 0.65, env_polarity: 1.0, key_follow: 0.3,
+            env1_a: 0.001, env1_d: 0.2, env1_s: 0.15, env1_r: 0.1,
+            env2_a: 0.001, env2_d: 0.25, env2_s: 0.4, env2_r: 0.08,
+            lfo_rate: 1.0, lfo_wave: 0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_delay: 0.0,
+            voice_mode: 0, portamento: 0.0,
+        },
+        // SubBass — deep sub bass (triangle fundamental, barely any harmonics)
+        JupiterPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 2.0,
+            vco1_level: 1.0, vco2_level: 0.7,
+            pulse_width: 0.5, sync: false, xmod: 0.0,
+            cutoff: 0.2, resonance: 0.3, hpf_cutoff: 0.0, slope_24: true,
+            env_mod: 0.2, env_polarity: 1.0, key_follow: 0.15,
+            env1_a: 0.005, env1_d: 0.4, env1_s: 0.7, env1_r: 0.12,
+            env2_a: 0.005, env2_d: 0.0, env2_s: 1.0, env2_r: 0.08,
+            lfo_rate: 1.0, lfo_wave: 0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_delay: 0.0,
+            voice_mode: 0, portamento: 0.0,
+        },
+        // Acid — TB-303-ish acid bass (resonant squelch, 24dB filter, glide)
+        JupiterPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: 0.0,
+            vco1_level: 0.9, vco2_level: 0.0,
+            pulse_width: 0.5, sync: false, xmod: 0.0,
+            cutoff: 0.12, resonance: 0.75, hpf_cutoff: 0.0, slope_24: true,
+            env_mod: 0.85, env_polarity: 1.0, key_follow: 0.35,
+            env1_a: 0.001, env1_d: 0.18, env1_s: 0.0, env1_r: 0.08,
+            env2_a: 0.001, env2_d: 0.3, env2_s: 0.5, env2_r: 0.05,
+            lfo_rate: 1.0, lfo_wave: 0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_delay: 0.0,
+            voice_mode: 0, portamento: 0.12,
+        },
+        // Choir — bright analog choir (Depeche Mode "Somebody" style)
+        JupiterPatch {
+            vco1_wave: 2, vco2_wave: 2, detune_cents: 8.0,
+            vco1_level: 0.7, vco2_level: 0.7,
+            pulse_width: 0.35, sync: false, xmod: 0.0,
+            cutoff: 0.7, resonance: 0.25, hpf_cutoff: 0.2, slope_24: false,
+            env_mod: 0.1, env_polarity: 1.0, key_follow: 0.6,
+            env1_a: 0.6, env1_d: 0.8, env1_s: 0.8, env1_r: 0.8,
+            env2_a: 0.6, env2_d: 0.5, env2_s: 0.9, env2_r: 0.7,
+            lfo_rate: 0.25, lfo_wave: 0, lfo_to_pitch: 0.01, lfo_to_filter: 0.05, lfo_delay: 0.3,
+            voice_mode: 3, portamento: 0.0,
+        },
+        // Vox — vocal formant-like (resonant filter, Tears for Fears territory)
+        JupiterPatch {
+            vco1_wave: 1, vco2_wave: 2, detune_cents: 5.0,
+            vco1_level: 0.6, vco2_level: 0.8,
+            pulse_width: 0.3, sync: false, xmod: 0.0,
+            cutoff: 0.4, resonance: 0.55, hpf_cutoff: 0.15, slope_24: false,
+            env_mod: 0.35, env_polarity: 1.0, key_follow: 0.7,
+            env1_a: 0.25, env1_d: 0.6, env1_s: 0.5, env1_r: 0.6,
+            env2_a: 0.2, env2_d: 0.4, env2_s: 0.8, env2_r: 0.5,
+            lfo_rate: 5.5, lfo_wave: 0, lfo_to_pitch: 0.0, lfo_to_filter: 0.08, lfo_delay: 0.4,
+            voice_mode: 2, portamento: 0.0,
+        },
+        // Whstle — pure sine-like whistle lead (Vangelis "Chariots of Fire" style)
+        JupiterPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 0.0,
+            vco1_level: 0.9, vco2_level: 0.0,
+            pulse_width: 0.5, sync: false, xmod: 0.0,
+            cutoff: 0.3, resonance: 0.0, hpf_cutoff: 0.05, slope_24: true,
+            env_mod: 0.15, env_polarity: 1.0, key_follow: 0.9,
+            env1_a: 0.15, env1_d: 0.3, env1_s: 0.7, env1_r: 0.3,
+            env2_a: 0.1, env2_d: 0.0, env2_s: 1.0, env2_r: 0.2,
+            lfo_rate: 5.0, lfo_wave: 0, lfo_to_pitch: 0.025, lfo_to_filter: 0.0, lfo_delay: 0.5,
+            voice_mode: 0, portamento: 0.1,
+        },
+        // PWMLd — pulse width modulation lead (OMD / Depeche Mode lead style)
+        JupiterPatch {
+            vco1_wave: 2, vco2_wave: 2, detune_cents: 7.0,
+            vco1_level: 0.8, vco2_level: 0.8,
+            pulse_width: 0.3, sync: false, xmod: 0.0,
+            cutoff: 0.55, resonance: 0.15, hpf_cutoff: 0.05, slope_24: true,
+            env_mod: 0.3, env_polarity: 1.0, key_follow: 0.6,
+            env1_a: 0.01, env1_d: 0.3, env1_s: 0.5, env1_r: 0.25,
+            env2_a: 0.01, env2_d: 0.0, env2_s: 1.0, env2_r: 0.3,
+            lfo_rate: 0.4, lfo_wave: 0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_delay: 0.0,
+            voice_mode: 1, portamento: 0.06,
+        },
+        // XMBell — cross-mod ring bell (aggressive metallic, Jarre "Oxygene" style)
+        JupiterPatch {
+            vco1_wave: 0, vco2_wave: 1, detune_cents: 500.0,
+            vco1_level: 0.5, vco2_level: 0.5,
+            pulse_width: 0.5, sync: false, xmod: 0.6,
+            cutoff: 0.8, resonance: 0.1, hpf_cutoff: 0.08, slope_24: false,
+            env_mod: 0.2, env_polarity: -1.0, key_follow: 0.8,
+            env1_a: 0.001, env1_d: 1.8, env1_s: 0.0, env1_r: 1.5,
+            env2_a: 0.001, env2_d: 2.0, env2_s: 0.0, env2_r: 2.0,
+            lfo_rate: 0.5, lfo_wave: 0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_delay: 0.0,
+            voice_mode: 2, portamento: 0.0,
+        },
+        // Seq — tight sequence-friendly pluck (Tangerine Dream / Berlin school)
+        JupiterPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: 4.0,
+            vco1_level: 0.8, vco2_level: 0.6,
+            pulse_width: 0.5, sync: false, xmod: 0.0,
+            cutoff: 0.25, resonance: 0.4, hpf_cutoff: 0.0, slope_24: true,
+            env_mod: 0.55, env_polarity: 1.0, key_follow: 0.6,
+            env1_a: 0.001, env1_d: 0.15, env1_s: 0.0, env1_r: 0.1,
+            env2_a: 0.001, env2_d: 0.18, env2_s: 0.0, env2_r: 0.08,
+            lfo_rate: 1.0, lfo_wave: 0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_delay: 0.0,
+            voice_mode: 2, portamento: 0.0,
+        },
+        // Reso — screaming resonant sweep (classic Jupiter-8 factory reso demo)
+        JupiterPatch {
+            vco1_wave: 1, vco2_wave: 3, detune_cents: 0.0,
+            vco1_level: 0.7, vco2_level: 0.2,
+            pulse_width: 0.5, sync: false, xmod: 0.0,
+            cutoff: 0.2, resonance: 0.85, hpf_cutoff: 0.0, slope_24: true,
+            env_mod: 0.9, env_polarity: 1.0, key_follow: 0.5,
+            env1_a: 0.01, env1_d: 1.5, env1_s: 0.0, env1_r: 0.8,
+            env2_a: 0.01, env2_d: 0.0, env2_s: 1.0, env2_r: 0.5,
+            lfo_rate: 0.1, lfo_wave: 0, lfo_to_pitch: 0.0, lfo_to_filter: 0.2, lfo_delay: 0.0,
+            voice_mode: 2, portamento: 0.0,
+        },
+        // Dtune — massively detuned poly (Duran Duran "Save a Prayer" style)
+        JupiterPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: 15.0,
+            vco1_level: 0.7, vco2_level: 0.7,
+            pulse_width: 0.5, sync: false, xmod: 0.0,
+            cutoff: 0.55, resonance: 0.1, hpf_cutoff: 0.1, slope_24: true,
+            env_mod: 0.2, env_polarity: 1.0, key_follow: 0.5,
+            env1_a: 0.5, env1_d: 0.8, env1_s: 0.7, env1_r: 1.2,
+            env2_a: 0.3, env2_d: 0.5, env2_s: 0.85, env2_r: 1.0,
+            lfo_rate: 0.2, lfo_wave: 0, lfo_to_pitch: 0.008, lfo_to_filter: 0.05, lfo_delay: 0.3,
+            voice_mode: 3, portamento: 0.0,
+        },
+        // ── NEW PATCHES (batch 3) ──
+        // Sources: Roland JP-8 factory patch sheets, Roland Cloud JUPITER-8 Model
+        // Expansion programming guide (articles.roland.com), Sound on Sound
+        // "Synth Secrets" series by Gordon Reid, Arturia Jup-8 V manual.
+
+        // Clav — JP-8 factory patch #21 CLAV
+        // Source: Roland factory patch sheet #21; percussive pulse-wave clavinet.
+        // Pulse waves with very short filter+amp envelopes, moderate resonance,
+        // HPF engaged for nasal quality. 24dB slope for sharp cutoff.
+        JupiterPatch {
+            vco1_wave: 2, vco2_wave: 2, detune_cents: 3.0,
+            vco1_level: 0.8, vco2_level: 0.7,
+            pulse_width: 0.35, sync: false, xmod: 0.0,
+            cutoff: 0.3, resonance: 0.35, hpf_cutoff: 0.2, slope_24: true,
+            env_mod: 0.6, env_polarity: 1.0, key_follow: 0.7,
+            env1_a: 0.001, env1_d: 0.12, env1_s: 0.0, env1_r: 0.08,
+            env2_a: 0.001, env2_d: 0.2, env2_s: 0.0, env2_r: 0.1,
+            lfo_rate: 1.0, lfo_wave: 0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_delay: 0.0,
+            voice_mode: 2, portamento: 0.0,
+        },
+        // HlwPad — Hollow Pad
+        // Source: Roland Cloud JUPITER-8 Model Expansion programming guide.
+        // Both pulse waves, Env-1 inverted with fast attack/short decay modulating
+        // VCO-1 pitch for hollow onset. Mixer 180-200, fine tune 10, VCF ~750,
+        // Env-2 A=400 S=full R=500-550. Optional LFO PWM at rate 100-110.
+        JupiterPatch {
+            vco1_wave: 2, vco2_wave: 2, detune_cents: 10.0,
+            vco1_level: 0.75, vco2_level: 0.75,
+            pulse_width: 0.43, sync: false, xmod: 0.0,
+            cutoff: 0.75, resonance: 0.1, hpf_cutoff: 0.05, slope_24: true,
+            env_mod: 0.1, env_polarity: -1.0, key_follow: 0.5,
+            env1_a: 0.001, env1_d: 0.25, env1_s: 0.0, env1_r: 0.3,
+            env2_a: 0.4, env2_d: 0.0, env2_s: 1.0, env2_r: 0.55,
+            lfo_rate: 0.4, lfo_wave: 0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_delay: 0.0,
+            voice_mode: 2, portamento: 0.0,
+        },
+        // PwrPlk — Power Pluck
+        // Source: Roland Cloud JUPITER-8 Model Expansion programming guide.
+        // Both saw, mixer 200/200, fine tune 8, VCF 750 (0.75), Env-1 mod 230-250
+        // (normalized ~0.9), Env-2 A=0 S=0 D/R=500-600, Env-1 A=0 S=0 D/R=470.
+        // Described as "authentic when dry" — no effects needed.
+        JupiterPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: 8.0,
+            vco1_level: 0.8, vco2_level: 0.8,
+            pulse_width: 0.5, sync: false, xmod: 0.0,
+            cutoff: 0.75, resonance: 0.15, hpf_cutoff: 0.0, slope_24: true,
+            env_mod: 0.9, env_polarity: 1.0, key_follow: 0.6,
+            env1_a: 0.001, env1_d: 0.47, env1_s: 0.0, env1_r: 0.47,
+            env2_a: 0.001, env2_d: 0.55, env2_s: 0.0, env2_r: 0.55,
+            lfo_rate: 1.0, lfo_wave: 0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_delay: 0.0,
+            voice_mode: 2, portamento: 0.0,
+        },
+        // LoStr — JP-8 factory patch #31 LO STRINGS
+        // Source: Roland factory patch sheet #31; Roland Cloud programming guide
+        // "Analog Strings" section. VCO-1 saw, VCO-2 pulse with PW manual ~110
+        // (normalized 0.43), fine tune +6, mixer 200/200, VCF 800-900 (0.85),
+        // HPF ~300 (0.3), Env-2 A=450 S=full R=500. 12dB slope for warmth.
+        // The classic "JP Strings" sound used in countless records.
+        JupiterPatch {
+            vco1_wave: 1, vco2_wave: 2, detune_cents: 6.0,
+            vco1_level: 0.8, vco2_level: 0.8,
+            pulse_width: 0.43, sync: false, xmod: 0.0,
+            cutoff: 0.85, resonance: 0.08, hpf_cutoff: 0.3, slope_24: false,
+            env_mod: 0.1, env_polarity: 1.0, key_follow: 0.6,
+            env1_a: 0.45, env1_d: 0.5, env1_s: 0.9, env1_r: 0.5,
+            env2_a: 0.45, env2_d: 0.0, env2_s: 1.0, env2_r: 0.5,
+            lfo_rate: 4.5, lfo_wave: 0, lfo_to_pitch: 0.012, lfo_to_filter: 0.0, lfo_delay: 0.6,
+            voice_mode: 2, portamento: 0.0,
+        },
+        // Flute — JP-8 factory patch #82 FLUTE
+        // Source: Roland factory patch sheet #82; Sound on Sound "Synthesizing
+        // Simple Flutes" by Gordon Reid. Triangle wave (near-sine fundamental),
+        // light noise for breath. Filter at ~2kHz region (0.4 normalized) with
+        // keyboard tracking ~65%, light resonance for edge. Fast filter attack
+        // peaking before amp. Vibrato via LFO at 5-6Hz with delay.
+        JupiterPatch {
+            vco1_wave: 0, vco2_wave: 3, detune_cents: 0.0,
+            vco1_level: 0.9, vco2_level: 0.15,
+            pulse_width: 0.5, sync: false, xmod: 0.0,
+            cutoff: 0.4, resonance: 0.1, hpf_cutoff: 0.08, slope_24: true,
+            env_mod: 0.2, env_polarity: 1.0, key_follow: 0.65,
+            env1_a: 0.02, env1_d: 0.3, env1_s: 0.6, env1_r: 0.15,
+            env2_a: 0.08, env2_d: 0.0, env2_s: 1.0, env2_r: 0.12,
+            lfo_rate: 5.5, lfo_wave: 0, lfo_to_pitch: 0.02, lfo_to_filter: 0.05, lfo_delay: 0.5,
+            voice_mode: 0, portamento: 0.05,
+        },
+        // Tuba — deep brass, JP-8 factory patch #35 LO BRASS territory
+        // Source: Roland factory patch sheet #35 LO BRASS; Sound on Sound "Synth
+        // Secrets" Part 25 (synthesizing brass). Saw waves for harmonic-rich brass
+        // timbre. Low VCF cutoff (~350 = 0.35) with strong env mod (700-750 = 0.75).
+        // Env-1 inverted with fast decay for downward pitch transient on attack
+        // (mod ~10 = small pitch dip). Env-2 A=180, S=full, R=180.
+        // Solo mode, deeper range implied by patch name.
+        JupiterPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: 5.0,
+            vco1_level: 0.9, vco2_level: 0.8,
+            pulse_width: 0.5, sync: false, xmod: 0.0,
+            cutoff: 0.3, resonance: 0.2, hpf_cutoff: 0.0, slope_24: true,
+            env_mod: 0.75, env_polarity: 1.0, key_follow: 0.3,
+            env1_a: 0.01, env1_d: 0.35, env1_s: 0.6, env1_r: 0.25,
+            env2_a: 0.18, env2_d: 0.0, env2_s: 1.0, env2_r: 0.18,
+            lfo_rate: 5.0, lfo_wave: 0, lfo_to_pitch: 0.015, lfo_to_filter: 0.0, lfo_delay: 0.6,
+            voice_mode: 0, portamento: 0.0,
+        },
+        // SawPad — pure saw pad (Roland Cloud "Smooth Pad" recipe)
+        // Source: Roland Cloud JUPITER-8 Model Expansion programming guide.
+        // Both saw, mixer 200/200, fine tune +/-7, VCF 600-700 (0.65),
+        // Env mod ~70 assigned to Env-2, Env-2 A=400 R=500-550 S=max.
+        // No HPF, 24dB slope. Classic Jupiter warmth.
+        JupiterPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: 7.0,
+            vco1_level: 0.8, vco2_level: 0.8,
+            pulse_width: 0.5, sync: false, xmod: 0.0,
+            cutoff: 0.65, resonance: 0.15, hpf_cutoff: 0.0, slope_24: true,
+            env_mod: 0.25, env_polarity: 1.0, key_follow: 0.5,
+            env1_a: 0.4, env1_d: 0.8, env1_s: 0.85, env1_r: 0.55,
+            env2_a: 0.4, env2_d: 0.0, env2_s: 1.0, env2_r: 0.55,
+            lfo_rate: 0.8, lfo_wave: 0, lfo_to_pitch: 0.01, lfo_to_filter: 0.0, lfo_delay: 0.4,
+            voice_mode: 2, portamento: 0.0,
+        },
+        // Clrnet — JP-8 factory patch #81 CLARINET
+        // Source: Roland factory patch sheet #81; Sound on Sound "Synth Secrets"
+        // clarinet synthesis. Square/pulse wave is the classic clarinet starting
+        // point (odd harmonics). Narrow pulse width ~0.3 for hollow clarinet
+        // character. Moderate filter with key follow for natural brightness
+        // tracking. Vibrato delayed, solo mode with portamento.
+        JupiterPatch {
+            vco1_wave: 3, vco2_wave: 3, detune_cents: 0.0,
+            vco1_level: 0.8, vco2_level: 0.15,
+            pulse_width: 0.5, sync: false, xmod: 0.0,
+            cutoff: 0.45, resonance: 0.15, hpf_cutoff: 0.05, slope_24: true,
+            env_mod: 0.25, env_polarity: 1.0, key_follow: 0.7,
+            env1_a: 0.03, env1_d: 0.2, env1_s: 0.7, env1_r: 0.12,
+            env2_a: 0.05, env2_d: 0.0, env2_s: 1.0, env2_r: 0.1,
+            lfo_rate: 5.5, lfo_wave: 0, lfo_to_pitch: 0.015, lfo_to_filter: 0.03, lfo_delay: 0.5,
+            voice_mode: 0, portamento: 0.05,
+        },
+        // Cello — JP-8 factory patch #84 CELLO
+        // Source: Roland factory patch sheet #84. Saw wave for rich bowed string
+        // harmonics. Low HPF to remove rumble, moderate filter with key follow.
+        // Slow attack for bowed onset, full sustain, moderate release.
+        // Solo mode with gentle portamento for legato slides.
+        JupiterPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: 3.0,
+            vco1_level: 0.8, vco2_level: 0.6,
+            pulse_width: 0.5, sync: false, xmod: 0.0,
+            cutoff: 0.5, resonance: 0.15, hpf_cutoff: 0.1, slope_24: false,
+            env_mod: 0.2, env_polarity: 1.0, key_follow: 0.5,
+            env1_a: 0.3, env1_d: 0.5, env1_s: 0.8, env1_r: 0.4,
+            env2_a: 0.25, env2_d: 0.3, env2_s: 0.9, env2_r: 0.35,
+            lfo_rate: 5.0, lfo_wave: 0, lfo_to_pitch: 0.015, lfo_to_filter: 0.0, lfo_delay: 0.6,
+            voice_mode: 0, portamento: 0.08,
+        },
+        // Xylo — JP-8 factory patch #26 XYLO (xylophone)
+        // Source: Roland factory patch sheet #26. Triangle waves for pure,
+        // bell-like fundamental. Very short envelopes (percussive mallet strike).
+        // High key follow so higher notes are brighter. No VCO detune for
+        // clean pitch. Cross-mod adds metallic inharmonic content.
+        JupiterPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 0.0,
+            vco1_level: 0.7, vco2_level: 0.5,
+            pulse_width: 0.5, sync: false, xmod: 0.15,
+            cutoff: 0.6, resonance: 0.05, hpf_cutoff: 0.1, slope_24: true,
+            env_mod: 0.3, env_polarity: 1.0, key_follow: 0.9,
+            env1_a: 0.001, env1_d: 0.4, env1_s: 0.0, env1_r: 0.3,
+            env2_a: 0.001, env2_d: 0.5, env2_s: 0.0, env2_r: 0.4,
+            lfo_rate: 1.0, lfo_wave: 0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_delay: 0.0,
+            voice_mode: 2, portamento: 0.0,
+        },
+        // FnkBas — JP-8 factory patch #13 JUICY FUNK
+        // Source: Roland factory patch sheet #13. Funky resonant bass with
+        // sharp filter envelope. Single saw for tight low end, high resonance
+        // for squelchy character. Very short envelopes, solo mode.
+        // 24dB slope for aggressive filter sweep.
+        JupiterPatch {
+            vco1_wave: 1, vco2_wave: 3, detune_cents: 0.0,
+            vco1_level: 0.9, vco2_level: 0.3,
+            pulse_width: 0.5, sync: false, xmod: 0.0,
+            cutoff: 0.18, resonance: 0.6, hpf_cutoff: 0.0, slope_24: true,
+            env_mod: 0.7, env_polarity: 1.0, key_follow: 0.35,
+            env1_a: 0.001, env1_d: 0.15, env1_s: 0.1, env1_r: 0.08,
+            env2_a: 0.001, env2_d: 0.25, env2_s: 0.3, env2_r: 0.08,
+            lfo_rate: 1.0, lfo_wave: 0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_delay: 0.0,
+            voice_mode: 0, portamento: 0.06,
+        },
+        // WrmLd — warm lead (JP-8 factory patch #17 HAMMER LEAD territory)
+        // Source: Roland factory patch sheet #17. Saw+pulse combination for a
+        // rich, warm solo lead. Moderate filter with env mod for expressive
+        // attack. Unison mode for fat sound, gentle portamento, delayed vibrato.
+        // 12dB slope for smoother, warmer filtering.
+        JupiterPatch {
+            vco1_wave: 1, vco2_wave: 2, detune_cents: 7.0,
+            vco1_level: 0.7, vco2_level: 0.7,
+            pulse_width: 0.4, sync: false, xmod: 0.0,
+            cutoff: 0.5, resonance: 0.2, hpf_cutoff: 0.03, slope_24: false,
+            env_mod: 0.35, env_polarity: 1.0, key_follow: 0.5,
+            env1_a: 0.01, env1_d: 0.4, env1_s: 0.6, env1_r: 0.3,
+            env2_a: 0.01, env2_d: 0.0, env2_s: 1.0, env2_r: 0.25,
+            lfo_rate: 5.0, lfo_wave: 0, lfo_to_pitch: 0.02, lfo_to_filter: 0.0, lfo_delay: 0.5,
+            voice_mode: 1, portamento: 0.08,
+        },
+        // Noise — textural noise wash (JP-8 factory patch #66 SOLAR WINDS)
+        // Source: Roland factory patch sheet #66 SOLAR WINDS; Jupiter-8 noise
+        // generator is on VCO-2 wave 3. Filtered noise with slow LFO modulating
+        // filter for evolving texture. Long envelopes, resonance for tonal
+        // character. 12dB slope for gentler rolloff.
+        JupiterPatch {
+            vco1_wave: 0, vco2_wave: 3, detune_cents: 0.0,
+            vco1_level: 0.3, vco2_level: 0.9,
+            pulse_width: 0.5, sync: false, xmod: 0.0,
+            cutoff: 0.4, resonance: 0.45, hpf_cutoff: 0.1, slope_24: false,
+            env_mod: 0.2, env_polarity: 1.0, key_follow: 0.2,
+            env1_a: 1.5, env1_d: 2.0, env1_s: 0.5, env1_r: 2.0,
+            env2_a: 2.0, env2_d: 1.0, env2_s: 0.7, env2_r: 3.0,
+            lfo_rate: 0.1, lfo_wave: 0, lfo_to_pitch: 0.0, lfo_to_filter: 0.3, lfo_delay: 0.0,
+            voice_mode: 2, portamento: 0.0,
+        },
+        // CarSyn — JP-8 factory patch #15 CARS SYNC (The Cars "Let's Go" style)
+        // Source: Roland factory patch sheet #15 CARS SYNC. Hard sync lead with
+        // filter envelope sweep for the classic sync scream. VCO-2 synced to
+        // VCO-1, filter envelope sweeps harmonics. Solo mode, portamento for
+        // pitch slides. Bright, aggressive character.
+        JupiterPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: 0.0,
+            vco1_level: 0.4, vco2_level: 0.9,
+            pulse_width: 0.5, sync: true, xmod: 0.0,
+            cutoff: 0.55, resonance: 0.2, hpf_cutoff: 0.05, slope_24: true,
+            env_mod: 0.7, env_polarity: 1.0, key_follow: 0.5,
+            env1_a: 0.01, env1_d: 0.5, env1_s: 0.2, env1_r: 0.25,
+            env2_a: 0.005, env2_d: 0.0, env2_s: 1.0, env2_r: 0.2,
+            lfo_rate: 5.5, lfo_wave: 0, lfo_to_pitch: 0.025, lfo_to_filter: 0.0, lfo_delay: 0.4,
+            voice_mode: 0, portamento: 0.1,
         },
     ]
 }
@@ -1176,7 +1585,8 @@ mod tests {
             s.init(44100.0, 64);
             let patch_val = patch_idx as f32 / (PATCH_COUNT as f32 - 0.01);
             s.set_parameter(P_PATCH, patch_val);
-            let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 8);
+            // Use enough buffers for slow-attack patches (up to ~3s attack)
+            let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 2500);
             let peak = out.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
             assert!(peak > 0.001, "Patch {} ({}) should produce sound, peak={peak}",
                 patch_idx, PATCH_NAMES[patch_idx]);

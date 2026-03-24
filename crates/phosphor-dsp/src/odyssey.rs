@@ -56,10 +56,14 @@ pub const PARAM_DEFAULTS: [f32; PARAM_COUNT] = [
 
 // ── Patches ──
 
-pub const PATCH_COUNT: usize = 15;
+pub const PATCH_COUNT: usize = 44;
 pub const PATCH_NAMES: [&str; PATCH_COUNT] = [
     "Bass", "Funk", "SyncLd", "Bells", "Pad", "S&H", "Zap",
     "HwkFunk", "Atmos", "Cars", "SciFi", "Pluck", "ThkLead", "FltSwp", "NoiseHt",
+    "Duo", "SnarDrm", "Kick", "Rezz", "Squelch", "Growl", "Wind",
+    "WahBass", "Stab", "Buzz", "Flute", "Trem", "Siren", "Brass", "Organ",
+    "Conga", "Tom", "Clap", "PWMBas", "Violin", "Oboe",
+    "Alarm", "Robot", "Whstlr", "Choir", "Sitar", "TrmTub", "Mrmbas", "Thremn",
 ];
 
 /// Discrete parameter labels for UI.
@@ -298,6 +302,439 @@ fn presets() -> [OdysseyPatch; PATCH_COUNT] {
             ar_a: 0.001, ar_r: 0.06, use_adsr_for_vca: false,
             lfo_rate: 1.0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
             portamento: 0.0,
+        },
+        // Duo — duophonic split: low voice bass + high voice lead (George Duke style)
+        // Two saws detuned an octave apart, moderate filter for body
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 1200.0,
+            vco1_level: 0.9, vco2_level: 0.7,
+            pulse_width: 0.5, sync: false, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 1, cutoff: 0.35, resonance: 0.2, hpf_cutoff: 0.0,
+            env_mod: 0.4, key_follow: 0.5,
+            adsr_a: 0.005, adsr_d: 0.3, adsr_s: 0.5, adsr_r: 0.2,
+            ar_a: 0.005, ar_r: 0.25, use_adsr_for_vca: false,
+            lfo_rate: 5.0, lfo_to_pitch: 0.015, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.06,
+        },
+        // SnarDrm — snare drum synthesis (noise burst + pitched VCO body)
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 0.0,
+            vco1_level: 0.5, vco2_level: 0.0,
+            pulse_width: 0.5, sync: false, ring_mod_level: 0.0, noise_level: 0.7,
+            filter_type: 2, cutoff: 0.55, resonance: 0.15, hpf_cutoff: 0.1,
+            env_mod: 0.8, key_follow: 0.0,
+            adsr_a: 0.001, adsr_d: 0.12, adsr_s: 0.0, adsr_r: 0.08,
+            ar_a: 0.001, ar_r: 0.1, use_adsr_for_vca: false,
+            lfo_rate: 1.0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.0,
+        },
+        // Kick — deep thud via self-oscillating filter as tone source
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 0.0,
+            vco1_level: 0.3, vco2_level: 0.0,
+            pulse_width: 0.5, sync: false, ring_mod_level: 0.0, noise_level: 0.1,
+            filter_type: 1, cutoff: 0.08, resonance: 0.95, hpf_cutoff: 0.0,
+            env_mod: 0.4, key_follow: 0.0,
+            adsr_a: 0.001, adsr_d: 0.15, adsr_s: 0.0, adsr_r: 0.1,
+            ar_a: 0.001, ar_r: 0.12, use_adsr_for_vca: false,
+            lfo_rate: 1.0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.0,
+        },
+        // Rezz — high-resonance sweep, Larry Fast / Synergy style
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 7.0,
+            vco1_level: 0.7, vco2_level: 0.7,
+            pulse_width: 0.5, sync: false, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 1, cutoff: 0.2, resonance: 0.8, hpf_cutoff: 0.0,
+            env_mod: 0.85, key_follow: 0.3,
+            adsr_a: 0.01, adsr_d: 0.8, adsr_s: 0.1, adsr_r: 0.5,
+            ar_a: 0.01, ar_r: 0.6, use_adsr_for_vca: true,
+            lfo_rate: 0.3, lfo_to_pitch: 0.0, lfo_to_filter: 0.15, lfo_to_pwm: 0.0,
+            portamento: 0.0,
+        },
+        // Squelch — acid-style squelchy bass (TB-303 territory on Odyssey)
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 0.0,
+            vco1_level: 0.9, vco2_level: 0.0,
+            pulse_width: 0.5, sync: false, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 1, cutoff: 0.12, resonance: 0.75, hpf_cutoff: 0.0,
+            env_mod: 0.9, key_follow: 0.4,
+            adsr_a: 0.001, adsr_d: 0.15, adsr_s: 0.0, adsr_r: 0.08,
+            ar_a: 0.001, ar_r: 0.12, use_adsr_for_vca: false,
+            lfo_rate: 1.0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.04,
+        },
+        // Growl — aggressive detuned sync lead (Edgar Winter style)
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 15.0,
+            vco1_level: 0.5, vco2_level: 1.0,
+            pulse_width: 0.5, sync: true, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 2, cutoff: 0.3, resonance: 0.35, hpf_cutoff: 0.0,
+            env_mod: 0.6, key_follow: 0.4,
+            adsr_a: 0.01, adsr_d: 0.35, adsr_s: 0.6, adsr_r: 0.2,
+            ar_a: 0.01, ar_r: 0.25, use_adsr_for_vca: false,
+            lfo_rate: 6.0, lfo_to_pitch: 0.04, lfo_to_filter: 0.2, lfo_to_pwm: 0.0,
+            portamento: 0.05,
+        },
+        // Wind — breathy texture (noise through resonant filter with slow sweep)
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 0.0,
+            vco1_level: 0.1, vco2_level: 0.0,
+            pulse_width: 0.5, sync: false, ring_mod_level: 0.0, noise_level: 0.9,
+            filter_type: 0, cutoff: 0.3, resonance: 0.5, hpf_cutoff: 0.1,
+            env_mod: 0.15, key_follow: 0.2,
+            adsr_a: 0.8, adsr_d: 0.5, adsr_s: 0.6, adsr_r: 1.5,
+            ar_a: 1.0, ar_r: 2.0, use_adsr_for_vca: true,
+            lfo_rate: 0.15, lfo_to_pitch: 0.0, lfo_to_filter: 0.35, lfo_to_pwm: 0.0,
+            portamento: 0.0,
+        },
+        // WahBass — auto-wah bass (Stevie Wonder / Herbie Hancock)
+        // High env_mod with short decay creates wah-like filter sweep on each note
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 1, detune_cents: -5.0,
+            vco1_level: 0.9, vco2_level: 0.6,
+            pulse_width: 0.35, sync: false, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 1, cutoff: 0.15, resonance: 0.55, hpf_cutoff: 0.0,
+            env_mod: 0.8, key_follow: 0.5,
+            adsr_a: 0.005, adsr_d: 0.2, adsr_s: 0.15, adsr_r: 0.12,
+            ar_a: 0.005, ar_r: 0.2, use_adsr_for_vca: false,
+            lfo_rate: 1.0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.0,
+        },
+        // Stab — short rhythmic stab (new wave / Ultravox style)
+        OdysseyPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: 3.0,
+            vco1_level: 0.8, vco2_level: 0.8,
+            pulse_width: 0.45, sync: false, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 2, cutoff: 0.5, resonance: 0.2, hpf_cutoff: 0.05,
+            env_mod: 0.5, key_follow: 0.5,
+            adsr_a: 0.001, adsr_d: 0.1, adsr_s: 0.0, adsr_r: 0.06,
+            ar_a: 0.001, ar_r: 0.08, use_adsr_for_vca: false,
+            lfo_rate: 1.0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.0,
+        },
+        // Buzz — harsh PWM texture (industrial / Throbbing Gristle territory)
+        OdysseyPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: 10.0,
+            vco1_level: 0.7, vco2_level: 0.7,
+            pulse_width: 0.15, sync: false, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 2, cutoff: 0.55, resonance: 0.3, hpf_cutoff: 0.0,
+            env_mod: 0.25, key_follow: 0.4,
+            adsr_a: 0.01, adsr_d: 0.3, adsr_s: 0.7, adsr_r: 0.3,
+            ar_a: 0.01, ar_r: 0.3, use_adsr_for_vca: true,
+            lfo_rate: 3.5, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_to_pwm: 0.6,
+            portamento: 0.0,
+        },
+        // Flute — gentle, breathy flute (prog rock, Genesis-era)
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 0.0,
+            vco1_level: 0.6, vco2_level: 0.0,
+            pulse_width: 0.5, sync: false, ring_mod_level: 0.0, noise_level: 0.08,
+            filter_type: 0, cutoff: 0.35, resonance: 0.1, hpf_cutoff: 0.12,
+            env_mod: 0.15, key_follow: 0.8,
+            adsr_a: 0.08, adsr_d: 0.2, adsr_s: 0.7, adsr_r: 0.15,
+            ar_a: 0.08, ar_r: 0.15, use_adsr_for_vca: true,
+            lfo_rate: 5.5, lfo_to_pitch: 0.02, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.03,
+        },
+        // Trem — tremolo lead (Tangerine Dream / Klaus Schulze style)
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 1, detune_cents: 5.0,
+            vco1_level: 0.7, vco2_level: 0.5,
+            pulse_width: 0.4, sync: false, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 0, cutoff: 0.45, resonance: 0.2, hpf_cutoff: 0.0,
+            env_mod: 0.3, key_follow: 0.5,
+            adsr_a: 0.01, adsr_d: 0.3, adsr_s: 0.6, adsr_r: 0.3,
+            ar_a: 0.01, ar_r: 0.3, use_adsr_for_vca: true,
+            lfo_rate: 7.0, lfo_to_pitch: 0.0, lfo_to_filter: 0.5, lfo_to_pwm: 0.0,
+            portamento: 0.0,
+        },
+        // Siren — rising pitch emergency siren effect
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 0.0,
+            vco1_level: 0.8, vco2_level: 0.0,
+            pulse_width: 0.5, sync: false, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 0, cutoff: 0.6, resonance: 0.15, hpf_cutoff: 0.0,
+            env_mod: 0.2, key_follow: 0.5,
+            adsr_a: 0.01, adsr_d: 0.3, adsr_s: 0.8, adsr_r: 0.5,
+            ar_a: 0.01, ar_r: 0.5, use_adsr_for_vca: true,
+            lfo_rate: 1.5, lfo_to_pitch: 0.5, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.3,
+        },
+        // Brass — punchy brass section (Herbie Hancock "Headhunters" era)
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 6.0,
+            vco1_level: 0.8, vco2_level: 0.8,
+            pulse_width: 0.5, sync: false, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 1, cutoff: 0.2, resonance: 0.15, hpf_cutoff: 0.0,
+            env_mod: 0.7, key_follow: 0.5,
+            adsr_a: 0.02, adsr_d: 0.15, adsr_s: 0.55, adsr_r: 0.15,
+            ar_a: 0.02, ar_r: 0.15, use_adsr_for_vca: false,
+            lfo_rate: 1.0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.0,
+        },
+        // Organ — cheesy combo organ (drawbar-esque pulse waves)
+        OdysseyPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: 1200.0,
+            vco1_level: 0.7, vco2_level: 0.5,
+            pulse_width: 0.5, sync: false, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 0, cutoff: 0.6, resonance: 0.05, hpf_cutoff: 0.05,
+            env_mod: 0.05, key_follow: 0.6,
+            adsr_a: 0.005, adsr_d: 0.1, adsr_s: 0.9, adsr_r: 0.05,
+            ar_a: 0.005, ar_r: 0.05, use_adsr_for_vca: false,
+            lfo_rate: 6.5, lfo_to_pitch: 0.01, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.0,
+        },
+        // ── New patches ──────────────────────────────────────────────
+        //
+        // Sources:
+        //   [PB81]  ARP Odyssey Patch Book, ARP Instruments Inc., 1981
+        //   [OM76]  ARP Odyssey MkII Owner's Manual, 1976
+        //   [KPB]   Korg ARP Odyssey Patchbook, 2017 (100 modern patches)
+        //   [SS]    Gordon Reid, "Synth Secrets", Sound on Sound, 1999-2004
+        //   [808]   Roland TR-808 circuit analysis (bridged-T tom/conga design)
+        //   [SOS]   Sound on Sound practical synthesis articles
+
+        // Conga — analog conga drum
+        // Source: [PB81] "Bigger Bass Drum & Tom Tom Solo" adapted for conga range;
+        // [808] bridged-T conga circuit: sine-like oscillator, fast pitch drop,
+        // ~400ms decay, no noise (congas are cleaner than toms), bandpass-like
+        // filtering via resonance. Played in upper register for conga pitch.
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 0.0,
+            vco1_level: 1.0, vco2_level: 0.0,
+            pulse_width: 0.5, sync: false, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 2, cutoff: 0.35, resonance: 0.55, hpf_cutoff: 0.1,
+            env_mod: 0.65, key_follow: 0.8,
+            adsr_a: 0.001, adsr_d: 0.4, adsr_s: 0.0, adsr_r: 0.3,
+            ar_a: 0.001, ar_r: 0.35, use_adsr_for_vca: false,
+            lfo_rate: 1.0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.0,
+        },
+        // Tom — analog tom drum
+        // Source: [808] TR-808 tom circuit: same bridged-T oscillator as conga but
+        // with added pink noise for body; [PB81] "Bigger Bass Drum & Tom Tom Solo"
+        // patch uses single VCO, fast ADSR decay, moderate noise, resonant filter.
+        // Longer decay than conga, noise adds the characteristic 808 tom "thud".
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 0.0,
+            vco1_level: 1.0, vco2_level: 0.0,
+            pulse_width: 0.5, sync: false, ring_mod_level: 0.0, noise_level: 0.25,
+            filter_type: 2, cutoff: 0.3, resonance: 0.45, hpf_cutoff: 0.05,
+            env_mod: 0.7, key_follow: 0.7,
+            adsr_a: 0.001, adsr_d: 0.5, adsr_s: 0.0, adsr_r: 0.4,
+            ar_a: 0.001, ar_r: 0.45, use_adsr_for_vca: false,
+            lfo_rate: 1.0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.0,
+        },
+        // Clap — synthetic hand clap
+        // Source: [808] TR-808 clap circuit: filtered noise burst with fast
+        // repeating envelope to simulate multiple hands; [KPB] modern percussion
+        // patches use noise through bandpass (resonant LPF + HPF). Short burst
+        // with ~200ms decay, mid-band filtered noise, slight reverb-like tail.
+        OdysseyPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: 0.0,
+            vco1_level: 0.0, vco2_level: 0.0,
+            pulse_width: 0.5, sync: false, ring_mod_level: 0.0, noise_level: 1.0,
+            filter_type: 0, cutoff: 0.45, resonance: 0.35, hpf_cutoff: 0.2,
+            env_mod: 0.3, key_follow: 0.0,
+            adsr_a: 0.001, adsr_d: 0.2, adsr_s: 0.0, adsr_r: 0.15,
+            ar_a: 0.001, ar_r: 0.2, use_adsr_for_vca: false,
+            lfo_rate: 1.0, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.0,
+        },
+        // PWMBas — pulse-width modulation bass
+        // Source: [KPB] Korg 2017 patchbook "PWM Bass" category; [OM76] owner's
+        // manual demonstrates PWM using LFO→pulse width for animated bass.
+        // Two pulse VCOs slightly detuned, LFO modulates pulse width for
+        // the characteristic hollow-to-thin cycling movement. 4035 Moog filter
+        // for deep, round low end typical of Odyssey PWM bass patches.
+        OdysseyPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: -5.0,
+            vco1_level: 0.8, vco2_level: 0.8,
+            pulse_width: 0.35, sync: false, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 1, cutoff: 0.22, resonance: 0.4, hpf_cutoff: 0.0,
+            env_mod: 0.55, key_follow: 0.3,
+            adsr_a: 0.005, adsr_d: 0.3, adsr_s: 0.3, adsr_r: 0.15,
+            ar_a: 0.005, ar_r: 0.2, use_adsr_for_vca: false,
+            lfo_rate: 2.5, lfo_to_pitch: 0.0, lfo_to_filter: 0.0, lfo_to_pwm: 0.6,
+            portamento: 0.0,
+        },
+        // Violin — solo violin
+        // Source: [PB81] "Solo Violin" patch; [SS] Gordon Reid "Synthesizing
+        // Bowed Strings" (SoS): sawtooth wave, body resonances at 300-700Hz,
+        // gentle HF roll-off (~9dB/oct above mid), delayed vibrato at ~5-6Hz,
+        // slow attack ~80-120ms to simulate bow grab. [SOS] "Practical Bowed-
+        // String Synthesis": Korg 700 violin used sawtooth 4', modest vibrato,
+        // tiny portamento. Single saw VCO, low-pass filtering to tame
+        // brightness, moderate resonance for body, slow attack for bow.
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 0.0,
+            vco1_level: 1.0, vco2_level: 0.0,
+            pulse_width: 0.5, sync: false, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 0, cutoff: 0.4, resonance: 0.2, hpf_cutoff: 0.08,
+            env_mod: 0.15, key_follow: 0.6,
+            adsr_a: 0.1, adsr_d: 0.2, adsr_s: 0.8, adsr_r: 0.2,
+            ar_a: 0.08, ar_r: 0.2, use_adsr_for_vca: true,
+            lfo_rate: 5.5, lfo_to_pitch: 0.025, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.05,
+        },
+        // Oboe — nasal reed tone
+        // Source: [SS] Gordon Reid "Synth Secrets" series on woodwinds: oboe
+        // timbre comes from narrow pulse width (~10-15%), creating the
+        // characteristic "nasal" or "pinched" quality. [OM76] Odyssey manual
+        // demonstrates pulse width for reed instruments. [PB81] "Clarinet &
+        // English Horn Duo" uses narrow pulse. Narrow PW, moderate filter
+        // with some resonance for the nasal peak, slow-ish attack for breath.
+        OdysseyPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: 2.0,
+            vco1_level: 0.9, vco2_level: 0.3,
+            pulse_width: 0.15, sync: false, ring_mod_level: 0.0, noise_level: 0.05,
+            filter_type: 0, cutoff: 0.38, resonance: 0.3, hpf_cutoff: 0.05,
+            env_mod: 0.2, key_follow: 0.6,
+            adsr_a: 0.06, adsr_d: 0.15, adsr_s: 0.75, adsr_r: 0.12,
+            ar_a: 0.05, ar_r: 0.12, use_adsr_for_vca: true,
+            lfo_rate: 5.0, lfo_to_pitch: 0.02, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.0,
+        },
+        // Alarm — emergency siren (two-tone)
+        // Source: [PB81] "Italian Siren" patch: uses LFO to modulate pitch of
+        // single VCO at ~2Hz rate for the characteristic European two-tone
+        // emergency siren. Square wave for harsh, cutting tone that carries.
+        // High filter cutoff, no resonance, fast gate for continuous tone.
+        OdysseyPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: 0.0,
+            vco1_level: 1.0, vco2_level: 0.0,
+            pulse_width: 0.5, sync: false, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 0, cutoff: 0.7, resonance: 0.05, hpf_cutoff: 0.0,
+            env_mod: 0.0, key_follow: 0.3,
+            adsr_a: 0.005, adsr_d: 0.1, adsr_s: 1.0, adsr_r: 0.05,
+            ar_a: 0.005, ar_r: 0.05, use_adsr_for_vca: false,
+            lfo_rate: 2.0, lfo_to_pitch: 0.35, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.0,
+        },
+        // Robot — metallic robotic voice
+        // Source: [PB81] ring mod patches; ring mod between two VCOs at
+        // non-harmonic intervals creates inharmonic, metallic, "robotic"
+        // timbres. Detuned by ~minor 3rd (300 cents) for dissonant clang.
+        // Pulse waves through ring mod with resonant filter for vowel-like
+        // formant. Classic Odyssey technique documented in owner's manual
+        // ring modulator section.
+        OdysseyPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: 300.0,
+            vco1_level: 0.0, vco2_level: 0.3,
+            pulse_width: 0.4, sync: false, ring_mod_level: 0.9, noise_level: 0.0,
+            filter_type: 0, cutoff: 0.35, resonance: 0.5, hpf_cutoff: 0.0,
+            env_mod: 0.3, key_follow: 0.4,
+            adsr_a: 0.01, adsr_d: 0.2, adsr_s: 0.6, adsr_r: 0.15,
+            ar_a: 0.01, ar_r: 0.15, use_adsr_for_vca: true,
+            lfo_rate: 3.0, lfo_to_pitch: 0.0, lfo_to_filter: 0.15, lfo_to_pwm: 0.2,
+            portamento: 0.0,
+        },
+        // Whstlr — "Beginning Whistler"
+        // Source: [PB81] "Beginning Whistler" patch: self-oscillating filter
+        // (high resonance) creates a pure sine-like whistle tone. No VCO
+        // audio — sound comes entirely from the resonant filter peak. ADSR
+        // controls filter to create pitch contour. Key follow at maximum
+        // so filter tracks keyboard. Slow LFO vibrato for human quality.
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 0.0,
+            vco1_level: 0.0, vco2_level: 0.0,
+            pulse_width: 0.5, sync: false, ring_mod_level: 0.0, noise_level: 0.08,
+            filter_type: 0, cutoff: 0.5, resonance: 0.95, hpf_cutoff: 0.0,
+            env_mod: 0.1, key_follow: 1.0,
+            adsr_a: 0.08, adsr_d: 0.1, adsr_s: 0.9, adsr_r: 0.15,
+            ar_a: 0.06, ar_r: 0.15, use_adsr_for_vca: true,
+            lfo_rate: 5.0, lfo_to_pitch: 0.0, lfo_to_filter: 0.03, lfo_to_pwm: 0.0,
+            portamento: 0.08,
+        },
+        // Choir — soprano choir pad
+        // Source: [PB81] "Choir Soprano" patch: two detuned sawtooth waves
+        // for chorus effect, pulse width modulation to simulate vowel
+        // movement, slow attack for breath onset, HPF to remove muddiness.
+        // [SS] choir synthesis uses detuned saws + PWM for formant animation.
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 1, detune_cents: 7.0,
+            vco1_level: 0.7, vco2_level: 0.6,
+            pulse_width: 0.4, sync: false, ring_mod_level: 0.0, noise_level: 0.05,
+            filter_type: 0, cutoff: 0.42, resonance: 0.15, hpf_cutoff: 0.08,
+            env_mod: 0.15, key_follow: 0.5,
+            adsr_a: 0.3, adsr_d: 0.3, adsr_s: 0.75, adsr_r: 0.4,
+            ar_a: 0.25, ar_r: 0.4, use_adsr_for_vca: true,
+            lfo_rate: 3.5, lfo_to_pitch: 0.01, lfo_to_filter: 0.08, lfo_to_pwm: 0.35,
+            portamento: 0.0,
+        },
+        // Sitar — "High Voltage Sitar"
+        // Source: [PB81] "High Voltage Sitar" patch: uses oscillator sync
+        // with resonant filter to create the buzzy, twangy sitar-like
+        // harmonics. Sync creates the metallic overtone series; high
+        // resonance adds the nasal "bridge buzz" quality. Fast attack,
+        // medium decay for plucked string character. VCO2 slightly above
+        // VCO1 for the sync sweep.
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 50.0,
+            vco1_level: 0.0, vco2_level: 1.0,
+            pulse_width: 0.5, sync: true, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 0, cutoff: 0.45, resonance: 0.6, hpf_cutoff: 0.0,
+            env_mod: 0.5, key_follow: 0.7,
+            adsr_a: 0.003, adsr_d: 0.6, adsr_s: 0.15, adsr_r: 0.3,
+            ar_a: 0.003, ar_r: 0.4, use_adsr_for_vca: false,
+            lfo_rate: 5.5, lfo_to_pitch: 0.015, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.0,
+        },
+        // TrmTub — trombone/tuba brass
+        // Source: [PB81] "Trombone/Tuba" patch; [SS] Gordon Reid brass
+        // synthesis: sawtooth waves, ~50ms attack for lip settling, filter
+        // opens with loudness (env_mod), resonance proportional to amplitude.
+        // Two detuned saws for section thickness. 4035 Moog ladder filter
+        // for the fat brass quality. Key follow moderate — lower notes
+        // should be darker. 5Hz vibrato per Reid's recommendation.
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 5.0,
+            vco1_level: 0.9, vco2_level: 0.7,
+            pulse_width: 0.5, sync: false, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 1, cutoff: 0.18, resonance: 0.2, hpf_cutoff: 0.0,
+            env_mod: 0.65, key_follow: 0.4,
+            adsr_a: 0.05, adsr_d: 0.2, adsr_s: 0.6, adsr_r: 0.15,
+            ar_a: 0.04, ar_r: 0.15, use_adsr_for_vca: true,
+            lfo_rate: 5.0, lfo_to_pitch: 0.015, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.02,
+        },
+        // Mrmbas — marimba with echo
+        // Source: [PB81] "Marimba w/Echo" patch: uses resonant filter to
+        // create the tuned wooden bar resonance, very fast attack and
+        // medium decay for the struck bar character. Key follow high so
+        // filter tracks pitch. HPF removes low-frequency mud. Single VCO
+        // pulse wave — the hollow quality mimics wooden resonator. LFO
+        // modulates filter subtly for the "echo" tremolo effect.
+        OdysseyPatch {
+            vco1_wave: 1, vco2_wave: 1, detune_cents: 0.0,
+            vco1_level: 0.9, vco2_level: 0.0,
+            pulse_width: 0.45, sync: false, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 0, cutoff: 0.5, resonance: 0.35, hpf_cutoff: 0.05,
+            env_mod: 0.4, key_follow: 0.8,
+            adsr_a: 0.001, adsr_d: 0.45, adsr_s: 0.0, adsr_r: 0.3,
+            ar_a: 0.001, ar_r: 0.35, use_adsr_for_vca: true,
+            lfo_rate: 8.0, lfo_to_pitch: 0.0, lfo_to_filter: 0.12, lfo_to_pwm: 0.0,
+            portamento: 0.0,
+        },
+        // Thremn — theremin
+        // Source: [PB81] "Theremin" patch; classic Odyssey theremin technique:
+        // single sawtooth VCO through open filter, maximum portamento for the
+        // characteristic sliding pitch, sine-like vibrato at ~6Hz for the
+        // wavering quality. The Odyssey was widely used for theremin effects.
+        // [OM76] portamento section demonstrates this technique. High key
+        // follow, wide-open filter, ADSR controls amplitude.
+        OdysseyPatch {
+            vco1_wave: 0, vco2_wave: 0, detune_cents: 0.0,
+            vco1_level: 1.0, vco2_level: 0.0,
+            pulse_width: 0.5, sync: false, ring_mod_level: 0.0, noise_level: 0.0,
+            filter_type: 0, cutoff: 0.55, resonance: 0.1, hpf_cutoff: 0.0,
+            env_mod: 0.1, key_follow: 0.7,
+            adsr_a: 0.08, adsr_d: 0.1, adsr_s: 0.9, adsr_r: 0.2,
+            ar_a: 0.06, ar_r: 0.2, use_adsr_for_vca: true,
+            lfo_rate: 6.0, lfo_to_pitch: 0.04, lfo_to_filter: 0.0, lfo_to_pwm: 0.0,
+            portamento: 0.4,
         },
     ]
 }
@@ -904,6 +1341,7 @@ pub struct OdysseySynth {
     pub params: [f32; PARAM_COUNT],
     patches: [OdysseyPatch; PATCH_COUNT],
     last_patch_index: usize,
+    debug_frame: u64,
 }
 
 impl OdysseySynth {
@@ -914,6 +1352,7 @@ impl OdysseySynth {
             params: PARAM_DEFAULTS,
             patches: presets(),
             last_patch_index: usize::MAX, // force initial load
+            debug_frame: 0,
         };
         s.sync_params_from_patch();
         s
@@ -1021,11 +1460,16 @@ impl Plugin for OdysseySynth {
 
         let buf_len = outputs[0].len();
         let gain = self.params[P_GAIN];
+        let patch_idx = self.current_patch_index();
         let patch = self.active_patch();
+        // Use patch values (which are already derived from user params in active_patch)
+        let user_cutoff = patch.cutoff;
+        let user_reso = patch.resonance;
+        let user_env_mod = patch.env_mod;
+
+        // Debug logging removed — was bleeding into TUI display
+
         let voice = self.voice.as_mut().unwrap();
-        let user_cutoff = self.params[P_CUTOFF] as f64;
-        let user_reso = self.params[P_RESO] as f64;
-        let user_env_mod = self.params[P_ENV_MOD] as f64;
 
         // Configure envelopes
         voice.adsr.attack = patch.adsr_a;

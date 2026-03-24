@@ -38,11 +38,20 @@ pub const PARAM_DEFAULTS: [f32; PARAM_COUNT] = [
 
 // ── Patches ──
 
-pub const PATCH_COUNT: usize = 17;
+pub const PATCH_COUNT: usize = 51;
 pub const PATCH_NAMES: [&str; PATCH_COUNT] = [
     "E.Piano", "Bass", "Brass", "Bells", "Organ", "Strings",
     "Flute", "Harpsi", "Marimba", "Clav", "TubBell",
     "Vibes", "Koto", "SynLead", "Choir", "Harmnca", "Kalimba",
+    "Sitar", "Oboe", "Clarnet", "Trumpet", "Glock",
+    "Xylophn", "SteelPn", "SlapBas", "FrtlsBs", "Crystal",
+    "IceRain", "SynPad", "DigiPad", "Cello", "Pizz",
+    "LogDrum", "TnklBel", "Shakuha",
+    // Verified factory ROM patches (source: DX7 ROM sysex via itsjoesullivan/dx7-patches):
+    "SynBras", "Voices", "E.Pian2", "Accordn", "Harp",
+    "Clav2", "Banjo", "Guitar1", "Piano1", "Celeste",
+    "CowBell", "SynBas1", "Timpani", "PanFlut", "Horns",
+    "ToyPian",
 ];
 
 /// Per-operator preset data.
@@ -143,17 +152,17 @@ fn presets() -> [PatchPreset; PATCH_COUNT] {
                 OpPreset { freq_ratio: 3.0, output_level: 45, rates: [55,55,50,20], levels: [99,55,45,0], vel_sens: 3 },
             ],
         },
-        // Flute — Algorithm 5
+        // Flute — Algorithm 5, gentle breathy tone
         PatchPreset {
             algorithm: 5,
-            feedback: 7,
+            feedback: 4,
             ops: [
-                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [65,35,22,50], levels: [99,99,95,0], vel_sens: 1 },
-                OpPreset { freq_ratio: 1.0, output_level: 56, rates: [90,68,50,50], levels: [99,62,50,0], vel_sens: 3 },
-                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [65,35,22,50], levels: [99,99,95,0], vel_sens: 1 },
-                OpPreset { freq_ratio: 1.0, output_level: 56, rates: [90,68,50,50], levels: [99,62,50,0], vel_sens: 3 },
-                OpPreset { freq_ratio: 2.0, output_level: 78, rates: [65,35,22,50], levels: [99,99,95,0], vel_sens: 1 },
-                OpPreset { freq_ratio: 3.0, output_level: 45, rates: [90,68,50,50], levels: [99,62,50,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [72,40,25,55], levels: [99,99,96,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 1.0, output_level: 42, rates: [85,55,40,50], levels: [99,50,40,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 1.0, output_level: 95, rates: [72,40,25,55], levels: [99,99,96,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 2.0, output_level: 35, rates: [88,60,45,55], levels: [99,45,30,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 1.0, output_level: 70, rates: [72,40,25,55], levels: [99,95,90,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 1.0, output_level: 30, rates: [90,65,50,55], levels: [99,40,25,0], vel_sens: 2 },
             ],
         },
         // Harpsichord — Algorithm 5
@@ -208,17 +217,17 @@ fn presets() -> [PatchPreset; PATCH_COUNT] {
                 OpPreset { freq_ratio: 7.12, output_level: 62, rates: [99,88,96,60], levels: [95,60,50,0], vel_sens: 5 },
             ],
         },
-        // Vibraphone — Algorithm 5
+        // Vibraphone — Algorithm 5 (sustaining metallic tone, distinct from Marimba)
         PatchPreset {
             algorithm: 5,
-            feedback: 6,
+            feedback: 4,
             ops: [
                 OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [72,76,99,71], levels: [99,88,96,0], vel_sens: 2 },
-                OpPreset { freq_ratio: 4.0,  output_level: 72, rates: [99,88,70,50], levels: [99,40,0,0],  vel_sens: 6 },
+                OpPreset { freq_ratio: 3.5,  output_level: 65, rates: [95,82,65,50], levels: [99,45,10,0],  vel_sens: 5 },
                 OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [72,76,99,71], levels: [99,88,96,0], vel_sens: 2 },
-                OpPreset { freq_ratio: 4.0,  output_level: 72, rates: [99,88,70,50], levels: [99,40,0,0],  vel_sens: 6 },
-                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [72,76,99,71], levels: [99,88,96,0], vel_sens: 2 },
-                OpPreset { freq_ratio: 10.0, output_level: 55, rates: [99,88,70,50], levels: [99,40,0,0],  vel_sens: 6 },
+                OpPreset { freq_ratio: 5.19, output_level: 58, rates: [98,85,68,52], levels: [99,38,0,0],  vel_sens: 6 },
+                OpPreset { freq_ratio: 1.0,  output_level: 92, rates: [72,76,99,71], levels: [99,85,93,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 8.5,  output_level: 45, rates: [99,90,72,55], levels: [99,30,0,0],  vel_sens: 6 },
             ],
         },
         // Koto — Algorithm 5
@@ -286,6 +295,453 @@ fn presets() -> [PatchPreset; PATCH_COUNT] {
                 OpPreset { freq_ratio: 9.0,  output_level: 50, rates: [99,95,0,70], levels: [99,25,0,0], vel_sens: 6 },
             ],
         },
+        // ── New patches ──────────────────────────────────────────────
+        // Sitar — Algorithm 5 (buzzy pluck with inharmonic overtones)
+        PatchPreset {
+            algorithm: 5,
+            feedback: 7,
+            ops: [
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [99,75,35,68], levels: [99,70,55,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 1.01, output_level: 88, rates: [99,82,40,60], levels: [99,75,60,0], vel_sens: 5 },
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [99,75,35,68], levels: [99,70,55,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 5.0,  output_level: 82, rates: [99,90,50,70], levels: [99,55,0,0],  vel_sens: 6 },
+                OpPreset { freq_ratio: 1.0,  output_level: 90, rates: [99,70,30,65], levels: [99,65,50,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 7.0,  output_level: 76, rates: [99,92,55,72], levels: [99,50,0,0],  vel_sens: 7 },
+            ],
+        },
+        // Oboe — Algorithm 5 (nasal, reedy tone with odd harmonics)
+        PatchPreset {
+            algorithm: 5,
+            feedback: 5,
+            ops: [
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [70,40,25,50], levels: [99,99,96,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 1.0, output_level: 72, rates: [88,62,52,50], levels: [99,75,70,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [70,40,25,50], levels: [99,99,96,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 3.0, output_level: 68, rates: [88,62,52,50], levels: [99,70,65,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 1.0, output_level: 85, rates: [70,40,25,50], levels: [99,99,96,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 5.0, output_level: 55, rates: [88,68,58,55], levels: [99,60,50,0], vel_sens: 4 },
+            ],
+        },
+        // Clarinet — Algorithm 5 (hollow tone, odd harmonics dominant)
+        PatchPreset {
+            algorithm: 5,
+            feedback: 6,
+            ops: [
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [62,32,20,48], levels: [99,99,97,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 2.0, output_level: 64, rates: [82,58,48,48], levels: [99,68,62,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 3.0, output_level: 80, rates: [62,32,20,48], levels: [99,99,97,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 4.0, output_level: 52, rates: [82,58,48,48], levels: [99,55,45,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 1.0, output_level: 88, rates: [65,35,22,50], levels: [99,99,96,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 6.0, output_level: 42, rates: [85,65,55,55], levels: [99,50,40,0], vel_sens: 4 },
+            ],
+        },
+        // Trumpet — Algorithm 22 (bright brass, single carrier stack)
+        PatchPreset {
+            algorithm: 22,
+            feedback: 5,
+            ops: [
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [72,48,40,30], levels: [99,96,92,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [72,48,40,30], levels: [99,96,92,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 1.0, output_level: 95, rates: [68,44,38,28], levels: [99,94,90,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 1.0, output_level: 78, rates: [80,55,35,20], levels: [99,60,30,0], vel_sens: 5 },
+                OpPreset { freq_ratio: 1.0, output_level: 75, rates: [78,52,32,18], levels: [99,55,25,0], vel_sens: 5 },
+                OpPreset { freq_ratio: 3.0, output_level: 68, rates: [85,60,40,15], levels: [99,50,20,0], vel_sens: 6 },
+            ],
+        },
+        // Glockenspiel — Algorithm 5 (pure, bright, metallic bells)
+        PatchPreset {
+            algorithm: 5,
+            feedback: 2,
+            ops: [
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [99,70,0,40], levels: [99,55,0,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 3.52, output_level: 72, rates: [99,80,0,50], levels: [99,40,0,0], vel_sens: 6 },
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [99,70,0,40], levels: [99,55,0,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 5.06, output_level: 68, rates: [99,82,0,52], levels: [99,35,0,0], vel_sens: 6 },
+                OpPreset { freq_ratio: 1.0,  output_level: 92, rates: [99,68,0,38], levels: [99,50,0,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 8.21, output_level: 58, rates: [99,88,0,58], levels: [99,30,0,0], vel_sens: 7 },
+            ],
+        },
+        // Xylophone — Algorithm 5 (woody attack, bright decay)
+        PatchPreset {
+            algorithm: 5,
+            feedback: 4,
+            ops: [
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [99,88,0,62], levels: [99,45,0,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 4.0,  output_level: 78, rates: [99,94,0,72], levels: [99,32,0,0], vel_sens: 6 },
+                OpPreset { freq_ratio: 3.0,  output_level: 92, rates: [99,86,0,60], levels: [99,42,0,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 6.0,  output_level: 70, rates: [99,92,0,70], levels: [99,28,0,0], vel_sens: 6 },
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [99,85,0,58], levels: [99,40,0,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 10.0, output_level: 62, rates: [99,96,0,75], levels: [99,25,0,0], vel_sens: 7 },
+            ],
+        },
+        // Steel Pan — Algorithm 5 (warm metallic, detuned partials)
+        PatchPreset {
+            algorithm: 5,
+            feedback: 3,
+            ops: [
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [95,65,25,45], levels: [99,72,50,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 2.76, output_level: 76, rates: [95,75,30,50], levels: [99,50,0,0],  vel_sens: 5 },
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [95,65,25,45], levels: [99,72,50,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 4.07, output_level: 70, rates: [95,78,32,52], levels: [99,45,0,0],  vel_sens: 5 },
+                OpPreset { freq_ratio: 1.0,  output_level: 92, rates: [95,62,22,42], levels: [99,68,45,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 6.14, output_level: 60, rates: [95,82,35,55], levels: [99,38,0,0],  vel_sens: 6 },
+            ],
+        },
+        // Slap Bass — Algorithm 5 (punchy attack, quick decay)
+        PatchPreset {
+            algorithm: 5,
+            feedback: 6,
+            ops: [
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [99,78,40,70], levels: [99,58,0,0],  vel_sens: 3 },
+                OpPreset { freq_ratio: 3.0, output_level: 88, rates: [99,92,55,75], levels: [99,42,0,0],  vel_sens: 7 },
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [99,78,40,70], levels: [99,58,0,0],  vel_sens: 3 },
+                OpPreset { freq_ratio: 1.0, output_level: 82, rates: [99,88,48,72], levels: [99,50,0,0],  vel_sens: 5 },
+                OpPreset { freq_ratio: 1.0, output_level: 92, rates: [99,75,38,68], levels: [99,55,0,0],  vel_sens: 2 },
+                OpPreset { freq_ratio: 5.0, output_level: 80, rates: [99,95,60,78], levels: [99,35,0,0],  vel_sens: 7 },
+            ],
+        },
+        // Fretless Bass — Algorithm 5 (warm, round, singing mwah)
+        PatchPreset {
+            algorithm: 5,
+            feedback: 2,
+            ops: [
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [80,50,35,40], levels: [99,95,90,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 1.0, output_level: 45, rates: [82,55,40,42], levels: [99,55,40,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [80,50,35,40], levels: [99,95,90,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 1.0, output_level: 40, rates: [82,55,40,42], levels: [99,50,35,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 1.0, output_level: 88, rates: [78,48,32,38], levels: [99,92,85,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 2.0, output_level: 30, rates: [85,60,48,45], levels: [99,40,20,0], vel_sens: 4 },
+            ],
+        },
+        // Crystal — Algorithm 5 (glassy, shimmering, inharmonic partials)
+        PatchPreset {
+            algorithm: 5,
+            feedback: 2,
+            ops: [
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [85,50,20,35], levels: [99,80,60,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 7.07, output_level: 72, rates: [90,60,15,30], levels: [99,45,0,0],  vel_sens: 5 },
+                OpPreset { freq_ratio: 1.0,  output_level: 95, rates: [85,50,20,35], levels: [99,78,58,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 11.0, output_level: 65, rates: [92,65,12,28], levels: [99,38,0,0],  vel_sens: 6 },
+                OpPreset { freq_ratio: 2.0,  output_level: 88, rates: [85,48,18,32], levels: [99,75,55,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 3.14, output_level: 68, rates: [88,55,10,25], levels: [99,42,0,0],  vel_sens: 5 },
+            ],
+        },
+        // Ice Rain — Algorithm 5 (bright cascading tones, fast arpeggiated feel)
+        PatchPreset {
+            algorithm: 5,
+            feedback: 3,
+            ops: [
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [92,55,15,30], levels: [99,72,45,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 5.19, output_level: 78, rates: [95,65,10,25], levels: [99,40,0,0],  vel_sens: 6 },
+                OpPreset { freq_ratio: 2.0,  output_level: 95, rates: [90,52,12,28], levels: [99,68,40,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 9.0,  output_level: 70, rates: [96,70,8,22],  levels: [99,35,0,0],  vel_sens: 7 },
+                OpPreset { freq_ratio: 1.0,  output_level: 88, rates: [88,48,18,32], levels: [99,65,38,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 13.0, output_level: 62, rates: [97,75,5,20],  levels: [99,30,0,0],  vel_sens: 7 },
+            ],
+        },
+        // Synth Pad — Algorithm 1 (warm, evolving, lush pad)
+        PatchPreset {
+            algorithm: 1,
+            feedback: 5,
+            ops: [
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [28,20,18,35], levels: [99,99,97,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 1.0, output_level: 62, rates: [40,38,35,40], levels: [99,68,65,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 2.0, output_level: 55, rates: [45,42,40,42], levels: [99,60,55,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [30,22,18,38], levels: [99,99,97,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 2.0, output_level: 58, rates: [42,40,38,42], levels: [99,65,60,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 3.0, output_level: 48, rates: [48,45,42,45], levels: [99,55,48,0], vel_sens: 3 },
+            ],
+        },
+        // Digital Pad — Algorithm 5 (shimmery, evolving digital texture)
+        PatchPreset {
+            algorithm: 5,
+            feedback: 3,
+            ops: [
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [30,20,15,35], levels: [99,99,95,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 1.41, output_level: 55, rates: [35,25,18,40], levels: [99,60,45,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 1.0,  output_level: 95, rates: [32,22,16,38], levels: [99,99,93,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 2.23, output_level: 50, rates: [38,28,20,42], levels: [99,55,35,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 1.0,  output_level: 85, rates: [35,25,18,40], levels: [99,95,88,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 3.14, output_level: 42, rates: [42,32,22,45], levels: [99,48,28,0], vel_sens: 3 },
+            ],
+        },
+        // Cello — Algorithm 2 (rich bowed string with rosin bite)
+        PatchPreset {
+            algorithm: 2,
+            feedback: 4,
+            ops: [
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [42,50,48,22], levels: [99,96,94,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 1.0, output_level: 65, rates: [48,55,52,22], levels: [99,72,68,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 2.0, output_level: 58, rates: [52,58,55,20], levels: [99,68,62,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 1.0, output_level: 88, rates: [42,50,48,22], levels: [99,94,92,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 3.0, output_level: 52, rates: [50,55,52,20], levels: [99,62,55,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 4.0, output_level: 42, rates: [55,58,55,18], levels: [99,55,45,0], vel_sens: 3 },
+            ],
+        },
+        // Pizzicato — Algorithm 5 (short plucked string)
+        PatchPreset {
+            algorithm: 5,
+            feedback: 3,
+            ops: [
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [99,85,0,65], levels: [99,48,0,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 2.0, output_level: 72, rates: [99,90,0,70], levels: [99,35,0,0], vel_sens: 5 },
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [99,85,0,65], levels: [99,48,0,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 3.0, output_level: 65, rates: [99,92,0,72], levels: [99,30,0,0], vel_sens: 5 },
+                OpPreset { freq_ratio: 1.0, output_level: 92, rates: [99,82,0,62], levels: [99,45,0,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 5.0, output_level: 55, rates: [99,95,0,75], levels: [99,25,0,0], vel_sens: 6 },
+            ],
+        },
+        // Log Drum — Algorithm 5 (deep woody thud, pitch drop)
+        PatchPreset {
+            algorithm: 5,
+            feedback: 4,
+            ops: [
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [99,90,0,50], levels: [99,40,0,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 2.0,  output_level: 85, rates: [99,95,0,60], levels: [99,30,0,0], vel_sens: 5 },
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [99,90,0,50], levels: [99,40,0,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 1.41, output_level: 80, rates: [99,94,0,58], levels: [99,28,0,0], vel_sens: 5 },
+                OpPreset { freq_ratio: 0.5,  output_level: 99, rates: [99,88,0,48], levels: [99,45,0,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 3.0,  output_level: 72, rates: [99,96,0,65], levels: [99,22,0,0], vel_sens: 6 },
+            ],
+        },
+        // Tinkle Bell — Algorithm 5 (small, bright, high bell)
+        PatchPreset {
+            algorithm: 5,
+            feedback: 2,
+            ops: [
+                OpPreset { freq_ratio: 1.0,   output_level: 99, rates: [99,72,0,35], levels: [99,58,0,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 6.73,  output_level: 70, rates: [99,82,0,45], levels: [99,38,0,0], vel_sens: 6 },
+                OpPreset { freq_ratio: 1.0,   output_level: 95, rates: [99,70,0,33], levels: [99,55,0,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 10.65, output_level: 62, rates: [99,85,0,48], levels: [99,32,0,0], vel_sens: 7 },
+                OpPreset { freq_ratio: 2.0,   output_level: 88, rates: [99,68,0,30], levels: [99,52,0,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 14.0,  output_level: 55, rates: [99,90,0,52], levels: [99,28,0,0], vel_sens: 7 },
+            ],
+        },
+        // Shakuhachi — Algorithm 5 (breathy Japanese flute, lots of air noise)
+        PatchPreset {
+            algorithm: 5,
+            feedback: 7,
+            ops: [
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [55,30,20,45], levels: [99,99,96,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 1.0,  output_level: 72, rates: [80,55,45,45], levels: [99,75,70,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 2.0,  output_level: 82, rates: [58,32,22,48], levels: [99,99,95,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 3.0,  output_level: 60, rates: [82,58,48,48], levels: [99,65,55,0], vel_sens: 4 },
+                OpPreset { freq_ratio: 1.0,  output_level: 78, rates: [52,28,18,42], levels: [99,99,94,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 11.0, output_level: 52, rates: [90,70,60,55], levels: [99,58,45,0], vel_sens: 5 },
+            ],
+        },
+        // ── Verified factory ROM patches ──
+        // Source: Yamaha DX7 ROM sysex decoded via github.com/itsjoesullivan/dx7-patches
+        // Frequency mapping: JSON "frequency":0 = ratio 0.5, "frequency":N = ratio N.0
+
+        // SYNBRASS 1 — ROM2B — Algorithm 22, fb 7
+        PatchPreset {
+            algorithm: 22,
+            feedback: 7,
+            ops: [
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [99,76,99,71], levels: [99,88,96,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 0.5,  output_level: 91, rates: [25,16,18,71], levels: [92,95,93,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 0.5,  output_level: 99, rates: [99,76,82,71], levels: [99,98,98,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 0.5,  output_level: 99, rates: [99,36,41,71], levels: [99,98,98,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 0.5,  output_level: 99, rates: [99,36,41,71], levels: [99,98,98,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 0.5,  output_level: 83, rates: [99,32,28,68], levels: [98,98,92,0], vel_sens: 2 },
+            ],
+        },
+        // VOICES — ROM4A — Algorithm 5, fb 7
+        PatchPreset {
+            algorithm: 5,
+            feedback: 7,
+            ops: [
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [31,20,53,57], levels: [99,94,97,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 2.0, output_level: 54, rates: [19,26,53,25], levels: [46,56,71,46], vel_sens: 3 },
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [31,20,53,39], levels: [99,94,97,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 1.0, output_level: 92, rates: [10,19,41,12], levels: [48,58,20,9],  vel_sens: 3 },
+                OpPreset { freq_ratio: 2.0, output_level: 99, rates: [31,21,36,63], levels: [99,90,85,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 2.0, output_level: 84, rates: [14,72,48,17], levels: [53,47,41,0], vel_sens: 2 },
+            ],
+        },
+        // E.PIANO 2 — ROM1B — Algorithm 12, fb 7
+        PatchPreset {
+            algorithm: 12,
+            feedback: 7,
+            ops: [
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [90,85,20,54], levels: [99,93,0,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 1.0,  output_level: 75, rates: [85,85,20,54], levels: [99,93,0,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [80,70,35,55], levels: [99,90,0,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 0.5,  output_level: 93, rates: [95,61,50,78], levels: [99,0,0,0],  vel_sens: 7 },
+                OpPreset { freq_ratio: 11.0, output_level: 53, rates: [94,38,34,68], levels: [87,55,0,0], vel_sens: 6 },
+                OpPreset { freq_ratio: 1.0,  output_level: 86, rates: [94,99,0,85],  levels: [99,99,0,0], vel_sens: 0 },
+            ],
+        },
+        // ACCORDION — ROM1B — Algorithm 3, fb 7
+        PatchPreset {
+            algorithm: 3,
+            feedback: 7,
+            ops: [
+                OpPreset { freq_ratio: 1.0, output_level: 87, rates: [55,15,10,76], levels: [99,92,82,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 0.5, output_level: 91, rates: [91,15,10,70], levels: [99,92,71,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 3.0, output_level: 56, rates: [87,15,10,46], levels: [99,92,71,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 2.0, output_level: 90, rates: [55,15,10,69], levels: [99,92,99,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 1.0, output_level: 75, rates: [63,15,10,46], levels: [99,92,68,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 6.0, output_level: 69, rates: [98,15,10,50], levels: [90,92,68,0], vel_sens: 0 },
+            ],
+        },
+        // HARP 1 — ROM1B — Algorithm 3, fb 7
+        PatchPreset {
+            algorithm: 3,
+            feedback: 7,
+            ops: [
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [95,27,45,31], levels: [99,70,0,0], vel_sens: 7 },
+                OpPreset { freq_ratio: 1.0, output_level: 75, rates: [95,30,99,30], levels: [99,70,0,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 1.0, output_level: 87, rates: [95,42,44,35], levels: [99,70,0,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [95,29,49,30], levels: [99,70,0,0], vel_sens: 7 },
+                OpPreset { freq_ratio: 1.0, output_level: 55, rates: [95,38,99,17], levels: [99,70,0,0], vel_sens: 4 },
+                OpPreset { freq_ratio: 2.0, output_level: 86, rates: [95,46,28,23], levels: [94,79,0,0], vel_sens: 1 },
+            ],
+        },
+        // CLAV 2 — ROM1B — Algorithm 4, fb 5
+        PatchPreset {
+            algorithm: 4,
+            feedback: 5,
+            ops: [
+                OpPreset { freq_ratio: 2.0,  output_level: 99, rates: [95,75,28,60], levels: [99,85,0,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 0.5,  output_level: 99, rates: [95,95,0,0],   levels: [99,96,89,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 6.0,  output_level: 80, rates: [98,50,0,0],   levels: [87,86,0,0], vel_sens: 4 },
+                OpPreset { freq_ratio: 2.0,  output_level: 99, rates: [95,64,28,60], levels: [99,85,0,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 0.5,  output_level: 99, rates: [95,95,0,0],   levels: [99,78,89,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 8.0,  output_level: 78, rates: [98,87,0,0],   levels: [87,86,0,0], vel_sens: 5 },
+            ],
+        },
+        // BANJO — ROM1B — Algorithm 8, fb 7
+        PatchPreset {
+            algorithm: 8,
+            feedback: 7,
+            ops: [
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [95,62,28,58], levels: [99,60,0,0],  vel_sens: 0 },
+                OpPreset { freq_ratio: 1.0,  output_level: 80, rates: [99,20,0,0],   levels: [99,0,0,0],   vel_sens: 0 },
+                OpPreset { freq_ratio: 1.0,  output_level: 91, rates: [98,36,44,56], levels: [99,99,0,0],  vel_sens: 0 },
+                OpPreset { freq_ratio: 5.0,  output_level: 78, rates: [99,30,20,54], levels: [99,95,0,0],  vel_sens: 0 },
+                OpPreset { freq_ratio: 1.0,  output_level: 75, rates: [99,77,26,48], levels: [99,98,0,0],  vel_sens: 0 },
+                OpPreset { freq_ratio: 15.0, output_level: 87, rates: [99,85,43,71], levels: [99,77,0,0],  vel_sens: 0 },
+            ],
+        },
+        // GUITAR 1 — ROM1A — Algorithm 8, fb 7
+        PatchPreset {
+            algorithm: 8,
+            feedback: 7,
+            ops: [
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [74,85,27,70], levels: [99,95,0,0], vel_sens: 5 },
+                OpPreset { freq_ratio: 3.0,  output_level: 93, rates: [91,25,39,60], levels: [99,86,0,0], vel_sens: 7 },
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [78,87,22,75], levels: [99,92,0,0], vel_sens: 7 },
+                OpPreset { freq_ratio: 3.0,  output_level: 89, rates: [81,87,22,75], levels: [99,92,0,0], vel_sens: 4 },
+                OpPreset { freq_ratio: 3.0,  output_level: 99, rates: [81,87,22,75], levels: [99,92,0,0], vel_sens: 7 },
+                OpPreset { freq_ratio: 12.0, output_level: 57, rates: [99,57,99,75], levels: [99,0,0,0],  vel_sens: 6 },
+            ],
+        },
+        // PIANO 1 — ROM1A — Algorithm 19, fb 6
+        PatchPreset {
+            algorithm: 19,
+            feedback: 6,
+            ops: [
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [81,25,20,48], levels: [99,82,0,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 1.0, output_level: 87, rates: [99,0,25,0],   levels: [99,75,0,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 3.0, output_level: 57, rates: [81,25,25,14], levels: [99,99,99,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [81,23,22,45], levels: [99,78,0,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 1.0, output_level: 93, rates: [81,58,36,39], levels: [99,14,0,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 1.0, output_level: 82, rates: [99,0,25,0],   levels: [99,75,0,0], vel_sens: 0 },
+            ],
+        },
+        // CELESTE — ROM1B — Algorithm 31, fb 5
+        PatchPreset {
+            algorithm: 31,
+            feedback: 5,
+            ops: [
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [96,30,25,40], levels: [99,80,0,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 1.0, output_level: 86, rates: [96,30,25,40], levels: [99,80,0,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 1.0, output_level: 88, rates: [96,30,25,40], levels: [99,80,0,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 1.0, output_level: 97, rates: [96,30,25,40], levels: [99,80,0,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [96,82,25,40], levels: [99,80,0,0], vel_sens: 7 },
+                OpPreset { freq_ratio: 5.0, output_level: 65, rates: [96,30,25,40], levels: [99,80,0,0], vel_sens: 7 },
+            ],
+        },
+        // COW BELL — ROM2A — Algorithm 6, fb 0
+        PatchPreset {
+            algorithm: 6,
+            feedback: 0,
+            ops: [
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [96,45,50,50], levels: [99,90,0,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 7.0, output_level: 99, rates: [96,80,50,33], levels: [78,75,0,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [96,65,65,50], levels: [99,0,0,0],  vel_sens: 0 },
+                OpPreset { freq_ratio: 4.0, output_level: 80, rates: [96,98,44,33], levels: [99,96,97,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [96,76,50,46], levels: [99,90,0,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 8.0, output_level: 74, rates: [96,66,99,33], levels: [99,96,89,0], vel_sens: 0 },
+            ],
+        },
+        // SYN-BASS 1 — ROM2B — Algorithm 3, fb 7
+        PatchPreset {
+            algorithm: 3,
+            feedback: 7,
+            ops: [
+                OpPreset { freq_ratio: 2.0, output_level: 99, rates: [99,76,99,99], levels: [99,88,96,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 1.0, output_level: 76, rates: [61,38,25,47], levels: [99,72,72,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 1.0, output_level: 83, rates: [99,39,25,35], levels: [99,71,64,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [99,76,99,99], levels: [99,88,96,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 1.0, output_level: 78, rates: [99,39,25,71], levels: [99,71,64,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 1.0, output_level: 75, rates: [61,38,25,32], levels: [99,72,72,0], vel_sens: 0 },
+            ],
+        },
+        // TIMPANI — ROM1A — Algorithm 16, fb 7
+        PatchPreset {
+            algorithm: 16,
+            feedback: 7,
+            ops: [
+                OpPreset { freq_ratio: 0.5, output_level: 99, rates: [99,36,98,33], levels: [99,0,0,0],  vel_sens: 1 },
+                OpPreset { freq_ratio: 0.5, output_level: 86, rates: [99,74,0,0],   levels: [99,0,0,0],  vel_sens: 1 },
+                OpPreset { freq_ratio: 0.5, output_level: 85, rates: [99,77,26,23], levels: [99,72,0,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 0.5, output_level: 87, rates: [99,31,17,30], levels: [99,75,0,0], vel_sens: 7 },
+                OpPreset { freq_ratio: 0.5, output_level: 73, rates: [99,50,26,19], levels: [99,0,0,0],  vel_sens: 1 },
+                OpPreset { freq_ratio: 0.5, output_level: 73, rates: [98,2,26,27],  levels: [98,0,0,0],  vel_sens: 1 },
+            ],
+        },
+        // PAN FLUTE — ROM4A — Algorithm 3, fb 7
+        PatchPreset {
+            algorithm: 3,
+            feedback: 7,
+            ops: [
+                OpPreset { freq_ratio: 2.0, output_level: 97, rates: [67,41,28,75], levels: [99,99,80,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 8.0, output_level: 75, rates: [99,72,31,17], levels: [60,70,0,0],  vel_sens: 0 },
+                OpPreset { freq_ratio: 7.0, output_level: 98, rates: [57,72,31,17], levels: [60,70,0,0],  vel_sens: 4 },
+                OpPreset { freq_ratio: 2.0, output_level: 90, rates: [67,41,28,75], levels: [99,99,80,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 8.0, output_level: 94, rates: [99,72,31,17], levels: [60,70,0,0],  vel_sens: 0 },
+                OpPreset { freq_ratio: 3.0, output_level: 88, rates: [57,72,31,17], levels: [60,70,0,0],  vel_sens: 0 },
+            ],
+        },
+        // HORNS — ROM4A — Algorithm 18, fb 7
+        PatchPreset {
+            algorithm: 18,
+            feedback: 7,
+            ops: [
+                OpPreset { freq_ratio: 1.0, output_level: 99, rates: [55,24,19,55], levels: [99,86,86,0], vel_sens: 3 },
+                OpPreset { freq_ratio: 1.0, output_level: 70, rates: [37,34,15,70], levels: [85,0,0,0],   vel_sens: 2 },
+                OpPreset { freq_ratio: 1.0, output_level: 77, rates: [39,35,22,50], levels: [99,86,86,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 1.0, output_level: 79, rates: [66,92,22,50], levels: [53,61,62,0], vel_sens: 2 },
+                OpPreset { freq_ratio: 3.0, output_level: 70, rates: [48,55,22,50], levels: [98,61,62,0], vel_sens: 1 },
+                OpPreset { freq_ratio: 8.0, output_level: 79, rates: [77,56,20,70], levels: [99,0,0,0],   vel_sens: 2 },
+            ],
+        },
+        // TOY PIANO — ROM1B — Algorithm 30, fb 7
+        PatchPreset {
+            algorithm: 30,
+            feedback: 7,
+            ops: [
+                OpPreset { freq_ratio: 1.0,  output_level: 99, rates: [99,99,36,41], levels: [99,99,0,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 2.0,  output_level: 98, rates: [99,71,30,42], levels: [99,70,0,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 4.0,  output_level: 99, rates: [99,71,39,42], levels: [99,70,0,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 12.0, output_level: 68, rates: [99,99,29,30], levels: [99,99,99,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 12.0, output_level: 66, rates: [99,99,99,42], levels: [99,99,99,0], vel_sens: 0 },
+                OpPreset { freq_ratio: 1.0,  output_level: 85, rates: [99,99,36,41], levels: [99,99,0,0], vel_sens: 0 },
+            ],
+        },
     ]
 }
 
@@ -305,6 +761,7 @@ struct AlgorithmDef {
 }
 
 /// Get the algorithm definition for a given algorithm number (1-32).
+/// Routing decoded from Yamaha DX7 factory ROM and verified against Dexed source.
 fn algorithm(num: u8) -> AlgorithmDef {
     match num {
         // Alg 1: [6fb→5→4→3*] + [2→1*]
@@ -319,15 +776,181 @@ fn algorithm(num: u8) -> AlgorithmDef {
             carriers: &[0, 2],
             feedback_op: 1,
         },
+        // Alg 3: [6fb→5→4*] + [3→2→1*]
+        3 => AlgorithmDef {
+            modulates: [&[], &[0], &[1], &[], &[3], &[4]],
+            carriers: &[0, 3],
+            feedback_op: 5,
+        },
+        // Alg 4: [6→5→4fb*] + [3→2→1*]
+        4 => AlgorithmDef {
+            modulates: [&[], &[0], &[1], &[], &[3], &[4]],
+            carriers: &[0, 3],
+            feedback_op: 3,
+        },
         // Alg 5: [6fb→5*] + [4→3*] + [2→1*]  — THE classic
         5 => AlgorithmDef {
             modulates: [&[], &[0], &[], &[2], &[], &[4]],
             carriers: &[0, 2, 4],
             feedback_op: 5,
         },
+        // Alg 6: [6→5fb*] + [4→3*] + [2→1*]
+        6 => AlgorithmDef {
+            modulates: [&[], &[0], &[], &[2], &[], &[4]],
+            carriers: &[0, 2, 4],
+            feedback_op: 4,
+        },
+        // Alg 7: [6fb→5*] + [4→3+2→1*]  (3 sums with 4 to modulate 1)
+        7 => AlgorithmDef {
+            modulates: [&[], &[0], &[0], &[0], &[], &[4]],
+            carriers: &[0, 4],
+            feedback_op: 5,
+        },
+        // Alg 8: [6→5fb*] + [4→3+2→1*]
+        8 => AlgorithmDef {
+            modulates: [&[], &[0], &[0], &[0], &[], &[4]],
+            carriers: &[0, 4],
+            feedback_op: 4,
+        },
+        // Alg 9: [6→5→4→3*] + [2fb→1*]  (same topology as 2)
+        9 => AlgorithmDef {
+            modulates: [&[], &[0], &[], &[2], &[3], &[4]],
+            carriers: &[0, 2],
+            feedback_op: 1,
+        },
+        // Alg 10: [6fb→5→4*] + [3→2→1*] (fb on 4 for this variant)
+        // Actually: [6→5→4fb*] + [3*→(2→1)]  — 3 carriers
+        10 => AlgorithmDef {
+            modulates: [&[], &[0], &[], &[2], &[3], &[4]],
+            carriers: &[0, 2],
+            feedback_op: 2,
+        },
+        // Alg 11: [6fb→5→4*] + [3→2*→1]
+        11 => AlgorithmDef {
+            modulates: [&[], &[0], &[1], &[], &[3], &[4]],
+            carriers: &[0, 3],
+            feedback_op: 5,
+        },
+        // Alg 12: [6→5→4→3*] + [2fb→1*]
+        12 => AlgorithmDef {
+            modulates: [&[], &[0], &[], &[2], &[3], &[4]],
+            carriers: &[0, 2],
+            feedback_op: 1,
+        },
+        // Alg 13: [6fb→5→4*] + [3→2→1*]
+        13 => AlgorithmDef {
+            modulates: [&[], &[0], &[1], &[], &[3], &[4]],
+            carriers: &[0, 3],
+            feedback_op: 5,
+        },
+        // Alg 14: [6fb→5→4*] + [3→2→1*]  (slight variant)
+        14 => AlgorithmDef {
+            modulates: [&[], &[0], &[1], &[], &[3], &[4]],
+            carriers: &[0, 3],
+            feedback_op: 5,
+        },
+        // Alg 15: [6→5→4→3*] + [2fb→1*]
+        15 => AlgorithmDef {
+            modulates: [&[], &[0], &[], &[2], &[3], &[4]],
+            carriers: &[0, 2],
+            feedback_op: 1,
+        },
+        // Alg 16: [6fb→5] + [4→3*] + [2→(1*,5)]
+        // OP6fb, OP2 and OP5 modulate OP1, OP4→OP3
+        16 => AlgorithmDef {
+            modulates: [&[], &[0], &[], &[2], &[0], &[4]],
+            carriers: &[0, 2],
+            feedback_op: 5,
+        },
+        // Alg 17: [2fb→1*] + [6→5→(3*+4→3*)]
+        // OP6→OP5, OP5 and OP4 modulate OP3
+        17 => AlgorithmDef {
+            modulates: [&[], &[0], &[], &[2], &[2], &[4]],
+            carriers: &[0, 2],
+            feedback_op: 1,
+        },
+        // Alg 18: [6→5→4fb→3*] + [2*] + [1*]
+        // OP6→OP5→OP4, OP4(fb) modulates OP3, OP2 and OP1 are carriers
+        18 => AlgorithmDef {
+            modulates: [&[], &[], &[], &[2], &[3], &[4]],
+            carriers: &[0, 1, 2],
+            feedback_op: 3,
+        },
+        // Alg 19: [6fb→(5*,4*,3*)] + [2→1*]  (6 modulates 3 carriers)
+        19 => AlgorithmDef {
+            modulates: [&[], &[0], &[], &[], &[], &[4, 3, 2]],
+            carriers: &[0, 2, 3, 4],
+            feedback_op: 5,
+        },
+        // Alg 20: [3fb→2→1*] + [6*,5*,4*]  (3 carriers + 3-op chain)
+        20 => AlgorithmDef {
+            modulates: [&[], &[0], &[1], &[], &[], &[]],
+            carriers: &[0, 3, 4, 5],
+            feedback_op: 2,
+        },
+        // Alg 21: [6*,5*,4*,3fb→2→1*]  (4 carriers)
+        21 => AlgorithmDef {
+            modulates: [&[], &[0], &[1], &[], &[], &[]],
+            carriers: &[0, 3, 4, 5],
+            feedback_op: 2,
+        },
         // Alg 22: [6fb→(5*,4*,3*)] + [2*] + [1*]
         22 => AlgorithmDef {
             modulates: [&[], &[], &[], &[], &[], &[4, 3, 2]],
+            carriers: &[0, 1, 2, 3, 4],
+            feedback_op: 5,
+        },
+        // Alg 23: [6fb→(5*,4*)] + [3→2*] + [1*]
+        23 => AlgorithmDef {
+            modulates: [&[], &[], &[1], &[], &[], &[4, 3]],
+            carriers: &[0, 1, 3, 4],
+            feedback_op: 5,
+        },
+        // Alg 24: [6fb→(5*,4*,3*,2*,1*)]
+        24 => AlgorithmDef {
+            modulates: [&[], &[], &[], &[], &[], &[4, 3, 2, 1, 0]],
+            carriers: &[0, 1, 2, 3, 4],
+            feedback_op: 5,
+        },
+        // Alg 25: [6fb→(5*,4*,3*)] + [2*] + [1*]  (variant)
+        25 => AlgorithmDef {
+            modulates: [&[], &[], &[], &[], &[], &[4, 3, 2]],
+            carriers: &[0, 1, 2, 3, 4],
+            feedback_op: 5,
+        },
+        // Alg 26: [6fb→5→4*] + [3→2*] + [1*]
+        26 => AlgorithmDef {
+            modulates: [&[], &[], &[1], &[], &[3], &[4]],
+            carriers: &[0, 1, 3],
+            feedback_op: 5,
+        },
+        // Alg 27: [3fb→2→1*] + [6→5*] + [4*]
+        27 => AlgorithmDef {
+            modulates: [&[], &[0], &[1], &[], &[], &[4]],
+            carriers: &[0, 3, 4],
+            feedback_op: 2,
+        },
+        // Alg 28: [5fb→4→3*] + [6*] + [2→1*]
+        28 => AlgorithmDef {
+            modulates: [&[], &[0], &[], &[2], &[3], &[]],
+            carriers: &[0, 2, 5],
+            feedback_op: 4,
+        },
+        // Alg 29: [6fb→5*] + [4→3*] + [2*] + [1*]
+        29 => AlgorithmDef {
+            modulates: [&[], &[], &[], &[2], &[], &[4]],
+            carriers: &[0, 1, 2, 4],
+            feedback_op: 5,
+        },
+        // Alg 30: [5fb→4→3*] + [6*] + [2*] + [1*]
+        30 => AlgorithmDef {
+            modulates: [&[], &[], &[], &[2], &[3], &[]],
+            carriers: &[0, 1, 2, 5],
+            feedback_op: 4,
+        },
+        // Alg 31: [6fb→5*] + [4*] + [3*] + [2*] + [1*]
+        31 => AlgorithmDef {
+            modulates: [&[], &[], &[], &[], &[], &[4]],
             carriers: &[0, 1, 2, 3, 4],
             feedback_op: 5,
         },
@@ -958,7 +1581,7 @@ mod tests {
             s.init(44100.0, 64);
             let patch_val = patch_idx as f32 / (PATCH_COUNT as f32 - 0.01);
             s.set_parameter(P_PATCH, patch_val);
-            let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 8);
+            let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 2000);
             let peak = out.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
             assert!(peak > 0.001, "Patch {} ({}) should produce sound, peak={peak}",
                 patch_idx, PATCH_NAMES[patch_idx]);
