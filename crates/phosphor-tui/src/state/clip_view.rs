@@ -132,6 +132,15 @@ pub struct PianoRollState {
     pub selected_note_indices: Vec<usize>,
     /// Number input buffer for typing column numbers.
     column_digits: String,
+    /// Highlight range for bulk selection (Shift+h/l in Navigation mode).
+    /// When set, columns from highlight_start..=highlight_end are selected.
+    pub highlight_start: Option<usize>,
+    pub highlight_end: Option<usize>,
+    /// Yanked (copied) notes buffer. Notes stored with start_frac relative to
+    /// the yank origin (leftmost yanked column), so they can be pasted at any position.
+    pub yank_buffer: Vec<phosphor_core::clip::NoteSnapshot>,
+    /// Width of the yanked region in columns, so paste knows the source span.
+    pub yank_columns: usize,
 }
 
 impl Default for PianoRollState {
@@ -150,6 +159,10 @@ impl PianoRollState {
             column_count: 16,
             selected_note_indices: Vec::new(),
             column_digits: String::new(),
+            highlight_start: None,
+            highlight_end: None,
+            yank_buffer: Vec::new(),
+            yank_columns: 0,
         }
     }
 
@@ -263,6 +276,85 @@ impl PianoRollState {
 
     pub fn column_digits_display(&self) -> &str {
         &self.column_digits
+    }
+
+    // ── Highlight (Shift+h/l range selection) ──
+
+    /// Begin or cancel highlighting at the current column.
+    /// If already highlighting and range is just the anchor column, cancel.
+    pub fn start_highlight(&mut self) {
+        if let (Some(s), Some(e)) = (self.highlight_start, self.highlight_end) {
+            if s == e && s == self.column {
+                // Pressing shift on the same single column again = cancel
+                self.clear_highlight();
+                return;
+            }
+        }
+        if self.highlight_start.is_none() {
+            self.highlight_start = Some(self.column);
+            self.highlight_end = Some(self.column);
+        }
+    }
+
+    /// Expand highlight left (Shift+h while highlighting).
+    pub fn highlight_left(&mut self) {
+        if let (Some(start), Some(end)) = (self.highlight_start, self.highlight_end) {
+            if self.column > 0 {
+                self.column -= 1;
+            }
+            // Adjust range to include current column
+            let new_start = self.column.min(start);
+            let new_end = self.column.max(end);
+            self.highlight_start = Some(new_start);
+            self.highlight_end = Some(new_end);
+            // If we moved back past our anchor, shrink from the other side
+            if self.column >= start {
+                self.highlight_end = Some(self.column);
+            } else {
+                self.highlight_start = Some(self.column);
+            }
+        }
+    }
+
+    /// Expand highlight right (Shift+l while highlighting).
+    pub fn highlight_right(&mut self) {
+        if let (Some(start), Some(end)) = (self.highlight_start, self.highlight_end) {
+            if self.column + 1 < self.column_count {
+                self.column += 1;
+            }
+            let new_start = self.column.min(start);
+            let new_end = self.column.max(end);
+            self.highlight_start = Some(new_start);
+            self.highlight_end = Some(new_end);
+            if self.column <= end {
+                self.highlight_start = Some(self.column);
+            } else {
+                self.highlight_end = Some(self.column);
+            }
+        }
+    }
+
+    /// Clear the highlight (Shift released or Esc).
+    pub fn clear_highlight(&mut self) {
+        self.highlight_start = None;
+        self.highlight_end = None;
+    }
+
+    /// Check if a column is within the highlight range.
+    pub fn is_highlighted(&self, col: usize) -> bool {
+        if let (Some(start), Some(end)) = (self.highlight_start, self.highlight_end) {
+            col >= start && col <= end
+        } else {
+            false
+        }
+    }
+
+    /// Get the highlighted column range, if any.
+    pub fn highlight_range(&self) -> Option<(usize, usize)> {
+        match (self.highlight_start, self.highlight_end) {
+            (Some(s), Some(e)) => Some((s.min(e), s.max(e))),
+            _ => None,
+        }
     }
 
     pub fn set_view_height(&mut self, h: u8) {

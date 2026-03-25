@@ -176,7 +176,44 @@ pub enum SpaceAction {
     Save,
     Open,
     AddInstrument,
+    Delete,
     NewTrack,
+}
+
+// ── Confirmation Modal ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmKind {
+    DeleteTrack,
+    DeleteClip,
+}
+
+#[derive(Debug)]
+pub struct ConfirmModal {
+    pub open: bool,
+    pub kind: ConfirmKind,
+    pub message: String,
+}
+
+impl Default for ConfirmModal {
+    fn default() -> Self { Self::new() }
+}
+
+impl ConfirmModal {
+    pub fn new() -> Self {
+        Self { open: false, kind: ConfirmKind::DeleteTrack, message: String::new() }
+    }
+
+    pub fn show(&mut self, kind: ConfirmKind, message: &str) {
+        self.open = true;
+        self.kind = kind;
+        self.message = message.to_string();
+    }
+
+    pub fn close(&mut self) {
+        self.open = false;
+        self.message.clear();
+    }
 }
 
 // ── Input Modal (for file path entry) ──
@@ -333,6 +370,7 @@ pub const SPACE_ACTIONS: &[(&str, &str, &str)] = &[
     ("spc+a", "add instr", "add instrument track"),
     ("spc+s", "save",      "save project"),
     ("spc+o", "open",      "open project"),
+    ("spc+d", "delete",    "delete selected track/clip"),
     ("spc+h", "help",      "open help topics"),
 ];
 

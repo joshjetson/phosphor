@@ -80,7 +80,9 @@ pub fn render(
     render_bottom_bar(frame, chunks[ci], nav);
 
     // Overlays
-    if nav.input_modal.open {
+    if nav.confirm_modal.open {
+        render_confirm_modal(frame, nav);
+    } else if nav.input_modal.open {
         render_input_modal(frame, nav);
     } else if nav.instrument_modal.open {
         render_instrument_modal(frame, nav);
@@ -878,14 +880,28 @@ fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState) {
             }
         }
 
-        // Column highlight
+        // Highlight range (Shift+h/l selection)
+        if let Some((hl_start, hl_end)) = pr.highlight_range() {
+            let hl_x_start = hl_start * col_w;
+            let hl_x_end = ((hl_end + 1) * col_w).min(note_w);
+            let hl_bg = Color::Rgb(40, 25, 12); // warm amber highlight
+            for x in hl_x_start..hl_x_end {
+                let (ch, old_s) = gr[x];
+                let fg = old_s.fg.unwrap_or(theme::DIM);
+                gr[x] = (ch, Style::default().fg(fg).bg(hl_bg));
+            }
+        }
+
+        // Column highlight (current column cursor)
         if in_col_mode {
             let col_start = pr.column * col_w;
             let col_end = (col_start + col_w).min(note_w);
             let col_bg = if in_row_mode && is_cur {
                 Color::Rgb(30, 55, 65) // row+column intersection
+            } else if pr.is_highlighted(pr.column) {
+                Color::Rgb(50, 35, 15) // cursor on highlighted column
             } else {
-                Color::Rgb(14, 28, 38) // column highlight
+                Color::Rgb(14, 28, 38) // normal column highlight
             };
             for x in col_start..col_end {
                 let (ch, old_s) = gr[x];
@@ -1059,6 +1075,30 @@ fn render_instrument_modal(frame: &mut Frame, nav: &NavState) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+fn render_confirm_modal(frame: &mut Frame, nav: &NavState) {
+    let area = frame.area();
+    let msg = &nav.confirm_modal.message;
+    let mw = (msg.len() as u16 + 6).min(area.width.saturating_sub(4)).max(30);
+    let mh = 4u16;
+    let mx = (area.width.saturating_sub(mw)) / 2;
+    let my = (area.height.saturating_sub(mh)) / 2;
+    let menu_area = Rect::new(mx, my, mw, mh);
+
+    frame.render_widget(Clear, menu_area);
+    let block = Block::default()
+        .style(Style::default().bg(Color::Rgb(10, 22, 34)))
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(180, 50, 50)))
+        .title(Span::styled(" confirm ", Style::default().fg(Color::Rgb(180, 50, 50)).add_modifier(Modifier::BOLD)));
+    frame.render_widget(block, menu_area);
+
+    let inner = Rect::new(mx + 2, my + 1, mw - 4, mh - 2);
+    let lines = vec![
+        Line::from(Span::styled(msg.as_str(), theme::normal())),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 fn render_input_modal(frame: &mut Frame, nav: &NavState) {
     let area = frame.area();
     let mw = 50u16.min(area.width.saturating_sub(4));
@@ -1192,7 +1232,7 @@ fn render_bottom_bar(frame: &mut Frame, area: Rect, nav: &NavState) {
                 && nav.clip_view.piano_roll.focus == PianoRollFocus::Selected =>
                 vec![("hl","left\u{2194}"),("H/L","right\u{2194}"),("jk","\u{2193}row"),("esc","nav")],
             Pane::ClipView if nav.clip_view.focus == ClipViewFocus::PianoRoll =>
-                vec![("hl","col"),("1-9","jump"),("enter","sel"),("esc","back")],
+                vec![("hl","col"),("H/L","highlight"),("d","del hl"),("1-9","jump"),("enter","sel")],
             Pane::ClipView => vec![("jk","nav"),("hl","panel"),("tab","tabs"),("esc","back")],
         }
     };

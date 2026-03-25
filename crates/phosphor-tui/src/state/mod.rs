@@ -14,6 +14,7 @@ mod loop_editor;
 mod menu;
 mod track;
 mod transport_ui;
+pub mod undo;
 
 pub use clip_view::*;
 pub use input::*;
@@ -103,6 +104,10 @@ pub struct NavState {
     pub tracks: Vec<TrackState>,
     /// Text input modal (for save/open file paths).
     pub input_modal: InputModal,
+    /// Confirmation modal (for delete actions).
+    pub confirm_modal: ConfirmModal,
+    /// Undo/redo stack.
+    pub undo_stack: undo::UndoStack,
 }
 
 impl NavState {
@@ -124,6 +129,8 @@ impl NavState {
             transport_ui: TransportUiState::new(),
             tracks,
             input_modal: InputModal::new(),
+            confirm_modal: ConfirmModal::new(),
+            undo_stack: undo::UndoStack::new(),
         }
     }
 
@@ -150,6 +157,7 @@ impl NavState {
             'a' => Some(SpaceAction::AddInstrument),
             's' => Some(SpaceAction::Save),
             'o' => Some(SpaceAction::Open),
+            'd' => Some(SpaceAction::Delete),
             'n' => Some(SpaceAction::NewTrack),
             'h' => {
                 self.space_menu.open = true;
