@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Built-in DSP, oscillators, and synthesizers for the Phosphor DAW"
+readme = "../../README.md"
 
 [dependencies]
 phosphor-plugin.workspace = true

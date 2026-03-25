@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "MIDI I/O and message routing for the Phosphor DAW"
+readme = "../../README.md"
 
 [dependencies]
 midir.workspace = true

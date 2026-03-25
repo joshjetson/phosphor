@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Plugin trait definitions for the Phosphor DAW"
+readme = "../../README.md"
 
 [dependencies]
 thiserror.workspace = true

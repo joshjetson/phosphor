@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Audio engine, mixer, and transport for the Phosphor DAW"
+readme = "../../README.md"
 
 [dependencies]
 phosphor-midi.workspace = true
