@@ -1113,6 +1113,7 @@ impl App {
             InstrumentType::DX7 => Box::new(phosphor_dsp::dx7::Dx7Synth::new()),
             InstrumentType::Jupiter8 => Box::new(phosphor_dsp::jupiter::Jupiter8Synth::new()),
             InstrumentType::Odyssey => Box::new(phosphor_dsp::odyssey::OdysseySynth::new()),
+            InstrumentType::Juno60 => Box::new(phosphor_dsp::juno::Juno60Synth::new()),
         };
         dbg::system("  plugin created");
         let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::SetInstrument {

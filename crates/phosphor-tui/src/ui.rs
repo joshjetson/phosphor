@@ -574,6 +574,7 @@ fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
             let is_dx7 = instrument_type == Some(InstrumentType::DX7);
             let is_jupiter = instrument_type == Some(InstrumentType::Jupiter8);
             let is_odyssey = instrument_type == Some(InstrumentType::Odyssey);
+            let is_juno = instrument_type == Some(InstrumentType::Juno60);
             let param_names: &[&str] = if is_drum {
                 &phosphor_dsp::drum_rack::PARAM_NAMES
             } else if is_dx7 {
@@ -582,6 +583,8 @@ fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                 &phosphor_dsp::jupiter::PARAM_NAMES
             } else if is_odyssey {
                 &phosphor_dsp::odyssey::PARAM_NAMES
+            } else if is_juno {
+                &phosphor_dsp::juno::PARAM_NAMES
             } else {
                 &phosphor_dsp::synth::PARAM_NAMES
             };
@@ -608,11 +611,14 @@ fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                     phosphor_dsp::jupiter::discrete_label(i, val)
                 } else if is_odyssey {
                     phosphor_dsp::odyssey::discrete_label(i, val)
+                } else if is_juno {
+                    phosphor_dsp::juno::discrete_label(i, val)
                 } else if i == 0 {
                     // Index 0 is always a discrete selector for non-Jupiter instruments
                     Some(if is_drum {
-                        match (val * 4.0) as u8 {
-                            0 => "808", 1 => "909", 2 => "707", 3 => "606", _ => "777",
+                        match (val * 10.0) as u8 {
+                            0 => "808", 1 => "909", 2 => "707", 3 => "606", 4 => "777",
+                            5 => "tsty-1", 6 => "tsty-2", 7 => "tsty-3", 8 => "tsty-4", _ => "tsty-5",
                         }
                     } else if is_dx7 {
                         let idx = (val * (phosphor_dsp::dx7::PATCH_COUNT as f32 - 0.01)) as usize;

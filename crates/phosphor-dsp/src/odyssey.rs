@@ -1341,7 +1341,6 @@ pub struct OdysseySynth {
     pub params: [f32; PARAM_COUNT],
     patches: [OdysseyPatch; PATCH_COUNT],
     last_patch_index: usize,
-    debug_frame: u64,
 }
 
 impl OdysseySynth {
@@ -1352,7 +1351,6 @@ impl OdysseySynth {
             params: PARAM_DEFAULTS,
             patches: presets(),
             last_patch_index: usize::MAX, // force initial load
-            debug_frame: 0,
         };
         s.sync_params_from_patch();
         s
@@ -1460,7 +1458,6 @@ impl Plugin for OdysseySynth {
 
         let buf_len = outputs[0].len();
         let gain = self.params[P_GAIN];
-        let patch_idx = self.current_patch_index();
         let patch = self.active_patch();
         // Use patch values (which are already derived from user params in active_patch)
         let user_cutoff = patch.cutoff;

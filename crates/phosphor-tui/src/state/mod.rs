@@ -305,10 +305,13 @@ impl NavState {
                 // Synth: 4 options → step 0.25. Drums: 5 kits → step 0.20
                 let is_jupiter = track.instrument_type == Some(InstrumentType::Jupiter8);
                 let is_odyssey = track.instrument_type == Some(InstrumentType::Odyssey);
+                let is_juno = track.instrument_type == Some(InstrumentType::Juno60);
                 let is_discrete = if is_jupiter {
                     phosphor_dsp::jupiter::is_discrete(idx)
                 } else if is_odyssey {
                     phosphor_dsp::odyssey::is_discrete(idx)
+                } else if is_juno {
+                    phosphor_dsp::juno::is_discrete(idx)
                 } else {
                     idx == 0
                 };
@@ -316,17 +319,23 @@ impl NavState {
                     let step = if is_jupiter {
                         match idx {
                             0 => 1.0 / (phosphor_dsp::jupiter::PATCH_COUNT as f32 - 0.01),
-                            _ => 0.25, // 4 options
+                            _ => 0.25,
                         }
                     } else if is_odyssey {
                         match idx {
-                            0 => 1.0 / (phosphor_dsp::odyssey::PATCH_COUNT as f32 - 0.01), // 7 patches
+                            0 => 1.0 / (phosphor_dsp::odyssey::PATCH_COUNT as f32 - 0.01),
                             6 => 0.34, // 3 filter types
-                            _ => 0.5, // 2 options (saw/pulse, on/off)
+                            _ => 0.5,
+                        }
+                    } else if is_juno {
+                        match idx {
+                            0 => 1.0 / (phosphor_dsp::juno::PATCH_COUNT as f32 - 0.01),
+                            12 => 0.25, // 4 chorus modes
+                            _ => 0.5,   // on/off switches
                         }
                     } else {
                         match track.instrument_type {
-                            Some(InstrumentType::DrumRack) => 0.20,
+                            Some(InstrumentType::DrumRack) => 0.1, // 10 kits
                             Some(InstrumentType::DX7) => 1.0 / (phosphor_dsp::dx7::PATCH_COUNT as f32 - 0.01),
                             _ => 0.25,
                         }
@@ -346,6 +355,9 @@ impl NavState {
                         }
                         Some(InstrumentType::Odyssey) => {
                             Some(phosphor_dsp::odyssey::OdysseySynth::params_for_patch(new_val))
+                        }
+                        Some(InstrumentType::Juno60) => {
+                            Some(phosphor_dsp::juno::Juno60Synth::params_for_patch(new_val))
                         }
                         _ => None,
                     };
@@ -544,6 +556,7 @@ impl NavState {
             InstrumentType::DX7 => "dx7",
             InstrumentType::Jupiter8 => "jup8",
             InstrumentType::Odyssey => "odyss",
+            InstrumentType::Juno60 => "juno",
             InstrumentType::Sampler => "smplr",
         };
 
@@ -572,6 +585,9 @@ impl NavState {
             }
             InstrumentType::Odyssey => {
                 phosphor_dsp::odyssey::PARAM_DEFAULTS.to_vec()
+            }
+            InstrumentType::Juno60 => {
+                phosphor_dsp::juno::PARAM_DEFAULTS.to_vec()
             }
         };
         // Sync the initial armed state to audio

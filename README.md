@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>A terminal-native DAW built in Rust</strong><br/>
-  Built-in synthesizers, MIDI controller auto-detection, per-track instruments, and a plugin system designed for extensibility.
+  6 built-in synthesizers, 10 drum kits, 300+ patches, MIDI controller auto-detection, and a plugin system designed for extensibility.
 </p>
 
 <p align="center">
@@ -17,10 +17,10 @@
 
 - [Overview](#overview)
 - [Quick Start](#quick-start)
+- [Instruments](#instruments)
 - [Features](#features)
 - [Architecture](#architecture)
 - [Controls](#controls)
-- [Synth Parameters](#synth-parameters)
 - [Building from Source](#building-from-source)
 - [Project Structure](#project-structure)
 - [Configuration](#configuration)
@@ -33,9 +33,7 @@
 
 Phosphor is a digital audio workstation that runs entirely in your terminal. It pairs a solarized-dark TUI with a real-time audio engine, giving you a DAW you can use over SSH, in a tiling window manager, or anywhere a terminal lives.
 
-Each instrument track gets its own polyphonic synthesizer instance with independent parameters. MIDI controllers are detected automatically on startup. The audio engine runs on a dedicated real-time thread with lock-free communication — no mutexes in the audio path, ever.
-
-Phosphor is in active early development. The current beta includes a fully playable polyphonic synth with per-track isolation, real-time VU metering, and vim-style navigation.
+Each instrument track gets its own synthesizer instance with independent parameters. MIDI controllers are detected automatically on startup. The audio engine runs on a dedicated real-time thread with lock-free communication — no mutexes in the audio path, ever.
 
 ---
 
@@ -53,6 +51,9 @@ cargo build --release
 # Run (TUI is the default)
 cargo run --release
 
+# Run with debug logging
+PHOSPHOR_DEBUG=1 cargo run --release
+
 # Run without audio (UI development)
 cargo run --release -- --no-audio
 
@@ -64,10 +65,49 @@ cargo run --release -- --no-midi
 
 1. Press `Space` to open the command menu
 2. Press `a` to add an instrument track
-3. Select **Phosphor Synth** and press `Enter`
+3. Select an instrument and press `Enter`
 4. Play your MIDI controller — sound comes out
 5. Use `j/k` to navigate synth parameters, `h/l` to adjust values
-6. Press `Space` then `a` again to add a second instrument with different settings
+6. Press `Tab` to cycle between Track FX, Synth params, Inst Config, Piano Roll
+
+---
+
+## Instruments
+
+### Synthesizers
+
+| Instrument | Type | Voices | Patches | Description |
+|-----------|------|--------|---------|-------------|
+| **Phosphor Synth** | Subtractive | 16 | 4 waveforms | Dual oscillators, SVF filter, drive, ADSR |
+| **DX7** | FM | 16 | 51 | 6-operator FM, 32 algorithms, classic ROM patches |
+| **Jupiter-8** | Analog poly | 8 | 42 | Dual polyBLEP VCOs, IR3109 OTA ladder filter, 4 voice modes |
+| **ARP Odyssey** | Duophonic | 2 | 44 | 3 selectable filter types (4023/4035/4075), hard sync, ring mod, S&H |
+| **Juno-60** | DCO poly | 6 | 18 | Single DCO, BBD stereo chorus (I/II/I+II), sub-oscillator |
+
+### Drum Rack
+
+| Kit | Character |
+|-----|-----------|
+| **808** | Circuit-accurate analog — sine kicks, 6-osc metallic hats |
+| **909** | Triangle snares, bit-crushed hats, longer pitch sweeps |
+| **707** | Hybrid 808/909 character |
+| **606** | Thinner, clickier, higher frequencies |
+| **777** | 808/909 bass + creative FM/ring-mod/wavefolder sounds |
+| **tsty-1** | Warm vintage, tape-saturated, reel-to-reel character |
+| **tsty-2** | Acoustic modal — Bessel membrane modes, multi-phase envelopes |
+| **tsty-3** | 88 unique sounds — every note a distinct synthesis |
+| **tsty-4** | Extended hats/snares with long decays, varied synthesis methods |
+| **tsty-5** | Resonator-based — impulse exciter into tuned bandpass filters, wire-coupled snares |
+
+### Patch Highlights
+
+**DX7** (51 patches): E.Piano, Bass, Brass, Bells, Organ, Strings, Flute, Harpsichord, Marimba, Clavinet, Tubular Bells, Vibraphone, Koto, Synth Lead, Choir, Harmonica, Kalimba, Sitar, Oboe, Clarinet, Trumpet, Glockenspiel, Xylophone, Steel Pan, Slap Bass, Fretless Bass, Crystal, Ice Rain, Synth Pad, Digital Pad, Cello, Pizzicato, Log Drum, Tinkle Bell, Shakuhachi, Synth Brass, Voices, E.Piano 2, Accordion, Harp, Clav 2, Banjo, Guitar, Piano, Celeste, Cowbell, Synth Bass, Timpani, Pan Flute, Horns, Toy Piano
+
+**Jupiter-8** (42 patches): Pad, Brass, Bass, Sync Lead, Strings, Electric Piano, Pluck, Bell, Organ, PWM Pad, Unison Lead, Key Bass, Ambient, Sweep, Stab, Harp, Sync Bass, Sub Bass, Acid, Choir, Vox, Whistle, PWM Lead, XM Bell, Sequence, Resonant, Detune, Clav, Hollow Pad, Power Pluck, Lo Strings, Flute, Tuba, Saw Pad, Clarinet, Cello, Xylo, Funk Bass, Warm Lead, Noise, Cars Sync, and more
+
+**Odyssey** (44 patches): Bass, Funk, Sync Lead, Bells, Pad, S&H, Zap, Hawkshaw Funk, Bennett Atmos, Numan Cars, Sci-Fi Wobble, Percussive Pluck, Thick Lead, Filter Sweep, Noise Hit, Duo Split, Snare Drum, Kick, Resonance, Squelch, Growl, Wind, Wah Bass, Stab, Buzz, Flute, Tremolo, Siren, Brass, Organ, Conga, Tom, Clap, PWM Bass, Violin, Oboe, Choir, Trombone, Marimba, Alarm, Robot, Whistler, Sitar, Theremin
+
+**Juno-60** (18 patches): Classic Pad, PWM Pad, Bass, Brass, Strings, Hoover, Acid, Warm Lead, Choir, Pluck, Organ, Synth Bass, Glass Bells, Resonant Pad, Wind, Clav, Sub Bass, Saw Pad
 
 ---
 
@@ -75,28 +115,24 @@ cargo run --release -- --no-midi
 
 **Audio Engine**
 - Real-time audio via cpal (CoreAudio, WASAPI, ALSA)
-- Lock-free audio thread — no allocations, no mutexes, no I/O
+- Lock-free audio thread — zero allocations, zero mutexes in the hot path
 - Per-track instrument instances with independent processing
 - Per-track and master VU metering via atomic shared state
 - Configurable buffer size (default 64 samples, ~1.5ms latency at 44.1kHz)
 
-**Synthesizer**
-- 16-voice polyphonic subtractive synth
-- Dual oscillators with adjustable detune (0-50 cents)
-- 4 waveforms: sine, saw, square, triangle
-- Sub oscillator (one octave down)
-- White noise generator
-- Resonant state-variable low-pass filter with envelope modulation
-- Soft-clip drive/saturation
-- Full ADSR envelope
-- 12 real-time adjustable parameters
+**Synthesizers**
+- **Phosphor Synth**: 16-voice polyphonic subtractive — dual oscillators, SVF filter, drive, ADSR
+- **DX7**: 6-operator FM synthesis, all 32 algorithms, 4-rate/4-level envelopes, operator feedback
+- **Jupiter-8**: Dual polyBLEP VCOs, IR3109 4-pole OTA ladder filter with tanh saturation, per-voice analog drift, 4 voice modes (Solo/Unison/Poly1/Poly2)
+- **ARP Odyssey**: Duophonic split, 3 selectable filters (12dB SVF / 24dB Moog ladder / 24dB Norton), XOR ring mod, hard sync, Sample & Hold
+- **Juno-60**: Single DCO per voice, BBD stereo chorus (Chorus I / II / I+II), sub-oscillator, 4-position HPF, single ADSR shared VCF+VCA
+- **Drum Rack**: 10 kits including circuit-accurate 808/909/707/606, creative 777, warm tape-saturated tsty series, and resonator-based physical modeling
 
 **MIDI**
 - Auto-detection of MIDI controllers on startup
 - Lock-free SPSC ring buffer for MIDI-to-audio routing
 - Sample-accurate MIDI event processing
 - Note-on/off, CC, pitch bend support
-- CC 120 (All Sound Off) and CC 123 (All Notes Off) handling
 - Per-track MIDI routing — only the selected track receives input
 
 **TUI**
@@ -104,18 +140,18 @@ cargo run --release -- --no-midi
 - Vim-style navigation (j/k/h/l, Enter, Esc)
 - Space menu (spacevim-inspired leader key)
 - Per-track color coding, VU meters, mute/solo/arm controls
-- Synth parameter panel with real-time adjustment
-- FX chain display with tabs (Track FX, Synth, Clip FX)
-- Clip view with piano roll and FX panel
+- Synth parameter panel with real-time adjustment and patch selection
+- Instrument config tab for deeper parameter access
+- Clip view with piano roll, automation, and FX panel
+- Transport with BPM, loop region, metronome, recording
 - Send A/B buses and master track
-- Scroll support for tracks and parameters
 
 **Architecture**
-- Workspace with 6 crates, clean dependency graph
+- Workspace with 7 crates, clean dependency graph
 - Shared domain models via atomics (no locks between threads)
 - Command channel pattern for UI-to-audio communication
-- Plugin trait for instruments and effects
-- 113+ tests covering DSP, MIDI, engine, mixer, and navigation
+- Plugin trait for instruments and effects — same interface for built-in and third-party
+- 214+ tests covering DSP, MIDI, engine, mixer, and navigation
 
 ---
 
@@ -123,27 +159,27 @@ cargo run --release -- --no-midi
 
 ```
                     UI Thread                              Audio Thread
-                    ─────────                              ────────────
+                    ---------                              ------------
                     NavState                               Mixer
-                      │                                      │
-                      ├─ TrackState ──Arc<TrackHandle>──→ AudioTrack
-                      │    muted ───→ TrackConfig.muted      │
-                      │    soloed ──→ TrackConfig.soloed      ├─ instrument: Box<dyn Plugin>
-                      │    volume ──→ TrackConfig.volume      ├─ buf_l / buf_r
-                      │    VU ←──── TrackHandle.vu ←──────── └─ per-track VU
-                      │
-                      └─ MixerCommand ──crossbeam──→ Mixer.drain_commands()
-                           AddTrack                     → tracks.push()
-                           SetInstrument                → track.instrument = Some(plugin)
-                           SetParameter                 → plugin.set_parameter()
+                      |                                      |
+                      +-- TrackState --Arc<TrackHandle>--> AudioTrack
+                      |    muted ---> TrackConfig.muted      |
+                      |    soloed --> TrackConfig.soloed      +-- instrument: Box<dyn Plugin>
+                      |    volume --> TrackConfig.volume      +-- buf_l / buf_r
+                      |    VU <----- TrackHandle.vu <------- +-- per-track VU
+                      |
+                      +-- MixerCommand --crossbeam--> Mixer.drain_commands()
+                           AddTrack                     -> tracks.push()
+                           SetInstrument                -> track.instrument = Some(plugin)
+                           SetParameter                 -> plugin.set_parameter()
 
-MIDI Controller ──midir──→ MidiRingSender ──SPSC──→ MidiRingReceiver
-                                                        │
+MIDI Controller --midir--> MidiRingSender --SPSC--> MidiRingReceiver
+                                                        |
                                                    EngineAudio.process()
-                                                        │
+                                                        |
                                                    Mixer.process()
-                                                        │
-                                                   cpal audio callback ──→ speakers
+                                                        |
+                                                   cpal audio callback --> speakers
 ```
 
 ---
@@ -155,72 +191,44 @@ MIDI Controller ──midir──→ MidiRingSender ──SPSC──→ MidiRing
 | Key | Action |
 |-----|--------|
 | `Space` | Open command menu |
-| `Space` `Space` | Close command menu |
 | `Ctrl+C` | Quit |
-| `Tab` | Cycle between panes |
+| `Tab` | Cycle between panes / tabs |
 | `Esc` | Back / close menu |
 
 ### Space Menu
 
 | Key | Action |
 |-----|--------|
-| `Space` `1` | Focus tracks pane |
-| `Space` `2` | Focus clip view pane |
+| `Space` `1` | Focus transport |
+| `Space` `2` | Focus tracks |
+| `Space` `3` | Focus clip view |
 | `Space` `p` | Play / pause |
 | `Space` `r` | Toggle recording |
-| `Space` `l` | Toggle loop |
+| `Space` `l` | Edit loop region |
+| `Space` `m` | Toggle metronome |
 | `Space` `!` | Panic — kill all sound |
 | `Space` `a` | Add instrument track |
-| `Space` `h` | Help topics |
 
 ### Tracks Pane
 
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Navigate between tracks |
-| `Enter` | Select track (shows synth controls) |
-| `h` / `l` | Navigate track elements (fx, vol, mute, solo, arm, clips) |
+| `Enter` | Select track |
+| `h` / `l` | Navigate track elements |
 | `m` | Toggle mute |
 | `s` | Toggle solo |
 | `r` | Toggle record arm |
-| `+` / `-` | Adjust BPM |
-| `q` | Quit (when no track selected) |
 
-### Clip View / Synth Controls
+### Clip View
 
 | Key | Action |
 |-----|--------|
-| `j` / `k` | Navigate parameters |
-| `h` / `l` | Decrease / increase parameter value (5% steps) |
-| `Tab` | Cycle tabs (Track FX / Synth / Clip FX) |
-| `Esc` | Back to tracks |
-
----
-
-## Synth Parameters
-
-The Phosphor Synth exposes 12 parameters, all adjustable in real-time:
-
-| Parameter | Range | Description |
-|-----------|-------|-------------|
-| waveform | sine / saw / square / tri | Oscillator waveform shape |
-| detune | 0–50 cents | Dual oscillator detuning for analog fatness |
-| sub | 0–100% | Sub oscillator level (one octave down, sine) |
-| noise | 0–100% | White noise mix for breath and texture |
-| cutoff | 20Hz–20kHz | Low-pass filter cutoff frequency |
-| reso | 0–95% | Filter resonance |
-| drive | 0–100% | Soft-clip saturation / overdrive |
-| attack | 0–2000ms | Envelope attack time |
-| decay | 0–2000ms | Envelope decay time |
-| sustain | 0–100% | Envelope sustain level |
-| release | 0–2000ms | Envelope release time |
-| gain | 0–100% | Output level |
-
-**Vintage sound tips:**
-- Saw wave + detune 15-25 cents + sub 30% = classic analog pad
-- Square wave + cutoff 40% + reso 60% + drive 30% = acid bass
-- Triangle + slow attack + long release + noise 10% = ambient texture
-- Saw + cutoff 20% + reso 80% = filtered sweep (automate cutoff)
+| `Tab` | Cycle tabs: Track FX / Synth / Inst Config / Piano / Auto |
+| `j` / `k` | Navigate parameters or piano roll |
+| `h` / `l` | Adjust values or navigate columns |
+| `Enter` | Select column / note |
+| `n` | Draw note in piano roll |
 
 ---
 
@@ -244,13 +252,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace
-```
-
-### Benchmarks
-
-```bash
-cargo bench --workspace
+cargo test --workspace  # 214+ tests
 ```
 
 ---
@@ -259,35 +261,27 @@ cargo bench --workspace
 
 ```
 phosphor/
-├── Cargo.toml                 # Workspace root
+├── Cargo.toml                 # Workspace root (phosphor-studio on crates.io)
 ├── src/main.rs                # CLI entry point
 ├── crates/
-│   ├── phosphor-core/         # Audio engine, mixer, transport, project models
-│   │   ├── src/
-│   │   │   ├── engine.rs      # Audio callback, VU levels
-│   │   │   ├── mixer.rs       # Per-track processing, MIDI routing
-│   │   │   ├── project.rs     # Shared domain models (TrackConfig, TrackHandle)
-│   │   │   ├── transport.rs   # Play/pause/loop with atomics
-│   │   │   ├── cpal_backend.rs# Real audio I/O
-│   │   │   └── audio.rs       # Test audio backend
-│   │   └── benches/
-│   ├── phosphor-dsp/          # Built-in DSP and instruments
+│   ├── phosphor-core/         # Audio engine, mixer, transport, metronome
+│   ├── phosphor-dsp/          # Built-in instruments
 │   │   └── src/
-│   │       ├── synth.rs       # Polyphonic subtractive synth (Plugin impl)
+│   │       ├── synth.rs       # Phosphor Synth (subtractive)
+│   │       ├── dx7.rs         # DX7 FM synthesizer (51 patches)
+│   │       ├── jupiter.rs     # Jupiter-8 analog poly (42 patches)
+│   │       ├── odyssey.rs     # ARP Odyssey duophonic (44 patches)
+│   │       ├── juno.rs        # Juno-60 DCO + BBD chorus (18 patches)
+│   │       ├── drum_rack.rs   # Drum machine (10 kits, 88 sounds each)
 │   │       └── oscillator.rs  # Waveform oscillators
-│   ├── phosphor-midi/         # MIDI I/O and message handling
-│   │   └── src/
-│   │       ├── message.rs     # MIDI message parsing
-│   │       ├── ring.rs        # Lock-free SPSC ring buffer
-│   │       └── ports.rs       # Port enumeration and hot-plug detection
+│   ├── phosphor-midi/         # MIDI I/O, message parsing, ring buffer
 │   ├── phosphor-plugin/       # Plugin trait definitions
-│   │   └── src/lib.rs         # Plugin, MidiEvent, ParameterInfo traits
 │   ├── phosphor-tui/          # Terminal UI frontend
 │   │   └── src/
 │   │       ├── app.rs         # Application loop, audio/MIDI wiring
-│   │       ├── state.rs       # Navigation, track state, modals
+│   │       ├── state/         # Navigation, track state, clip view, modals
 │   │       ├── ui.rs          # Rendering
-│   │       └── theme.rs       # Color palette
+│   │       └── theme.rs       # Solarized-dark color palette
 │   └── phosphor-gui/          # GUI frontend (planned)
 └── architect.md               # Architecture plan and roadmap
 ```
@@ -312,16 +306,13 @@ Options:
     -V, --version         Print version
 ```
 
-### Latency Tuning
+### Debug Logging
 
-Lower buffer sizes reduce latency but increase CPU load:
+```bash
+PHOSPHOR_DEBUG=1 cargo run --release
+```
 
-| Buffer Size | Latency @ 44.1kHz | Use Case |
-|------------|-------------------|----------|
-| 32 | 0.7ms | Low-latency monitoring |
-| 64 | 1.5ms | Default, good balance |
-| 128 | 2.9ms | Lighter CPU load |
-| 256 | 5.8ms | Complex projects |
+Creates `phosphor_debug.log` with timestamped user actions and system responses. Includes a panic handler that captures full backtraces to the log.
 
 ---
 
@@ -342,11 +333,12 @@ pub trait Plugin: Send {
 }
 ```
 
-To add a new instrument or effect:
+To add a new instrument:
 
 1. Create a struct that implements `Plugin`
 2. Add it to `phosphor-dsp` (or your own crate)
-3. Register it in the instrument selection modal
+3. Add the variant to `InstrumentType` in `phosphor-tui/src/state/menu.rs`
+4. Wire it into `create_instrument_track()` in `app.rs`
 
 ---
 
