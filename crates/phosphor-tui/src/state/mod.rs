@@ -101,6 +101,8 @@ pub struct NavState {
     pub loop_editor: LoopEditor,
     pub transport_ui: TransportUiState,
     pub tracks: Vec<TrackState>,
+    /// Text input modal (for save/open file paths).
+    pub input_modal: InputModal,
 }
 
 impl NavState {
@@ -121,6 +123,7 @@ impl NavState {
             loop_editor: LoopEditor::new(),
             transport_ui: TransportUiState::new(),
             tracks,
+            input_modal: InputModal::new(),
         }
     }
 
@@ -146,6 +149,7 @@ impl NavState {
             '!' => Some(SpaceAction::Panic),
             'a' => Some(SpaceAction::AddInstrument),
             's' => Some(SpaceAction::Save),
+            'o' => Some(SpaceAction::Open),
             'n' => Some(SpaceAction::NewTrack),
             'h' => {
                 self.space_menu.open = true;

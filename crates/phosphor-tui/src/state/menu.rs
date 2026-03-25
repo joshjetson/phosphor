@@ -174,8 +174,93 @@ pub enum SpaceAction {
     ToggleMetronome,
     Panic,
     Save,
+    Open,
     AddInstrument,
     NewTrack,
+}
+
+// ── Input Modal (for file path entry) ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputModalKind {
+    SaveAs,
+    Open,
+}
+
+#[derive(Debug)]
+pub struct InputModal {
+    pub open: bool,
+    pub kind: InputModalKind,
+    pub buffer: String,
+    pub cursor: usize,
+}
+
+impl Default for InputModal {
+    fn default() -> Self { Self::new() }
+}
+
+impl InputModal {
+    pub fn new() -> Self {
+        Self { open: false, kind: InputModalKind::SaveAs, buffer: String::new(), cursor: 0 }
+    }
+
+    pub fn open_save(&mut self, default_name: &str) {
+        self.open = true;
+        self.kind = InputModalKind::SaveAs;
+        self.buffer = format!("sessions/{default_name}");
+        self.cursor = self.buffer.len();
+    }
+
+    pub fn open_load(&mut self) {
+        self.open = true;
+        self.kind = InputModalKind::Open;
+        self.buffer = "sessions/".to_string();
+        self.cursor = self.buffer.len();
+    }
+
+    pub fn type_char(&mut self, ch: char) {
+        self.buffer.insert(self.cursor, ch);
+        self.cursor += 1;
+    }
+
+    pub fn backspace(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+            self.buffer.remove(self.cursor);
+        }
+    }
+
+    pub fn delete(&mut self) {
+        if self.cursor < self.buffer.len() {
+            self.buffer.remove(self.cursor);
+        }
+    }
+
+    pub fn move_left(&mut self) {
+        if self.cursor > 0 { self.cursor -= 1; }
+    }
+
+    pub fn move_right(&mut self) {
+        if self.cursor < self.buffer.len() { self.cursor += 1; }
+    }
+
+    pub fn move_home(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub fn move_end(&mut self) {
+        self.cursor = self.buffer.len();
+    }
+
+    pub fn close(&mut self) {
+        self.open = false;
+        self.buffer.clear();
+        self.cursor = 0;
+    }
+
+    pub fn value(&self) -> &str {
+        &self.buffer
+    }
 }
 
 /// The space menu: press Space to open, Space again to close.
@@ -247,6 +332,7 @@ pub const SPACE_ACTIONS: &[(&str, &str, &str)] = &[
     ("spc+!", "panic",     "kill all sound immediately"),
     ("spc+a", "add instr", "add instrument track"),
     ("spc+s", "save",      "save project"),
+    ("spc+o", "open",      "open project"),
     ("spc+h", "help",      "open help topics"),
 ];
 

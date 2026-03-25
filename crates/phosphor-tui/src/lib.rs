@@ -3,6 +3,7 @@
 pub mod actions;
 mod app;
 pub mod debug_log;
+pub mod session;
 pub mod state;
 #[cfg(test)]
 mod test_harness;

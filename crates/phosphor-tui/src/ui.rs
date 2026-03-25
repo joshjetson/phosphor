@@ -80,7 +80,9 @@ pub fn render(
     render_bottom_bar(frame, chunks[ci], nav);
 
     // Overlays
-    if nav.instrument_modal.open {
+    if nav.input_modal.open {
+        render_input_modal(frame, nav);
+    } else if nav.instrument_modal.open {
         render_instrument_modal(frame, nav);
     } else if nav.space_menu.open {
         render_space_menu(frame, nav);
@@ -1053,6 +1055,59 @@ fn render_instrument_modal(frame: &mut Frame, nav: &NavState) {
         ]));
         lines.push(Line::from(""));
     }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_input_modal(frame: &mut Frame, nav: &NavState) {
+    let area = frame.area();
+    let mw = 50u16.min(area.width.saturating_sub(4));
+    let mh = 5u16;
+    let mx = (area.width.saturating_sub(mw)) / 2;
+    let my = (area.height.saturating_sub(mh)) / 2;
+    let menu_area = Rect::new(mx, my, mw, mh);
+
+    frame.render_widget(Clear, menu_area);
+
+    let title = match nav.input_modal.kind {
+        InputModalKind::SaveAs => " save project ",
+        InputModalKind::Open => " open project ",
+    };
+    let block = Block::default()
+        .style(Style::default().bg(Color::Rgb(10, 22, 34)))
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(theme::border_style())
+        .title(Span::styled(title, theme::amber_bright().add_modifier(Modifier::BOLD)));
+    frame.render_widget(block, menu_area);
+
+    let inner = Rect::new(mx + 2, my + 1, mw - 4, mh - 2);
+
+    let prompt = match nav.input_modal.kind {
+        InputModalKind::SaveAs => "filename: ",
+        InputModalKind::Open => "path: ",
+    };
+
+    let buf = nav.input_modal.value();
+    let cursor_pos = nav.input_modal.cursor;
+    let (before, after) = buf.split_at(cursor_pos.min(buf.len()));
+    let cursor_char = if after.is_empty() { "\u{2588}" } else { &after[..1] };
+    let rest = if after.len() > 1 { &after[1..] } else { "" };
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(prompt, theme::dim()),
+            Span::styled(before, theme::amber_bright().add_modifier(Modifier::BOLD)),
+            Span::styled(cursor_char, Style::default().fg(Color::Rgb(8, 18, 28)).bg(theme::AMBER_BRIGHT)),
+            Span::styled(rest, theme::amber_bright().add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  enter", theme::dim()),
+            Span::styled(" confirm  ", theme::muted()),
+            Span::styled("esc", theme::dim()),
+            Span::styled(" cancel", theme::muted()),
+        ]),
+    ];
 
     frame.render_widget(Paragraph::new(lines), inner);
 }

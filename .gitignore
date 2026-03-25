@@ -4,3 +4,5 @@
 .DS_Store
 .claude/
 phosphor_debug.log
+sessions/*.phos
+sessions/*.phos.tmp

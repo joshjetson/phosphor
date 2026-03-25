@@ -3210,6 +3210,8 @@ dependencies = [
  "phosphor-midi",
  "phosphor-plugin",
  "ratatui",
+ "serde",
+ "serde_json",
  "tracing",
 ]
 
