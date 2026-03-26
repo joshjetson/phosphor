@@ -177,6 +177,7 @@ pub enum SpaceAction {
     Open,
     AddInstrument,
     Delete,
+    CycleTheme,
     NewTrack,
 }
 
@@ -371,6 +372,7 @@ pub const SPACE_ACTIONS: &[(&str, &str, &str)] = &[
     ("spc+s", "save",      "save project"),
     ("spc+o", "open",      "open project"),
     ("spc+d", "delete",    "delete selected track/clip"),
+    ("spc+v", "vibe",      "cycle color theme"),
     ("spc+h", "help",      "open help topics"),
 ];
 

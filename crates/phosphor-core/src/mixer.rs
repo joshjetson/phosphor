@@ -193,7 +193,9 @@ impl Mixer {
                 && current_tick < track.last_record_tick
             {
                 commit_recording(track, loop_end, clip_tx);
-                track.record_buf.start(current_tick);
+                // Start new recording at loop start, not current_tick
+                // (current_tick may be a few ticks past 0 due to buffer boundaries)
+                track.record_buf.start(transport.loop_start());
             }
             if should_record {
                 track.last_record_tick = current_tick;
@@ -329,12 +331,17 @@ impl Mixer {
     }
 
     pub fn reset_all(&mut self) {
+        let clip_tx = &self.clip_tx;
         for track in &mut self.tracks {
             if let Some(ref mut inst) = track.instrument {
                 inst.reset();
             }
             track.handle.vu.set(0.0, 0.0);
-            if track.record_buf.is_active() {
+            // Commit any active recording before resetting (don't lose overdubs)
+            if track.record_buf.is_active() && track.was_recording {
+                let end_tick = track.last_record_tick.max(0);
+                commit_recording(track, end_tick, clip_tx);
+            } else if track.record_buf.is_active() {
                 track.record_buf.discard();
             }
             track.was_recording = false;
@@ -578,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn mixer_reset_discards_recording() {
+    fn mixer_reset_commits_recording() {
         let (mut mixer, tx, clip_rx, transport) = setup_mixer();
         let _handle = add_armed_synth(&tx, 0);
         transport.play();
@@ -590,10 +597,8 @@ mod tests {
 
         mixer.reset_all();
 
-        transport.toggle_record();
-        mixer.process(&mut output, &[], &transport);
-
-        assert!(clip_rx.try_recv().is_err(), "Reset should discard active recording");
+        // Reset should commit the active recording, not discard it
+        assert!(clip_rx.try_recv().is_ok(), "Reset should commit active recording");
     }
 
     #[test]

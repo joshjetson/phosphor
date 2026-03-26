@@ -9,8 +9,14 @@ use phosphor_core::clip::NoteSnapshot;
 /// A single undoable action.
 #[derive(Debug, Clone)]
 pub enum UndoAction {
-    /// Notes were deleted from a clip.
+    /// Notes were deleted from a clip (undo = add them back).
     DeleteNotes {
+        track_idx: usize,
+        clip_idx: usize,
+        notes: Vec<NoteSnapshot>,
+    },
+    /// Notes were added to a clip via paste (undo = remove them).
+    PasteNotes {
         track_idx: usize,
         clip_idx: usize,
         notes: Vec<NoteSnapshot>,

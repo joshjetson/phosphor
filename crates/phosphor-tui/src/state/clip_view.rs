@@ -136,11 +136,16 @@ pub struct PianoRollState {
     /// When set, columns from highlight_start..=highlight_end are selected.
     pub highlight_start: Option<usize>,
     pub highlight_end: Option<usize>,
+    /// Number of columns visible on screen (set by renderer each frame).
+    pub visible_columns: usize,
     /// Yanked (copied) notes buffer. Notes stored with start_frac relative to
     /// the yank origin (leftmost yanked column), so they can be pasted at any position.
     pub yank_buffer: Vec<phosphor_core::clip::NoteSnapshot>,
     /// Width of the yanked region in columns, so paste knows the source span.
     pub yank_columns: usize,
+    /// Row highlight range (Shift+j/k). Stores MIDI note numbers (low..=high).
+    pub row_highlight_low: Option<u8>,
+    pub row_highlight_high: Option<u8>,
 }
 
 impl Default for PianoRollState {
@@ -161,6 +166,9 @@ impl PianoRollState {
             column_digits: String::new(),
             highlight_start: None,
             highlight_end: None,
+            visible_columns: 16,
+            row_highlight_low: None,
+            row_highlight_high: None,
             yank_buffer: Vec::new(),
             yank_columns: 0,
         }
@@ -231,12 +239,20 @@ impl PianoRollState {
     pub fn move_column_left(&mut self) {
         if self.column > 0 {
             self.column -= 1;
+            // Auto-scroll left
+            if self.column < self.scroll_x {
+                self.scroll_x = self.column;
+            }
         }
     }
 
     pub fn move_column_right(&mut self) {
         if self.column + 1 < self.column_count {
             self.column += 1;
+            // Auto-scroll right (visible_columns is set by renderer)
+            if self.column >= self.scroll_x + self.visible_columns && self.visible_columns > 0 {
+                self.scroll_x = self.column + 1 - self.visible_columns;
+            }
         }
     }
 
@@ -250,6 +266,8 @@ impl PianoRollState {
                 if !could_grow || self.column_digits.len() >= 2 {
                     self.column = num - 1;
                     self.column_digits.clear();
+                    // Auto-scroll to show the jumped-to column
+                    self.ensure_column_visible();
                     return true;
                 }
                 // Single digit but could be prefix of larger number — wait
@@ -267,11 +285,22 @@ impl PianoRollState {
             if num >= 1 && num <= self.column_count {
                 self.column = num - 1;
                 self.column_digits.clear();
+                self.ensure_column_visible();
                 return true;
             }
         }
         self.column_digits.clear();
         false
+    }
+
+    /// Scroll to make the current column visible.
+    pub fn ensure_column_visible(&mut self) {
+        if self.visible_columns == 0 { return; }
+        if self.column < self.scroll_x {
+            self.scroll_x = self.column;
+        } else if self.column >= self.scroll_x + self.visible_columns {
+            self.scroll_x = self.column + 1 - self.visible_columns;
+        }
     }
 
     pub fn column_digits_display(&self) -> &str {
@@ -334,10 +363,89 @@ impl PianoRollState {
         }
     }
 
-    /// Clear the highlight (Shift released or Esc).
+    /// Clear the column highlight.
     pub fn clear_highlight(&mut self) {
         self.highlight_start = None;
         self.highlight_end = None;
+    }
+
+    // ── Row highlight (Shift+j/k) ──
+
+    /// Begin or cancel row highlighting at the current cursor note.
+    pub fn start_row_highlight(&mut self) {
+        if let (Some(lo), Some(hi)) = (self.row_highlight_low, self.row_highlight_high) {
+            if lo == hi && lo == self.cursor_note {
+                self.clear_row_highlight();
+                return;
+            }
+        }
+        if self.row_highlight_low.is_none() {
+            self.row_highlight_low = Some(self.cursor_note);
+            self.row_highlight_high = Some(self.cursor_note);
+        }
+    }
+
+    /// Expand row highlight downward (Shift+j).
+    pub fn highlight_down(&mut self) {
+        self.start_row_highlight();
+        if self.cursor_note > 0 {
+            self.cursor_note -= 1;
+            if self.cursor_note < self.view_bottom_note {
+                self.view_bottom_note = self.cursor_note;
+            }
+        }
+        if let Some(lo) = self.row_highlight_low {
+            self.row_highlight_low = Some(self.cursor_note.min(lo));
+        }
+        if let Some(hi) = self.row_highlight_high {
+            self.row_highlight_high = Some(self.cursor_note.max(hi));
+        }
+    }
+
+    /// Expand row highlight upward (Shift+k).
+    pub fn highlight_up(&mut self) {
+        self.start_row_highlight();
+        if self.cursor_note < 127 {
+            self.cursor_note += 1;
+            let top = self.view_bottom_note.saturating_add(self.view_height);
+            if self.cursor_note >= top {
+                self.view_bottom_note = self.cursor_note - self.view_height + 1;
+            }
+        }
+        if let Some(lo) = self.row_highlight_low {
+            self.row_highlight_low = Some(self.cursor_note.min(lo));
+        }
+        if let Some(hi) = self.row_highlight_high {
+            self.row_highlight_high = Some(self.cursor_note.max(hi));
+        }
+    }
+
+    pub fn clear_row_highlight(&mut self) {
+        self.row_highlight_low = None;
+        self.row_highlight_high = None;
+    }
+
+    /// Check if a MIDI note is within the row highlight range.
+    pub fn is_row_highlighted(&self, note: u8) -> bool {
+        if let (Some(lo), Some(hi)) = (self.row_highlight_low, self.row_highlight_high) {
+            note >= lo && note <= hi
+        } else {
+            false
+        }
+    }
+
+    /// Get the highlighted row range as (low_note, high_note).
+    pub fn row_highlight_range(&self) -> Option<(u8, u8)> {
+        match (self.row_highlight_low, self.row_highlight_high) {
+            (Some(lo), Some(hi)) => Some((lo, hi)),
+            _ => None,
+        }
+    }
+
+    /// Clear both column and row highlights.
+    pub fn clear_all_highlights(&mut self) {
+        self.clear_highlight();
+        self.clear_row_highlight();
     }
 
     /// Check if a column is within the highlight range.

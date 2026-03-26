@@ -16,6 +16,7 @@ use phosphor_core::EngineConfig;
 /// Run the TUI application.
 pub fn run(config: EngineConfig, enable_audio: bool, enable_midi: bool) -> Result<()> {
     debug_log::init();
+    theme::load_preference();
 
     // Install panic handler that logs to our debug file before crashing
     let default_hook = std::panic::take_hook();
