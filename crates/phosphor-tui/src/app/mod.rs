@@ -27,6 +27,7 @@ mod delete;
 mod keys;
 mod piano_roll;
 mod session_io;
+mod clips;
 mod tracks;
 mod transport;
 mod undo_redo;
@@ -66,9 +67,36 @@ pub struct App {
     session_path: Option<std::path::PathBuf>,
     /// Status message shown briefly at bottom of screen.
     pub(crate) status_message: Option<(String, std::time::Instant)>,
+    /// Yanked (copied) clip for cross-track paste.
+    pub(crate) yanked_clip: Option<crate::state::Clip>,
+    /// Timeline position of the yanked clip (for cross-track paste at same position).
+    pub(crate) yanked_clip_start: i64,
 }
 
 impl App {
+    /// Create the app with a splash screen shown during init.
+    /// Enters alternate screen once — `run()` reuses it.
+    pub fn new_with_splash(config: EngineConfig, enable_audio: bool, enable_midi: bool) -> Result<Self> {
+        terminal::enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, crossterm::cursor::Hide)?;
+        let backend = CrosstermBackend::new(stdout);
+        let mut splash_terminal = Terminal::new(backend)?;
+
+        // Show splash while we init
+        crate::splash::show_splash(&mut splash_terminal)?;
+
+        // Now init — splash stays visible on screen
+        let app = Self::new(config, enable_audio, enable_midi);
+
+        // Clean up splash terminal (raw mode stays, alternate screen stays)
+        // App::run will create its own terminal on the same alternate screen
+        drop(splash_terminal);
+        let _ = terminal::disable_raw_mode();
+
+        Ok(app)
+    }
+
     pub fn new(config: EngineConfig, enable_audio: bool, enable_midi: bool) -> Self {
         let (mixer_tx, mixer_rx) = mixer_command_channel();
         let (clip_tx, clip_rx) = clip_snapshot_channel();
@@ -133,6 +161,8 @@ impl App {
                         clip_rx,
                         session_path: None,
                         status_message: None,
+                        yanked_clip: None,
+                        yanked_clip_start: 0,
                     };
                 }
             };
@@ -159,6 +189,8 @@ impl App {
             clip_rx,
             session_path: None,
             status_message: None,
+            yanked_clip: None,
+            yanked_clip_start: 0,
         }
     }
 
@@ -307,12 +339,32 @@ impl App {
         self.sync_loop_to_transport();
         terminal::enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnterAlternateScreen, crossterm::cursor::Hide)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
+
+        // Install panic hook that restores terminal before printing the panic
+        let original_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = terminal::disable_raw_mode();
+            let _ = execute!(
+                io::stdout(),
+                LeaveAlternateScreen,
+                crossterm::cursor::Show
+            );
+            original_hook(info);
+        }));
+
         let result = self.main_loop(&mut terminal);
-        terminal::disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+
+        // Restore terminal — always runs even if main_loop errored
+        let _ = terminal::disable_raw_mode();
+        let _ = execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            crossterm::cursor::Show
+        );
+
         result
     }
 
@@ -321,6 +373,7 @@ impl App {
         let mut frame_count: u64 = 0;
         while self.running {
             self.nav.tick();
+            self.nav.sync_clip_view_target();
             for track in &self.nav.tracks {
                 track.sync_to_audio();
             }

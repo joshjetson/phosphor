@@ -112,6 +112,9 @@ pub struct NavState {
     pub confirm_modal: ConfirmModal,
     /// Undo/redo stack.
     pub undo_stack: undo::UndoStack,
+    /// Whether a clip is "locked" for editing (Enter locks, Esc unlocks).
+    /// When locked, h/l moves the clip instead of navigating between elements.
+    pub clip_locked: bool,
 }
 
 impl NavState {
@@ -135,6 +138,7 @@ impl NavState {
             input_modal: InputModal::new(),
             confirm_modal: ConfirmModal::new(),
             undo_stack: undo::UndoStack::new(),
+            clip_locked: false,
         }
     }
     pub fn visible_tracks(&self) -> &[TrackState] {

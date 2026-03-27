@@ -4,6 +4,7 @@ pub mod actions;
 mod app;
 pub mod debug_log;
 pub mod session;
+mod splash;
 pub mod state;
 #[cfg(test)]
 mod test_harness;
@@ -35,6 +36,6 @@ pub fn run(config: EngineConfig, enable_audio: bool, enable_midi: bool) -> Resul
         default_hook(info);
     }));
 
-    let mut app = app::App::new(config, enable_audio, enable_midi);
+    let mut app = app::App::new_with_splash(config, enable_audio, enable_midi)?;
     app.run()
 }

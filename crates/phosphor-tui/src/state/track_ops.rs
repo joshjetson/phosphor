@@ -63,9 +63,16 @@ impl NavState {
             }
             TrackElement::Volume => { /* future: volume slider */ }
             TrackElement::Clip(idx) => {
+                self.clip_locked = true;
                 self.open_clip_view(self.track_cursor, idx);
                 self.clip_view.clip_tab = ClipTab::PianoRoll;
                 self.clip_view.focus = ClipViewFocus::PianoRoll;
+                crate::debug_log::system(&format!(
+                    "clip locked: track={} clip={} start={} len={}",
+                    self.track_cursor, idx,
+                    self.tracks.get(self.track_cursor).and_then(|t| t.clips.get(idx)).map(|c| c.start_tick).unwrap_or(-1),
+                    self.tracks.get(self.track_cursor).and_then(|t| t.clips.get(idx)).map(|c| c.length_ticks).unwrap_or(-1),
+                ));
             }
             _ => {}
         }
@@ -171,6 +178,23 @@ impl NavState {
         }
     }
 
+    /// Keep clip_view_target in sync with the currently selected clip element.
+    /// Called every frame as a safety net and after clip-modifying operations.
+    pub(crate) fn sync_clip_view_target(&mut self) {
+        if self.track_selected {
+            if let TrackElement::Clip(idx) = self.track_element {
+                let track_idx = self.track_cursor;
+                if let Some(track) = self.tracks.get(track_idx) {
+                    if idx < track.clips.len() {
+                        self.clip_view_target = Some((track_idx, idx));
+                        self.clip_view_visible = true;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     // ── Accessors ──
 
 
@@ -187,13 +211,12 @@ impl NavState {
             let beats = (snap.length_ticks as f64 / ppq as f64).ceil() as u16;
             let width = beats.max(2);
 
-            // Check if a clip already exists at this position (overdub/replace)
+            // Only merge into an existing clip if it has the EXACT same start and length
+            // (i.e. it's the same loop region being overdubbed). Overlapping but different
+            // clips (from duplicate, paste, move) should NOT be merged.
             if let Some(existing) = track.clips.iter_mut().find(|c| {
-                // Match by overlapping time range
-                c.start_tick < snap.start_tick + snap.length_ticks
-                    && snap.start_tick < c.start_tick + c.length_ticks
+                c.start_tick == snap.start_tick && c.length_ticks == snap.length_ticks
             }) {
-                // Log incoming notes before merge
                 for n in &snap.notes {
                     crate::debug_log::system(&format!(
                         "  overdub note: pitch={} frac={:.4} dur={:.4} (snap len={})",
@@ -201,32 +224,18 @@ impl NavState {
                     ));
                 }
 
-                // Rescale note fractions if clip lengths differ
-                if snap.length_ticks != existing.length_ticks && existing.length_ticks > 0 {
-                    let scale = snap.length_ticks as f64 / existing.length_ticks as f64;
-                    let offset = (snap.start_tick - existing.start_tick) as f64 / existing.length_ticks as f64;
-                    let mut adjusted = snap.notes.clone();
-                    for n in &mut adjusted {
-                        n.start_frac = n.start_frac * scale + offset;
-                        n.duration_frac *= scale;
-                    }
-                    existing.notes.extend(adjusted);
-                    crate::debug_log::system(&format!(
-                        "  rescaled: scale={:.4} offset={:.4}", scale, offset
-                    ));
-                } else {
-                    existing.notes.extend(snap.notes);
-                }
-
+                existing.notes.extend(snap.notes);
                 existing.has_content = true;
-                existing.length_ticks = existing.length_ticks.max(snap.length_ticks);
-                existing.width = width.max(existing.width);
                 crate::debug_log::system(&format!(
-                    "  overdub merged: now {} notes (existing len={})", existing.notes.len(), existing.length_ticks
+                    "  overdub merged (exact match): now {} notes", existing.notes.len()
                 ));
             } else {
-                // New clip
+                // New clip — no exact match found
                 let clip_number = track.clips.len() + 1;
+                crate::debug_log::system(&format!(
+                    "  new clip created: #{} at tick {} len {}",
+                    clip_number, snap.start_tick, snap.length_ticks
+                ));
                 track.clips.push(Clip {
                     number: clip_number,
                     width,
@@ -235,7 +244,6 @@ impl NavState {
                     length_ticks: snap.length_ticks,
                     notes: snap.notes,
                 });
-                crate::debug_log::system("  new clip created");
             }
         }
     }

@@ -83,12 +83,37 @@ impl App {
                     let track_idx = self.nav.track_cursor;
                     if let Some(track) = self.nav.tracks.get_mut(track_idx) {
                         if clip_idx < track.clips.len() {
+                            // Remove from audio thread
+                            if let Some(mixer_id) = track.mixer_id {
+                                let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::RemoveClip {
+                                    track_id: mixer_id,
+                                    clip_index: clip_idx,
+                                });
+                            }
+
                             let removed_clip = track.clips.remove(clip_idx);
                             self.nav.undo_stack.push(UndoAction::DeleteClip {
                                 track_idx, clip_idx, clip: removed_clip,
                             });
                             dbg::system(&format!("deleted clip {} on track {}", clip_idx, track_idx));
-                            self.nav.track_element = crate::state::TrackElement::Label;
+
+                            // Select adjacent clip instead of falling back to Label
+                            let remaining = track.clips.len();
+                            if remaining > 0 && clip_idx < remaining {
+                                // Next clip shifted into this index
+                                self.nav.track_element = crate::state::TrackElement::Clip(clip_idx);
+                                self.nav.open_clip_view(track_idx, clip_idx);
+                            } else if remaining > 0 {
+                                // Deleted the last clip, select previous
+                                let prev = remaining - 1;
+                                self.nav.track_element = crate::state::TrackElement::Clip(prev);
+                                self.nav.open_clip_view(track_idx, prev);
+                            } else {
+                                // No clips left
+                                self.nav.track_element = crate::state::TrackElement::Label;
+                                self.nav.clip_view_visible = false;
+                                self.nav.clip_view_target = None;
+                            }
                             self.status_message = Some(("clip deleted (u to undo)".into(), std::time::Instant::now()));
                         }
                     }

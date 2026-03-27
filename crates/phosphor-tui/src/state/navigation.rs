@@ -49,7 +49,7 @@ impl NavState {
     // ── Pane focus ──
 
     pub(crate) fn focus_pane(&mut self, pane: Pane) {
-        if self.focused_pane == Pane::Tracks { self.track_selected = false; }
+        if self.focused_pane == Pane::Tracks { self.track_selected = false; self.clip_locked = false; }
         self.focused_pane = pane;
         crate::debug_log::system(&format!("focused pane: {:?}", pane));
     }
@@ -152,6 +152,10 @@ impl NavState {
     pub(crate) fn move_left(&mut self) {
         if self.focused_pane == Pane::Tracks && self.track_selected {
             self.track_element = self.track_element.move_left();
+            // Keep clip view in sync when navigating between clips
+            if let TrackElement::Clip(idx) = self.track_element {
+                self.open_clip_view(self.track_cursor, idx);
+            }
         } else if self.focused_pane == Pane::ClipView {
             match self.clip_view.focus {
                 ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::InstConfig => {
@@ -174,6 +178,10 @@ impl NavState {
         if self.focused_pane == Pane::Tracks && self.track_selected {
             let num_clips = self.current_track().map(|t| t.clips.len()).unwrap_or(0);
             self.track_element = self.track_element.move_right(num_clips);
+            // Keep clip view in sync when navigating between clips
+            if let TrackElement::Clip(idx) = self.track_element {
+                self.open_clip_view(self.track_cursor, idx);
+            }
         } else if self.focused_pane == Pane::ClipView {
             match self.clip_view.focus {
                 ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::InstConfig => {
@@ -253,8 +261,12 @@ impl NavState {
         match self.focused_pane {
             Pane::Transport => {} // no escape action in transport
             Pane::Tracks => {
-                if self.track_selected {
+                if self.clip_locked {
+                    // Unlock clip — back to element navigation
+                    self.clip_locked = false;
+                } else if self.track_selected {
                     self.track_selected = false;
+                    self.clip_locked = false;
                     self.track_element = TrackElement::Label;
                     self.clip_view_visible = false;
                     self.clip_view_target = None;

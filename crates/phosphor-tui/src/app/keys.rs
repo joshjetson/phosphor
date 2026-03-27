@@ -334,6 +334,51 @@ impl App {
     pub(crate) fn handle_tracks_keys(&mut self, key: crossterm::event::KeyEvent) {
         use crate::debug_log as dbg;
 
+        // ── Clip locked mode: Enter was pressed on a clip ──
+        // h/l = move clip, Shift+H/L = stretch right edge, Ctrl+H/L = trim left edge
+        // y/p/d/P = yank/paste/duplicate, Esc = unlock
+        if self.nav.clip_locked {
+            if let crate::state::TrackElement::Clip(idx) = self.nav.track_element {
+                let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                match key.code {
+                    KeyCode::Esc => {
+                        dbg::user("clip locked: Esc → unlock");
+                        self.nav.escape();
+                    }
+                    // Ctrl+h/l: trim left edge
+                    KeyCode::Char('h') | KeyCode::Left if ctrl => {
+                        self.move_clip_left_edge(idx, -1);
+                    }
+                    KeyCode::Char('l') | KeyCode::Right if ctrl => {
+                        self.move_clip_left_edge(idx, 1);
+                    }
+                    // Shift+H/L: stretch/shrink right edge
+                    KeyCode::Char('H') | KeyCode::Char('h') | KeyCode::Left if shift => {
+                        self.move_clip_right_edge(idx, -1);
+                    }
+                    KeyCode::Char('L') | KeyCode::Char('l') | KeyCode::Right if shift => {
+                        self.move_clip_right_edge(idx, 1);
+                    }
+                    // Plain h/l: move clip left/right
+                    KeyCode::Char('h') | KeyCode::Left => {
+                        self.move_clip(idx, -1);
+                    }
+                    KeyCode::Char('l') | KeyCode::Right => {
+                        self.move_clip(idx, 1);
+                    }
+                    // Clip operations
+                    KeyCode::Char('y') => { self.yank_clip(idx); }
+                    KeyCode::Char('p') => { self.paste_clip_after(idx); }
+                    KeyCode::Char('P') => { self.paste_clip_to_track(); }
+                    KeyCode::Char('d') => { self.duplicate_clip(idx); }
+                    _ => {}
+                }
+            }
+            return;
+        }
+
+        // ── Normal tracks mode ──
         match key.code {
             KeyCode::Char('q') if !self.nav.track_selected && !self.nav.fx_menu.open => {
                 dbg::user("q → quit");
@@ -350,6 +395,39 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 dbg::user(&format!("k/Up → move up (cursor was {})", self.nav.track_cursor));
                 self.nav.move_up();
+            }
+            KeyCode::Char('y')
+                if self.nav.track_selected
+                && matches!(self.nav.track_element, crate::state::TrackElement::Clip(_))
+                && !self.nav.fx_menu.open =>
+            {
+                if let crate::state::TrackElement::Clip(idx) = self.nav.track_element {
+                    self.yank_clip(idx);
+                }
+            }
+            KeyCode::Char('p')
+                if self.nav.track_selected
+                && matches!(self.nav.track_element, crate::state::TrackElement::Clip(_))
+                && !self.nav.fx_menu.open =>
+            {
+                if let crate::state::TrackElement::Clip(idx) = self.nav.track_element {
+                    self.paste_clip_after(idx);
+                }
+            }
+            KeyCode::Char('P')
+                if self.nav.track_selected
+                && !self.nav.fx_menu.open =>
+            {
+                self.paste_clip_to_track();
+            }
+            KeyCode::Char('d')
+                if self.nav.track_selected
+                && matches!(self.nav.track_element, crate::state::TrackElement::Clip(_))
+                && !self.nav.fx_menu.open =>
+            {
+                if let crate::state::TrackElement::Clip(idx) = self.nav.track_element {
+                    self.duplicate_clip(idx);
+                }
             }
             KeyCode::Char('h') | KeyCode::Left => self.nav.move_left(),
             KeyCode::Char('l') | KeyCode::Right => self.nav.move_right(),
@@ -425,18 +503,29 @@ impl App {
                             self.nav.escape();
                         }
                     }
-                    KeyCode::Char('J') if shift => {
-                        // Shift+j: start or expand row highlight downward
+                    KeyCode::Char('J') | KeyCode::Down if shift => {
+                        // Shift+j or Shift+Down: start or expand row highlight downward
                         self.nav.clip_view.piano_roll.highlight_down();
                         dbg::user(&format!("piano roll: row highlight {:?}", self.nav.clip_view.piano_roll.row_highlight_range()));
                     }
-                    KeyCode::Char('K') if shift => {
-                        // Shift+k: start or expand row highlight upward
+                    KeyCode::Char('K') | KeyCode::Up if shift => {
+                        // Shift+k or Shift+Up: start or expand row highlight upward
                         self.nav.clip_view.piano_roll.highlight_up();
                         dbg::user(&format!("piano roll: row highlight {:?}", self.nav.clip_view.piano_roll.row_highlight_range()));
                     }
-                    KeyCode::Char('j') | KeyCode::Down => self.nav.clip_view.piano_roll.move_down(),
-                    KeyCode::Char('k') | KeyCode::Up => self.nav.clip_view.piano_roll.move_up(),
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        // If rows are highlighted, moving j/k unhighlights them
+                        if self.nav.clip_view.piano_roll.row_highlight_low.is_some() {
+                            self.nav.clip_view.piano_roll.clear_row_highlight();
+                        }
+                        self.nav.clip_view.piano_roll.move_down();
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        if self.nav.clip_view.piano_roll.row_highlight_low.is_some() {
+                            self.nav.clip_view.piano_roll.clear_row_highlight();
+                        }
+                        self.nav.clip_view.piano_roll.move_up();
+                    }
                     KeyCode::Char('H') if shift => {
                         // Shift+h: start or expand highlight left
                         self.nav.clip_view.piano_roll.start_highlight();

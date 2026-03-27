@@ -47,6 +47,18 @@ pub enum MixerCommand {
         clip_index: usize,
         events: Vec<ClipEvent>,
     },
+    /// Update a clip's timeline position and length on the audio thread.
+    UpdateClipPosition {
+        track_id: usize,
+        clip_index: usize,
+        start_tick: i64,
+        length_ticks: i64,
+    },
+    /// Remove a clip from a track on the audio thread.
+    RemoveClip {
+        track_id: usize,
+        clip_index: usize,
+    },
 }
 
 // ── AudioTrack ──
@@ -382,6 +394,21 @@ impl Mixer {
                         if let Some(clip) = track.clips.get_mut(clip_index) {
                             clip.events = events;
                             clip.events.sort_by_key(|e| e.tick);
+                        }
+                    }
+                }
+                MixerCommand::UpdateClipPosition { track_id, clip_index, start_tick, length_ticks } => {
+                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                        if let Some(clip) = track.clips.get_mut(clip_index) {
+                            clip.start_tick = start_tick;
+                            clip.length_ticks = length_ticks;
+                        }
+                    }
+                }
+                MixerCommand::RemoveClip { track_id, clip_index } => {
+                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                        if clip_index < track.clips.len() {
+                            track.clips.remove(clip_index);
                         }
                     }
                 }
