@@ -39,6 +39,19 @@ pub enum UndoAction {
         clip_idx: usize,
         clip: super::Clip,
     },
+    /// Notes were moved in the piano roll. Stores snapshots of the notes
+    /// BEFORE the move so undo can restore their original positions.
+    MoveNotes {
+        track_idx: usize,
+        clip_idx: usize,
+        /// (note_index, original_snapshot) for each moved note.
+        before: Vec<(usize, NoteSnapshot)>,
+    },
+    /// A clip was added (paste/duplicate). Undo = remove it.
+    AddClip {
+        track_idx: usize,
+        clip_idx: usize,
+    },
     /// A track was deleted. Stores full track state for restoration.
     DeleteTrack {
         track_idx: usize,

@@ -44,9 +44,15 @@ impl NavState {
 
     pub(crate) fn jump_to_clip(&mut self, clip_number: usize) {
         if let Some(track) = self.current_track() {
+            crate::debug_log::system(&format!(
+                "jump_to_clip: looking for #{}, track has {} clips: {:?}",
+                clip_number, track.clips.len(),
+                track.clips.iter().map(|c| (c.number, c.start_tick, c.length_ticks)).collect::<Vec<_>>()
+            ));
             if let Some(idx) = track.clips.iter().position(|c| c.number == clip_number) {
                 self.track_element = TrackElement::Clip(idx);
                 self.open_clip_view(self.track_cursor, idx);
+                crate::debug_log::system(&format!("jump_to_clip: selected idx={}", idx));
             }
         }
     }
@@ -152,6 +158,11 @@ impl NavState {
         self.clip_view_visible = true;
         self.clip_view_target = Some((track_idx, clip_idx));
         self.clip_view.fx_cursor = 0;
+        crate::debug_log::system(&format!(
+            "open_clip_view: track={} clip={} (notes={})",
+            track_idx, clip_idx,
+            self.tracks.get(track_idx).and_then(|t| t.clips.get(clip_idx)).map(|c| c.notes.len()).unwrap_or(0)
+        ));
     }
 
     /// Show controls for the currently selected track and route MIDI to it.
@@ -195,46 +206,168 @@ impl NavState {
         }
     }
 
+    /// Remove phantom clips: when two clips overlap at the same start position,
+    /// keep the longer one and absorb the shorter one's notes (rescaled).
+    /// Returns (mixer_id, removed_clip_index) pairs so the caller can sync audio.
+    pub(crate) fn dedup_clips(&mut self) -> Vec<(usize, usize)> {
+        let ppq = phosphor_core::transport::Transport::PPQ;
+        let tolerance = ppq;
+        let mut removed = Vec::new();
+
+        for track in &mut self.tracks {
+            if track.clips.len() < 2 { continue; }
+
+            track.clips.sort_by(|a, b| {
+                a.start_tick.cmp(&b.start_tick)
+                    .then(b.length_ticks.cmp(&a.length_ticks))
+            });
+
+            let mut i = 0;
+            while i + 1 < track.clips.len() {
+                let starts_close = (track.clips[i].start_tick - track.clips[i + 1].start_tick).abs() <= tolerance;
+                if starts_close {
+                    let shorter_len = track.clips[i + 1].length_ticks;
+                    let longer_len = track.clips[i].length_ticks;
+                    if longer_len > 0 {
+                        let scale = shorter_len as f64 / longer_len as f64;
+                        let absorbed: Vec<_> = track.clips[i + 1].notes.iter().map(|n| {
+                            let mut rescaled = *n;
+                            rescaled.start_frac *= scale;
+                            rescaled.duration_frac *= scale;
+                            rescaled
+                        }).collect();
+                        track.clips[i].notes.extend(absorbed);
+                    }
+                    crate::debug_log::system(&format!(
+                        "dedup: absorbed clip #{} (len={}) into clip #{} (len={}) on '{}'",
+                        track.clips[i + 1].number, shorter_len,
+                        track.clips[i].number, longer_len, track.name
+                    ));
+                    // Record the removal for audio thread sync
+                    if let Some(mid) = track.mixer_id {
+                        removed.push((mid, i + 1));
+                    }
+                    track.clips.remove(i + 1);
+                } else {
+                    i += 1;
+                }
+            }
+
+            for (idx, clip) in track.clips.iter_mut().enumerate() {
+                clip.number = idx + 1;
+            }
+        }
+        removed
+    }
+
     // ── Accessors ──
 
 
     /// Receive a clip snapshot from the audio thread and add it to the
     /// corresponding TUI track's clip list.
-    pub(crate) fn receive_clip_snapshot(&mut self, snap: phosphor_core::clip::ClipSnapshot) {
+    /// `is_recording` = true when transport is actively recording (snapshots are fresh overdubs).
+    /// When NOT recording, snapshots matching the viewed clip are stale (from panic/reset) and ignored.
+    pub(crate) fn receive_clip_snapshot(&mut self, snap: phosphor_core::clip::ClipSnapshot, is_recording: bool) {
         crate::debug_log::system(&format!(
-            "clip received: track={} events={} notes={} ticks={}..{}",
+            "clip received: track={} events={} notes={} ticks={}..{} recording={}",
             snap.track_id, snap.event_count, snap.notes.len(),
-            snap.start_tick, snap.start_tick + snap.length_ticks,
+            snap.start_tick, snap.start_tick + snap.length_ticks, is_recording,
         ));
-        if let Some(track) = self.tracks.iter_mut().find(|t| t.mixer_id == Some(snap.track_id)) {
+
+        // When NOT recording, ignore snapshots that match the clip currently open
+        // in the clip view. These are stale commits from panic/reset_all, not
+        // fresh recordings. They would undo the user's edits/deletes.
+        // When recording IS active, let them through — they're real overdub data.
+        if !is_recording {
+            if let Some((ti, ci)) = self.clip_view_target {
+                if let Some(track) = self.tracks.get(ti) {
+                    if track.mixer_id == Some(snap.track_id) {
+                        if let Some(clip) = track.clips.get(ci) {
+                            let tolerance = phosphor_core::transport::Transport::PPQ;
+                            if (clip.start_tick - snap.start_tick).abs() <= tolerance {
+                                crate::debug_log::system(
+                                    "  IGNORED: stale snapshot for viewed clip (not recording)"
+                                );
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Find the track index (we need it for clip_view_target fixup)
+        let track_idx = match self.tracks.iter().position(|t| t.mixer_id == Some(snap.track_id)) {
+            Some(idx) => idx,
+            None => return,
+        };
+
+        {
+            let track = &mut self.tracks[track_idx];
             let ppq = phosphor_core::transport::Transport::PPQ;
             let beats = (snap.length_ticks as f64 / ppq as f64).ceil() as u16;
             let width = beats.max(2);
+            let snap_end = snap.start_tick + snap.length_ticks;
 
-            // Only merge into an existing clip if it has the EXACT same start and length
-            // (i.e. it's the same loop region being overdubbed). Overlapping but different
-            // clips (from duplicate, paste, move) should NOT be merged.
-            if let Some(existing) = track.clips.iter_mut().find(|c| {
-                c.start_tick == snap.start_tick && c.length_ticks == snap.length_ticks
-            }) {
-                for n in &snap.notes {
+            // Absorb any clips that the new recording fully covers.
+            // A clip is covered if it starts within the snap range and ends within it.
+            let mut absorbed_notes = Vec::new();
+            let mut absorbed_count = 0usize;
+            track.clips.retain(|c| {
+                let c_end = c.start_tick + c.length_ticks;
+                let covered = c.start_tick >= snap.start_tick && c_end <= snap_end;
+                if covered {
                     crate::debug_log::system(&format!(
-                        "  overdub note: pitch={} frac={:.4} dur={:.4} (snap len={})",
-                        n.note, n.start_frac, n.duration_frac, snap.length_ticks
+                        "  absorbing clip #{}: tick {}..{} (snap covers {}..{})",
+                        c.number, c.start_tick, c_end, snap.start_tick, snap_end
                     ));
+                    // Rescale notes to snap's coordinate space
+                    let offset = (c.start_tick - snap.start_tick) as f64 / snap.length_ticks as f64;
+                    let scale = c.length_ticks as f64 / snap.length_ticks as f64;
+                    for mut n in c.notes.clone() {
+                        n.start_frac = n.start_frac * scale + offset;
+                        n.duration_frac *= scale;
+                        absorbed_notes.push(n);
+                    }
+                    absorbed_count += 1;
+                    false
+                } else {
+                    true
                 }
+            });
 
-                existing.notes.extend(snap.notes);
+            // Combine absorbed notes with the new recording's notes
+            let mut all_notes = absorbed_notes;
+            all_notes.extend(snap.notes);
+
+            // Try to merge into an existing clip with a close start
+            let merge_tolerance = ppq;
+            if let Some(existing) = track.clips.iter_mut().find(|c| {
+                (c.start_tick - snap.start_tick).abs() <= merge_tolerance
+            }) {
+                // Rescale if lengths differ
+                if snap.length_ticks != existing.length_ticks && existing.length_ticks > 0 {
+                    let scale = snap.length_ticks as f64 / existing.length_ticks as f64;
+                    let offset = (snap.start_tick - existing.start_tick) as f64 / existing.length_ticks as f64;
+                    for n in &mut all_notes {
+                        n.start_frac = n.start_frac * scale + offset;
+                        n.duration_frac *= scale;
+                    }
+                }
+                existing.notes.extend(all_notes);
                 existing.has_content = true;
+                existing.length_ticks = existing.length_ticks.max(snap.length_ticks);
+                existing.width = width.max(existing.width);
                 crate::debug_log::system(&format!(
-                    "  overdub merged (exact match): now {} notes", existing.notes.len()
+                    "  merged into existing clip: now {} notes, len={}",
+                    existing.notes.len(), existing.length_ticks
                 ));
             } else {
-                // New clip — no exact match found
+                // Create new clip
                 let clip_number = track.clips.len() + 1;
                 crate::debug_log::system(&format!(
-                    "  new clip created: #{} at tick {} len {}",
-                    clip_number, snap.start_tick, snap.length_ticks
+                    "  new clip: #{} at tick {} len {} ({} notes, absorbed {})",
+                    clip_number, snap.start_tick, snap.length_ticks, all_notes.len(), absorbed_count
                 ));
                 track.clips.push(Clip {
                     number: clip_number,
@@ -242,8 +375,32 @@ impl NavState {
                     has_content: true,
                     start_tick: snap.start_tick,
                     length_ticks: snap.length_ticks,
-                    notes: snap.notes,
+                    notes: all_notes,
+                    hidden_notes: Vec::new(),
                 });
+            }
+
+            // Renumber clips sequentially
+            for (i, c) in track.clips.iter_mut().enumerate() {
+                c.number = i + 1;
+            }
+        }
+
+        // Fix clip_view_target if it was pointing at this track
+        // (clips may have been absorbed/reordered)
+        if let Some((ti, ci)) = self.clip_view_target {
+            if ti == track_idx {
+                let num_clips = self.tracks[track_idx].clips.len();
+                if num_clips == 0 {
+                    self.clip_view_target = None;
+                    self.clip_view_visible = false;
+                } else if ci >= num_clips {
+                    // Target was past the end — point to the last clip
+                    self.clip_view_target = Some((track_idx, num_clips - 1));
+                    crate::debug_log::system(&format!(
+                        "  clip_view_target fixed: {} → {}", ci, num_clips - 1
+                    ));
+                }
             }
         }
     }

@@ -126,6 +126,7 @@ impl App {
                         start_tick: sc.start_tick,
                         length_ticks: sc.length_ticks,
                         notes,
+                        hidden_notes: Vec::new(),
                     });
 
                     // Send clip to audio thread: create then update events
@@ -151,6 +152,9 @@ impl App {
                 track.sync_to_audio();
             }
         }
+
+        // Clean up any phantom/duplicate clips
+        self.sync_dedup_to_audio();
 
         self.session_path = Some(path.clone());
         self.status_message = Some((

@@ -35,7 +35,7 @@ impl FxPanelTab {
 pub enum ClipTab {
     InstConfig,
     PianoRoll,
-    Automation,
+    Settings,
 }
 
 impl ClipTab {
@@ -43,19 +43,110 @@ impl ClipTab {
         match self {
             Self::InstConfig => "inst",
             Self::PianoRoll => "piano",
-            Self::Automation => "auto",
+            Self::Settings => "settings",
         }
     }
 
     pub fn next(self) -> Self {
         match self {
             Self::InstConfig => Self::PianoRoll,
-            Self::PianoRoll => Self::Automation,
-            Self::Automation => Self::InstConfig,
+            Self::PianoRoll => Self::Settings,
+            Self::Settings => Self::InstConfig,
         }
     }
 
-    pub const ALL: &[ClipTab] = &[Self::InstConfig, Self::PianoRoll, Self::Automation];
+    pub const ALL: &[ClipTab] = &[Self::InstConfig, Self::PianoRoll, Self::Settings];
+}
+
+// ── Grid Resolution ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridResolution {
+    Quarter,
+    Eighth,
+    Sixteenth,
+    ThirtySecond,
+    QuarterT,
+    EighthT,
+    SixteenthT,
+}
+
+impl GridResolution {
+    /// Fraction of a bar (4/4 time, 1 bar = column_count columns).
+    /// This returns fraction relative to the full clip (0.0..1.0) when multiplied
+    /// by (beats_per_bar / total_beats).
+    pub fn subdivisions_per_beat(self) -> f64 {
+        match self {
+            Self::Quarter => 1.0,
+            Self::Eighth => 2.0,
+            Self::Sixteenth => 4.0,
+            Self::ThirtySecond => 8.0,
+            Self::QuarterT => 1.5,    // 3 in the space of 2
+            Self::EighthT => 3.0,
+            Self::SixteenthT => 6.0,
+        }
+    }
+
+    /// Grid step as a fraction of the total clip, given total beats.
+    pub fn step_frac(self, total_beats: usize) -> f64 {
+        if total_beats == 0 { return 0.25; }
+        1.0 / (total_beats as f64 * self.subdivisions_per_beat())
+    }
+
+    /// Snap a fractional position to the nearest grid line.
+    pub fn snap(self, frac: f64, total_beats: usize) -> f64 {
+        let step = self.step_frac(total_beats);
+        if step <= 0.0 { return frac; }
+        (frac / step).round() * step
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Quarter => "1/4",
+            Self::Eighth => "1/8",
+            Self::Sixteenth => "1/16",
+            Self::ThirtySecond => "1/32",
+            Self::QuarterT => "1/4T",
+            Self::EighthT => "1/8T",
+            Self::SixteenthT => "1/16T",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Quarter => Self::Eighth,
+            Self::Eighth => Self::Sixteenth,
+            Self::Sixteenth => Self::ThirtySecond,
+            Self::ThirtySecond => Self::QuarterT,
+            Self::QuarterT => Self::EighthT,
+            Self::EighthT => Self::SixteenthT,
+            Self::SixteenthT => Self::Quarter,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Quarter => Self::SixteenthT,
+            Self::Eighth => Self::Quarter,
+            Self::Sixteenth => Self::Eighth,
+            Self::ThirtySecond => Self::Sixteenth,
+            Self::QuarterT => Self::ThirtySecond,
+            Self::EighthT => Self::QuarterT,
+            Self::SixteenthT => Self::EighthT,
+        }
+    }
+}
+
+// ── Edit Mode Sub-States ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditSubMode {
+    /// Navigating between notes by proximity.
+    Navigate,
+    /// Shift held: extending selection.
+    Selecting,
+    /// Notes selected, now moving them as a group.
+    Moving,
 }
 
 #[derive(Debug)]
@@ -146,6 +237,19 @@ pub struct PianoRollState {
     /// Row highlight range (Shift+j/k). Stores MIDI note numbers (low..=high).
     pub row_highlight_low: Option<u8>,
     pub row_highlight_high: Option<u8>,
+    // ── Edit mode ──
+    pub edit_mode: bool,
+    /// Index into the clip's notes vec — the "cursor" note.
+    pub edit_cursor: usize,
+    /// Indices of selected notes (for multi-select + move).
+    pub edit_selected: Vec<usize>,
+    pub edit_sub: EditSubMode,
+    // ── Grid / snap ──
+    pub grid: GridResolution,
+    pub snap_enabled: bool,
+    pub default_velocity: u8,
+    /// Settings panel cursor (for the Settings tab).
+    pub settings_cursor: usize,
 }
 
 impl Default for PianoRollState {
@@ -171,6 +275,14 @@ impl PianoRollState {
             row_highlight_high: None,
             yank_buffer: Vec::new(),
             yank_columns: 0,
+            edit_mode: false,
+            edit_cursor: 0,
+            edit_selected: Vec::new(),
+            edit_sub: EditSubMode::Navigate,
+            grid: GridResolution::Eighth,
+            snap_enabled: true,
+            default_velocity: 100,
+            settings_cursor: 0,
         }
     }
 

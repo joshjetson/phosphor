@@ -33,10 +33,22 @@ pub(super) fn render_clip_view_tabs(frame: &mut Frame, area: Rect, nav: &NavStat
     }
 
     if let Some(t) = nav.active_clip_track() {
+        let total_clips = t.clips.len();
         if let Some(c) = nav.active_clip() {
+            let clip_num = nav.clip_view_target.map(|(_, ci)| ci + 1).unwrap_or(c.number);
             spans.push(Span::styled(
-                format!(" {} \u{00B7} clip {}", t.name.to_uppercase(), c.number),
-                theme::muted()));
+                format!(" {} \u{00B7} clip {}/{}", t.name.to_uppercase(), clip_num, total_clips),
+                theme::normal()));
+            if nav.clip_view.piano_roll.edit_mode {
+                let sub = match nav.clip_view.piano_roll.edit_sub {
+                    crate::state::EditSubMode::Navigate => "nav",
+                    crate::state::EditSubMode::Selecting => "sel",
+                    crate::state::EditSubMode::Moving => "mov",
+                };
+                spans.push(Span::styled(
+                    format!(" [EDIT:{}]", sub),
+                    Style::default().fg(theme::amber_val()).add_modifier(Modifier::BOLD)));
+            }
         }
     }
 
@@ -62,7 +74,8 @@ pub(super) fn render_clip_view(frame: &mut Frame, area: Rect, nav: &NavState, sn
 
     match nav.clip_view.clip_tab {
         ClipTab::InstConfig => render_inst_config(frame, cols[2], nav),
-        _ => render_piano_roll(frame, cols[2], nav, snap),
+        ClipTab::Settings => render_settings(frame, cols[2], nav),
+        ClipTab::PianoRoll => render_piano_roll(frame, cols[2], nav, snap),
     }
 }
 
@@ -464,14 +477,25 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
         }
 
         // Draw MIDI notes from the active clip — adjusted for scroll window
-        let note_style = Style::default().fg(tc).bg(
+        let base_note_style = Style::default().fg(tc).bg(
             if is_cur { theme::piano_cursor_bg() } else { row_bg }
         ).add_modifier(Modifier::BOLD);
         // Scroll window as fraction of clip
         let scroll_frac = if total_beats > 0 { scroll_offset as f64 / total_beats as f64 } else { 0.0 };
         let visible_frac = if total_beats > 0 { visible_cols as f64 / total_beats as f64 } else { 1.0 };
-        for n in notes {
+        let in_edit = pr.edit_mode;
+        for (ni, n) in notes.iter().enumerate() {
             if n.note == note {
+                // Determine style based on edit mode state
+                let note_style = if in_edit && ni == pr.edit_cursor {
+                    // Edit cursor — bright highlight
+                    Style::default().fg(Color::Rgb(255, 255, 255)).bg(theme::amber_val()).add_modifier(Modifier::BOLD)
+                } else if in_edit && pr.edit_selected.contains(&ni) {
+                    // Selected note — tinted highlight
+                    Style::default().fg(Color::Rgb(255, 255, 200)).bg(Color::Rgb(80, 60, 20)).add_modifier(Modifier::BOLD)
+                } else {
+                    base_note_style
+                };
                 // Map note position from clip-space to visible-window-space
                 let rel_start = (n.start_frac - scroll_frac) / visible_frac;
                 let rel_end = (n.start_frac + n.duration_frac - scroll_frac) / visible_frac;
@@ -521,6 +545,54 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
         if !text.is_empty() { spans.push(Span::styled(text, cur_s)); }
 
         lines.push(Line::from(spans));
+    }
+
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+// ── Settings Panel ──
+
+fn render_settings(frame: &mut Frame, area: Rect, nav: &NavState) {
+    let focused = nav.focused_pane == Pane::ClipView && nav.clip_view.focus == ClipViewFocus::PianoRoll;
+    let pr = &nav.clip_view.piano_roll;
+    let cursor = pr.settings_cursor;
+
+    let items: Vec<(&str, String)> = vec![
+        ("Grid", pr.grid.label().to_string()),
+        ("Snap", if pr.snap_enabled { "on".into() } else { "off".into() }),
+        ("Velocity", format!("{}", pr.default_velocity)),
+    ];
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        "  Piano Roll Settings",
+        if focused { theme::amber_bright().add_modifier(Modifier::BOLD) } else { theme::dim() },
+    )));
+    lines.push(Line::from(""));
+
+    for (i, (label, value)) in items.iter().enumerate() {
+        let is_cur = focused && i == cursor;
+        let label_style = if is_cur { theme::amber_bright() } else { theme::normal() };
+        let value_style = if is_cur {
+            Style::default().fg(Color::Rgb(255, 255, 255)).bg(theme::amber_val())
+        } else {
+            theme::muted()
+        };
+        let arrow = if is_cur { "\u{25B8} " } else { "  " };
+        lines.push(Line::from(vec![
+            Span::styled(arrow, label_style),
+            Span::styled(format!("{:<10}", label), label_style),
+            Span::styled(format!(" {}", value), value_style),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  h/l to adjust, j/k to navigate", theme::dim())));
+    if focused {
+        lines.push(Line::from(Span::styled(
+            format!("  Edit mode: Space+E ({})", if pr.edit_mode { "active" } else { "off" }),
+            theme::muted(),
+        )));
     }
 
     frame.render_widget(Paragraph::new(lines), area);

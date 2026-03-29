@@ -65,6 +65,9 @@ impl App {
                 ));
             }
             SpaceAction::NewTrack => { /* future */ }
+            SpaceAction::EditMode => {
+                self.enter_edit_mode();
+            }
         }
     }
     /// Stop playback and silence all instruments. Called on pause, stop,

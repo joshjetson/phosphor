@@ -59,6 +59,11 @@ pub struct Clip {
     pub length_ticks: i64,
     /// Notes for piano roll display (from ClipSnapshot).
     pub notes: Vec<phosphor_core::clip::NoteSnapshot>,
+    /// Notes hidden by shrinking the clip. Stored with start_frac and
+    /// duration_frac as absolute tick ratios (tick / original_length_when_hidden)
+    /// converted to tick offsets for stable restore.
+    /// Format: (tick_offset_from_clip_start, duration_ticks, note, velocity)
+    pub hidden_notes: Vec<(i64, i64, u8, u8)>,
 }
 
 #[derive(Debug, Clone)]

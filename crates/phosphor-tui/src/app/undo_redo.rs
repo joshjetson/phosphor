@@ -68,6 +68,50 @@ impl App {
                 dbg::system(&format!("undo: removed {} pasted notes", notes.len()));
                 self.status_message = Some(("undo: paste removed".into(), std::time::Instant::now()));
             }
+            UndoAction::MoveNotes { track_idx, clip_idx, ref before } => {
+                // Undo move = restore each note to its original position
+                if let Some(track) = self.nav.tracks.get_mut(track_idx) {
+                    if let Some(clip) = track.clips.get_mut(clip_idx) {
+                        for (idx, original) in before {
+                            if let Some(note) = clip.notes.get_mut(*idx) {
+                                *note = *original;
+                            }
+                        }
+                    }
+                }
+                self.send_clip_update_for(track_idx, clip_idx);
+                dbg::system(&format!("undo: restored {} moved notes", before.len()));
+                self.status_message = Some(("undo: notes restored".into(), std::time::Instant::now()));
+            }
+            UndoAction::AddClip { track_idx, clip_idx } => {
+                // Undo add = remove the clip
+                if let Some(track) = self.nav.tracks.get_mut(track_idx) {
+                    if clip_idx < track.clips.len() {
+                        // Remove from audio thread
+                        if let Some(mid) = track.mixer_id {
+                            let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::RemoveClip {
+                                track_id: mid,
+                                clip_index: clip_idx,
+                            });
+                        }
+                        track.clips.remove(clip_idx);
+                    }
+                }
+                // Fix selection
+                if let crate::state::TrackElement::Clip(i) = self.nav.track_element {
+                    if i >= clip_idx {
+                        let num = self.nav.tracks.get(track_idx).map(|t| t.clips.len()).unwrap_or(0);
+                        if num > 0 {
+                            self.nav.track_element = crate::state::TrackElement::Clip(i.saturating_sub(1).min(num - 1));
+                        } else {
+                            self.nav.track_element = crate::state::TrackElement::Label;
+                        }
+                    }
+                }
+                self.nav.sync_clip_view_target();
+                dbg::system(&format!("undo: removed added clip {} on track {}", clip_idx, track_idx));
+                self.status_message = Some(("undo: clip removed".into(), std::time::Instant::now()));
+            }
             UndoAction::DeleteClip { track_idx, clip_idx, clip } => {
                 // Undo clip delete = insert it back
                 if let Some(track) = self.nav.tracks.get_mut(track_idx) {
@@ -197,10 +241,22 @@ impl App {
                 self.send_clip_update_for(track_idx, clip_idx);
                 self.status_message = Some(("redo: paste restored".into(), std::time::Instant::now()));
             }
+            UndoAction::MoveNotes { .. } => {
+                self.status_message = Some(("redo: not available for moves".into(), std::time::Instant::now()));
+            }
+            UndoAction::AddClip { .. } => {
+                self.status_message = Some(("redo: not available for paste/duplicate".into(), std::time::Instant::now()));
+            }
             UndoAction::DeleteClip { track_idx, clip_idx, .. } => {
                 // Redo clip delete = remove it again
                 if let Some(track) = self.nav.tracks.get_mut(track_idx) {
                     if clip_idx < track.clips.len() {
+                        if let Some(mid) = track.mixer_id {
+                            let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::RemoveClip {
+                                track_id: mid,
+                                clip_index: clip_idx,
+                            });
+                        }
                         track.clips.remove(clip_idx);
                     }
                 }

@@ -1,0 +1,160 @@
+{
+  "global": {
+    "Space": "open command menu",
+    "Ctrl+C": "quit",
+    "Ctrl+S": "quick save",
+    "u": "undo (works everywhere except modals)",
+    "Ctrl+R": "redo",
+    "Tab": "cycle panes / tabs",
+    "Shift+Tab": "prev pane",
+    "Esc": "back / close / clear / unlock",
+    "+/-": "adjust BPM"
+  },
+  "space_menu": {
+    "1": "focus transport",
+    "2": "focus tracks",
+    "3": "focus clip view",
+    "p": "play/pause",
+    "r": "toggle recording",
+    "l": "edit loop region",
+    "m": "toggle metronome",
+    "!": "panic (kill all sound)",
+    "a": "add instrument track",
+    "s": "save project",
+    "o": "open project",
+    "d": "delete selected track/clip",
+    "e": "enter edit mode (piano roll)",
+    "v": "cycle color theme",
+    "h": "help topics"
+  },
+  "tracks_pane": {
+    "not_selected": {
+      "j/k": "navigate between tracks",
+      "Enter": "select track",
+      "q": "quit"
+    },
+    "selected": {
+      "h/l": "navigate elements (label→fx→vol→mute→solo→arm→clips)",
+      "Enter_on_clip": "lock clip (enter clip-locked mode)",
+      "m": "toggle mute",
+      "s": "toggle solo",
+      "r": "toggle record arm",
+      "R": "toggle loop record",
+      "y": "yank (copy) clip (when on clip element)",
+      "p": "paste clip after current (when on clip element)",
+      "P": "paste clip to same position on another track",
+      "d": "duplicate clip (when on clip element)",
+      "1-9": "jump to clip by number",
+      "Esc": "deselect track"
+    },
+    "clip_locked": {
+      "description": "Enter on a clip enters this mode. h/l moves clip, Shift stretches, Ctrl trims.",
+      "h/l": "move clip left/right by one beat",
+      "Shift+H/L": "shrink/extend right edge by one beat",
+      "Ctrl+H/L": "trim/extend left edge by one beat",
+      "y": "yank clip",
+      "p": "paste after",
+      "P": "paste to track",
+      "d": "duplicate clip",
+      "Esc": "unlock clip (back to element navigation)"
+    }
+  },
+  "clip_view": {
+    "focus_switch": {
+      "Tab": "cycle tabs: trk fx → synth → inst config → piano → settings → trk fx",
+      "h_from_piano": "switch focus to FX panel",
+      "l_from_fx": "switch focus to piano roll"
+    },
+    "fx_panel_synth_tab": {
+      "j/k": "navigate synth parameters",
+      "h/l": "decrease/increase parameter value"
+    },
+    "settings_tab": {
+      "j/k": "navigate settings (grid, snap, velocity)",
+      "h/l": "adjust setting value"
+    }
+  },
+  "piano_roll_navigation": {
+    "description": "Default mode when viewing the piano roll (not in edit mode).",
+    "h/l": "navigate columns (beats)",
+    "j/k": "scroll up/down through notes (clears row highlight)",
+    "1-9": "jump to column by number",
+    "Enter": "select column (enter Right-Left-Trick mode)",
+    "n": "toggle note at cursor",
+    "Shift+H/L": "start/expand column highlight",
+    "Shift+J/K": "start/expand row highlight",
+    "d": "delete notes in highlighted region",
+    "y": "yank notes in highlighted region",
+    "p": "paste yanked notes at cursor/highlight",
+    "Esc": "clear highlights or exit piano roll"
+  },
+  "piano_roll_column_selected": {
+    "description": "Right-Left-Trick: column is locked. h/l adjusts note edges.",
+    "h/l": "adjust LEFT edge of all notes in column",
+    "H/L": "adjust RIGHT edge of all notes in column",
+    "j/k": "enter row mode (select individual note)",
+    "Esc": "back to navigation mode"
+  },
+  "piano_roll_row_mode": {
+    "description": "Single note selected via column→row drill-down.",
+    "h/l": "adjust LEFT edge of single note",
+    "H/L": "adjust RIGHT edge of single note",
+    "j/k": "move between notes in column",
+    "n": "draw/toggle note at cursor",
+    "Esc": "back to column mode"
+  },
+  "edit_mode": {
+    "description": "Space+E enters edit mode. Navigate between individual notes, select, move, delete.",
+    "enter": "Space+E (only from piano roll view)",
+    "navigate": {
+      "j/k": "move to next note UP/DOWN within same column",
+      "h/l": "jump to nearest note in prev/next column",
+      "Enter": "select cursor note for moving (single-note select)",
+      "d": "delete cursor note (undoable)",
+      "u": "undo",
+      "Esc": "exit edit mode"
+    },
+    "selecting": {
+      "trigger": "Shift+direction from navigate mode",
+      "Shift+j/k": "extend selection up/down in column",
+      "Shift+h/l": "extend selection to prev/next column",
+      "d": "delete all selected notes (undoable)",
+      "plain_direction": "transition to moving mode",
+      "Esc": "clear selection, back to navigate"
+    },
+    "moving": {
+      "trigger": "plain direction after selecting notes",
+      "h/l": "move selected notes left/right by grid step",
+      "j/k": "move selected notes up/down by semitone",
+      "Shift+direction": "go back to selecting (add more notes)",
+      "d": "delete all selected notes",
+      "Esc": "lock notes in place, clear selection"
+    }
+  },
+  "loop_editor": {
+    "enter_via": "Space+L",
+    "h/l": "move loop start left/right",
+    "H/L": "move loop end left/right",
+    "Enter": "toggle loop enabled/disabled",
+    "Esc": "exit loop editor"
+  },
+  "transport_pane": {
+    "h/l": "navigate transport elements (BPM, Record, Loop, Metronome)",
+    "Enter": "activate element (edit BPM, toggle record, etc.)",
+    "h/l_while_editing_bpm": "decrease/increase BPM",
+    "Esc": "release element"
+  },
+  "grid_settings": {
+    "resolutions": ["1/4", "1/8", "1/16", "1/32", "1/4T", "1/8T", "1/16T"],
+    "snap": "on/off — notes snap to grid when moved in edit mode",
+    "default_velocity": "1-127 — velocity for newly drawn notes"
+  },
+  "clip_behavior": {
+    "shrink_right_edge": "Notes past the new boundary are hidden (not deleted). Expanding restores them.",
+    "trim_left_edge": "Notes before the new start are hidden. Expanding restores them.",
+    "move_clip": "h/l in clip-locked mode. Collision detection prevents overlap.",
+    "duplicate": "d in clip-locked mode. Creates copy right after the clip.",
+    "delete": "Space+D with y/n confirmation. Selects adjacent clip after delete.",
+    "piano_roll_sync": "Clip view always shows the selected clip. Stretching/trimming updates piano roll in real time."
+  }
+}

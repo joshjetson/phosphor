@@ -289,7 +289,7 @@ mod tests {
         // Now switches to piano roll
         assert_eq!(nav.clip_view.clip_tab, ClipTab::PianoRoll);
         nav.cycle_tab();
-        assert_eq!(nav.clip_view.clip_tab, ClipTab::Automation);
+        assert_eq!(nav.clip_view.clip_tab, ClipTab::Settings);
         nav.cycle_tab();
         // Back to FX panel
         assert_eq!(nav.clip_view.focus, ClipViewFocus::FxPanel);

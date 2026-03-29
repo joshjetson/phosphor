@@ -103,13 +103,18 @@ impl NavState {
                     h.config.midi_active.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 self.clip_view_visible = true;
-                self.clip_view_target = Some((self.track_cursor, 0));
+
+                // Use the currently selected clip element, or default to clip 0
+                let clip_idx = match self.track_element {
+                    super::TrackElement::Clip(i) if i < track.clips.len() => i,
+                    _ => 0,
+                };
+                self.clip_view_target = Some((self.track_cursor, clip_idx));
 
                 // If track has recorded clips, show piano roll. Otherwise show synth.
                 if !track.clips.is_empty() {
                     self.clip_view.clip_tab = ClipTab::PianoRoll;
                     self.clip_view.focus = ClipViewFocus::PianoRoll;
-                    // Reset piano roll to browsing mode, column 1
                     self.clip_view.piano_roll.focus = PianoRollFocus::Navigation;
                     self.clip_view.piano_roll.column = 0;
                 } else {

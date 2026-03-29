@@ -24,6 +24,7 @@ use phosphor_midi::ring::midi_ring_buffer;
 
 use crate::state::{self, ClipViewFocus, ConfirmKind, FxPanelTab, InputModalKind, InstrumentType, NavState, Pane, PianoRollFocus, SpaceAction, TransportElement};
 mod delete;
+mod edit_mode;
 mod keys;
 mod piano_roll;
 mod session_io;
@@ -335,6 +336,8 @@ impl App {
     }
 
     pub fn run(&mut self) -> Result<()> {
+        // Clean up any phantom clips from previous sessions
+        self.sync_dedup_to_audio();
         // Sync initial loop range to transport
         self.sync_loop_to_transport();
         terminal::enable_raw_mode()?;
@@ -379,8 +382,9 @@ impl App {
             }
 
             // Poll for recorded clip snapshots from the audio thread
+            let is_recording = self.engine.transport.is_recording();
             while let Ok(snap) = self.clip_rx.try_recv() {
-                self.nav.receive_clip_snapshot(snap);
+                self.nav.receive_clip_snapshot(snap, is_recording);
             }
 
             let snapshot = self.engine.transport.snapshot();

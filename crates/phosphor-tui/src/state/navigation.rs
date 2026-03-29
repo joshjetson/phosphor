@@ -31,6 +31,7 @@ impl NavState {
             's' => Some(SpaceAction::Save),
             'o' => Some(SpaceAction::Open),
             'd' => Some(SpaceAction::Delete),
+            'e' => Some(SpaceAction::EditMode),
             'v' => Some(SpaceAction::CycleTheme),
             'n' => Some(SpaceAction::NewTrack),
             'h' => {
@@ -89,6 +90,11 @@ impl NavState {
                             self.clip_view.inst_config_cursor -= 1;
                         }
                     }
+                    ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::Settings => {
+                        if self.clip_view.piano_roll.settings_cursor > 0 {
+                            self.clip_view.piano_roll.settings_cursor -= 1;
+                        }
+                    }
                     ClipViewFocus::PianoRoll => self.clip_view.piano_roll.move_up(),
                     ClipViewFocus::FxPanel => {
                         if self.clip_view.fx_panel_tab == FxPanelTab::Synth {
@@ -129,6 +135,12 @@ impl NavState {
                             self.clip_view.inst_config_cursor += 1;
                         }
                     }
+                    ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::Settings => {
+                        const SETTINGS_COUNT: usize = 3; // grid, snap, velocity
+                        if self.clip_view.piano_roll.settings_cursor + 1 < SETTINGS_COUNT {
+                            self.clip_view.piano_roll.settings_cursor += 1;
+                        }
+                    }
                     ClipViewFocus::PianoRoll => self.clip_view.piano_roll.move_down(),
                     ClipViewFocus::FxPanel => {
                         if self.clip_view.fx_panel_tab == FxPanelTab::Synth {
@@ -161,6 +173,10 @@ impl NavState {
                 ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::InstConfig => {
                     // h = placeholder for future inst config param adjustment
                 }
+                ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::Settings => {
+                    // h = adjust setting left (prev grid, toggle snap, decrease velocity)
+                    self.adjust_setting(-1);
+                }
                 ClipViewFocus::PianoRoll => {
                     self.clip_view.focus = ClipViewFocus::FxPanel;
                 }
@@ -187,6 +203,10 @@ impl NavState {
                 ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::InstConfig => {
                     // l = placeholder for future inst config param adjustment
                 }
+                ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::Settings => {
+                    // l = adjust setting right (next grid, toggle snap, increase velocity)
+                    self.adjust_setting(1);
+                }
                 ClipViewFocus::FxPanel if self.clip_view.fx_panel_tab == FxPanelTab::Synth => {
                     // l = increase parameter value
                     self.adjust_synth_param(0.05);
@@ -196,6 +216,30 @@ impl NavState {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// Adjust the currently selected setting in the Settings tab.
+    pub(crate) fn adjust_setting(&mut self, direction: i32) {
+        match self.clip_view.piano_roll.settings_cursor {
+            0 => {
+                // Grid resolution
+                if direction > 0 {
+                    self.clip_view.piano_roll.grid = self.clip_view.piano_roll.grid.next();
+                } else {
+                    self.clip_view.piano_roll.grid = self.clip_view.piano_roll.grid.prev();
+                }
+            }
+            1 => {
+                // Snap on/off
+                self.clip_view.piano_roll.snap_enabled = !self.clip_view.piano_roll.snap_enabled;
+            }
+            2 => {
+                // Default velocity
+                let v = self.clip_view.piano_roll.default_velocity as i32 + direction * 5;
+                self.clip_view.piano_roll.default_velocity = v.clamp(1, 127) as u8;
+            }
+            _ => {}
         }
     }
 
@@ -303,10 +347,10 @@ impl NavState {
             }
             // Piano roll: piano → auto
             (ClipViewFocus::PianoRoll, _, ClipTab::PianoRoll) => {
-                self.clip_view.clip_tab = ClipTab::Automation;
+                self.clip_view.clip_tab = ClipTab::Settings;
             }
             // Piano roll: auto → back to trk fx
-            (ClipViewFocus::PianoRoll, _, ClipTab::Automation) => {
+            (ClipViewFocus::PianoRoll, _, ClipTab::Settings) => {
                 self.clip_view.focus = ClipViewFocus::FxPanel;
                 self.clip_view.fx_panel_tab = FxPanelTab::TrackFx;
                 self.clip_view.fx_cursor = 0;

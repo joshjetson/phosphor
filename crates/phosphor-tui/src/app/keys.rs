@@ -464,6 +464,12 @@ impl App {
         use crate::debug_log as dbg;
         use crate::state::PianoRollFocus;
 
+        // Edit mode intercepts all keys
+        if self.nav.clip_view.piano_roll.edit_mode {
+            self.handle_edit_mode_keys(key);
+            return;
+        }
+
         // If we're in the FX panel side, use the old synth/fx controls
         if self.nav.clip_view.focus == ClipViewFocus::FxPanel {
             match key.code {
@@ -554,6 +560,8 @@ impl App {
                             self.delete_selected_notes(col_range, row_range);
                             self.nav.clip_view.piano_roll.clear_all_highlights();
                             self.send_clip_update();
+                            // Kill any currently sounding notes from the deleted events
+                            self.engine.panic();
                             dbg::user("piano roll: deleted highlighted notes");
                         }
                     }

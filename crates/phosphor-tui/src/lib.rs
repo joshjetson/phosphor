@@ -8,6 +8,8 @@ mod splash;
 pub mod state;
 #[cfg(test)]
 mod test_harness;
+#[cfg(test)]
+mod test_clips;
 mod theme;
 mod ui;
 

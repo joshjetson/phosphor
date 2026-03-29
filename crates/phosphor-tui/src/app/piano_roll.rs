@@ -28,6 +28,7 @@ impl App {
                     start_tick,
                     length_ticks,
                     notes: Vec::new(),
+                    hidden_notes: Vec::new(),
                 });
                 self.nav.clip_view_target = Some((self.nav.track_cursor, track.clips.len() - 1));
 
@@ -100,6 +101,7 @@ impl App {
 
 
     pub(crate) fn send_clip_update(&self) {
+        use crate::debug_log as dbg;
         if let Some((track_idx, clip_idx)) = self.nav.clip_view_target {
             if let Some(track) = self.nav.tracks.get(track_idx) {
                 if let (Some(mixer_id), Some(clip)) = (track.mixer_id, track.clips.get(clip_idx)) {
@@ -107,6 +109,10 @@ impl App {
                         &clip.notes,
                         clip.length_ticks,
                     );
+                    dbg::system(&format!(
+                        "send_clip_update: track={} clip={} mixer={} notes={} events={}",
+                        track_idx, clip_idx, mixer_id, clip.notes.len(), events.len()
+                    ));
                     let _ = self.engine.shared.mixer_command_tx.send(
                         MixerCommand::UpdateClip {
                             track_id: mixer_id,
@@ -114,10 +120,20 @@ impl App {
                             events,
                         }
                     );
+                } else {
+                    dbg::system(&format!(
+                        "send_clip_update: track={} clip={} — no mixer_id or clip not found",
+                        track_idx, clip_idx
+                    ));
                 }
+            } else {
+                dbg::system(&format!("send_clip_update: track {} not found", track_idx));
             }
+        } else {
+            dbg::system("send_clip_update: no clip_view_target");
         }
     }
+
 
     /// Find the first note in a column, searching from cursor. `down` = search lower notes.
     /// Adjust a single note's edge. `right_edge` = true adjusts duration, false adjusts start.

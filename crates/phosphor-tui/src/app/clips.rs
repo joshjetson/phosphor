@@ -80,18 +80,50 @@ impl App {
                 let track = self.nav.tracks.get_mut(track_idx).unwrap();
                 let clip = track.clips.get_mut(clip_idx).unwrap();
 
-                // Rescale note fractions to preserve absolute tick positions
-                let scale = old_len as f64 / new_len as f64;
-                for note in &mut clip.notes {
-                    note.start_frac *= scale;
-                    note.duration_frac *= scale;
+                // Convert all notes to absolute tick offsets, change clip length,
+                // then convert back. Notes outside the new boundary get hidden.
+                // Hidden notes are stored as tick offsets so they survive any
+                // number of shrink/expand cycles.
+
+                // Step 1: convert current notes to tick offsets
+                let mut all_ticks: Vec<(i64, i64, u8, u8)> = clip.notes.drain(..)
+                    .map(|n| {
+                        let start_tick = (n.start_frac * old_len as f64) as i64;
+                        let dur_tick = (n.duration_frac * old_len as f64) as i64;
+                        (start_tick, dur_tick, n.note, n.velocity)
+                    })
+                    .collect();
+
+                // Include previously hidden notes
+                all_ticks.extend(clip.hidden_notes.drain(..));
+
+                // Step 2: partition into visible (within new_len) and hidden
+                let mut visible = Vec::new();
+                let mut hidden = Vec::new();
+                for (st, dur, note, vel) in all_ticks {
+                    if st < new_len {
+                        let clamped_dur = dur.min(new_len - st);
+                        visible.push(phosphor_core::clip::NoteSnapshot {
+                            note,
+                            velocity: vel,
+                            start_frac: st as f64 / new_len as f64,
+                            duration_frac: clamped_dur as f64 / new_len as f64,
+                        });
+                    } else {
+                        hidden.push((st, dur, note, vel));
+                    }
                 }
 
+                clip.notes = visible;
+                clip.hidden_notes = hidden;
                 clip.length_ticks = new_len;
                 let beats = (new_len as f64 / ppq as f64).ceil() as u16;
                 clip.width = beats.max(2);
 
-                dbg::system(&format!("clip right edge: len {} → {} (scale {:.3})", old_len, new_len, scale));
+                dbg::system(&format!(
+                    "clip right edge: len {} → {}, {} visible, {} hidden",
+                    old_len, new_len, clip.notes.len(), clip.hidden_notes.len()
+                ));
 
                 self.sync_clip_to_audio(track_idx, clip_idx);
                 self.status_message = Some((
@@ -136,23 +168,47 @@ impl App {
                 let track = self.nav.tracks.get_mut(track_idx).unwrap();
                 let clip = track.clips.get_mut(clip_idx).unwrap();
 
-                // Rescale note fractions: preserve absolute tick positions
-                // Note absolute tick = old_start + frac * old_len
-                // New frac = (old_start + frac * old_len - new_start) / new_len
-                for note in &mut clip.notes {
-                    let abs_tick = old_start as f64 + note.start_frac * old_len as f64;
-                    note.start_frac = (abs_tick - new_start as f64) / new_len as f64;
-                    note.duration_frac *= old_len as f64 / new_len as f64;
-                    // Clamp notes that fall outside
-                    note.start_frac = note.start_frac.clamp(0.0, 1.0);
+                // Convert notes to absolute timeline ticks, move start, convert back.
+                // Notes that fall before the new start get hidden.
+                let mut all_ticks: Vec<(i64, i64, u8, u8)> = clip.notes.drain(..)
+                    .map(|n| {
+                        let abs_start = old_start + (n.start_frac * old_len as f64) as i64;
+                        let dur_tick = (n.duration_frac * old_len as f64) as i64;
+                        (abs_start, dur_tick, n.note, n.velocity)
+                    })
+                    .collect();
+                // Include hidden notes (stored as tick offsets from old clip start)
+                for (st, dur, note, vel) in clip.hidden_notes.drain(..) {
+                    all_ticks.push((old_start + st, dur, note, vel));
                 }
 
+                let mut visible = Vec::new();
+                let mut hidden = Vec::new();
+                for (abs_st, dur, note, vel) in all_ticks {
+                    let rel = abs_st - new_start;
+                    if rel >= 0 && rel < new_len {
+                        visible.push(phosphor_core::clip::NoteSnapshot {
+                            note, velocity: vel,
+                            start_frac: rel as f64 / new_len as f64,
+                            duration_frac: dur.min(new_len - rel) as f64 / new_len as f64,
+                        });
+                    } else {
+                        // Store as offset from new clip start (may be negative for left-trimmed)
+                        hidden.push((abs_st - new_start, dur, note, vel));
+                    }
+                }
+
+                clip.notes = visible;
+                clip.hidden_notes = hidden;
                 clip.start_tick = new_start;
                 clip.length_ticks = new_len;
                 let beats = (new_len as f64 / ppq as f64).ceil() as u16;
                 clip.width = beats.max(2);
 
-                dbg::system(&format!("clip left edge: start {} → {}, len {}", old_start, new_start, new_len));
+                dbg::system(&format!(
+                    "clip left edge: start {} → {}, len {}, {} visible, {} hidden",
+                    old_start, new_start, new_len, clip.notes.len(), clip.hidden_notes.len()
+                ));
 
                 self.sync_clip_to_audio(track_idx, clip_idx);
                 self.status_message = Some((
@@ -225,6 +281,11 @@ impl App {
             track.clips.push(new_clip);
             dbg::system(&format!("pasted clip after clip {} at tick {}", clip_idx + 1, after_tick));
 
+            // Push undo for the new clip
+            self.nav.undo_stack.push(crate::state::undo::UndoAction::AddClip {
+                track_idx, clip_idx: new_idx,
+            });
+
             // Select the newly pasted clip
             self.nav.track_element = crate::state::TrackElement::Clip(new_idx);
             self.nav.open_clip_view(track_idx, new_idx);
@@ -275,6 +336,11 @@ impl App {
             track.clips.push(new_clip);
             dbg::system(&format!("pasted clip to track {} at tick {}", track_idx, self.yanked_clip_start));
 
+            // Push undo for the new clip
+            self.nav.undo_stack.push(crate::state::undo::UndoAction::AddClip {
+                track_idx, clip_idx: new_idx,
+            });
+
             // Select the newly pasted clip
             self.nav.track_element = crate::state::TrackElement::Clip(new_idx);
             self.nav.open_clip_view(track_idx, new_idx);
@@ -317,6 +383,48 @@ impl App {
                     "sync clip audio: track={} clip={} start={} len={} events={}",
                     mixer_id, clip_idx, clip.start_tick, clip.length_ticks, event_count
                 ));
+            }
+        }
+    }
+
+    /// Run dedup on TUI clips and sync removals + updates to the audio thread.
+    pub(crate) fn sync_dedup_to_audio(&mut self) {
+        use crate::debug_log as dbg;
+        let removed = self.nav.dedup_clips();
+
+        // Send RemoveClip for each absorbed phantom (process in reverse index order
+        // so indices stay valid)
+        for &(mixer_id, clip_index) in removed.iter().rev() {
+            let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::RemoveClip {
+                track_id: mixer_id,
+                clip_index,
+            });
+            dbg::system(&format!("dedup audio: removed clip {} on mixer {}", clip_index, mixer_id));
+        }
+
+        // After removals, resync all remaining clips on affected tracks
+        // (positions and events may have changed from absorption)
+        let affected_mixers: Vec<usize> = removed.iter().map(|&(mid, _)| mid).collect();
+        for track in &self.nav.tracks {
+            if let Some(mid) = track.mixer_id {
+                if !affected_mixers.contains(&mid) { continue; }
+                for (ci, clip) in track.clips.iter().enumerate() {
+                    let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::UpdateClipPosition {
+                        track_id: mid,
+                        clip_index: ci,
+                        start_tick: clip.start_tick,
+                        length_ticks: clip.length_ticks,
+                    });
+                    let events = phosphor_core::clip::NoteSnapshot::to_clip_events(
+                        &clip.notes, clip.length_ticks,
+                    );
+                    let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::UpdateClip {
+                        track_id: mid,
+                        clip_index: ci,
+                        events,
+                    });
+                }
+                dbg::system(&format!("dedup audio: resynced {} clips on mixer {}", track.clips.len(), mid));
             }
         }
     }

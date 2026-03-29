@@ -81,6 +81,9 @@ impl App {
             ConfirmKind::DeleteClip => {
                 if let crate::state::TrackElement::Clip(clip_idx) = self.nav.track_element {
                     let track_idx = self.nav.track_cursor;
+                    let mut deleted_mixer_id = None;
+                    let mut remaining = 0usize;
+
                     if let Some(track) = self.nav.tracks.get_mut(track_idx) {
                         if clip_idx < track.clips.len() {
                             // Remove from audio thread
@@ -89,6 +92,7 @@ impl App {
                                     track_id: mixer_id,
                                     clip_index: clip_idx,
                                 });
+                                deleted_mixer_id = Some(mixer_id);
                             }
 
                             let removed_clip = track.clips.remove(clip_idx);
@@ -96,26 +100,43 @@ impl App {
                                 track_idx, clip_idx, clip: removed_clip,
                             });
                             dbg::system(&format!("deleted clip {} on track {}", clip_idx, track_idx));
-
-                            // Select adjacent clip instead of falling back to Label
-                            let remaining = track.clips.len();
-                            if remaining > 0 && clip_idx < remaining {
-                                // Next clip shifted into this index
-                                self.nav.track_element = crate::state::TrackElement::Clip(clip_idx);
-                                self.nav.open_clip_view(track_idx, clip_idx);
-                            } else if remaining > 0 {
-                                // Deleted the last clip, select previous
-                                let prev = remaining - 1;
-                                self.nav.track_element = crate::state::TrackElement::Clip(prev);
-                                self.nav.open_clip_view(track_idx, prev);
-                            } else {
-                                // No clips left
-                                self.nav.track_element = crate::state::TrackElement::Label;
-                                self.nav.clip_view_visible = false;
-                                self.nav.clip_view_target = None;
-                            }
-                            self.status_message = Some(("clip deleted (u to undo)".into(), std::time::Instant::now()));
+                            remaining = track.clips.len();
                         }
+                    }
+
+                    // Only proceed if we actually deleted something
+                    if deleted_mixer_id.is_some() || remaining > 0 || self.nav.tracks.get(track_idx).map(|t| t.clips.is_empty()).unwrap_or(false) {
+                        // Drain pending clip snapshots for the deleted track's mixer
+                        // so a recording commit doesn't re-add the clip
+                        if let Some(mid) = deleted_mixer_id {
+                            let mut keep = Vec::new();
+                            while let Ok(snap) = self.clip_rx.try_recv() {
+                                if snap.track_id == mid {
+                                    dbg::system(&format!("discarded snapshot for track {} after clip delete", snap.track_id));
+                                } else {
+                                    keep.push(snap);
+                                }
+                            }
+                            let is_recording = self.engine.transport.is_recording();
+                            for snap in keep {
+                                self.nav.receive_clip_snapshot(snap, is_recording);
+                            }
+                        }
+
+                        // Select adjacent clip instead of falling back to Label
+                        if remaining > 0 && clip_idx < remaining {
+                            self.nav.track_element = crate::state::TrackElement::Clip(clip_idx);
+                            self.nav.open_clip_view(track_idx, clip_idx);
+                        } else if remaining > 0 {
+                            let prev = remaining - 1;
+                            self.nav.track_element = crate::state::TrackElement::Clip(prev);
+                            self.nav.open_clip_view(track_idx, prev);
+                        } else {
+                            self.nav.track_element = crate::state::TrackElement::Label;
+                            self.nav.clip_view_visible = false;
+                            self.nav.clip_view_target = None;
+                        }
+                        self.status_message = Some(("clip deleted (u to undo)".into(), std::time::Instant::now()));
                     }
                 }
             }

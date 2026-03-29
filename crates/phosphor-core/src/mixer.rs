@@ -76,6 +76,8 @@ pub struct AudioTrack {
     was_recording: bool,
     /// Last tick position seen during recording (to detect loop wraps).
     last_record_tick: i64,
+    /// Last tick position seen during playback (to detect loop wraps for clip playback).
+    last_playback_tick: i64,
     buf_l: Vec<f32>,
     buf_r: Vec<f32>,
     plugin_events: Vec<MidiEvent>,
@@ -92,6 +94,7 @@ impl AudioTrack {
             record_buf: RecordBuffer::new(),
             was_recording: false,
             last_record_tick: -1,
+            last_playback_tick: -1,
             buf_l: vec![0.0; max_buffer_size],
             buf_r: vec![0.0; max_buffer_size],
             plugin_events: Vec::with_capacity(256),
@@ -236,10 +239,11 @@ impl Mixer {
                 let from = current_tick;
                 let to = current_tick + buffer_ticks;
 
-                // Check if we just wrapped (position jumped backward since last buffer)
-                // If so, we need to play events from the loop start that we skipped
-                let just_wrapped = looping && track.last_record_tick >= 0
-                    && current_tick < track.last_record_tick;
+                // Detect loop wrap using dedicated playback tick tracker
+                // (separate from recording tick to avoid interference)
+                let just_wrapped = looping && track.last_playback_tick >= 0
+                    && current_tick < track.last_playback_tick;
+                track.last_playback_tick = current_tick;
 
                 if just_wrapped {
                     // Play events from loop_start to current position (the wrapped portion)
@@ -357,6 +361,7 @@ impl Mixer {
                 track.record_buf.discard();
             }
             track.was_recording = false;
+            track.last_playback_tick = -1;
         }
         self.metronome.reset();
     }
