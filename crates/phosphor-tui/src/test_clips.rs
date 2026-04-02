@@ -340,7 +340,7 @@ mod tests {
             event_count: 2,
             notes: vec![note(64, 0.5, 0.25)],
         };
-        app.nav.receive_clip_snapshot(snap, true);
+        let _ = app.nav.receive_clip_snapshot(snap, true);
 
         assert_eq!(app.nav.tracks[ti].clips.len(), 1, "should still be 1 clip (merged)");
         assert_eq!(app.nav.tracks[ti].clips[0].notes.len(), 2, "should have 2 notes after merge");
@@ -364,7 +364,7 @@ mod tests {
             start_tick: 0, length_ticks: 7680,
             event_count: 4, notes: vec![note(67, 0.25, 0.1)],
         };
-        app.nav.receive_clip_snapshot(snap, true);
+        let _ = app.nav.receive_clip_snapshot(snap, true);
 
         assert_eq!(app.nav.tracks[ti].clips.len(), 1,
             "both clips should be absorbed into the new recording");
@@ -399,7 +399,7 @@ mod tests {
             start_tick: 0, length_ticks: 3840,
             event_count: 4, notes: vec![note(60, 0.0, 0.25), note(64, 0.25, 0.25)],
         };
-        app.nav.receive_clip_snapshot(snap, false); // NOT recording
+        let _ = app.nav.receive_clip_snapshot(snap, false); // NOT recording
 
         assert_eq!(app.nav.tracks[ti].clips[0].notes.len(), 1,
             "stale snapshot should be ignored — notes should stay at 1");
@@ -477,5 +477,164 @@ mod tests {
         assert_eq!(app.nav.tracks[ti].clips.len(), 1, "phantom should be absorbed");
         assert_eq!(app.nav.tracks[ti].clips[0].length_ticks, 7680, "longer clip should survive");
         assert!(app.nav.tracks[ti].clips[0].notes.len() >= 2, "absorbed notes should be merged");
+    }
+
+    // ══════════════════════════════════════════════
+    // Regression: selected_note_indices cleared after delete
+    // ══════════════════════════════════════════════
+
+    #[test]
+    fn selected_indices_cleared_after_delete() {
+        let mut app = app();
+        add_synth_track(&mut app);
+        let ti = app.nav.track_cursor;
+
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![
+            note(60, 0.0, 0.25), note(64, 0.25, 0.25), note(67, 0.5, 0.25),
+        ]);
+        app.nav.track_element = TrackElement::Clip(0);
+        app.nav.open_clip_view(ti, 0);
+
+        // Set column count to 4 (one column per beat)
+        app.nav.clip_view.piano_roll.column_count = 4;
+
+        // Simulate selecting a column (Enter in piano roll sets these)
+        app.nav.clip_view.piano_roll.selected_note_indices = vec![0, 1, 2];
+
+        // Delete ALL notes using full column range
+        app.delete_selected_notes(Some((0, 3)), None);
+
+        assert!(app.nav.clip_view.piano_roll.selected_note_indices.is_empty(),
+            "selected_note_indices must be cleared after deletion to prevent stale index access");
+    }
+
+    // ══════════════════════════════════════════════
+    // Regression: recording absorption syncs to audio
+    // ══════════════════════════════════════════════
+
+    #[test]
+    fn absorption_returns_count_for_audio_sync() {
+        let mut app = app();
+        add_synth_track(&mut app);
+        let ti = app.nav.track_cursor;
+
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(60, 0.0, 0.25)]);
+        create_clip_with_notes(&mut app, ti, 3840, 3840, vec![note(72, 0.0, 0.25)]);
+
+        let mid = app.nav.tracks[ti].mixer_id.unwrap_or(0);
+        let snap = phosphor_core::clip::ClipSnapshot {
+            track_id: mid, clip_index: 0,
+            start_tick: 0, length_ticks: 7680,
+            event_count: 4, notes: vec![note(67, 0.25, 0.1)],
+        };
+
+        let result = app.nav.receive_clip_snapshot(snap, true);
+        assert!(result.is_some(), "absorption should return Some((mixer_id, count))");
+        let (ret_mid, absorbed) = result.unwrap();
+        assert_eq!(ret_mid, mid);
+        assert_eq!(absorbed, 2, "both clips should have been absorbed");
+    }
+
+    // ══════════════════════════════════════════════
+    // Regression: clip_view_target fixed after absorption
+    // ══════════════════════════════════════════════
+
+    #[test]
+    fn clip_view_target_fixed_after_absorption() {
+        let mut app = app();
+        add_synth_track(&mut app);
+        let ti = app.nav.track_cursor;
+
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(60, 0.0, 0.25)]);
+        create_clip_with_notes(&mut app, ti, 3840, 3840, vec![note(72, 0.0, 0.25)]);
+
+        // View clip 1
+        app.nav.open_clip_view(ti, 1);
+        assert_eq!(app.nav.clip_view_target, Some((ti, 1)));
+
+        // Recording absorbs both clips into one
+        let mid = app.nav.tracks[ti].mixer_id.unwrap_or(0);
+        let snap = phosphor_core::clip::ClipSnapshot {
+            track_id: mid, clip_index: 0,
+            start_tick: 0, length_ticks: 7680,
+            event_count: 2, notes: vec![note(67, 0.0, 0.1)],
+        };
+        let _ = app.nav.receive_clip_snapshot(snap, true);
+
+        assert_eq!(app.nav.tracks[ti].clips.len(), 1, "should be 1 clip after absorption");
+        // Target should be fixed — can't point to clip 1 when only 1 clip exists
+        let (_, ci) = app.nav.clip_view_target.unwrap();
+        assert_eq!(ci, 0, "clip_view_target should be fixed to 0");
+    }
+
+    // ══════════════════════════════════════════════
+    // Piano roll: group move with highlights
+    // ══════════════════════════════════════════════
+
+    #[test]
+    fn highlighted_notes_can_be_moved() {
+        let mut app = app();
+        add_synth_track(&mut app);
+        let ti = app.nav.track_cursor;
+
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![
+            note(60, 0.0, 0.125),
+            note(64, 0.0, 0.125),
+            note(67, 0.0, 0.125),
+            note(72, 0.5, 0.125), // different column
+        ]);
+
+        app.nav.track_element = TrackElement::Clip(0);
+        app.nav.open_clip_view(ti, 0);
+        app.nav.clip_view.piano_roll.column_count = 4;
+
+        // Highlight first column (column 0)
+        app.nav.clip_view.piano_roll.highlight_start = Some(0);
+        app.nav.clip_view.piano_roll.highlight_end = Some(0);
+
+        let original_pitches: Vec<u8> = app.nav.tracks[ti].clips[0].notes.iter()
+            .filter(|n| n.start_frac < 0.25)
+            .map(|n| n.note)
+            .collect();
+        assert_eq!(original_pitches, vec![60, 64, 67]);
+
+        // Move highlighted notes up by 1 semitone
+        app.move_highlighted_notes(0, 1);
+
+        let moved_pitches: Vec<u8> = app.nav.tracks[ti].clips[0].notes.iter()
+            .filter(|n| n.start_frac < 0.25)
+            .map(|n| n.note)
+            .collect();
+        assert_eq!(moved_pitches, vec![61, 65, 68], "all highlighted notes should move up 1 semitone");
+
+        // The note in column 2 (at frac 0.5) should NOT have moved
+        let unmoved = app.nav.tracks[ti].clips[0].notes.iter()
+            .find(|n| n.start_frac >= 0.4)
+            .unwrap();
+        assert_eq!(unmoved.note, 72, "note outside highlight should be unchanged");
+    }
+
+    #[test]
+    fn highlighted_move_is_undoable() {
+        let mut app = app();
+        add_synth_track(&mut app);
+        let ti = app.nav.track_cursor;
+
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![
+            note(60, 0.0, 0.125),
+        ]);
+
+        app.nav.track_element = TrackElement::Clip(0);
+        app.nav.open_clip_view(ti, 0);
+        app.nav.clip_view.piano_roll.column_count = 4;
+        app.nav.clip_view.piano_roll.highlight_start = Some(0);
+        app.nav.clip_view.piano_roll.highlight_end = Some(0);
+
+        app.move_highlighted_notes(0, 5); // up 5 semitones
+        assert_eq!(app.nav.tracks[ti].clips[0].notes[0].note, 65);
+
+        app.perform_undo();
+        assert_eq!(app.nav.tracks[ti].clips[0].notes[0].note, 60,
+            "undo should restore original pitch");
     }
 }

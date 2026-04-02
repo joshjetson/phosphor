@@ -384,7 +384,42 @@ impl App {
             // Poll for recorded clip snapshots from the audio thread
             let is_recording = self.engine.transport.is_recording();
             while let Ok(snap) = self.clip_rx.try_recv() {
-                self.nav.receive_clip_snapshot(snap, is_recording);
+                let _mixer_id = snap.track_id;
+                if let Some((mid, absorbed)) = self.nav.receive_clip_snapshot(snap, is_recording) {
+                    // Sync absorbed clips to audio — remove them in reverse order
+                    // The audio thread's clip array shifted, so remove from highest index down.
+                    // Since we don't know exact indices, rebuild all clips on this track.
+                    if let Some(track) = self.nav.tracks.iter().find(|t| t.mixer_id == Some(mid)) {
+                        // Remove ALL clips from audio for this track, then re-add current ones
+                        // This is the safest way to resync after absorption.
+                        for i in (0..track.clips.len() + absorbed).rev() {
+                            let _ = self.engine.shared.mixer_command_tx.send(
+                                MixerCommand::RemoveClip { track_id: mid, clip_index: i }
+                            );
+                        }
+                        for (ci, clip) in track.clips.iter().enumerate() {
+                            let _ = self.engine.shared.mixer_command_tx.send(
+                                MixerCommand::CreateClip {
+                                    track_id: mid,
+                                    start_tick: clip.start_tick,
+                                    length_ticks: clip.length_ticks,
+                                }
+                            );
+                            let events = phosphor_core::clip::NoteSnapshot::to_clip_events(
+                                &clip.notes, clip.length_ticks,
+                            );
+                            let _ = self.engine.shared.mixer_command_tx.send(
+                                MixerCommand::UpdateClip {
+                                    track_id: mid, clip_index: ci, events,
+                                }
+                            );
+                        }
+                        crate::debug_log::system(&format!(
+                            "audio resync after absorption: track={} clips={}",
+                            mid, track.clips.len()
+                        ));
+                    }
+                }
             }
 
             let snapshot = self.engine.transport.snapshot();

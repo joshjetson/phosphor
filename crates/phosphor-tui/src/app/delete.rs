@@ -119,7 +119,7 @@ impl App {
                             }
                             let is_recording = self.engine.transport.is_recording();
                             for snap in keep {
-                                self.nav.receive_clip_snapshot(snap, is_recording);
+                                let _ = self.nav.receive_clip_snapshot(snap, is_recording);
                             }
                         }
 

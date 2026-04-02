@@ -267,41 +267,37 @@ impl NavState {
     /// corresponding TUI track's clip list.
     /// `is_recording` = true when transport is actively recording (snapshots are fresh overdubs).
     /// When NOT recording, snapshots matching the viewed clip are stale (from panic/reset) and ignored.
-    pub(crate) fn receive_clip_snapshot(&mut self, snap: phosphor_core::clip::ClipSnapshot, is_recording: bool) {
+    /// Returns (mixer_id, count_absorbed) so caller can send RemoveClip commands to audio.
+    pub(crate) fn receive_clip_snapshot(&mut self, snap: phosphor_core::clip::ClipSnapshot, is_recording: bool) -> Option<(usize, usize)> {
         crate::debug_log::system(&format!(
             "clip received: track={} events={} notes={} ticks={}..{} recording={}",
             snap.track_id, snap.event_count, snap.notes.len(),
             snap.start_tick, snap.start_tick + snap.length_ticks, is_recording,
         ));
 
-        // When NOT recording, ignore snapshots that match the clip currently open
-        // in the clip view. These are stale commits from panic/reset_all, not
-        // fresh recordings. They would undo the user's edits/deletes.
-        // When recording IS active, let them through — they're real overdub data.
-        if !is_recording {
-            if let Some((ti, ci)) = self.clip_view_target {
-                if let Some(track) = self.tracks.get(ti) {
-                    if track.mixer_id == Some(snap.track_id) {
-                        if let Some(clip) = track.clips.get(ci) {
-                            let tolerance = phosphor_core::transport::Transport::PPQ;
-                            if (clip.start_tick - snap.start_tick).abs() <= tolerance {
-                                crate::debug_log::system(
-                                    "  IGNORED: stale snapshot for viewed clip (not recording)"
-                                );
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
+        // When NOT recording AND no grace remaining, ignore snapshots.
+        // These are stale commits from panic/reset_all that would re-add
+        // deleted notes or create phantom clips.
+        // Accept if: (a) currently recording, OR (b) grace counter > 0
+        // (final commits from tracks that just stopped recording).
+        if !is_recording && self.recording_grace == 0 {
+            crate::debug_log::system(
+                "  IGNORED: snapshot while not recording (stale from panic/reset)"
+            );
+            return None;
+        }
+        // Decrement grace after accepting a post-recording snapshot
+        if !is_recording && self.recording_grace > 0 {
+            self.recording_grace -= 1;
         }
 
         // Find the track index (we need it for clip_view_target fixup)
         let track_idx = match self.tracks.iter().position(|t| t.mixer_id == Some(snap.track_id)) {
             Some(idx) => idx,
-            None => return,
+            None => return None,
         };
 
+        let mut absorbed_count = 0usize;
         {
             let track = &mut self.tracks[track_idx];
             let ppq = phosphor_core::transport::Transport::PPQ;
@@ -312,7 +308,6 @@ impl NavState {
             // Absorb any clips that the new recording fully covers.
             // A clip is covered if it starts within the snap range and ends within it.
             let mut absorbed_notes = Vec::new();
-            let mut absorbed_count = 0usize;
             track.clips.retain(|c| {
                 let c_end = c.start_tick + c.length_ticks;
                 let covered = c.start_tick >= snap.start_tick && c_end <= snap_end;
@@ -402,6 +397,13 @@ impl NavState {
                     ));
                 }
             }
+        }
+
+        // Return absorption info so caller can sync removed clips to audio
+        if absorbed_count > 0 {
+            Some((snap.track_id, absorbed_count))
+        } else {
+            None
         }
     }
 }

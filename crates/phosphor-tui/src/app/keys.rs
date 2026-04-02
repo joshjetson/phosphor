@@ -195,8 +195,8 @@ impl App {
             return;
         }
 
-        // Space → open space menu
-        if key.code == KeyCode::Char(' ') {
+        // Space → open space menu (blocked in edit mode)
+        if key.code == KeyCode::Char(' ') && !self.nav.clip_view.piano_roll.edit_mode {
             dbg::user("Space → open space menu");
             self.nav.toggle_space_menu();
             return;
@@ -205,8 +205,9 @@ impl App {
         // Tab — blocked while piano roll is in column/row editing mode
         match key.code {
             KeyCode::Tab if self.nav.focused_pane == Pane::ClipView
-                && self.nav.clip_view.piano_roll.focus != PianoRollFocus::Navigation => {
-                // Tab blocked in column/row mode — controls are locked
+                && (self.nav.clip_view.piano_roll.focus != PianoRollFocus::Navigation
+                    || self.nav.clip_view.piano_roll.edit_mode) => {
+                // Tab blocked in column/row/edit mode — controls are locked
                 return;
             }
             KeyCode::Tab if self.nav.focused_pane == Pane::ClipView => {
@@ -499,9 +500,46 @@ impl App {
             // Browsing: h/l navigates columns, Enter selects a column
             PianoRollFocus::Navigation => {
                 let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+                // Highlight-locked stretch mode: Enter was pressed while highlights
+                // were active. h/l adjusts left edge, H/L adjusts right edge.
+                if self.nav.clip_view.piano_roll.highlight_locked {
+                    let step = self.nav.clip_view.piano_roll.grid.step_frac(
+                        self.nav.clip_view.piano_roll.column_count
+                    );
+                    match key.code {
+                        KeyCode::Esc => {
+                            self.nav.clip_view.piano_roll.highlight_locked = false;
+                            dbg::user("piano roll: stretch unlocked");
+                        }
+                        KeyCode::Char('h') | KeyCode::Left if !shift => {
+                            self.stretch_highlighted_notes(-step, false);
+                        }
+                        KeyCode::Char('l') | KeyCode::Right if !shift => {
+                            self.stretch_highlighted_notes(step, false);
+                        }
+                        KeyCode::Char('H') | KeyCode::Char('h') | KeyCode::Left if shift => {
+                            self.stretch_highlighted_notes(-step, true);
+                        }
+                        KeyCode::Char('L') | KeyCode::Char('l') | KeyCode::Right if shift => {
+                            self.stretch_highlighted_notes(step, true);
+                        }
+                        KeyCode::Char('d') => {
+                            let col_range = self.nav.clip_view.piano_roll.highlight_range();
+                            let row_range = self.nav.clip_view.piano_roll.row_highlight_range();
+                            self.delete_selected_notes(col_range, row_range);
+                            self.nav.clip_view.piano_roll.clear_all_highlights();
+                            self.send_clip_update();
+                            self.engine.panic();
+                            dbg::user("piano roll: deleted highlighted notes");
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => {
-                        // Clear any highlights first, otherwise escape
                         let pr = &self.nav.clip_view.piano_roll;
                         if pr.highlight_start.is_some() || pr.row_highlight_low.is_some() {
                             self.nav.clip_view.piano_roll.clear_all_highlights();
@@ -520,17 +558,24 @@ impl App {
                         dbg::user(&format!("piano roll: row highlight {:?}", self.nav.clip_view.piano_roll.row_highlight_range()));
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
-                        // If rows are highlighted, moving j/k unhighlights them
-                        if self.nav.clip_view.piano_roll.row_highlight_low.is_some() {
-                            self.nav.clip_view.piano_roll.clear_row_highlight();
+                        let has_highlights = self.nav.clip_view.piano_roll.highlight_start.is_some()
+                            || self.nav.clip_view.piano_roll.row_highlight_low.is_some();
+                        if has_highlights {
+                            // Move highlighted notes down by 1 semitone
+                            self.move_highlighted_notes(0, -1);
+                        } else {
+                            self.nav.clip_view.piano_roll.move_down();
                         }
-                        self.nav.clip_view.piano_roll.move_down();
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
-                        if self.nav.clip_view.piano_roll.row_highlight_low.is_some() {
-                            self.nav.clip_view.piano_roll.clear_row_highlight();
+                        let has_highlights = self.nav.clip_view.piano_roll.highlight_start.is_some()
+                            || self.nav.clip_view.piano_roll.row_highlight_low.is_some();
+                        if has_highlights {
+                            // Move highlighted notes up by 1 semitone
+                            self.move_highlighted_notes(0, 1);
+                        } else {
+                            self.nav.clip_view.piano_roll.move_up();
                         }
-                        self.nav.clip_view.piano_roll.move_up();
                     }
                     KeyCode::Char('H') if shift => {
                         // Shift+h: start or expand highlight left
@@ -545,12 +590,24 @@ impl App {
                         dbg::user(&format!("piano roll: highlight right, range {:?}", self.nav.clip_view.piano_roll.highlight_range()));
                     }
                     KeyCode::Char('h') | KeyCode::Left => {
-                        self.nav.clip_view.piano_roll.move_column_left();
-                        dbg::user(&format!("piano roll: col {}", self.nav.clip_view.piano_roll.column_display()));
+                        let has_highlights = self.nav.clip_view.piano_roll.highlight_start.is_some()
+                            || self.nav.clip_view.piano_roll.row_highlight_low.is_some();
+                        if has_highlights {
+                            self.move_highlighted_notes(-1, 0);
+                        } else {
+                            self.nav.clip_view.piano_roll.move_column_left();
+                            dbg::user(&format!("piano roll: col {}", self.nav.clip_view.piano_roll.column_display()));
+                        }
                     }
                     KeyCode::Char('l') | KeyCode::Right => {
-                        self.nav.clip_view.piano_roll.move_column_right();
-                        dbg::user(&format!("piano roll: col {}", self.nav.clip_view.piano_roll.column_display()));
+                        let has_highlights = self.nav.clip_view.piano_roll.highlight_start.is_some()
+                            || self.nav.clip_view.piano_roll.row_highlight_low.is_some();
+                        if has_highlights {
+                            self.move_highlighted_notes(1, 0);
+                        } else {
+                            self.nav.clip_view.piano_roll.move_column_right();
+                            dbg::user(&format!("piano roll: col {}", self.nav.clip_view.piano_roll.column_display()));
+                        }
                     }
                     KeyCode::Char('d') => {
                         // Delete notes in highlighted region (columns, rows, or both)
@@ -595,10 +652,24 @@ impl App {
                         self.send_clip_update();
                         dbg::user(&format!("piano roll: pasted notes (shift={})", row_offset.unwrap_or(0)));
                     }
+                    KeyCode::Char('n') => {
+                        self.draw_note(col, cursor_note);
+                        self.send_clip_update();
+                        dbg::user(&format!("piano roll: toggle note {} at col {}", cursor_note, col + 1));
+                    }
                     KeyCode::Enter => {
-                        let indices = self.note_indices_in_column(col);
-                        dbg::user(&format!("piano roll: Enter → column {} selected ({} notes)", self.nav.clip_view.piano_roll.column_display(), indices.len()));
-                        self.nav.clip_view.piano_roll.enter(indices);
+                        let has_highlights = self.nav.clip_view.piano_roll.highlight_start.is_some()
+                            || self.nav.clip_view.piano_roll.row_highlight_low.is_some();
+                        if has_highlights {
+                            // Lock highlights for stretching (Right-Left-Trick on highlighted group)
+                            self.nav.clip_view.piano_roll.highlight_locked = true;
+                            self.status_message = Some(("stretch mode: h/l=left edge, H/L=right edge, Esc=unlock".into(), std::time::Instant::now()));
+                            dbg::user("piano roll: Enter → highlight locked for stretching");
+                        } else {
+                            let indices = self.note_indices_in_column(col);
+                            dbg::user(&format!("piano roll: Enter → column {} selected ({} notes)", self.nav.clip_view.piano_roll.column_display(), indices.len()));
+                            self.nav.clip_view.piano_roll.enter(indices);
+                        }
                     }
                     KeyCode::Char(ch @ '0'..='9') => {
                         if self.nav.clip_view.piano_roll.type_digit(ch) {
@@ -616,30 +687,33 @@ impl App {
             //   Esc = back to Browsing
             PianoRollFocus::Selected => {
                 let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+                let step = self.nav.clip_view.piano_roll.grid.step_frac(
+                    self.nav.clip_view.piano_roll.column_count
+                );
                 match key.code {
                     KeyCode::Esc => {
                         dbg::user("piano roll: Esc → browsing");
                         self.nav.clip_view.piano_roll.escape();
                     }
                     KeyCode::Char('h') | KeyCode::Left if !shift => {
-                        self.adjust_column_edges(-0.01, false);
+                        self.adjust_column_edges(-step, false);
                         self.send_clip_update();
-                        dbg::user("piano roll: col left \u{2190}");
+                        dbg::user("piano roll: col left edge \u{2190}");
                     }
                     KeyCode::Char('l') | KeyCode::Right if !shift => {
-                        self.adjust_column_edges(0.01, false);
+                        self.adjust_column_edges(step, false);
                         self.send_clip_update();
-                        dbg::user("piano roll: col left \u{2192}");
+                        dbg::user("piano roll: col left edge \u{2192}");
                     }
                     KeyCode::Char('H') | KeyCode::Char('h') | KeyCode::Left => {
-                        self.adjust_column_edges(-0.01, true);
+                        self.adjust_column_edges(-step, true);
                         self.send_clip_update();
-                        dbg::user("piano roll: col right \u{2190}");
+                        dbg::user("piano roll: col right edge \u{2190}");
                     }
                     KeyCode::Char('L') | KeyCode::Char('l') | KeyCode::Right => {
-                        self.adjust_column_edges(0.01, true);
+                        self.adjust_column_edges(step, true);
                         self.send_clip_update();
-                        dbg::user("piano roll: col right \u{2192}");
+                        dbg::user("piano roll: col right edge \u{2192}");
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
                         // Enter row mode starting at the top of the visible area
@@ -667,30 +741,33 @@ impl App {
             //   Esc = back to Column (column-level control restored)
             PianoRollFocus::Row => {
                 let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+                let step = self.nav.clip_view.piano_roll.grid.step_frac(
+                    self.nav.clip_view.piano_roll.column_count
+                );
                 match key.code {
                     KeyCode::Esc => {
                         dbg::user("piano roll: Esc → column mode");
                         self.nav.clip_view.piano_roll.escape();
                     }
                     KeyCode::Char('h') | KeyCode::Left if !shift => {
-                        self.adjust_note_edge(col, cursor_note, -0.01, false);
+                        self.adjust_note_edge(col, cursor_note, -step, false);
                         self.send_clip_update();
-                        dbg::user("piano roll: note left \u{2190}");
+                        dbg::user("piano roll: note left edge \u{2190}");
                     }
                     KeyCode::Char('l') | KeyCode::Right if !shift => {
-                        self.adjust_note_edge(col, cursor_note, 0.01, false);
+                        self.adjust_note_edge(col, cursor_note, step, false);
                         self.send_clip_update();
-                        dbg::user("piano roll: note left \u{2192}");
+                        dbg::user("piano roll: note left edge \u{2192}");
                     }
                     KeyCode::Char('H') | KeyCode::Char('h') | KeyCode::Left => {
-                        self.adjust_note_edge(col, cursor_note, -0.01, true);
+                        self.adjust_note_edge(col, cursor_note, -step, true);
                         self.send_clip_update();
-                        dbg::user("piano roll: note right \u{2190}");
+                        dbg::user("piano roll: note right edge \u{2190}");
                     }
                     KeyCode::Char('L') | KeyCode::Char('l') | KeyCode::Right => {
-                        self.adjust_note_edge(col, cursor_note, 0.01, true);
+                        self.adjust_note_edge(col, cursor_note, step, true);
                         self.send_clip_update();
-                        dbg::user("piano roll: note right \u{2192}");
+                        dbg::user("piano roll: note right edge \u{2192}");
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
                         self.nav.clip_view.piano_roll.move_down();

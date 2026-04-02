@@ -76,8 +76,9 @@
   },
   "piano_roll_navigation": {
     "description": "Default mode when viewing the piano roll (not in edit mode).",
-    "h/l": "navigate columns (beats)",
-    "j/k": "scroll up/down through notes (clears row highlight)",
+    "n": "toggle note at cursor (draw or remove)",
+    "h/l": "navigate columns (or MOVE highlighted notes left/right if highlights exist)",
+    "j/k": "scroll up/down (or MOVE highlighted notes up/down if highlights exist)",
     "1-9": "jump to column by number",
     "Enter": "select column (enter Right-Left-Trick mode)",
     "n": "toggle note at cursor",
@@ -86,7 +87,15 @@
     "d": "delete notes in highlighted region",
     "y": "yank notes in highlighted region",
     "p": "paste yanked notes at cursor/highlight",
-    "Esc": "clear highlights or exit piano roll"
+    "Enter_with_highlights": "lock highlights for STRETCHING (Right-Left-Trick on group)",
+    "Esc": "clear highlights, or exit piano roll if no highlights"
+  },
+  "piano_roll_highlight_locked": {
+    "description": "After highlighting notes and pressing Enter, h/l/H/L stretch the group.",
+    "h/l": "adjust LEFT edge of all highlighted notes",
+    "H/L": "adjust RIGHT edge of all highlighted notes",
+    "d": "delete highlighted notes",
+    "Esc": "unlock highlights, back to navigation"
   },
   "piano_roll_column_selected": {
     "description": "Right-Left-Trick: column is locked. h/l adjusts note edges.",
@@ -123,10 +132,11 @@
       "Esc": "clear selection, back to navigate"
     },
     "moving": {
-      "trigger": "plain direction after selecting notes",
+      "trigger": "plain direction after selecting, or Enter on a single note",
       "h/l": "move selected notes left/right by grid step",
       "j/k": "move selected notes up/down by semitone",
-      "Shift+direction": "go back to selecting (add more notes)",
+      "Shift+H/L": "stretch RIGHT edge of selected notes (duration)",
+      "Shift+J/K": "stretch LEFT edge of selected notes (start position)",
       "d": "delete all selected notes",
       "Esc": "lock notes in place, clear selection"
     }

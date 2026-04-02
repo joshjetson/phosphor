@@ -115,6 +115,10 @@ pub struct NavState {
     /// Whether a clip is "locked" for editing (Enter locks, Esc unlocks).
     /// When locked, h/l moves the clip instead of navigating between elements.
     pub clip_locked: bool,
+    /// Grace counter: set to the number of armed tracks when recording stops.
+    /// Decremented as each valid snapshot is accepted. Prevents stale snapshots
+    /// while allowing final recording commits from all tracks to come through.
+    pub recording_grace: usize,
 }
 
 impl NavState {
@@ -139,6 +143,7 @@ impl NavState {
             confirm_modal: ConfirmModal::new(),
             undo_stack: undo::UndoStack::new(),
             clip_locked: false,
+            recording_grace: 0,
         }
     }
     pub fn visible_tracks(&self) -> &[TrackState] {

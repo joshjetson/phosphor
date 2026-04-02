@@ -5,8 +5,12 @@ use super::*;
 impl App {
     /// Stop playback and silence all instruments. Called on pause, stop,
     /// and stop-recording. Prevents notes from ringing after playback ends.
-    pub(crate) fn stop_playback(&self) {
+    pub(crate) fn stop_playback(&mut self) {
+        let was_recording = self.engine.transport.is_recording();
         self.engine.transport.pause();
+        if was_recording {
+            self.nav.recording_grace = self.nav.tracks.iter().filter(|t| t.armed).count();
+        }
         self.engine.panic();
     }
 
@@ -48,6 +52,7 @@ impl App {
 
         if is_recording {
             self.engine.transport.stop_loop_record();
+            self.nav.recording_grace = self.nav.tracks.iter().filter(|t| t.armed).count();
             self.engine.panic(); // silence all notes
         } else {
             // Make sure current track is armed and has a synth

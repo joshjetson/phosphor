@@ -145,7 +145,7 @@ pub enum EditSubMode {
     Navigate,
     /// Shift held: extending selection.
     Selecting,
-    /// Notes selected, now moving them as a group.
+    /// Notes selected. Plain h/l/j/k = move. Shift+h/l = stretch right edge. Shift+j/k = stretch left edge.
     Moving,
 }
 
@@ -237,6 +237,8 @@ pub struct PianoRollState {
     /// Row highlight range (Shift+j/k). Stores MIDI note numbers (low..=high).
     pub row_highlight_low: Option<u8>,
     pub row_highlight_high: Option<u8>,
+    /// Whether highlights are locked for stretching (Enter while highlights exist).
+    pub highlight_locked: bool,
     // ── Edit mode ──
     pub edit_mode: bool,
     /// Index into the clip's notes vec — the "cursor" note.
@@ -275,6 +277,7 @@ impl PianoRollState {
             row_highlight_high: None,
             yank_buffer: Vec::new(),
             yank_columns: 0,
+            highlight_locked: false,
             edit_mode: false,
             edit_cursor: 0,
             edit_selected: Vec::new(),
@@ -558,6 +561,7 @@ impl PianoRollState {
     pub fn clear_all_highlights(&mut self) {
         self.clear_highlight();
         self.clear_row_highlight();
+        self.highlight_locked = false;
     }
 
     /// Check if a column is within the highlight range.

@@ -26,8 +26,13 @@ impl App {
             }
             SpaceAction::ToggleRecord => {
                 use crate::debug_log as dbg;
+                let was_recording = self.engine.transport.is_recording();
                 self.engine.transport.toggle_record();
-                dbg::system(&format!("toggle record → recording={}", self.engine.transport.is_recording()));
+                let now_recording = self.engine.transport.is_recording();
+                if was_recording && !now_recording {
+                    self.nav.recording_grace = self.nav.tracks.iter().filter(|t| t.armed).count();
+                }
+                dbg::system(&format!("toggle record → recording={}", now_recording));
                 self.log_transport_state();
             }
             SpaceAction::ToggleLoop => {

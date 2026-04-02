@@ -418,6 +418,8 @@ impl App {
                         track_idx: ti, clip_idx: ci, notes: removed,
                     });
                 }
+                // Invalidate any stale note indices (column-selected mode)
+                self.nav.clip_view.piano_roll.selected_note_indices.clear();
                 self.status_message = Some((
                     format!("{count} note{} deleted", if count == 1 { "" } else { "s" }),
                     std::time::Instant::now(),
@@ -512,12 +514,114 @@ impl App {
                     track_idx: ti, clip_idx: ci, notes: pasted_notes,
                 });
             }
+            // Invalidate stale note indices
+            self.nav.clip_view.piano_roll.selected_note_indices.clear();
             self.status_message = Some((
                 format!("{count} note{} pasted (u to undo)", if count == 1 { "" } else { "s" }),
                 std::time::Instant::now(),
             ));
         } else {
             self.status_message = Some(("nothing to paste".into(), std::time::Instant::now()));
+        }
+    }
+
+    /// Stretch all notes in the highlighted column/row region.
+    /// `right_edge` = true adjusts duration, false adjusts start position.
+    pub(crate) fn stretch_highlighted_notes(&mut self, delta: f64, right_edge: bool) {
+        use crate::debug_log as dbg;
+        let col_range = self.nav.clip_view.piano_roll.highlight_range();
+        let row_range = self.nav.clip_view.piano_roll.row_highlight_range();
+        let col_count = self.nav.clip_view.piano_roll.column_count;
+        let target = self.nav.clip_view_target;
+
+        if col_count == 0 { return; }
+        let col_w = 1.0 / col_count as f64;
+
+        let mut before = Vec::new();
+        if let Some(clip) = self.nav.active_clip_mut() {
+            for (i, note) in clip.notes.iter_mut().enumerate() {
+                let note_center = note.start_frac + note.duration_frac * 0.5;
+                let in_col = col_range.map_or(true, |(cs, ce)| {
+                    let rs = cs as f64 * col_w;
+                    let re = (ce + 1) as f64 * col_w;
+                    note_center >= rs && note_center < re
+                });
+                let in_row = row_range.map_or(true, |(lo, hi)| {
+                    note.note >= lo && note.note <= hi
+                });
+                if in_col && in_row {
+                    before.push((i, *note));
+                    Self::apply_edge_delta(note, delta, right_edge);
+                }
+            }
+        }
+
+        if !before.is_empty() {
+            if let Some((ti, ci)) = target {
+                self.nav.undo_stack.push(UndoAction::MoveNotes {
+                    track_idx: ti, clip_idx: ci, before,
+                });
+            }
+            self.send_clip_update();
+            dbg::system(&format!("piano roll: stretched highlighted notes edge={} delta={:.4}",
+                if right_edge { "right" } else { "left" }, delta));
+        }
+    }
+
+    /// Move all notes in the highlighted column/row region by grid steps and semitones.
+    /// Uses the same grid resolution as edit mode for horizontal movement.
+    pub(crate) fn move_highlighted_notes(&mut self, grid_steps: i32, semitones: i32) {
+        use crate::debug_log as dbg;
+        let col_range = self.nav.clip_view.piano_roll.highlight_range();
+        let row_range = self.nav.clip_view.piano_roll.row_highlight_range();
+        let col_count = self.nav.clip_view.piano_roll.column_count;
+        let grid = self.nav.clip_view.piano_roll.grid;
+        let snap = self.nav.clip_view.piano_roll.snap_enabled;
+        let target = self.nav.clip_view_target;
+
+        if col_count == 0 { return; }
+        let col_w = 1.0 / col_count as f64;
+        let step = grid.step_frac(col_count);
+
+        // Capture before-state for undo, then apply move
+        let mut before = Vec::new();
+        if let Some(clip) = self.nav.active_clip_mut() {
+            for (i, note) in clip.notes.iter_mut().enumerate() {
+                let note_center = note.start_frac + note.duration_frac * 0.5;
+                let in_col = col_range.map_or(true, |(cs, ce)| {
+                    let rs = cs as f64 * col_w;
+                    let re = (ce + 1) as f64 * col_w;
+                    note_center >= rs && note_center < re
+                });
+                let in_row = row_range.map_or(true, |(lo, hi)| {
+                    note.note >= lo && note.note <= hi
+                });
+                if in_col && in_row {
+                    before.push((i, *note));
+                    if grid_steps != 0 {
+                        let new_frac = note.start_frac + grid_steps as f64 * step;
+                        note.start_frac = if snap {
+                            grid.snap(new_frac, col_count).clamp(0.0, 1.0 - note.duration_frac)
+                        } else {
+                            new_frac.clamp(0.0, 1.0 - note.duration_frac)
+                        };
+                    }
+                    if semitones != 0 {
+                        let new_note = note.note as i32 + semitones;
+                        note.note = new_note.clamp(0, 127) as u8;
+                    }
+                }
+            }
+        }
+
+        if !before.is_empty() {
+            if let Some((ti, ci)) = target {
+                self.nav.undo_stack.push(UndoAction::MoveNotes {
+                    track_idx: ti, clip_idx: ci, before,
+                });
+            }
+            self.send_clip_update();
+            dbg::system(&format!("piano roll: moved highlighted notes steps={} semi={}", grid_steps, semitones));
         }
     }
 }

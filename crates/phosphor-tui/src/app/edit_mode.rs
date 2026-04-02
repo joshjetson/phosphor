@@ -101,7 +101,7 @@ impl App {
         match self.nav.clip_view.piano_roll.edit_sub {
             EditSubMode::Navigate => {
                 match key.code {
-                    KeyCode::Esc => {
+                    KeyCode::Esc | KeyCode::Char('e') => {
                         self.exit_edit_mode();
                         return;
                     }
@@ -188,14 +188,22 @@ impl App {
                     }
                     _ => {}
                 }
+                let step = self.nav.clip_view.piano_roll.grid.step_frac(
+                    self.nav.clip_view.piano_roll.column_count
+                );
                 if let Some(d) = dir {
                     if shift {
-                        // Shift while moving: go back to selecting to add more notes
-                        self.nav.clip_view.piano_roll.edit_sub = EditSubMode::Selecting;
-                        self.edit_navigate_dir(d);
-                        self.add_cursor_to_selection();
-                        dbg::system("edit: back to selecting from moving");
+                        // Shift+h/l = stretch right edge, Shift+j/k = stretch left edge
+                        // This matches the Right-Left-Trick: shift = right edge
+                        match d {
+                            Dir::Left => self.stretch_selected_edit_notes(-step, true),
+                            Dir::Right => self.stretch_selected_edit_notes(step, true),
+                            // Shift+j/k = adjust left edge (start position)
+                            Dir::Up => self.stretch_selected_edit_notes(-step, false),
+                            Dir::Down => self.stretch_selected_edit_notes(step, false),
+                        }
                     } else {
+                        // Plain direction = move notes
                         let (gs, st) = Self::dir_to_move(d);
                         self.move_selected_notes(gs, st);
                     }
@@ -475,6 +483,48 @@ impl App {
         // Sync to audio thread
         self.send_clip_update();
         dbg::system(&format!("edit move: steps={} semi={} notes={}", grid_steps, semitones, indices.len()));
+    }
+
+    /// Stretch selected notes' edges. Reuses apply_edge_delta from piano_roll.
+    fn stretch_selected_edit_notes(&mut self, delta: f64, right_edge: bool) {
+        use crate::debug_log as dbg;
+        let pr = &self.nav.clip_view.piano_roll;
+        let target = self.nav.clip_view_target;
+
+        let mut indices: Vec<usize> = pr.edit_selected.clone();
+        if !indices.contains(&pr.edit_cursor) {
+            indices.push(pr.edit_cursor);
+        }
+
+        // Capture before-state
+        let before: Vec<(usize, phosphor_core::clip::NoteSnapshot)> = if let Some(clip) = self.nav.active_clip() {
+            indices.iter()
+                .filter_map(|&idx| clip.notes.get(idx).map(|n| (idx, *n)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Apply stretch
+        if let Some(clip) = self.nav.active_clip_mut() {
+            for &idx in &indices {
+                if let Some(note) = clip.notes.get_mut(idx) {
+                    Self::apply_edge_delta(note, delta, right_edge);
+                }
+            }
+        }
+
+        // Undo + sync
+        if !before.is_empty() {
+            if let Some((ti, ci)) = target {
+                self.nav.undo_stack.push(crate::state::undo::UndoAction::MoveNotes {
+                    track_idx: ti, clip_idx: ci, before,
+                });
+            }
+            self.send_clip_update();
+            dbg::system(&format!("edit stretch: edge={} delta={:.4} notes={}",
+                if right_edge { "right" } else { "left" }, delta, indices.len()));
+        }
     }
 
     /// Delete the note at the edit cursor. Pushes undo, syncs audio, kills sound.
