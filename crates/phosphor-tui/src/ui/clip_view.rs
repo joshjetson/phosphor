@@ -372,7 +372,7 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
         let mut hdr_spans: Vec<Span> = Vec::new();
         // Show recording indicator
         if snap.recording {
-            hdr_spans.push(Span::styled(" \u{25CF}REC", Style::default().fg(theme::REC_ACTIVE).add_modifier(Modifier::BOLD)));
+            hdr_spans.push(Span::styled(" \u{25CF}REC", Style::default().fg(theme::rec_active_val()).add_modifier(Modifier::BOLD)));
             hdr_spans.push(Span::styled(" ", theme::bg()));
         } else {
             hdr_spans.push(Span::styled("      ", theme::bg()));

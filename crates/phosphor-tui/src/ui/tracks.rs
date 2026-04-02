@@ -76,7 +76,7 @@ pub(super) fn render_header(frame: &mut Frame, area: Rect, ctx: &TrackCtx) {
 
     // Record arm dot
     let arm_s = if track.armed {
-        Style::default().fg(theme::REC_ACTIVE).bg(theme::bg_val())
+        Style::default().fg(theme::rec_active_val()).bg(theme::bg_val())
     } else {
         theme::dim()
     };

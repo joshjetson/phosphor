@@ -6,7 +6,7 @@ impl NavState {
 
     /// Adjust the currently selected synth parameter by delta.
     /// Returns the (mixer_id, param_index, new_value) if changed, for sending to audio.
-    pub(crate) fn adjust_synth_param(&mut self, delta: f32) -> Option<(usize, usize, f32)> {
+    pub fn adjust_synth_param(&mut self, delta: f32) -> Option<(usize, usize, f32)> {
         let idx = self.clip_view.synth_param_cursor;
         if let Some(track) = self.tracks.get_mut(self.track_cursor) {
             if idx < track.synth_params.len() {
@@ -89,7 +89,7 @@ impl NavState {
     /// Show controls for the currently selected track and route MIDI to it.
     /// For instrument tracks: opens clip view with Synth tab, activates MIDI input.
     /// For bus tracks: no clip view, deactivates MIDI.
-    pub(crate) fn show_current_track_controls(&mut self) {
+    pub fn show_current_track_controls(&mut self) {
         // Deactivate MIDI on ALL tracks first
         for track in &self.tracks {
             if let Some(ref h) = track.handle {

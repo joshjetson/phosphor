@@ -4,7 +4,7 @@ use super::*;
 
 impl NavState {
 
-    pub(crate) fn toggle_mute(&mut self) {
+    pub fn toggle_mute(&mut self) {
         if let Some(t) = self.current_track_mut() {
             t.muted = !t.muted;
             t.sync_to_audio();
@@ -12,7 +12,7 @@ impl NavState {
     }
 
 
-    pub(crate) fn toggle_solo(&mut self) {
+    pub fn toggle_solo(&mut self) {
         if let Some(t) = self.current_track_mut() {
             t.soloed = !t.soloed;
             t.sync_to_audio();
@@ -20,7 +20,7 @@ impl NavState {
     }
 
 
-    pub(crate) fn toggle_arm(&mut self) {
+    pub fn toggle_arm(&mut self) {
         if let Some(t) = self.current_track_mut() {
             t.armed = !t.armed;
             t.sync_to_audio();
@@ -28,37 +28,37 @@ impl NavState {
     }
 
 
-    pub(crate) fn digit_input(&mut self, ch: char) {
+    pub fn digit_input(&mut self, ch: char) {
         if self.focused_pane == Pane::Tracks && self.track_selected {
             self.number_buf.push_digit(ch);
         }
     }
 
 
-    pub(crate) fn tick(&mut self) {
+    pub fn tick(&mut self) {
         if let Some(clip_num) = self.number_buf.check_timeout() {
             self.jump_to_clip(clip_num);
         }
     }
 
 
-    pub(crate) fn jump_to_clip(&mut self, clip_number: usize) {
+    pub fn jump_to_clip(&mut self, clip_number: usize) {
         if let Some(track) = self.current_track() {
-            crate::debug_log::system(&format!(
+            tracing::debug!(
                 "jump_to_clip: looking for #{}, track has {} clips: {:?}",
                 clip_number, track.clips.len(),
                 track.clips.iter().map(|c| (c.number, c.start_tick, c.length_ticks)).collect::<Vec<_>>()
-            ));
+            );
             if let Some(idx) = track.clips.iter().position(|c| c.number == clip_number) {
                 self.track_element = TrackElement::Clip(idx);
                 self.open_clip_view(self.track_cursor, idx);
-                crate::debug_log::system(&format!("jump_to_clip: selected idx={}", idx));
+                tracing::debug!("jump_to_clip: selected idx={}", idx);
             }
         }
     }
 
 
-    pub(crate) fn activate_element(&mut self) {
+    pub fn activate_element(&mut self) {
         match self.track_element {
             TrackElement::Mute => self.toggle_mute(),
             TrackElement::Solo => self.toggle_solo(),
@@ -73,12 +73,12 @@ impl NavState {
                 self.open_clip_view(self.track_cursor, idx);
                 self.clip_view.clip_tab = ClipTab::PianoRoll;
                 self.clip_view.focus = ClipViewFocus::PianoRoll;
-                crate::debug_log::system(&format!(
+                tracing::debug!(
                     "clip locked: track={} clip={} start={} len={}",
                     self.track_cursor, idx,
                     self.tracks.get(self.track_cursor).and_then(|t| t.clips.get(idx)).map(|c| c.start_tick).unwrap_or(-1),
                     self.tracks.get(self.track_cursor).and_then(|t| t.clips.get(idx)).map(|c| c.length_ticks).unwrap_or(-1),
-                ));
+                );
             }
             _ => {}
         }
@@ -91,7 +91,7 @@ impl NavState {
     /// Add a new instrument track. Inserts before the send/master tracks.
     /// `handle` is the shared audio-thread handle for this track.
     /// `mixer_id` is the track's ID in the mixer.
-    pub(crate) fn add_instrument_track(
+    pub fn add_instrument_track(
         &mut self,
         instrument: InstrumentType,
         mixer_id: usize,
@@ -154,22 +154,22 @@ impl NavState {
     }
 
 
-    pub(crate) fn open_clip_view(&mut self, track_idx: usize, clip_idx: usize) {
+    pub fn open_clip_view(&mut self, track_idx: usize, clip_idx: usize) {
         self.clip_view_visible = true;
         self.clip_view_target = Some((track_idx, clip_idx));
         self.clip_view.fx_cursor = 0;
-        crate::debug_log::system(&format!(
+        tracing::debug!(
             "open_clip_view: track={} clip={} (notes={})",
             track_idx, clip_idx,
             self.tracks.get(track_idx).and_then(|t| t.clips.get(clip_idx)).map(|c| c.notes.len()).unwrap_or(0)
-        ));
+        );
     }
 
     /// Show controls for the currently selected track and route MIDI to it.
     /// For instrument tracks: opens clip view with Synth tab, activates MIDI input.
     /// For bus tracks: no clip view, deactivates MIDI.
 
-    pub(crate) fn fx_menu_select(&mut self) {
+    pub fn fx_menu_select(&mut self) {
         // Add FX
         if let Some(fx_type) = FxType::ALL.get(self.fx_menu.cursor) {
             let inst = FxInstance::new(*fx_type);
@@ -181,7 +181,7 @@ impl NavState {
     }
 
 
-    pub(crate) fn active_fx_chain_len(&self) -> usize {
+    pub fn active_fx_chain_len(&self) -> usize {
         match self.clip_view.fx_panel_tab {
             FxPanelTab::TrackFx | FxPanelTab::Synth => {
                 self.current_track().map(|t| t.fx_chain.len().max(1)).unwrap_or(1)
@@ -191,7 +191,7 @@ impl NavState {
 
     /// Keep clip_view_target in sync with the currently selected clip element.
     /// Called every frame as a safety net and after clip-modifying operations.
-    pub(crate) fn sync_clip_view_target(&mut self) {
+    pub fn sync_clip_view_target(&mut self) {
         if self.track_selected {
             if let TrackElement::Clip(idx) = self.track_element {
                 let track_idx = self.track_cursor;
@@ -209,7 +209,7 @@ impl NavState {
     /// Remove phantom clips: when two clips overlap at the same start position,
     /// keep the longer one and absorb the shorter one's notes (rescaled).
     /// Returns (mixer_id, removed_clip_index) pairs so the caller can sync audio.
-    pub(crate) fn dedup_clips(&mut self) -> Vec<(usize, usize)> {
+    pub fn dedup_clips(&mut self) -> Vec<(usize, usize)> {
         let ppq = phosphor_core::transport::Transport::PPQ;
         let tolerance = ppq;
         let mut removed = Vec::new();
@@ -238,11 +238,11 @@ impl NavState {
                         }).collect();
                         track.clips[i].notes.extend(absorbed);
                     }
-                    crate::debug_log::system(&format!(
+                    tracing::debug!(
                         "dedup: absorbed clip #{} (len={}) into clip #{} (len={}) on '{}'",
                         track.clips[i + 1].number, shorter_len,
                         track.clips[i].number, longer_len, track.name
-                    ));
+                    );
                     // Record the removal for audio thread sync
                     if let Some(mid) = track.mixer_id {
                         removed.push((mid, i + 1));
@@ -268,12 +268,12 @@ impl NavState {
     /// `is_recording` = true when transport is actively recording (snapshots are fresh overdubs).
     /// When NOT recording, snapshots matching the viewed clip are stale (from panic/reset) and ignored.
     /// Returns (mixer_id, count_absorbed) so caller can send RemoveClip commands to audio.
-    pub(crate) fn receive_clip_snapshot(&mut self, snap: phosphor_core::clip::ClipSnapshot, is_recording: bool) -> Option<(usize, usize)> {
-        crate::debug_log::system(&format!(
+    pub fn receive_clip_snapshot(&mut self, snap: phosphor_core::clip::ClipSnapshot, is_recording: bool) -> Option<(usize, usize)> {
+        tracing::debug!(
             "clip received: track={} events={} notes={} ticks={}..{} recording={}",
             snap.track_id, snap.event_count, snap.notes.len(),
             snap.start_tick, snap.start_tick + snap.length_ticks, is_recording,
-        ));
+        );
 
         // When NOT recording AND no grace remaining, ignore snapshots.
         // These are stale commits from panic/reset_all that would re-add
@@ -281,9 +281,7 @@ impl NavState {
         // Accept if: (a) currently recording, OR (b) grace counter > 0
         // (final commits from tracks that just stopped recording).
         if !is_recording && self.recording_grace == 0 {
-            crate::debug_log::system(
-                "  IGNORED: snapshot while not recording (stale from panic/reset)"
-            );
+            tracing::debug!("IGNORED: snapshot while not recording (stale from panic/reset)");
             return None;
         }
         // Decrement grace after accepting a post-recording snapshot
@@ -312,10 +310,10 @@ impl NavState {
                 let c_end = c.start_tick + c.length_ticks;
                 let covered = c.start_tick >= snap.start_tick && c_end <= snap_end;
                 if covered {
-                    crate::debug_log::system(&format!(
+                    tracing::debug!(
                         "  absorbing clip #{}: tick {}..{} (snap covers {}..{})",
                         c.number, c.start_tick, c_end, snap.start_tick, snap_end
-                    ));
+                    );
                     // Rescale notes to snap's coordinate space
                     let offset = (c.start_tick - snap.start_tick) as f64 / snap.length_ticks as f64;
                     let scale = c.length_ticks as f64 / snap.length_ticks as f64;
@@ -353,17 +351,17 @@ impl NavState {
                 existing.has_content = true;
                 existing.length_ticks = existing.length_ticks.max(snap.length_ticks);
                 existing.width = width.max(existing.width);
-                crate::debug_log::system(&format!(
+                tracing::debug!(
                     "  merged into existing clip: now {} notes, len={}",
                     existing.notes.len(), existing.length_ticks
-                ));
+                );
             } else {
                 // Create new clip
                 let clip_number = track.clips.len() + 1;
-                crate::debug_log::system(&format!(
+                tracing::debug!(
                     "  new clip: #{} at tick {} len {} ({} notes, absorbed {})",
                     clip_number, snap.start_tick, snap.length_ticks, all_notes.len(), absorbed_count
-                ));
+                );
                 track.clips.push(Clip {
                     number: clip_number,
                     width,
@@ -392,9 +390,9 @@ impl NavState {
                 } else if ci >= num_clips {
                     // Target was past the end — point to the last clip
                     self.clip_view_target = Some((track_idx, num_clips - 1));
-                    crate::debug_log::system(&format!(
-                        "  clip_view_target fixed: {} → {}", ci, num_clips - 1
-                    ));
+                    tracing::debug!(
+                        "  clip_view_target fixed: {} -> {}", ci, num_clips - 1
+                    );
                 }
             }
         }

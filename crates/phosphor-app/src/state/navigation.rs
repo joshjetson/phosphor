@@ -7,7 +7,7 @@ impl NavState {
     // ── Space menu ──
 
     /// Toggle the space menu open/closed.
-    pub(crate) fn toggle_space_menu(&mut self) {
+    pub fn toggle_space_menu(&mut self) {
         self.space_menu.toggle();
     }
 
@@ -16,7 +16,7 @@ impl NavState {
 
     /// Handle a key press while the space menu is open.
     /// Returns a SpaceAction if an action should be performed.
-    pub(crate) fn space_menu_handle(&mut self, ch: char) -> Option<SpaceAction> {
+    pub fn space_menu_handle(&mut self, ch: char) -> Option<SpaceAction> {
         self.space_menu.open = false;
         match ch {
             '1' => { self.focus_pane(Pane::Transport); None }
@@ -49,14 +49,14 @@ impl NavState {
 
     // ── Pane focus ──
 
-    pub(crate) fn focus_pane(&mut self, pane: Pane) {
+    pub fn focus_pane(&mut self, pane: Pane) {
         if self.focused_pane == Pane::Tracks { self.track_selected = false; self.clip_locked = false; }
         self.focused_pane = pane;
-        crate::debug_log::system(&format!("focused pane: {:?}", pane));
+        tracing::debug!("focused pane: {:?}", pane);
     }
 
 
-    pub(crate) fn focus_next_pane(&mut self) {
+    pub fn focus_next_pane(&mut self) {
         self.focus_pane(self.focused_pane.next());
     }
 
@@ -65,7 +65,7 @@ impl NavState {
 
     // ── Navigation ──
 
-    pub(crate) fn move_up(&mut self) {
+    pub fn move_up(&mut self) {
         if self.instrument_modal.open { self.instrument_modal.move_up(); return; }
         if self.space_menu.open { self.space_menu.move_up(); return; }
         if self.fx_menu.open { self.fx_menu.move_up(); return; }
@@ -111,7 +111,7 @@ impl NavState {
     }
 
 
-    pub(crate) fn move_down(&mut self) {
+    pub fn move_down(&mut self) {
         if self.instrument_modal.open { self.instrument_modal.move_down(); return; }
         if self.space_menu.open { self.space_menu.move_down(); return; }
         if self.fx_menu.open { self.fx_menu.move_down(); return; }
@@ -161,7 +161,7 @@ impl NavState {
     }
 
 
-    pub(crate) fn move_left(&mut self) {
+    pub fn move_left(&mut self) {
         if self.focused_pane == Pane::Tracks && self.track_selected {
             self.track_element = self.track_element.move_left();
             // Keep clip view in sync when navigating between clips
@@ -190,7 +190,7 @@ impl NavState {
     }
 
 
-    pub(crate) fn move_right(&mut self) {
+    pub fn move_right(&mut self) {
         if self.focused_pane == Pane::Tracks && self.track_selected {
             let num_clips = self.current_track().map(|t| t.clips.len()).unwrap_or(0);
             self.track_element = self.track_element.move_right(num_clips);
@@ -220,7 +220,7 @@ impl NavState {
     }
 
     /// Adjust the currently selected setting in the Settings tab.
-    pub(crate) fn adjust_setting(&mut self, direction: i32) {
+    pub fn adjust_setting(&mut self, direction: i32) {
         match self.clip_view.piano_roll.settings_cursor {
             0 => {
                 // Grid resolution
@@ -246,7 +246,7 @@ impl NavState {
     /// Adjust the currently selected synth parameter by delta.
     /// Returns the (mixer_id, param_index, new_value) if changed, for sending to audio.
 
-    pub(crate) fn enter(&mut self) -> Option<SpaceAction> {
+    pub fn enter(&mut self) -> Option<SpaceAction> {
         // Space menu open → select item via space_menu_handle using the key from cursor position
         if self.space_menu.open {
             match self.space_menu.section {
@@ -289,7 +289,7 @@ impl NavState {
     }
 
 
-    pub(crate) fn escape(&mut self) {
+    pub fn escape(&mut self) {
         if self.instrument_modal.open {
             self.instrument_modal.open = false;
             return;
@@ -325,7 +325,7 @@ impl NavState {
 
     /// Cycle tabs in the clip view (FX panel or piano roll side).
     /// Cycle through ALL tabs in buffer 3: trk fx → synth → inst config → piano → auto → trk fx...
-    pub(crate) fn cycle_tab(&mut self) {
+    pub fn cycle_tab(&mut self) {
         if self.focused_pane != Pane::ClipView { return; }
 
         match (self.clip_view.focus, self.clip_view.fx_panel_tab, self.clip_view.clip_tab) {

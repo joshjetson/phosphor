@@ -1,16 +1,16 @@
 [package]
-name = "phosphor-gui"
+name = "phosphor-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "GUI frontend for the Phosphor DAW (planned)"
-readme = "../../README.md"
+description = "Shared business logic for Phosphor DAW frontends"
 
 [dependencies]
-phosphor-app.workspace = true
 phosphor-core.workspace = true
-eframe.workspace = true
-egui.workspace = true
+phosphor-dsp.workspace = true
+phosphor-plugin.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

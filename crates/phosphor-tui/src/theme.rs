@@ -403,6 +403,9 @@ pub fn amber_val() -> Color { palette().amber }
 pub fn amber_bright_val() -> Color { palette().amber_bright }
 pub fn dim_val() -> Color { palette().dim }
 pub fn normal_val() -> Color { palette().normal }
+pub fn highlight_val() -> Color { palette().highlight }
+pub fn rec_dim_val() -> Color { palette().rec_dim }
+pub fn rec_active_val() -> Color { palette().rec_active }
 
 // Old const names kept for backward compat — code that uses these directly
 // gets the Phosphor theme colors. Style functions above are theme-aware.
@@ -415,8 +418,8 @@ pub fn normal_val() -> Color { palette().normal }
 #[allow(dead_code)] pub const HIGHLIGHT: Color = Color::Rgb(88, 160, 176);
 #[allow(dead_code)] pub const AMBER: Color = Color::Rgb(114, 88, 14);
 #[allow(dead_code)] pub const AMBER_BRIGHT: Color = Color::Rgb(150, 116, 20);
-pub const REC_DIM: Color = Color::Rgb(90, 26, 26);
-pub const REC_ACTIVE: Color = Color::Rgb(180, 50, 50);
+#[allow(dead_code)] pub const REC_DIM: Color = Color::Rgb(90, 26, 26);
+#[allow(dead_code)] pub const REC_ACTIVE: Color = Color::Rgb(180, 50, 50);
 
 pub fn track_color(index: usize) -> Color {
     let p = palette();

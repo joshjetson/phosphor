@@ -8,6 +8,7 @@ description = "Terminal UI frontend for the Phosphor DAW"
 readme = "../../README.md"
 
 [dependencies]
+phosphor-app.workspace = true
 phosphor-core.workspace = true
 phosphor-dsp.workspace = true
 phosphor-midi.workspace = true

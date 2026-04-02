@@ -15,12 +15,12 @@ THEME_NAMES=$(grep -A"$THEME_COUNT" 'THEME_NAMES' crates/phosphor-tui/src/theme.
 TEST_COUNT=$(cargo test --workspace 2>&1 | grep 'test result' | awk '{sum += $4} END {print sum}')
 
 # Extract instrument types from the ALL constant (single line)
-INSTRUMENTS=$(grep 'ALL.*InstrumentType.*Self' crates/phosphor-tui/src/state/menu.rs | grep -o 'Self::[A-Za-z0-9]*' | sed 's/Self:://' | tr '\n' ', ' | sed 's/,$//')
+INSTRUMENTS=$(grep 'ALL.*InstrumentType.*Self' crates/phosphor-app/src/state/menu.rs | grep -o 'Self::[A-Za-z0-9]*' | sed 's/Self:://' | tr '\n' ', ' | sed 's/,$//')
 
 # Extract SpaceAction variants
 SPACE_ACTIONS=$(python3 -c "
 import re
-with open('crates/phosphor-tui/src/state/menu.rs') as f:
+with open('crates/phosphor-app/src/state/menu.rs') as f:
     text = f.read()
 m = re.search(r'enum SpaceAction \{(.*?)\}', text, re.DOTALL)
 if m:
@@ -31,7 +31,7 @@ if m:
 # Extract UndoAction variants
 UNDO_ACTIONS=$(python3 -c "
 import re
-with open('crates/phosphor-tui/src/state/undo.rs') as f:
+with open('crates/phosphor-app/src/state/undo.rs') as f:
     text = f.read()
 m = re.search(r'pub enum UndoAction \{(.*?)\n\}', text, re.DOTALL)
 if m:
@@ -42,7 +42,7 @@ if m:
 # Extract GridResolution labels
 GRID_VARIANTS=$(python3 -c "
 import re
-with open('crates/phosphor-tui/src/state/clip_view.rs') as f:
+with open('crates/phosphor-app/src/state/clip_view.rs') as f:
     text = f.read()
 m = re.search(r'impl GridResolution.*?pub fn label.*?\{(.*?)\}', text, re.DOTALL)
 if m:

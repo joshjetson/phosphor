@@ -38,11 +38,11 @@ pub(super) fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap
     let rec_sel = tp && te == TransportElement::Record;
     let rec = if snap.recording {
         Span::styled("\u{25CF} rec", Style::default()
-            .fg(theme::REC_ACTIVE)
+            .fg(theme::rec_active_val())
             .bg(if rec_sel { hi } else { theme::bg_val() }))
     } else {
         Span::styled("\u{25CF} rec", Style::default()
-            .fg(if rec_sel { theme::normal_val() } else { theme::REC_DIM })
+            .fg(if rec_sel { theme::normal_val() } else { theme::rec_dim_val() })
             .bg(if rec_sel { hi } else { theme::bg_val() }))
     };
 

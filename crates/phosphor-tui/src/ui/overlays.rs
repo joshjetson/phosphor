@@ -48,7 +48,7 @@ pub(super) fn render_space_menu(frame: &mut Frame, nav: &NavState) {
                         let indicator = if is_cur { "\u{25B6}" } else { " " };
                         let key_s = if is_cur { theme::amber_bright().add_modifier(Modifier::BOLD) } else { theme::amber() };
                         let label_s = if is_cur {
-                            Style::default().fg(theme::HIGHLIGHT).bg(theme::overlay_bg()).add_modifier(Modifier::BOLD)
+                            Style::default().fg(theme::highlight_val()).bg(theme::overlay_bg()).add_modifier(Modifier::BOLD)
                         } else { theme::normal() };
 
                         spans.push(Span::styled(format!("{indicator} "), label_s));
@@ -73,7 +73,7 @@ pub(super) fn render_space_menu(frame: &mut Frame, nav: &NavState) {
                 let is_cur = nav.space_menu.cursor == i;
                 let indicator = if is_cur { "\u{25B6} " } else { "  " };
                 let s = if is_cur {
-                    Style::default().fg(theme::HIGHLIGHT).bg(theme::overlay_bg()).add_modifier(Modifier::BOLD)
+                    Style::default().fg(theme::highlight_val()).bg(theme::overlay_bg()).add_modifier(Modifier::BOLD)
                 } else { theme::normal() };
 
                 lines.push(Line::from(vec![
@@ -143,8 +143,8 @@ pub(super) fn render_confirm_modal(frame: &mut Frame, nav: &NavState) {
     let block = Block::default()
         .style(Style::default().bg(theme::overlay_bg()))
         .borders(ratatui::widgets::Borders::ALL)
-        .border_style(Style::default().fg(theme::REC_ACTIVE))
-        .title(Span::styled(" confirm ", Style::default().fg(theme::REC_ACTIVE).add_modifier(Modifier::BOLD)));
+        .border_style(Style::default().fg(theme::rec_active_val()))
+        .title(Span::styled(" confirm ", Style::default().fg(theme::rec_active_val()).add_modifier(Modifier::BOLD)));
     frame.render_widget(block, menu_area);
 
     let inner = Rect::new(mx + 2, my + 1, mw - 4, mh - 2);
@@ -192,7 +192,7 @@ pub(super) fn render_input_modal(frame: &mut Frame, nav: &NavState) {
         Line::from(vec![
             Span::styled(prompt, theme::dim()),
             Span::styled(before, theme::amber_bright().add_modifier(Modifier::BOLD)),
-            Span::styled(cursor_char, Style::default().fg(theme::overlay_bg()).bg(theme::AMBER_BRIGHT)),
+            Span::styled(cursor_char, Style::default().fg(theme::overlay_bg()).bg(theme::amber_bright_val())),
             Span::styled(rest, theme::amber_bright().add_modifier(Modifier::BOLD)),
         ]),
         Line::from(""),
