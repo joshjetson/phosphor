@@ -436,7 +436,7 @@ fn commit_recording(track: &mut AudioTrack, end_tick: i64, clip_tx: &Sender<Clip
     }
 }
 
-fn midi_to_plugin_event(msg: &MidiMessage) -> Option<MidiEvent> {
+pub fn midi_to_plugin_event(msg: &MidiMessage) -> Option<MidiEvent> {
     use phosphor_midi::message::MidiMessageType;
     match msg.message_type {
         MidiMessageType::NoteOn { .. }

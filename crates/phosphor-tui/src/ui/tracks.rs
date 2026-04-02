@@ -219,7 +219,7 @@ pub(super) fn render_clips(frame: &mut Frame, area: Rect, ctx: &TrackCtx, snap: 
 
         // Clip number
         let ns = format!("{}", clip.number);
-        let n_s = Style::default().fg(if focused { theme::AMBER_BRIGHT } else { theme::dim_color(tc, if dim { 20 } else { 40 }) }).bg(cbg);
+        let n_s = Style::default().fg(if focused { theme::amber_bright_val() } else { theme::dim_color(tc, if dim { 20 } else { 40 }) }).bg(cbg);
         for (i, ch) in ns.chars().enumerate() {
             let x = cx+i+1;
             if x < ce && 1 < h { grid[1][x] = (ch, n_s); }

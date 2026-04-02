@@ -417,7 +417,7 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
         } else {
             theme::piano_white_bg()
         };
-        let key_fg = if is_cur { theme::AMBER_BRIGHT } else if note % 12 == 0 { theme::NORMAL } else { theme::DIM };
+        let key_fg = if is_cur { theme::amber_bright_val() } else if note % 12 == 0 { theme::normal_val() } else { theme::dim_val() };
 
         let mut spans: Vec<Span> = Vec::new();
         spans.push(Span::styled(format!("{:>5} ", midi_note_name(note)), Style::default().fg(key_fg).bg(key_bg)));
@@ -470,7 +470,7 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
             let hl_bg = theme::selection_bg();
             for x in hl_x_start..hl_x_end {
                 let (ch, old_s) = gr[x];
-                let fg = old_s.fg.unwrap_or(theme::DIM);
+                let fg = old_s.fg.unwrap_or(theme::dim_val());
                 gr[x] = (ch, Style::default().fg(fg).bg(hl_bg));
             }
         }
@@ -489,7 +489,7 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
             };
             for x in col_start..col_end {
                 let (ch, old_s) = gr[x];
-                let fg = old_s.fg.unwrap_or(theme::DIM);
+                let fg = old_s.fg.unwrap_or(theme::dim_val());
                 gr[x] = (ch, Style::default().fg(fg).bg(col_bg));
             }
         }
@@ -559,7 +559,7 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
 
         // Merge grid cells into spans
         let mut text = String::new();
-        let mut cur_s = Style::default().fg(theme::DIM).bg(row_bg);
+        let mut cur_s = Style::default().fg(theme::dim_val()).bg(row_bg);
         for (ch, s) in gr {
             if s == cur_s { text.push(ch); }
             else {

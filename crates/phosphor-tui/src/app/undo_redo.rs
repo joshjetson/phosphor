@@ -68,6 +68,24 @@ impl App {
                 dbg::system(&format!("undo: removed {} pasted notes", notes.len()));
                 self.status_message = Some(("undo: paste removed".into(), std::time::Instant::now()));
             }
+            UndoAction::ModifyClip { track_idx, clip_idx, ref prev_notes, ref prev_hidden, prev_start, prev_length } => {
+                // Undo clip modification = restore position, length, notes, hidden_notes
+                if let Some(track) = self.nav.tracks.get_mut(track_idx) {
+                    if let Some(clip) = track.clips.get_mut(clip_idx) {
+                        clip.start_tick = prev_start;
+                        clip.length_ticks = prev_length;
+                        clip.notes = prev_notes.clone();
+                        clip.hidden_notes = prev_hidden.clone();
+                        let ppq = phosphor_core::transport::Transport::PPQ;
+                        let beats = (prev_length as f64 / ppq as f64).ceil() as u16;
+                        clip.width = beats.max(2);
+                    }
+                }
+                // Sync clip position + events to audio
+                self.sync_clip_to_audio(track_idx, clip_idx);
+                dbg::system(&format!("undo: clip restored start={} len={}", prev_start, prev_length));
+                self.status_message = Some(("undo: clip restored".into(), std::time::Instant::now()));
+            }
             UndoAction::MoveNotes { track_idx, clip_idx, ref before } => {
                 // Undo move = restore each note to its original position
                 if let Some(track) = self.nav.tracks.get_mut(track_idx) {
@@ -240,6 +258,9 @@ impl App {
                 }
                 self.send_clip_update_for(track_idx, clip_idx);
                 self.status_message = Some(("redo: paste restored".into(), std::time::Instant::now()));
+            }
+            UndoAction::ModifyClip { .. } => {
+                self.status_message = Some(("redo: not available for clip modify".into(), std::time::Instant::now()));
             }
             UndoAction::MoveNotes { .. } => {
                 self.status_message = Some(("redo: not available for moves".into(), std::time::Instant::now()));

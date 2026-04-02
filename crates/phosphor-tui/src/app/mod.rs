@@ -425,8 +425,9 @@ impl App {
             let snapshot = self.engine.transport.snapshot();
 
             // Update piano roll dimensions to match terminal size and clip
-            let term_h = terminal.size()?.height;
-            let term_w = terminal.size()?.width;
+            let term_size = terminal.size()?;
+            let term_h = term_size.height;
+            let term_w = term_size.width;
             let piano_h = term_h.saturating_sub(30).max(6) as u8;
             self.nav.clip_view.piano_roll.set_view_height(piano_h);
 

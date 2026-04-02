@@ -47,6 +47,16 @@ pub enum UndoAction {
         /// (note_index, original_snapshot) for each moved note.
         before: Vec<(usize, NoteSnapshot)>,
     },
+    /// A clip's position or size was changed (move/stretch/trim).
+    /// Stores the clip's previous start_tick, length_ticks, notes, and hidden_notes.
+    ModifyClip {
+        track_idx: usize,
+        clip_idx: usize,
+        prev_start: i64,
+        prev_length: i64,
+        prev_notes: Vec<NoteSnapshot>,
+        prev_hidden: Vec<(i64, i64, u8, u8)>,
+    },
     /// A clip was added (paste/duplicate). Undo = remove it.
     AddClip {
         track_idx: usize,

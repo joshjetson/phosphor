@@ -28,9 +28,9 @@ pub(super) fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap
     let bpm_fg = if editing && bpm_sel {
         theme::playhead_fg()
     } else if bpm_sel {
-        theme::AMBER_BRIGHT
+        theme::amber_bright_val()
     } else {
-        theme::AMBER_BRIGHT
+        theme::amber_bright_val()
     };
     let bpm_label = if editing && bpm_sel { "\u{2190}bpm\u{2192}" } else { "bpm:" };
 
@@ -42,7 +42,7 @@ pub(super) fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap
             .bg(if rec_sel { hi } else { theme::bg_val() }))
     } else {
         Span::styled("\u{25CF} rec", Style::default()
-            .fg(if rec_sel { theme::NORMAL } else { theme::REC_DIM })
+            .fg(if rec_sel { theme::normal_val() } else { theme::REC_DIM })
             .bg(if rec_sel { hi } else { theme::bg_val() }))
     };
 
@@ -59,18 +59,18 @@ pub(super) fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap
     } else if loop_enabled {
         Span::styled(
             format!("loop:{}", nav.loop_editor.display()),
-            Style::default().fg(theme::AMBER).bg(if loop_sel { hi } else { theme::bg_val() }),
+            Style::default().fg(theme::amber_val()).bg(if loop_sel { hi } else { theme::bg_val() }),
         )
     } else {
         Span::styled("loop:off", Style::default()
-            .fg(if loop_sel { theme::NORMAL } else { theme::DIM })
+            .fg(if loop_sel { theme::normal_val() } else { theme::dim_val() })
             .bg(if loop_sel { hi } else { theme::bg_val() }))
     };
 
     // Metronome
     let met_sel = tp && te == TransportElement::Metronome;
     let met = Span::styled("\u{266A}", Style::default()
-        .fg(if snap.metronome { theme::AMBER } else { theme::DIM })
+        .fg(if snap.metronome { theme::amber_val() } else { theme::dim_val() })
         .bg(if met_sel { hi } else { theme::bg_val() }));
 
     // Seq

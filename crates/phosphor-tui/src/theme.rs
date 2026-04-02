@@ -400,18 +400,21 @@ pub fn bg_val() -> Color { palette().bg }
 pub fn dim_color_val() -> Color { palette().dim }
 /// Get the AMBER color for the active theme.
 pub fn amber_val() -> Color { palette().amber }
+pub fn amber_bright_val() -> Color { palette().amber_bright }
+pub fn dim_val() -> Color { palette().dim }
+pub fn normal_val() -> Color { palette().normal }
 
 // Old const names kept for backward compat — code that uses these directly
 // gets the Phosphor theme colors. Style functions above are theme-aware.
 #[allow(dead_code)] pub const BG: Color = Color::Rgb(11, 29, 40);
 #[allow(dead_code)] pub const BORDER: Color = Color::Rgb(15, 37, 53);
-pub const DIM: Color = Color::Rgb(22, 46, 60);
+#[allow(dead_code)] pub const DIM: Color = Color::Rgb(22, 46, 60);
 #[allow(dead_code)] pub const MUTED: Color = Color::Rgb(26, 58, 76);
-pub const NORMAL: Color = Color::Rgb(37, 78, 98);
+#[allow(dead_code)] pub const NORMAL: Color = Color::Rgb(37, 78, 98);
 #[allow(dead_code)] pub const BRIGHT: Color = Color::Rgb(56, 113, 127);
-pub const HIGHLIGHT: Color = Color::Rgb(88, 160, 176);
-pub const AMBER: Color = Color::Rgb(114, 88, 14);
-pub const AMBER_BRIGHT: Color = Color::Rgb(150, 116, 20);
+#[allow(dead_code)] pub const HIGHLIGHT: Color = Color::Rgb(88, 160, 176);
+#[allow(dead_code)] pub const AMBER: Color = Color::Rgb(114, 88, 14);
+#[allow(dead_code)] pub const AMBER_BRIGHT: Color = Color::Rgb(150, 116, 20);
 pub const REC_DIM: Color = Color::Rgb(90, 26, 26);
 pub const REC_ACTIVE: Color = Color::Rgb(180, 50, 50);
 

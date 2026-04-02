@@ -30,6 +30,7 @@ impl App {
         }
         if !self.nav.space_menu.open && !self.nav.input_modal.open && !self.nav.confirm_modal.open
             && !self.nav.instrument_modal.open && !self.nav.fx_menu.open
+            && !self.nav.clip_locked && !self.nav.clip_view.piano_roll.edit_mode
         {
             if key.code == KeyCode::Char('u') && !key.modifiers.contains(KeyModifiers::SHIFT) {
                 dbg::user("u → performing undo");
@@ -195,8 +196,9 @@ impl App {
             return;
         }
 
-        // Space → open space menu (blocked in edit mode)
-        if key.code == KeyCode::Char(' ') && !self.nav.clip_view.piano_roll.edit_mode {
+        // Space → open space menu (blocked in edit mode when in clip view)
+        let in_edit = self.nav.focused_pane == Pane::ClipView && self.nav.clip_view.piano_roll.edit_mode;
+        if key.code == KeyCode::Char(' ') && !in_edit {
             dbg::user("Space → open space menu");
             self.nav.toggle_space_menu();
             return;
@@ -558,8 +560,7 @@ impl App {
                         dbg::user(&format!("piano roll: row highlight {:?}", self.nav.clip_view.piano_roll.row_highlight_range()));
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
-                        let has_highlights = self.nav.clip_view.piano_roll.highlight_start.is_some()
-                            || self.nav.clip_view.piano_roll.row_highlight_low.is_some();
+                        let has_highlights = self.nav.clip_view.piano_roll.has_highlights();
                         if has_highlights {
                             // Move highlighted notes down by 1 semitone
                             self.move_highlighted_notes(0, -1);
@@ -568,8 +569,7 @@ impl App {
                         }
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
-                        let has_highlights = self.nav.clip_view.piano_roll.highlight_start.is_some()
-                            || self.nav.clip_view.piano_roll.row_highlight_low.is_some();
+                        let has_highlights = self.nav.clip_view.piano_roll.has_highlights();
                         if has_highlights {
                             // Move highlighted notes up by 1 semitone
                             self.move_highlighted_notes(0, 1);
@@ -590,8 +590,7 @@ impl App {
                         dbg::user(&format!("piano roll: highlight right, range {:?}", self.nav.clip_view.piano_roll.highlight_range()));
                     }
                     KeyCode::Char('h') | KeyCode::Left => {
-                        let has_highlights = self.nav.clip_view.piano_roll.highlight_start.is_some()
-                            || self.nav.clip_view.piano_roll.row_highlight_low.is_some();
+                        let has_highlights = self.nav.clip_view.piano_roll.has_highlights();
                         if has_highlights {
                             self.move_highlighted_notes(-1, 0);
                         } else {
@@ -600,8 +599,7 @@ impl App {
                         }
                     }
                     KeyCode::Char('l') | KeyCode::Right => {
-                        let has_highlights = self.nav.clip_view.piano_roll.highlight_start.is_some()
-                            || self.nav.clip_view.piano_roll.row_highlight_low.is_some();
+                        let has_highlights = self.nav.clip_view.piano_roll.has_highlights();
                         if has_highlights {
                             self.move_highlighted_notes(1, 0);
                         } else {
@@ -658,8 +656,7 @@ impl App {
                         dbg::user(&format!("piano roll: toggle note {} at col {}", cursor_note, col + 1));
                     }
                     KeyCode::Enter => {
-                        let has_highlights = self.nav.clip_view.piano_roll.highlight_start.is_some()
-                            || self.nav.clip_view.piano_roll.row_highlight_low.is_some();
+                        let has_highlights = self.nav.clip_view.piano_roll.has_highlights();
                         if has_highlights {
                             // Lock highlights for stretching (Right-Left-Trick on highlighted group)
                             self.nav.clip_view.piano_roll.highlight_locked = true;

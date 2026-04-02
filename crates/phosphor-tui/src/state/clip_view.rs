@@ -592,6 +592,11 @@ impl PianoRollState {
         }
     }
 
+    /// Returns true if any column or row highlights are active.
+    pub fn has_highlights(&self) -> bool {
+        self.highlight_start.is_some() || self.row_highlight_low.is_some()
+    }
+
     /// The 1-based column number for display.
     pub fn column_display(&self) -> usize {
         self.column + 1

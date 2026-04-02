@@ -81,9 +81,6 @@ impl App {
 
     /// Push edited note data from the TUI clip to the audio thread.
     /// Send clip events to audio thread for a specific track/clip (used by undo/redo).
-
-    /// Push edited note data from the TUI clip to the audio thread.
-    /// Send clip events to audio thread for a specific track/clip (used by undo/redo).
     pub(crate) fn send_clip_update_for(&self, track_idx: usize, clip_idx: usize) {
         if let Some(track) = self.nav.tracks.get(track_idx) {
             if let (Some(mixer_id), Some(clip)) = (track.mixer_id, track.clips.get(clip_idx)) {
@@ -135,10 +132,6 @@ impl App {
     }
 
 
-    /// Find the first note in a column, searching from cursor. `down` = search lower notes.
-    /// Adjust a single note's edge. `right_edge` = true adjusts duration, false adjusts start.
-
-    /// Find the first note in a column, searching from cursor. `down` = search lower notes.
     /// Adjust a single note's edge. `right_edge` = true adjusts duration, false adjusts start.
     pub(crate) fn adjust_note_edge(&mut self, col: usize, note_num: u8, delta: f64, right_edge: bool) {
         let (col_start, col_end) = self.column_frac_range(col);
@@ -153,8 +146,6 @@ impl App {
     }
 
     /// Get indices of notes that fall within a column's time range.
-
-    /// Get indices of notes that fall within a column's time range.
     pub(crate) fn note_indices_in_column(&self, col: usize) -> Vec<usize> {
         let (col_start, col_end) = self.column_frac_range(col);
         match self.nav.active_clip() {
@@ -165,8 +156,6 @@ impl App {
             None => Vec::new(),
         }
     }
-
-    /// Adjust notes by their stored indices (captured when column was selected).
 
     /// Adjust notes by their stored indices (captured when column was selected).
     pub(crate) fn adjust_column_edges(&mut self, delta: f64, right_edge: bool) {
@@ -183,15 +172,11 @@ impl App {
     }
 
     /// Get the fractional range [start, end) for a column index.
-
-    /// Get the fractional range [start, end) for a column index.
     pub(crate) fn column_frac_range(&self, col: usize) -> (f64, f64) {
         let col_count = self.nav.clip_view.piano_roll.column_count;
         let col_w = 1.0 / col_count as f64;
         (col as f64 * col_w, (col + 1) as f64 * col_w)
     }
-
-    /// Apply a delta to a note's left or right edge.
 
     /// Apply a delta to a note's left or right edge.
     pub(crate) fn apply_edge_delta(note: &mut phosphor_core::clip::NoteSnapshot, delta: f64, right_edge: bool) {
@@ -203,9 +188,6 @@ impl App {
             note.duration_frac = end - note.start_frac;
         }
     }
-
-    /// If a synth param was just adjusted, send the update to the audio thread.
-    /// When the patch selector (index 0) changes, sends ALL params to sync preset.
 
     /// If a synth param was just adjusted, send the update to the audio thread.
     /// When the patch selector (index 0) changes, sends ALL params to sync preset.
@@ -239,142 +221,6 @@ impl App {
         }
     }
 
-
-    // ── (Old column-only methods removed — use delete_selected_notes etc.) ──
-
-    #[allow(dead_code)]
-    fn delete_highlighted_notes(&mut self, col_start: usize, col_end: usize) {
-        let col_count = self.nav.clip_view.piano_roll.column_count;
-        if col_count == 0 { return; }
-        let col_w = 1.0 / col_count as f64;
-        let range_start = col_start as f64 * col_w;
-        let range_end = (col_end + 1) as f64 * col_w;
-
-        let target = self.nav.clip_view_target;
-
-        if let Some(clip) = self.nav.active_clip_mut() {
-            // Collect notes to remove for undo
-            let mut removed_notes = Vec::new();
-            let mut kept = Vec::new();
-            for n in clip.notes.drain(..) {
-                let note_center = n.start_frac + n.duration_frac * 0.5;
-                if note_center >= range_start && note_center < range_end {
-                    removed_notes.push(n);
-                } else {
-                    kept.push(n);
-                }
-            }
-            clip.notes = kept;
-
-            if !removed_notes.is_empty() {
-                let count = removed_notes.len();
-                if let Some((ti, ci)) = target {
-                    self.nav.undo_stack.push(UndoAction::DeleteNotes {
-                        track_idx: ti, clip_idx: ci, notes: removed_notes,
-                    });
-                }
-                self.status_message = Some((
-                    format!("{count} note{} deleted", if count == 1 { "" } else { "s" }),
-                    std::time::Instant::now(),
-                ));
-            }
-        }
-    }
-
-    // ── Piano roll yank/paste ──
-
-
-    // ── Piano roll yank/paste ──
-
-    #[allow(dead_code)]
-    pub(crate) fn yank_highlighted_notes(&mut self, col_start: usize, col_end: usize) {
-        let col_count = self.nav.clip_view.piano_roll.column_count;
-        if col_count == 0 { return; }
-        let col_w = 1.0 / col_count as f64;
-        let range_start = col_start as f64 * col_w;
-        let range_end = (col_end + 1) as f64 * col_w;
-
-        if let Some(clip) = self.nav.active_clip() {
-            // Copy notes in the range, with start_frac made relative to range_start
-            let mut yanked = Vec::new();
-            for n in &clip.notes {
-                let note_center = n.start_frac + n.duration_frac * 0.5;
-                if note_center >= range_start && note_center < range_end {
-                    let mut copied = *n;
-                    copied.start_frac -= range_start; // make relative to yank origin
-                    yanked.push(copied);
-                }
-            }
-            let num_cols = col_end - col_start + 1;
-            self.nav.clip_view.piano_roll.yank_buffer = yanked.clone();
-            self.nav.clip_view.piano_roll.yank_columns = num_cols;
-
-            self.status_message = Some((
-                format!("{} note{} yanked from {} col{}",
-                    yanked.len(), if yanked.len() == 1 { "" } else { "s" },
-                    num_cols, if num_cols == 1 { "" } else { "s" }),
-                std::time::Instant::now(),
-            ));
-        }
-    }
-
-
-    #[allow(dead_code)]
-    pub(crate) fn paste_yanked_notes(&mut self, paste_col: usize) {
-        let col_count = self.nav.clip_view.piano_roll.column_count;
-        if col_count == 0 { return; }
-        let col_w = 1.0 / col_count as f64;
-        let paste_start = paste_col as f64 * col_w;
-
-        let yank_buf = self.nav.clip_view.piano_roll.yank_buffer.clone();
-        if yank_buf.is_empty() {
-            self.status_message = Some(("nothing to paste".into(), std::time::Instant::now()));
-            return;
-        }
-
-        // Get the highlight width for clipping (if highlighted), otherwise use yank_columns
-        let max_paste_cols = if let Some((hl_start, hl_end)) = self.nav.clip_view.piano_roll.highlight_range() {
-            hl_end - hl_start + 1
-        } else {
-            self.nav.clip_view.piano_roll.yank_columns
-        };
-        let max_paste_frac = max_paste_cols as f64 * col_w;
-
-        let target = self.nav.clip_view_target;
-        let mut pasted_count = 0;
-
-        if let Some(clip) = self.nav.active_clip_mut() {
-            for n in &yank_buf {
-                // Only paste notes that fit within the paste region
-                if n.start_frac + n.duration_frac <= max_paste_frac {
-                    let mut pasted = *n;
-                    pasted.start_frac += paste_start; // offset to paste position
-                    // Clamp to clip bounds
-                    if pasted.start_frac + pasted.duration_frac <= 1.0 {
-                        clip.notes.push(pasted);
-                        pasted_count += 1;
-                    }
-                }
-            }
-        }
-
-        if pasted_count > 0 {
-            // Push undo for the paste (as a bulk draw)
-            if let (Some((ti, ci)), Some(clip)) = (target, self.nav.active_clip()) {
-                // Collect the pasted notes (they're the last N notes in the clip)
-                let pasted_notes: Vec<_> = clip.notes[clip.notes.len() - pasted_count..].to_vec();
-                self.nav.undo_stack.push(UndoAction::DeleteNotes {
-                    track_idx: ti, clip_idx: ci, notes: pasted_notes,
-                });
-                // Note: we store as DeleteNotes so undo removes them
-            }
-        }
-
-        self.status_message = Some((
-            format!("{pasted_count} note{} pasted", if pasted_count == 1 { "" } else { "s" }),
-            std::time::Instant::now(),
-        ));
-    }
 
     // ── Combined column+row selection operations ──
 

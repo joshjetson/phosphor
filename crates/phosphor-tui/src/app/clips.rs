@@ -3,6 +3,20 @@
 use super::*;
 
 impl App {
+    /// Capture clip state before modification for undo.
+    fn capture_clip_state(&self, track_idx: usize, clip_idx: usize) -> Option<crate::state::undo::UndoAction> {
+        let track = self.nav.tracks.get(track_idx)?;
+        let clip = track.clips.get(clip_idx)?;
+        Some(crate::state::undo::UndoAction::ModifyClip {
+            track_idx,
+            clip_idx,
+            prev_start: clip.start_tick,
+            prev_length: clip.length_ticks,
+            prev_notes: clip.notes.clone(),
+            prev_hidden: clip.hidden_notes.clone(),
+        })
+    }
+
     /// Move a clip left/right by one beat (changes start_tick, keeps length).
     pub(crate) fn move_clip(&mut self, clip_idx: usize, direction: i64) {
         use crate::debug_log as dbg;
@@ -37,7 +51,11 @@ impl App {
 
                 if new_start == old_start { return; }
 
-                // Apply mutably
+                // Capture state for undo before modifying
+                if let Some(undo) = self.capture_clip_state(track_idx, clip_idx) {
+                    self.nav.undo_stack.push(undo);
+                }
+
                 let track = self.nav.tracks.get_mut(track_idx).unwrap();
                 let clip = track.clips.get_mut(clip_idx).unwrap();
                 clip.start_tick = new_start;
@@ -76,7 +94,11 @@ impl App {
 
                 if new_len == old_len { return; }
 
-                // Now apply mutably
+                // Capture state for undo before modifying
+                if let Some(undo) = self.capture_clip_state(track_idx, clip_idx) {
+                    self.nav.undo_stack.push(undo);
+                }
+
                 let track = self.nav.tracks.get_mut(track_idx).unwrap();
                 let clip = track.clips.get_mut(clip_idx).unwrap();
 
@@ -164,7 +186,11 @@ impl App {
 
                 let new_len = end_tick - new_start;
 
-                // Now apply mutably
+                // Capture state for undo before modifying
+                if let Some(undo) = self.capture_clip_state(track_idx, clip_idx) {
+                    self.nav.undo_stack.push(undo);
+                }
+
                 let track = self.nav.tracks.get_mut(track_idx).unwrap();
                 let clip = track.clips.get_mut(clip_idx).unwrap();
 
@@ -234,8 +260,8 @@ impl App {
         }
     }
 
-    /// Paste yanked clip right after the given clip on the same track.
-    pub(crate) fn paste_clip_after(&mut self, clip_idx: usize) {
+    /// Paste yanked clip at a specific start tick on the current track.
+    fn paste_clip_at(&mut self, start_tick: i64) {
         use crate::debug_log as dbg;
 
         let yanked = match self.yanked_clip.clone() {
@@ -248,15 +274,8 @@ impl App {
 
         let track_idx = self.nav.track_cursor;
         if let Some(track) = self.nav.tracks.get_mut(track_idx) {
-            // Place right after the current clip
-            let after_tick = if let Some(cur) = track.clips.get(clip_idx) {
-                cur.start_tick + cur.length_ticks
-            } else {
-                0
-            };
-
             let mut new_clip = yanked;
-            new_clip.start_tick = after_tick;
+            new_clip.start_tick = start_tick;
             new_clip.number = track.clips.len() + 1;
 
             // Send to audio thread
@@ -279,7 +298,7 @@ impl App {
 
             let new_idx = track.clips.len();
             track.clips.push(new_clip);
-            dbg::system(&format!("pasted clip after clip {} at tick {}", clip_idx + 1, after_tick));
+            dbg::system(&format!("pasted clip to track {} at tick {}", track_idx, start_tick));
 
             // Push undo for the new clip
             self.nav.undo_stack.push(crate::state::undo::UndoAction::AddClip {
@@ -289,64 +308,29 @@ impl App {
             // Select the newly pasted clip
             self.nav.track_element = crate::state::TrackElement::Clip(new_idx);
             self.nav.open_clip_view(track_idx, new_idx);
-
-            self.status_message = Some((
-                format!("clip pasted at beat {}", after_tick / phosphor_core::transport::Transport::PPQ + 1),
-                std::time::Instant::now(),
-            ));
         }
+    }
+
+    /// Paste yanked clip right after the given clip on the same track.
+    pub(crate) fn paste_clip_after(&mut self, clip_idx: usize) {
+        let track_idx = self.nav.track_cursor;
+        let after_tick = self.nav.tracks.get(track_idx)
+            .and_then(|t| t.clips.get(clip_idx))
+            .map(|c| c.start_tick + c.length_ticks)
+            .unwrap_or(0);
+
+        self.paste_clip_at(after_tick);
+        self.status_message = Some((
+            format!("clip pasted at beat {}", after_tick / phosphor_core::transport::Transport::PPQ + 1),
+            std::time::Instant::now(),
+        ));
     }
 
     /// Paste yanked clip to the current track at the same timeline position.
     pub(crate) fn paste_clip_to_track(&mut self) {
-        use crate::debug_log as dbg;
-
-        let yanked = match self.yanked_clip.clone() {
-            Some(c) => c,
-            None => {
-                self.status_message = Some(("no clip to paste".into(), std::time::Instant::now()));
-                return;
-            }
-        };
-
-        let track_idx = self.nav.track_cursor;
-        if let Some(track) = self.nav.tracks.get_mut(track_idx) {
-            let mut new_clip = yanked;
-            new_clip.start_tick = self.yanked_clip_start; // same position as source
-            new_clip.number = track.clips.len() + 1;
-
-            if let Some(mixer_id) = track.mixer_id {
-                let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::CreateClip {
-                    track_id: mixer_id,
-                    start_tick: new_clip.start_tick,
-                    length_ticks: new_clip.length_ticks,
-                });
-                let events = phosphor_core::clip::NoteSnapshot::to_clip_events(
-                    &new_clip.notes, new_clip.length_ticks,
-                );
-                let new_idx = track.clips.len();
-                let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::UpdateClip {
-                    track_id: mixer_id,
-                    clip_index: new_idx,
-                    events,
-                });
-            }
-
-            let new_idx = track.clips.len();
-            track.clips.push(new_clip);
-            dbg::system(&format!("pasted clip to track {} at tick {}", track_idx, self.yanked_clip_start));
-
-            // Push undo for the new clip
-            self.nav.undo_stack.push(crate::state::undo::UndoAction::AddClip {
-                track_idx, clip_idx: new_idx,
-            });
-
-            // Select the newly pasted clip
-            self.nav.track_element = crate::state::TrackElement::Clip(new_idx);
-            self.nav.open_clip_view(track_idx, new_idx);
-
-            self.status_message = Some(("clip pasted to track".into(), std::time::Instant::now()));
-        }
+        let start_tick = self.yanked_clip_start;
+        self.paste_clip_at(start_tick);
+        self.status_message = Some(("clip pasted to track".into(), std::time::Instant::now()));
     }
 
     /// Duplicate clip immediately after itself.
@@ -358,7 +342,7 @@ impl App {
     }
 
     /// Sync a clip's data to the audio thread after editing (move, stretch, etc).
-    fn sync_clip_to_audio(&self, track_idx: usize, clip_idx: usize) {
+    pub(crate) fn sync_clip_to_audio(&self, track_idx: usize, clip_idx: usize) {
         use crate::debug_log as dbg;
         if let Some(track) = self.nav.tracks.get(track_idx) {
             if let (Some(mixer_id), Some(clip)) = (track.mixer_id, track.clips.get(clip_idx)) {

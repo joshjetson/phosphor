@@ -5,11 +5,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crossbeam_channel::Sender;
-use phosphor_midi::message::{MidiMessage, MidiMessageType};
+use phosphor_midi::message::MidiMessage;
 use phosphor_midi::ring::MidiRingReceiver;
 use phosphor_plugin::{MidiEvent, Plugin};
 
-use crate::mixer::{Mixer, MixerCommand, mixer_command_channel};
+use crate::mixer::{Mixer, MixerCommand, midi_to_plugin_event, mixer_command_channel};
 use crate::project::TrackHandle;
 use crate::transport::Transport;
 use crate::EngineConfig;
@@ -288,24 +288,6 @@ impl EngineAudio {
 
         // Advance transport
         transport.advance(num_frames as u32, self.sample_rate);
-    }
-}
-
-/// Convert a phosphor-midi MidiMessage to a phosphor-plugin MidiEvent.
-fn midi_to_plugin_event(msg: &MidiMessage) -> Option<MidiEvent> {
-    // For now, all events get sample_offset 0 (within the current buffer).
-    // Future: use msg.timestamp for sample-accurate positioning.
-    match msg.message_type {
-        MidiMessageType::NoteOn { .. }
-        | MidiMessageType::NoteOff { .. }
-        | MidiMessageType::ControlChange { .. }
-        | MidiMessageType::PitchBend { .. } => Some(MidiEvent {
-            sample_offset: 0,
-            status: msg.raw[0],
-            data1: msg.raw[1],
-            data2: msg.raw[2],
-        }),
-        _ => None,
     }
 }
 
