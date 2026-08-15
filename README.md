@@ -81,7 +81,7 @@ cargo run --release -- --no-midi
 | Instrument | Type | Voices | Patches | Description |
 |-----------|------|--------|---------|-------------|
 | **Phosphor Synth** | Subtractive | 16 | 4 waveforms | Dual oscillators, SVF filter, drive, ADSR |
-| **DX7** | FM | 16 | 51 | 6-operator FM, 32 algorithms, classic ROM patches |
+| **DX7** | FM | 16 | 51 | 6-operator FM, hardware-accurate 32 algorithms, log-domain EGs, LFO + pitch EG |
 | **Jupiter-8** | Analog poly | 8 | 42 | Dual polyBLEP VCOs, IR3109 OTA ladder filter, 4 voice modes |
 | **ARP Odyssey** | Duophonic | 2 | 44 | 3 selectable filter types (4023/4035/4075), hard sync, ring mod, S&H |
 | **Juno-60** | DCO poly | 6 | 18 | Single DCO, BBD stereo chorus (I/II/I+II), sub-oscillator |
@@ -124,7 +124,7 @@ cargo run --release -- --no-midi
 
 **Synthesizers**
 - **Phosphor Synth**: 16-voice polyphonic subtractive — dual oscillators, SVF filter, drive, ADSR
-- **DX7**: 6-operator FM synthesis, all 32 algorithms, 4-rate/4-level envelopes, operator feedback
+- **DX7**: 6-operator FM synthesis modelled on the YM21280/YM21290 chipset — all 32 algorithms decoded from the hardware table (including the multi-operator feedback loops in algorithms 4 and 6), log-domain envelopes with the hardware rate curve and its distinct attack shape, coarse/fine/detune frequency on the real parameter grid, keyboard level and rate scaling, global LFO with six waveforms and two-stage delay, and a per-voice pitch envelope
 - **Jupiter-8**: Dual polyBLEP VCOs, IR3109 4-pole OTA ladder filter with tanh saturation, per-voice analog drift, 4 voice modes (Solo/Unison/Poly1/Poly2)
 - **ARP Odyssey**: Duophonic split, 3 selectable filters (12dB SVF / 24dB Moog ladder / 24dB Norton), XOR ring mod, hard sync, Sample & Hold
 - **Juno-60**: Single DCO per voice, BBD stereo chorus (Chorus I / II / I+II), sub-oscillator, 4-position HPF, single ADSR shared VCF+VCA
@@ -178,7 +178,7 @@ cargo run --release -- --no-midi
 - Shared domain models via atomics (no locks between threads)
 - Command channel pattern for UI-to-audio communication
 - Plugin trait for instruments and effects — same interface for built-in and third-party
-- 234 tests covering DSP, MIDI, engine, mixer, and navigation
+- 293 tests covering DSP, MIDI, engine, mixer, and navigation
 
 ---
 
@@ -429,7 +429,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace  # 234 tests
+cargo test --workspace  # 293 tests
 ```
 
 ---
