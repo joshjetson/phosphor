@@ -92,6 +92,8 @@ pub fn render(
     // Overlays
     if nav.confirm_modal.open {
         render_confirm_modal(frame, nav);
+    } else if nav.quantize_modal.open {
+        render_quantize_modal(frame, nav);
     } else if nav.input_modal.open {
         render_input_modal(frame, nav);
     } else if nav.instrument_modal.open {

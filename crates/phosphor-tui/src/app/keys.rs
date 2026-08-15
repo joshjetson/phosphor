@@ -59,6 +59,27 @@ impl App {
             return;
         }
 
+        // Quantize modal — j/k navigate, h/l adjust, Enter applies
+        if self.nav.quantize_modal.open {
+            match key.code {
+                KeyCode::Esc => { self.nav.quantize_modal.close(); }
+                KeyCode::Char('j') | KeyCode::Down => { self.nav.quantize_modal.move_down(); }
+                KeyCode::Char('k') | KeyCode::Up => { self.nav.quantize_modal.move_up(); }
+                KeyCode::Char('h') | KeyCode::Left => { self.nav.quantize_modal.adjust(-1); }
+                KeyCode::Char('l') | KeyCode::Right => { self.nav.quantize_modal.adjust(1); }
+                KeyCode::Enter => {
+                    if self.nav.quantize_modal.cursor == 2 {
+                        let grid = self.nav.quantize_modal.grid;
+                        let strength = self.nav.quantize_modal.strength;
+                        self.nav.quantize_modal.close();
+                        self.apply_quantize(grid, strength);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // Input modal active — capture all keys for text entry
         if self.nav.input_modal.open {
             match key.code {
@@ -492,6 +513,21 @@ impl App {
             return;
         }
 
+        // Settings tab — route directly to nav methods which handle settings internally
+        if self.nav.clip_view.focus == ClipViewFocus::PianoRoll
+            && self.nav.clip_view.clip_tab == ClipTab::Settings
+        {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => self.nav.escape(),
+                KeyCode::Char('j') | KeyCode::Down => self.nav.move_down(),
+                KeyCode::Char('k') | KeyCode::Up => self.nav.move_up(),
+                KeyCode::Char('h') | KeyCode::Left => self.nav.move_left(),
+                KeyCode::Char('l') | KeyCode::Right => self.nav.move_right(),
+                _ => {}
+            }
+            return;
+        }
+
         // Piano roll side — route by focus level
         // Read focus level and state before any mutable borrows
         let focus = self.nav.clip_view.piano_roll.focus;
@@ -507,7 +543,7 @@ impl App {
                 // were active. h/l adjusts left edge, H/L adjusts right edge.
                 if self.nav.clip_view.piano_roll.highlight_locked {
                     let step = self.nav.clip_view.piano_roll.grid.step_frac(
-                        self.nav.clip_view.piano_roll.column_count
+                        self.nav.clip_view.piano_roll.total_beats
                     );
                     match key.code {
                         KeyCode::Esc => {
@@ -685,7 +721,7 @@ impl App {
             PianoRollFocus::Selected => {
                 let shift = key.modifiers.contains(KeyModifiers::SHIFT);
                 let step = self.nav.clip_view.piano_roll.grid.step_frac(
-                    self.nav.clip_view.piano_roll.column_count
+                    self.nav.clip_view.piano_roll.total_beats
                 );
                 match key.code {
                     KeyCode::Esc => {
@@ -739,7 +775,7 @@ impl App {
             PianoRollFocus::Row => {
                 let shift = key.modifiers.contains(KeyModifiers::SHIFT);
                 let step = self.nav.clip_view.piano_roll.grid.step_frac(
-                    self.nav.clip_view.piano_roll.column_count
+                    self.nav.clip_view.piano_roll.total_beats
                 );
                 match key.code {
                     KeyCode::Esc => {

@@ -7,10 +7,24 @@ impl App {
     /// Draw a new note at the given column and pitch.
     /// Creates a clip if none exists on the track.
     pub(crate) fn draw_note(&mut self, col: usize, note_num: u8) {
-        let col_count = self.nav.clip_view.piano_roll.column_count;
+        let pr = &self.nav.clip_view.piano_roll;
+        let col_count = pr.column_count;
+        let total_beats = pr.total_beats;
+        let snap = pr.snap_enabled;
+        let grid = pr.grid;
+        let velocity = pr.default_velocity;
         let col_w = 1.0 / col_count as f64;
-        let start_frac = col as f64 * col_w;
-        let duration_frac = col_w;
+        let duration_frac = grid.step_frac(total_beats);
+        // Clamp the start to keep the note inside the clip. Without the clamp,
+        // drawing at the last column with snap on can push start_frac to 1.0,
+        // which renders invisibly while still playing.
+        // Invariant: start_frac + duration_frac <= 1.0.
+        let raw_start = if snap {
+            grid.snap(col as f64 * col_w, total_beats)
+        } else {
+            col as f64 * col_w
+        };
+        let start_frac = raw_start.clamp(0.0, 1.0 - duration_frac);
 
         // If there's no clip yet, create one on both TUI and audio thread
         if self.nav.active_clip().is_none() {
@@ -66,7 +80,7 @@ impl App {
                 crate::debug_log::system(&format!("removed note {} at col {}", note_num, col));
             } else {
                 let note = phosphor_core::clip::NoteSnapshot {
-                    note: note_num, velocity: 100, start_frac, duration_frac,
+                    note: note_num, velocity, start_frac, duration_frac,
                 };
                 clip.notes.push(note.clone());
                 if let Some((ti, ci)) = target {
@@ -421,13 +435,14 @@ impl App {
         let col_range = self.nav.clip_view.piano_roll.highlight_range();
         let row_range = self.nav.clip_view.piano_roll.row_highlight_range();
         let col_count = self.nav.clip_view.piano_roll.column_count;
+        let total_beats = self.nav.clip_view.piano_roll.total_beats;
         let grid = self.nav.clip_view.piano_roll.grid;
         let snap = self.nav.clip_view.piano_roll.snap_enabled;
         let target = self.nav.clip_view_target;
 
         if col_count == 0 { return; }
         let col_w = 1.0 / col_count as f64;
-        let step = grid.step_frac(col_count);
+        let step = grid.step_frac(total_beats);
 
         // Capture before-state for undo, then apply move
         let mut before = Vec::new();
@@ -447,7 +462,7 @@ impl App {
                     if grid_steps != 0 {
                         let new_frac = note.start_frac + grid_steps as f64 * step;
                         note.start_frac = if snap {
-                            grid.snap(new_frac, col_count).clamp(0.0, 1.0 - note.duration_frac)
+                            grid.snap(new_frac, total_beats).clamp(0.0, 1.0 - note.duration_frac)
                         } else {
                             new_frac.clamp(0.0, 1.0 - note.duration_frac)
                         };
@@ -468,6 +483,47 @@ impl App {
             }
             self.send_clip_update();
             dbg::system(&format!("piano roll: moved highlighted notes steps={} semi={}", grid_steps, semitones));
+        }
+    }
+
+    pub(crate) fn apply_quantize(&mut self, grid: crate::state::GridResolution, strength: u8) {
+        use crate::debug_log as dbg;
+        let total_beats = self.nav.clip_view.piano_roll.total_beats;
+        let target = self.nav.clip_view_target;
+        let strength_frac = strength as f64 / 100.0;
+
+        let mut before = Vec::new();
+        if let Some(clip) = self.nav.active_clip_mut() {
+            for (i, note) in clip.notes.iter_mut().enumerate() {
+                let snapped = grid.snap(note.start_frac, total_beats);
+                if (snapped - note.start_frac).abs() > 1e-9 {
+                    before.push((i, *note));
+                    // Clamp to keep the note within the clip bounds. Without this,
+                    // a note near the end (e.g. 0.9375 with a 1/8 grid) snaps to
+                    // 1.0 and vanishes from the piano roll while still playing.
+                    // Invariant: start_frac + duration_frac <= 1.0.
+                    note.start_frac = (note.start_frac
+                        + (snapped - note.start_frac) * strength_frac)
+                        .clamp(0.0, 1.0 - note.duration_frac);
+                }
+            }
+        }
+
+        if !before.is_empty() {
+            let count = before.len();
+            if let Some((ti, ci)) = target {
+                self.nav.undo_stack.push(UndoAction::MoveNotes {
+                    track_idx: ti, clip_idx: ci, before,
+                });
+            }
+            self.send_clip_update();
+            dbg::system(&format!("quantized {} notes to {} at {}%", count, grid.label(), strength));
+            self.status_message = Some((
+                format!("{count} note{} quantized", if count == 1 { "" } else { "s" }),
+                std::time::Instant::now(),
+            ));
+        } else {
+            self.status_message = Some(("notes already quantized".into(), std::time::Instant::now()));
         }
     }
 }

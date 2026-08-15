@@ -165,6 +165,8 @@ cargo run --release -- --no-midi
 - Synth parameter panel with real-time adjustment and patch selection
 - Instrument config tab for deeper parameter access
 - Piano roll with horizontal scroll, playhead, column/row highlighting
+- Note-level edit mode with per-note select, move, transpose, and stretch
+- Variable-strength quantize (25–100%) with grid resolution selection
 - Clip locking with move, stretch, trim, and collision detection
 - Transport with BPM, loop region, metronome, recording
 - Send A/B buses and master track
@@ -176,7 +178,7 @@ cargo run --release -- --no-midi
 - Shared domain models via atomics (no locks between threads)
 - Command channel pattern for UI-to-audio communication
 - Plugin trait for instruments and effects — same interface for built-in and third-party
-- 216+ tests covering DSP, MIDI, engine, mixer, and navigation
+- 234 tests covering DSP, MIDI, engine, mixer, and navigation
 
 ---
 
@@ -210,7 +212,10 @@ cargo run --release -- --no-midi
 | `Space` `s` | Save project |
 | `Space` `o` | Open project |
 | `Space` `d` | Delete selected track/clip (with confirmation) |
+| `Space` `e` | Enter edit mode (note-level piano roll editing) |
+| `Space` `q` | Quantize notes to grid |
 | `Space` `v` | Cycle color theme |
+| `Space` `h` | Open help topics |
 
 ### Tracks Pane
 
@@ -286,6 +291,55 @@ Clip operations include collision detection — clips cannot overlap. Moving, st
 | `j` / `k` | Move between notes in column |
 | `n` | Draw note / toggle note |
 | `Esc` | Back to column mode |
+
+### Piano Roll — Edit Mode (Space+E)
+
+Note-level editing. Where the Right Left Trick operates on whole columns, edit mode moves a cursor between individual notes.
+
+**Navigate**
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Move to next note up/down within the same column |
+| `h` / `l` | Jump to nearest note in previous/next column |
+| `Enter` | Select cursor note for moving |
+| `d` | Delete cursor note |
+| `u` | Undo |
+| `Esc` / `e` | Exit edit mode |
+
+**Select** (triggered by `Shift`+direction from navigate)
+
+| Key | Action |
+|-----|--------|
+| `Shift+J` / `Shift+K` | Extend selection up/down within the column |
+| `Shift+H` / `Shift+L` | Extend selection to previous/next column |
+| `d` | Delete all selected notes |
+| `h` / `j` / `k` / `l` | Begin moving the selection |
+| `Esc` | Clear selection, back to navigate |
+
+**Move** (after selecting, or `Enter` on a single note)
+
+| Key | Action |
+|-----|--------|
+| `h` / `l` | Move selected notes left/right by one grid step |
+| `j` / `k` | Transpose selected notes down/up by a semitone |
+| `Shift+H` / `Shift+L` | Stretch the right edge (duration) |
+| `Shift+J` / `Shift+K` | Stretch the left edge (start position) |
+| `d` | Delete all selected notes |
+| `Esc` | Lock notes in place, clear selection |
+
+### Quantize (Space+Q)
+
+Opens a modal that snaps the selected clip's notes to the grid. Requires a selected clip.
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Move between rows (grid, strength, apply) |
+| `h` / `l` | Adjust the selected value |
+| `Enter` | Apply quantize (when on the apply button) |
+| `Esc` | Close without applying |
+
+Strength runs from 25% to 100%. At 100% notes land exactly on the grid; below that they move proportionally toward it, so you can tighten a performance without flattening its feel. Quantize is a single undoable action — `u` restores the original positions.
 
 ### Loop Editor (Space+L)
 
@@ -375,7 +429,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace  # 216+ tests
+cargo test --workspace  # 234 tests
 ```
 
 ---

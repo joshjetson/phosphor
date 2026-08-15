@@ -355,10 +355,13 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
         16
     }.max(1);
 
+    // column_count is grid-scaled (e.g. 32 for 16 beats at 1/8 grid)
+    let column_count = pr.column_count.max(1);
+
     // Visible columns limited by screen width (min 3 chars per column)
-    let max_visible = (note_w / 3).max(1).min(total_beats);
-    let scroll_offset = pr.scroll_x.min(total_beats.saturating_sub(max_visible));
-    let visible_cols = max_visible.min(total_beats - scroll_offset);
+    let max_visible = (note_w / 3).max(1).min(column_count);
+    let scroll_offset = pr.scroll_x.min(column_count.saturating_sub(max_visible));
+    let visible_cols = max_visible.min(column_count - scroll_offset);
     // Use the full note_w for column width calculation to avoid a gap at the right
     // where notes render but no column grid exists. Integer col_w * visible_cols
     // must equal note_w, so we shrink note_w to the largest multiple.
@@ -439,14 +442,16 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
 
         // Gridlines at grid resolution subdivisions
         let subs_per_beat = pr.grid.subdivisions_per_beat();
-        let total_subs = (total_beats as f64 * subs_per_beat) as usize;
-        let scroll_beat_frac = if total_beats > 0 { scroll_offset as f64 / total_beats as f64 } else { 0.0 };
-        let visible_beat_frac = if total_beats > 0 { visible_cols as f64 / total_beats as f64 } else { 1.0 };
+        let total_subs = (total_beats as f64 * subs_per_beat).round() as usize;
+        let scroll_beat_frac = if column_count > 0 { scroll_offset as f64 / column_count as f64 } else { 0.0 };
+        let visible_beat_frac = if column_count > 0 { visible_cols as f64 / column_count as f64 } else { 1.0 };
         for s in 1..total_subs {
             let abs_frac = s as f64 / total_subs as f64;
             let vis_frac = (abs_frac - scroll_beat_frac) / visible_beat_frac;
             if vis_frac <= 0.0 || vis_frac >= 1.0 { continue; }
-            let x = (vis_frac * note_w as f64) as usize;
+            // Draw grid line 1 cell before the column boundary so the thin
+            // stroke visually aligns with the left edge of notes at this position
+            let x = ((vis_frac * note_w as f64) as usize).saturating_sub(1);
             if x >= note_w { continue; }
             let beat_idx = (s as f64 / subs_per_beat) as usize;
             let is_beat = (s as f64 % subs_per_beat).abs() < 0.01;
@@ -499,8 +504,8 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
             if is_cur { theme::piano_cursor_bg() } else { row_bg }
         ).add_modifier(Modifier::BOLD);
         // Scroll window as fraction of clip
-        let scroll_frac = if total_beats > 0 { scroll_offset as f64 / total_beats as f64 } else { 0.0 };
-        let visible_frac = if total_beats > 0 { visible_cols as f64 / total_beats as f64 } else { 1.0 };
+        let scroll_frac = if column_count > 0 { scroll_offset as f64 / column_count as f64 } else { 0.0 };
+        let visible_frac = if column_count > 0 { visible_cols as f64 / column_count as f64 } else { 1.0 };
         let in_edit = pr.edit_mode;
         for (ni, n) in notes.iter().enumerate() {
             if n.note == note {
@@ -524,8 +529,6 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
                 let note_len = ex - sx;
                 for (j, cell) in gr.iter_mut().take(ex).skip(sx).enumerate() {
                     if j == 0 || (note_len > 2 && j == note_len - 1) {
-                        // Border: use row background as foreground so the edge
-                        // visually separates adjacent notes in any theme
                         *cell = ('\u{2502}', Style::default().fg(row_bg).bg(note_style.fg.unwrap_or(tc)));
                     } else {
                         *cell = ('\u{2588}', note_style);

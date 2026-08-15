@@ -180,6 +180,7 @@ pub enum SpaceAction {
     CycleTheme,
     NewTrack,
     EditMode,
+    Quantize,
 }
 
 // ── Confirmation Modal ──
@@ -374,9 +375,48 @@ pub const SPACE_ACTIONS: &[(&str, &str, &str)] = &[
     ("spc+o", "open",      "open project"),
     ("spc+d", "delete",    "delete selected track/clip"),
     ("spc+e", "edit mode", "note-level piano roll editing"),
+    ("spc+q", "quantize",  "snap notes to grid"),
     ("spc+v", "vibe",      "cycle color theme"),
     ("spc+h", "help",      "open help topics"),
 ];
+
+// ── Quantize Modal ──
+
+use super::clip_view::GridResolution;
+
+#[derive(Debug)]
+pub struct QuantizeModal {
+    pub open: bool,
+    pub grid: GridResolution,
+    pub strength: u8,
+    pub cursor: usize,
+}
+
+impl Default for QuantizeModal {
+    fn default() -> Self { Self::new() }
+}
+
+impl QuantizeModal {
+    pub fn new() -> Self {
+        Self { open: false, grid: GridResolution::Eighth, strength: 100, cursor: 0 }
+    }
+    pub fn open_with(&mut self, grid: GridResolution) {
+        self.open = true;
+        self.grid = grid;
+        self.strength = 100;
+        self.cursor = 0;
+    }
+    pub fn close(&mut self) { self.open = false; }
+    pub fn move_up(&mut self) { if self.cursor > 0 { self.cursor -= 1; } }
+    pub fn move_down(&mut self) { if self.cursor < 2 { self.cursor += 1; } }
+    pub fn adjust(&mut self, direction: i32) {
+        match self.cursor {
+            0 => { if direction > 0 { self.grid = self.grid.next(); } else { self.grid = self.grid.prev(); } }
+            1 => { self.strength = (self.strength as i32 + direction * 25).clamp(25, 100) as u8; }
+            _ => {}
+        }
+    }
+}
 
 /// Help topic entries: (title, short description).
 pub const HELP_TOPICS: &[(&str, &str)] = &[

@@ -22,7 +22,7 @@ use phosphor_core::EngineConfig;
 use phosphor_dsp::synth::PhosphorSynth;
 use phosphor_midi::ring::midi_ring_buffer;
 
-use crate::state::{self, ClipViewFocus, ConfirmKind, FxPanelTab, InputModalKind, InstrumentType, NavState, Pane, PianoRollFocus, SpaceAction, TransportElement};
+use crate::state::{self, ClipTab, ClipViewFocus, ConfirmKind, FxPanelTab, InputModalKind, InstrumentType, NavState, Pane, PianoRollFocus, SpaceAction, TransportElement};
 mod delete;
 mod edit_mode;
 mod keys;
@@ -437,13 +437,14 @@ impl App {
                 .map(|c| ((c.length_ticks as f64) / ppq as f64).ceil() as usize)
                 .unwrap_or(16)
                 .max(1);
-            self.nav.clip_view.piano_roll.set_column_count(total_beats);
+            self.nav.clip_view.piano_roll.total_beats = total_beats;
+            self.nav.clip_view.piano_roll.update_column_count();
 
             // Set visible columns based on terminal width
             let key_w = 7usize; // key labels + separator
             let fx_panel_w = 25usize; // FX panel + separator
             let note_w = (term_w as usize).saturating_sub(key_w + fx_panel_w);
-            let vis_cols = (note_w / 3).max(1).min(total_beats);
+            let vis_cols = (note_w / 3).max(1).min(self.nav.clip_view.piano_roll.column_count);
             self.nav.clip_view.piano_roll.visible_columns = vis_cols;
 
             // Log frame details periodically and on first frame after track creation

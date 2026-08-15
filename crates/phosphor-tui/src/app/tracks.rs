@@ -73,6 +73,14 @@ impl App {
             SpaceAction::EditMode => {
                 self.enter_edit_mode();
             }
+            SpaceAction::Quantize => {
+                if self.nav.clip_view_target.is_some() {
+                    let grid = self.nav.clip_view.piano_roll.grid;
+                    self.nav.quantize_modal.open_with(grid);
+                } else {
+                    self.status_message = Some(("no clip selected".into(), std::time::Instant::now()));
+                }
+            }
         }
     }
     /// Stop playback and silence all instruments. Called on pause, stop,

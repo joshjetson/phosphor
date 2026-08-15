@@ -189,7 +189,7 @@ impl App {
                     _ => {}
                 }
                 let step = self.nav.clip_view.piano_roll.grid.step_frac(
-                    self.nav.clip_view.piano_roll.column_count
+                    self.nav.clip_view.piano_roll.total_beats
                 );
                 if let Some(d) = dir {
                     if shift {
@@ -395,7 +395,7 @@ impl App {
     /// Column width based on grid resolution.
     fn edit_column_width(&self) -> f64 {
         let pr = &self.nav.clip_view.piano_roll;
-        pr.grid.step_frac(pr.column_count)
+        pr.grid.step_frac(pr.total_beats)
     }
 
     /// Check if two notes are in the same column.
@@ -419,7 +419,7 @@ impl App {
     pub(crate) fn move_selected_notes(&mut self, grid_steps: i32, semitones: i32) {
         use crate::debug_log as dbg;
         let pr = &self.nav.clip_view.piano_roll;
-        let total_beats = pr.column_count;
+        let total_beats = pr.total_beats;
         let grid = pr.grid;
         let snap = pr.snap_enabled;
         let target = self.nav.clip_view_target;
@@ -440,7 +440,7 @@ impl App {
             Vec::new()
         };
 
-        // Apply the move
+        // Apply the move (grid-step horizontal, snap-aware; semitone vertical)
         if let Some(clip) = self.nav.active_clip_mut() {
             for &idx in &indices {
                 if let Some(note) = clip.notes.get_mut(idx) {

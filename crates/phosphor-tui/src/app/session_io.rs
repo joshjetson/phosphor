@@ -46,6 +46,44 @@ impl App {
 
     pub(crate) fn do_load(&mut self, path_str: &str) {
         let path = std::path::PathBuf::from(path_str);
+
+        // Stop the transport before touching any session state. If playback
+        // or recording was rolling, the audio thread keeps advancing the
+        // playhead and honoring the `recording` atomic as we swap tracks in
+        // and out — so new-session clips would get walked over by the old
+        // playhead, armed tracks from the restored session could start
+        // recording immediately, and the metronome would keep clicking
+        // across the transition.
+        //
+        // `stop_playback` calls `transport.pause()` (clears `playing`),
+        // sets recording_grace for any armed old-session tracks, and calls
+        // `engine.panic()` to kill live voices. It does NOT clear the
+        // `recording` atomic (pause() leaves it set), so we follow up with
+        // `stop_loop_record()` which unconditionally clears both `playing`
+        // and `recording`. Finally we reset position to match the
+        // `transport.stop()` convention used elsewhere — the loop range is
+        // about to be overwritten with the new session's values anyway, so
+        // leaving the playhead at an arbitrary old-session offset is
+        // nonsense in the new session.
+        //
+        // Ordering note: if `crate::session::load` fails below, we've
+        // already stopped the user's playback. That's a minor UX cost
+        // (they hit Space to resume) traded against silent corruption if
+        // we parsed first and the transport kept running through a
+        // successful load. Stopping first is the correct trade.
+        //
+        // Race note: stopping during an in-progress recording may cause
+        // the mixer's next callback to commit a final ClipSnapshot (see
+        // `commit_recording` in mixer.rs when `!should_record &&
+        // track.was_recording`). That snapshot may arrive before or
+        // after our clip_rx drain below. The drain catches anything in
+        // flight at drain time; `recording_grace = 0` below ensures any
+        // straggler that arrives later is dropped by
+        // `receive_clip_snapshot`.
+        self.stop_playback();
+        self.engine.transport.stop_loop_record();
+        self.engine.transport.set_position(0);
+
         let session = match crate::session::load(&path) {
             Ok(s) => s,
             Err(e) => {
@@ -68,7 +106,19 @@ impl App {
         self.sync_loop_to_transport();
 
         // Remove existing instrument tracks (keep bus tracks)
-        // Clear all instrument tracks from TUI state
+        // First: tell the audio-thread mixer to drop each instrument track's
+        // plugin. Without this, old Box<dyn Plugin> instances stay resident
+        // and a new session's MIDI triggers both old and new voices.
+        for track in &self.nav.tracks {
+            if track.instrument_type.is_some() {
+                if let Some(mid) = track.mixer_id {
+                    let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::RemoveTrack {
+                        track_id: mid,
+                    });
+                }
+            }
+        }
+        // Now clear instrument tracks from TUI state
         self.nav.tracks.retain(|t| t.instrument_type.is_none());
         self.nav.track_cursor = 0;
         self.nav.track_scroll = 0;
@@ -77,6 +127,35 @@ impl App {
 
         // Kill all sound
         self.engine.panic();
+
+        // Drain any in-flight clip snapshots from the old session.
+        // The audio thread may have already queued ClipSnapshots for
+        // old tracks (finalized recordings, or pending commits from the
+        // panic we just requested). If we don't drain, they'll be delivered
+        // on the next UI tick — after new-session tracks exist — and either
+        // land on the wrong track (track-id collision is unlikely given
+        // next_track_id is monotonic, but the invariant shouldn't rely on
+        // that) or waste a recording_grace slot in receive_clip_snapshot.
+        // Unlike the delete-clip drain, there's nothing to keep-and-replay:
+        // every queued snapshot belongs to the old session.
+        use crate::debug_log as dbg;
+        let mut discarded = 0usize;
+        while let Ok(snap) = self.clip_rx.try_recv() {
+            dbg::system(&format!(
+                "discarded snapshot for track {} during session load",
+                snap.track_id,
+            ));
+            discarded += 1;
+        }
+        if discarded > 0 {
+            dbg::system(&format!("session load: drained {discarded} stale clip snapshot(s)"));
+        }
+        // Reset recording grace so any late snapshots the audio thread emits
+        // after the drain (processing our RemoveTrack / panic on its next
+        // callback) don't decrement a grace slot intended for live recording.
+        // receive_clip_snapshot gates on `!is_recording && recording_grace == 0`,
+        // so zeroing this ensures late old-session snapshots are ignored.
+        self.nav.recording_grace = 0;
 
         // Recreate tracks from session
         for st in &session.tracks {

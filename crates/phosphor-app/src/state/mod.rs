@@ -112,6 +112,8 @@ pub struct NavState {
     pub confirm_modal: ConfirmModal,
     /// Undo/redo stack.
     pub undo_stack: undo::UndoStack,
+    /// Quantize modal state.
+    pub quantize_modal: QuantizeModal,
     /// Whether a clip is "locked" for editing (Enter locks, Esc unlocks).
     /// When locked, h/l moves the clip instead of navigating between elements.
     pub clip_locked: bool,
@@ -142,6 +144,7 @@ impl NavState {
             input_modal: InputModal::new(),
             confirm_modal: ConfirmModal::new(),
             undo_stack: undo::UndoStack::new(),
+            quantize_modal: QuantizeModal::new(),
             clip_locked: false,
             recording_grace: 0,
         }

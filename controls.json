@@ -24,6 +24,7 @@
     "o": "open project",
     "d": "delete selected track/clip",
     "e": "enter edit mode (piano roll)",
+    "q": "quantize notes to grid",
     "v": "cycle color theme",
     "h": "help topics"
   },
@@ -140,6 +141,13 @@
       "d": "delete all selected notes",
       "Esc": "lock notes in place, clear selection"
     }
+  },
+  "quantize_modal": {
+    "description": "Space+Q opens quantize modal when a clip is selected.",
+    "j/k": "navigate rows (grid, strength, apply)",
+    "h/l": "adjust selected value (grid resolution or strength %)",
+    "Enter": "apply quantize (when on apply button)",
+    "Esc": "close modal"
   },
   "loop_editor": {
     "enter_via": "Space+L",

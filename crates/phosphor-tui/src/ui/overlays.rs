@@ -245,6 +245,71 @@ pub(super) fn render_fx_menu(frame: &mut Frame, nav: &NavState) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+pub(super) fn render_quantize_modal(frame: &mut Frame, nav: &NavState) {
+    let area = frame.area();
+    let mw = 36u16.min(area.width.saturating_sub(4));
+    let mh = 9u16;
+    let mx = (area.width.saturating_sub(mw)) / 2;
+    let my = (area.height.saturating_sub(mh)) / 2;
+    let menu_area = Rect::new(mx, my, mw, mh);
+
+    frame.render_widget(Clear, menu_area);
+    let block = Block::default()
+        .style(Style::default().bg(theme::overlay_bg()))
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(theme::border_style())
+        .title(Span::styled(" quantize ", theme::amber_bright().add_modifier(Modifier::BOLD)));
+    frame.render_widget(block, menu_area);
+
+    let inner = Rect::new(mx + 2, my + 1, mw - 4, mh - 2);
+    let qm = &nav.quantize_modal;
+
+    let row_style = |idx: usize| -> (Style, &'static str) {
+        if qm.cursor == idx {
+            (theme::amber_bright().add_modifier(Modifier::BOLD), "\u{25B6} ")
+        } else {
+            (theme::normal(), "  ")
+        }
+    };
+
+    let (s0, ind0) = row_style(0);
+    let (s1, ind1) = row_style(1);
+    let (s2, ind2) = row_style(2);
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(ind0, s0),
+            Span::styled("grid      ", theme::dim()),
+            Span::styled(format!("\u{25C0} {} \u{25B6}", qm.grid.label()), s0),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(ind1, s1),
+            Span::styled("strength  ", theme::dim()),
+            Span::styled(format!("\u{25C0} {}% \u{25B6}", qm.strength), s1),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(ind2, s2),
+            Span::styled(
+                "[ apply ]",
+                if qm.cursor == 2 { theme::amber_bright().add_modifier(Modifier::BOLD) } else { theme::normal() },
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  j/k", theme::dim()),
+            Span::styled(" nav  ", theme::muted()),
+            Span::styled("h/l", theme::dim()),
+            Span::styled(" adjust  ", theme::muted()),
+            Span::styled("enter", theme::dim()),
+            Span::styled(" apply", theme::muted()),
+        ]),
+    ];
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 // ── Separator + Helpers ──
 
 

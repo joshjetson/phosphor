@@ -218,6 +218,8 @@ pub struct PianoRollState {
     pub column: usize,
     /// Total number of columns in the grid (set by renderer).
     pub column_count: usize,
+    /// Total beats in the clip (e.g. 4 for a 1-bar clip).
+    pub total_beats: usize,
     /// Indices of notes that belong to the selected column (set on Enter).
     /// Edits operate on these indices so notes don't "escape" the column.
     pub selected_note_indices: Vec<usize>,
@@ -268,6 +270,7 @@ impl PianoRollState {
             focus: PianoRollFocus::Navigation,
             column: 0,
             column_count: 16,
+            total_beats: 4,
             selected_note_indices: Vec::new(),
             column_digits: String::new(),
             highlight_start: None,
@@ -589,6 +592,15 @@ impl PianoRollState {
         self.column_count = count.max(1);
         if self.column >= self.column_count {
             self.column = self.column_count - 1;
+        }
+    }
+
+    /// Recalculate column_count from total_beats and grid resolution.
+    pub fn update_column_count(&mut self) {
+        let cols = (self.total_beats as f64 * self.grid.subdivisions_per_beat()).round() as usize;
+        self.column_count = cols.max(1);
+        if self.column >= self.column_count {
+            self.column = self.column_count.saturating_sub(1);
         }
     }
 

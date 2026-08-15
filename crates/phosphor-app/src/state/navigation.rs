@@ -32,6 +32,7 @@ impl NavState {
             'o' => Some(SpaceAction::Open),
             'd' => Some(SpaceAction::Delete),
             'e' => Some(SpaceAction::EditMode),
+            'q' => Some(SpaceAction::Quantize),
             'v' => Some(SpaceAction::CycleTheme),
             'n' => Some(SpaceAction::NewTrack),
             'h' => {
@@ -229,6 +230,7 @@ impl NavState {
                 } else {
                     self.clip_view.piano_roll.grid = self.clip_view.piano_roll.grid.prev();
                 }
+                self.clip_view.piano_roll.update_column_count();
             }
             1 => {
                 // Snap on/off
