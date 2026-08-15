@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Shared business logic for Phosphor DAW frontends"
+readme = "../../README.md"
 
 [dependencies]
 phosphor-core.workspace = true
