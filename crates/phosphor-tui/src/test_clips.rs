@@ -88,7 +88,7 @@ mod tests {
         assert_eq!(app.nav.clip_view_target, Some((ti, 0)));
 
         // Navigate to clip 1 using nav.move_right (which syncs clip view)
-        app.nav.clip_locked = false;
+        app.nav.element_locked = false;
         app.nav.track_selected = true;
         app.nav.move_right(); // Clip(0) → Clip(1)
         assert_eq!(app.nav.track_element, TrackElement::Clip(1));
@@ -120,7 +120,7 @@ mod tests {
 
         app.nav.track_element = TrackElement::Clip(0);
         app.nav.track_selected = true;
-        app.nav.clip_locked = true;
+        app.nav.element_locked = true;
 
         // Shrink right edge by 2 beats (4 beats → 2 beats)
         app.move_clip_right_edge(0, -1);
@@ -300,7 +300,7 @@ mod tests {
 
         app.nav.track_selected = true;
         app.nav.track_element = TrackElement::Clip(0);
-        app.nav.clip_locked = true;
+        app.nav.element_locked = true;
 
         // Try to move clip 0 right — should be blocked by clip 1
         let start_before = app.nav.tracks[ti].clips[0].start_tick;

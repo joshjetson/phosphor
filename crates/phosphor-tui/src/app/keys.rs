@@ -30,7 +30,7 @@ impl App {
         }
         if !self.nav.space_menu.open && !self.nav.input_modal.open && !self.nav.confirm_modal.open
             && !self.nav.instrument_modal.open && !self.nav.fx_menu.open
-            && !self.nav.clip_locked && !self.nav.clip_view.piano_roll.edit_mode
+            && !self.nav.element_locked && !self.nav.clip_view.piano_roll.edit_mode
         {
             if key.code == KeyCode::Char('u') && !key.modifiers.contains(KeyModifiers::SHIFT) {
                 dbg::user("u → performing undo");
@@ -358,10 +358,23 @@ impl App {
     pub(crate) fn handle_tracks_keys(&mut self, key: crossterm::event::KeyEvent) {
         use crate::debug_log as dbg;
 
-        // ── Clip locked mode: Enter was pressed on a clip ──
-        // h/l = move clip, Shift+H/L = stretch right edge, Ctrl+H/L = trim left edge
-        // y/p/d/P = yank/paste/duplicate, Esc = unlock
-        if self.nav.clip_locked {
+        // ── Element locked mode: Enter was pressed on the selected element ──
+        // Clip: h/l = move, Shift+H/L = stretch right edge, Ctrl+H/L = trim
+        //       left edge, y/p/d/P = yank/paste/duplicate, Esc = unlock
+        // Volume: h/l = fader down/up, Esc or Enter = release
+        if self.nav.element_locked {
+            if self.nav.track_element == crate::state::TrackElement::Volume {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Enter => {
+                        dbg::user("fader: release");
+                        self.nav.escape();
+                    }
+                    KeyCode::Char('h') | KeyCode::Left => self.step_fader(-1),
+                    KeyCode::Char('l') | KeyCode::Right => self.step_fader(1),
+                    _ => {}
+                }
+                return;
+            }
             if let crate::state::TrackElement::Clip(idx) = self.nav.track_element {
                 let shift = key.modifiers.contains(KeyModifiers::SHIFT);
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -458,6 +471,14 @@ impl App {
             KeyCode::Enter => {
                 dbg::user(&format!("Enter → select (track_selected={})", self.nav.track_selected));
                 self.nav.enter();
+                if self.nav.element_locked
+                    && self.nav.track_element == crate::state::TrackElement::Volume
+                {
+                    self.status_message = Some((
+                        "fader: h/l = -1/+1 dB, Esc to release".into(),
+                        std::time::Instant::now(),
+                    ));
+                }
             }
             KeyCode::Char('m') if !self.nav.fx_menu.open => {
                 dbg::user("m → toggle mute");

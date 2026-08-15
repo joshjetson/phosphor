@@ -10,6 +10,8 @@ pub mod state;
 mod test_harness;
 #[cfg(test)]
 mod test_clips;
+#[cfg(test)]
+mod test_fader;
 mod theme;
 mod ui;
 

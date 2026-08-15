@@ -5,9 +5,22 @@
 
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
+use crate::level::soft_saturate;
 use crate::oscillator::{Oscillator, Waveform};
 
 const MAX_VOICES: usize = 16;
+
+/// Fixed headroom trim on the voice sum, applied after the gain knob.
+///
+/// Sized on ordinary playing, in step with the other four — see `OUTPUT_TRIM`
+/// in dx7.rs, which carries the full reasoning. The trim lands this synth at
+/// the same typical loudness as theirs.
+///
+/// Measured worst case at default parameters: 1.39 for an eight-note chord
+/// at velocity 127, which used to leave the buffer — this synth had no
+/// output bound of any kind, so it handed values above 1.0 straight to the
+/// mixer. At this trim that worst case is well under the saturator knee.
+const OUTPUT_TRIM: f32 = 0.2481;
 
 // ── Parameter indices ──
 pub const P_WAVEFORM: usize = 0;
@@ -340,7 +353,7 @@ impl Plugin for PhosphorSynth {
         if outputs.is_empty() { return; }
 
         let buf_len = outputs[0].len();
-        let gain = self.params[P_GAIN];
+        let gain = self.params[P_GAIN] * OUTPUT_TRIM;
         let waveform = self.waveform;
         let detune = self.detune_cents();
         let sub_level = self.params[P_SUB_LEVEL];
@@ -390,6 +403,10 @@ impl Plugin for PhosphorSynth {
                 sample += v.tick(sub_level, noise_level, cutoff, reso, drive);
             }
             sample *= gain;
+            // Bound the output without hard clipping it. The trim above keeps
+            // ordinary playing under the knee, so this is the identity for
+            // everything except a patch pushed past it by the gain knob.
+            sample = soft_saturate(sample);
 
             for ch in outputs.iter_mut() { ch[i] = sample; }
         }
@@ -465,8 +482,11 @@ mod tests {
     #[test]
     fn sound_on_note_on() {
         let mut s = PhosphorSynth::new(); s.init(44100.0, 64);
-        let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 4);
-        assert!(out.iter().map(|v| v.abs()).fold(0.0f32, f32::max) > 0.01);
+        // 200 buffers, not 4: the output carries a headroom trim, so five
+        // milliseconds of attack is not enough signal to tell "sounding" from
+        // "silent" with any margin.
+        let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 200);
+        assert!(out.iter().map(|v| v.abs()).fold(0.0f32, f32::max) > 0.005);
     }
 
     #[test]
@@ -490,9 +510,9 @@ mod tests {
     fn polyphony() {
         let mut s = PhosphorSynth::new(); s.init(44100.0, 64);
         let events = [note_on(60, 100, 0), note_on(64, 100, 0), note_on(67, 100, 0)];
-        let out = process_buffers(&mut s, &events, 4);
+        let out = process_buffers(&mut s, &events, 200);
         let peak = out.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
-        assert!(peak > 0.01 && peak <= 1.0, "peak={peak}");
+        assert!(peak > 0.005 && peak < 1.0, "peak={peak}");
     }
 
     #[test]
@@ -500,8 +520,11 @@ mod tests {
         let mut s = PhosphorSynth::new(); s.init(44100.0, 128);
         let mut out = vec![0.0f32; 128];
         s.process(&[], &mut [&mut out], &[note_on(60, 100, 64)]);
-        assert!(out[..64].iter().map(|v| v.abs()).fold(0.0f32, f32::max) < 0.001);
-        assert!(out[64..].iter().map(|v| v.abs()).fold(0.0f32, f32::max) > 0.001);
+        // Before the offset no voice is sounding at all, so the sum is exactly
+        // zero — a stronger claim than "quiet", and one that does not move
+        // when the output trim does.
+        assert!(out[..64].iter().all(|&v| v == 0.0));
+        assert!(out[64..].iter().map(|v| v.abs()).fold(0.0f32, f32::max) > 0.0001);
     }
 
     #[test]

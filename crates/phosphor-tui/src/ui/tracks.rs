@@ -2,6 +2,72 @@
 
 use super::*;
 
+/// Width of the VU bar, in cells. Three is what the track header has room
+/// for, and it is the number the scale below is chosen around.
+const VU_CELLS: usize = 3;
+
+/// Bottom of the VU's range, −30 dBFS.
+///
+/// Picked for the number of cells there are rather than by convention. Three
+/// cells over 30 dB is 10 dB each, which puts the boundaries where the useful
+/// distinctions are: three cells means the track is within 10 dB of full
+/// scale, two means it is in the −20..−10 window that ordinary playing
+/// occupies, one means there is signal but it is quiet. The −60 dBFS a drawn
+/// meter usually spans would spend two of its three cells on levels below
+/// anything the instruments produce, and read fully lit the whole time
+/// someone is playing.
+const VU_FLOOR_DB: f32 = -30.0;
+
+/// How many cells of the VU a peak fills.
+///
+/// The meter reads the track buffer before the fader, so it shows what the
+/// instrument produced. It used to be linear — `(cells as f32 * level)` —
+/// which was survivable when the instruments ran into a hard clip at full
+/// scale, and is not now that they are trimmed for headroom: an ordinary
+/// 0.25 peak filled `3 * 0.25 = 0` cells and the meter was dark exactly when
+/// it had something to say. Hearing is logarithmic and so is this.
+///
+/// Rounded up rather than down so any audible signal lights at least one
+/// cell; the alternative wastes a third of a three-cell meter on the gap
+/// between "silent" and "the first cell is worth drawing".
+fn vu_cells(level: f32) -> usize {
+    // NaN takes the same path as silence. This value is written by the audio
+    // thread and read here without synchronisation beyond the atomic itself,
+    // so it is handled rather than assumed away; the float-to-integer cast
+    // below saturates rather than trapping, so nothing here can panic.
+    if level.is_nan() || level <= 0.0 {
+        return 0;
+    }
+    let fraction = 1.0 - (20.0 * level.log10()) / VU_FLOOR_DB;
+    if fraction <= 0.0 {
+        return 0;
+    }
+    ((fraction * VU_CELLS as f32).ceil() as usize).min(VU_CELLS)
+}
+
+/// The fader as dB relative to unity, in exactly three characters.
+///
+/// A fader is a dB control, so it reads as one: `  0` at unity, ` +6` at the
+/// top of the travel, ` -2` where a new track starts, `-oo` at the bottom.
+/// The `v` label the field used to carry is spent on the sign, which is the
+/// better use of the character — every value is signed, so the leading
+/// column says "relative level" on its own.
+///
+/// What it replaced was `volume * 99` in two characters. That was only ever
+/// meaningful for a 0..1 fader, and once the travel went to +6 dB it would
+/// have rendered 198 into a two-character field.
+fn fader_label(volume: f32) -> String {
+    if volume <= 0.0 {
+        return "-oo".to_string();
+    }
+    let text = match (20.0 * volume.log10()).round() as i32 {
+        0 => "0".to_string(),
+        db if db <= -100 => "-oo".to_string(),
+        db => format!("{db:+}"),
+    };
+    format!("{text:>3}")
+}
+
 pub(super) fn render_tracks(frame: &mut Frame, area: Rect, nav: &NavState, snap: &TransportSnapshot) {
     let vis = nav.visible_tracks();
 
@@ -71,8 +137,7 @@ pub(super) fn render_header(frame: &mut Frame, area: Rect, ctx: &TrackCtx) {
     let id_s = Style::default().fg(theme::dim_color(tc, if dim { 20 } else { 40 })).bg(theme::bg_val());
 
     // VU — horizontal bar on row 1
-    let vu_w = 3usize;
-    let vu_filled = (vu_w as f32 * vu_level) as usize;
+    let vu_filled = vu_cells(vu_level);
 
     // Record arm dot
     let arm_s = if track.armed {
@@ -92,7 +157,7 @@ pub(super) fn render_header(frame: &mut Frame, area: Rect, ctx: &TrackCtx) {
         let v_f = sel && nav.track_element == TrackElement::Volume;
         r0.push(Span::styled("fx", theme::btn_style(!track.fx_chain.is_empty(), fx_f, tc)));
         r0.push(Span::styled(" ", theme::bg()));
-        r0.push(Span::styled(format!("v{:<2}", (track.volume * 99.0) as u8), theme::btn_style(false, v_f, tc)));
+        r0.push(Span::styled(fader_label(track.volume), theme::btn_style(nav.element_locked && v_f, v_f, tc)));
         r0.push(Span::styled(if track.armed { " \u{25CF}" } else { "  " }, arm_s));
     }
 
@@ -107,8 +172,8 @@ pub(super) fn render_header(frame: &mut Frame, area: Rect, ctx: &TrackCtx) {
         theme::btn_style(false, s_f, tc)
     };
 
-    let vu_filled = vu_filled.min(vu_w);
-    let vu_bar: String = "\u{2588}".repeat(vu_filled) + &"\u{2591}".repeat(vu_w - vu_filled);
+    let vu_bar: String =
+        "\u{2588}".repeat(vu_filled) + &"\u{2591}".repeat(VU_CELLS - vu_filled);
     let vu_s = Style::default()
         .fg(theme::dim_color(tc, if dim { 20 } else { 55 }))
         .bg(theme::piano_black_bg());
@@ -261,6 +326,87 @@ pub(super) fn render_clips(frame: &mut Frame, area: Rect, ctx: &TrackCtx, snap: 
 
     let lines: Vec<Line> = grid_to_lines(grid);
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The defect this replaced: a linear three-cell meter reads zero for
+    /// every level the instruments actually produce. With ordinary playing
+    /// peaking near 0.25, `(3.0 * 0.25) as usize` is 0 — a meter that is dark
+    /// whenever there is something to show.
+    #[test]
+    fn vu_is_lit_at_the_levels_the_instruments_produce() {
+        // Ordinary playing, -12 dBFS.
+        assert!(vu_cells(0.25) >= 2, "ordinary playing read {} cells", vu_cells(0.25));
+        // A quiet single note, around -24 dBFS.
+        assert!(vu_cells(0.063) >= 1, "a quiet note read no cells");
+        // The loudest thing in the project, -1 dBFS.
+        assert_eq!(vu_cells(0.88), VU_CELLS);
+    }
+
+    /// Three cells, three bands, ten dB each. The point of the scale is that
+    /// the cells mean different things; a meter that is always full or always
+    /// dark carries no information.
+    #[test]
+    fn vu_bands_are_ten_db_apart() {
+        // Just inside each band, so rounding at the boundary cannot flip it.
+        assert_eq!(vu_cells(0.4), 3); // -8 dBFS
+        assert_eq!(vu_cells(0.126), 2); // -18 dBFS
+        assert_eq!(vu_cells(0.04), 1); // -28 dBFS
+        assert_eq!(vu_cells(0.02), 0); // -34 dBFS, under the floor
+    }
+
+    #[test]
+    fn vu_is_monotonic_and_never_overflows_the_bar() {
+        let mut previous = 0;
+        let mut level = 0.0001f32;
+        while level < 4.0 {
+            let cells = vu_cells(level);
+            assert!(cells >= previous, "meter went down at {level}");
+            assert!(cells <= VU_CELLS, "meter drew {cells} cells into {VU_CELLS}");
+            previous = cells;
+            level *= 1.01;
+        }
+    }
+
+    /// The meter reads a value written by the audio thread, so it has to
+    /// survive anything that thread can put there without panicking. The
+    /// subtraction in the bar below it would underflow if this returned more
+    /// cells than there are.
+    #[test]
+    fn vu_handles_silence_and_nonsense() {
+        assert_eq!(vu_cells(0.0), 0);
+        assert_eq!(vu_cells(-1.0), 0);
+        assert_eq!(vu_cells(f32::NAN), 0);
+        assert_eq!(vu_cells(f32::INFINITY), VU_CELLS);
+        assert_eq!(vu_cells(f32::NEG_INFINITY), 0);
+        assert_eq!(vu_cells(f32::MIN_POSITIVE), 0);
+    }
+
+    /// Exactly three characters at every fader position, because the header
+    /// row has no slack: one character more and the record-arm dot is pushed
+    /// off the end of the track header.
+    #[test]
+    fn fader_label_is_always_three_characters() {
+        let mut volume = 0.0f32;
+        while volume <= 2.0 {
+            let label = fader_label(volume);
+            assert_eq!(label.chars().count(), 3, "{volume} rendered as {label:?}");
+            volume += 0.001;
+        }
+    }
+
+    #[test]
+    fn fader_label_reads_as_db() {
+        assert_eq!(fader_label(2.0), " +6");
+        assert_eq!(fader_label(1.413), " +3");
+        assert_eq!(fader_label(1.0), "  0");
+        assert_eq!(fader_label(0.708), " -3");
+        assert_eq!(fader_label(0.251), "-12");
+        assert_eq!(fader_label(0.0), "-oo");
+    }
 }
 
 // ── Clip View (FX Panel left + Piano Roll right) ──

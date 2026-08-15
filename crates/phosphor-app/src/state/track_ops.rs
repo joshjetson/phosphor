@@ -27,6 +27,19 @@ impl NavState {
         }
     }
 
+    /// Move the selected track's fader by `steps` presses, syncing to the
+    /// audio thread. Returns the new linear gain, or `None` if there is no
+    /// track under the cursor.
+    ///
+    /// Not undoable, and deliberately: the fader is a continuous control like
+    /// the synth parameters, and none of those push onto the undo stack
+    /// either. The stack is for structural edits — notes, clips, tracks —
+    /// where the change cannot be reversed by looking at the screen and
+    /// pressing the other key.
+    pub fn adjust_volume(&mut self, steps: i32) -> Option<f32> {
+        self.current_track_mut().map(|t| t.adjust_volume(steps))
+    }
+
 
     pub fn digit_input(&mut self, ch: char) {
         if self.focused_pane == Pane::Tracks && self.track_selected {
@@ -67,9 +80,18 @@ impl NavState {
                 self.fx_menu.open = true;
                 self.fx_menu.cursor = 0;
             }
-            TrackElement::Volume => { /* future: volume slider */ }
+            TrackElement::Volume => {
+                // Lock the fader so h/l adjusts it instead of stepping to the
+                // next element — the same Enter-to-lock, Esc-to-release shape
+                // as a clip and as the transport's BPM field. Only on tracks
+                // that have a fader: a bus track's header does not draw one,
+                // and locking a control that is not on screen is a dead end.
+                if self.current_track().is_some_and(super::TrackState::is_live) {
+                    self.element_locked = true;
+                }
+            }
             TrackElement::Clip(idx) => {
-                self.clip_locked = true;
+                self.element_locked = true;
                 self.open_clip_view(self.track_cursor, idx);
                 self.clip_view.clip_tab = ClipTab::PianoRoll;
                 self.clip_view.focus = ClipViewFocus::PianoRoll;

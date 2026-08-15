@@ -6,9 +6,37 @@
 
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
+use crate::level::soft_saturate;
+
 const MAX_VOICES: usize = 16;
 const NUM_OPERATORS: usize = 6;
 const TWO_PI: f64 = std::f64::consts::TAU;
+
+/// Fixed headroom trim on the voice sum, applied after the gain knob.
+///
+/// Measured, not guessed. Sized on **ordinary playing** — the preset the
+/// instrument loads with, a triad at velocity 100 — which this value puts at
+/// a peak of −12 dBFS. That is a usable tracking level: loud enough that the
+/// OS volume control is not the only fader in the signal path, quiet enough
+/// that several tracks still sum without leaning on the master limiter.
+///
+/// The extremes are deliberately *not* what sizes this constant. The worst
+/// case across the 51 presets is patch 47 "Timpani", whose attack transient
+/// reaches 5.91 for an eight-note chord at velocity 127 (the loudest
+/// *sustained* patch is 49 "Horns" at 5.40). Eight notes triggered on the
+/// same sample start with their operator phases reset together, so they sum
+/// very nearly linearly — 7.3x a single note, not the sqrt(8) = 2.8x that
+/// uncorrelated voices would give. Trimming until even that transient stayed
+/// under the saturator knee would put the whole bank 3.6 dB below where it
+/// needs to be, to accommodate the rarest input the instrument accepts.
+/// Instead the transient crosses the knee, [`soft_saturate`] rounds off about
+/// 1.3 dB of it, and the peak still lands under the master limiter's ceiling.
+///
+/// The value also lands this synth's median patch at the same loudness as
+/// the other four; see `OUTPUT_TRIM` in jupiter.rs, odyssey.rs, juno.rs and
+/// synth.rs. It is a constant on purpose: dividing by the number of sounding
+/// voices would pump as notes are released.
+const OUTPUT_TRIM: f32 = 0.1738;
 
 // ── Parameter indices ──
 pub const P_PATCH: usize = 0;
@@ -465,16 +493,35 @@ fn presets() -> [PatchPreset; PATCH_COUNT] {
             ..PatchPreset::neutral()
         },
         // Clavinet — Algorithm 5
+        //
+        // Carrier decay voiced against the factory CLAV 2 (patch 40), which is a
+        // decoded ROM patch rather than an authored one: L2 a dozen or so levels
+        // under L1, then a slow decay 2 with L3 at 0 carrying the whole ring.
+        // The string loses 8.3 dB settling off the pluck and the rest over about
+        // a second, instead of dropping 29 dB in 7 ms and trickling out after.
+        //
+        // The modulators follow that same reference, which holds its own at L3 89
+        // for the whole note. Theirs used to run to L3 0 and get there 13 ms after
+        // decay 1 ended, so the ring the carriers had just been given was a bare
+        // sine for all but its first few milliseconds — the spectral centroid sat
+        // at 1.00x the fundamental from 50 ms on. L2 96 into a slow decay 2 to
+        // L3 86 keeps the index falling for the first 600 ms and then holds it,
+        // which is 3.4x the fundamental at 50 ms easing to 1.9x at 800 ms.
+        //
+        // OP6 holds ten levels lower than the ratio-2.71 pair on purpose. It is
+        // the feedback operator, and sustaining it costs peak headroom out of
+        // proportion to the brightness it adds: matched to the pair at L3 86 it
+        // moves the centroid by -2% and the eight-note peak by 0.3 dB.
         PatchPreset {
             algorithm: 5,
             feedback: 6,
             ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,86,56,76], levels: [99,60,0,0],   vel_sens: 2, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine: 71, output_level: 86, rates: [99,95,70,80], levels: [99,52,0,0],   vel_sens: 7, right_depth: 20, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,86,56,76], levels: [99,60,0,0],   vel_sens: 2, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine: 71, output_level: 86, rates: [99,95,70,80], levels: [99,52,0,0],   vel_sens: 7, right_depth: 20, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,86,56,76], levels: [99,55,0,0],   vel_sens: 3, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 78, rates: [99,92,66,82], levels: [99,50,0,0],   vel_sens: 7, right_depth: 20, ..OpPreset::neutral() },
+                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,52,30,76], levels: [99,88,0,0],   vel_sens: 2, right_depth: 8,  ..OpPreset::neutral() },
+                OpPreset { coarse:  2, fine: 71, output_level: 86, rates: [99,95,20,80], levels: [99,96,86,0],  vel_sens: 7, right_depth: 20, ..OpPreset::neutral() },
+                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,52,30,76], levels: [99,88,0,0],   vel_sens: 2, right_depth: 8,  ..OpPreset::neutral() },
+                OpPreset { coarse:  2, fine: 71, output_level: 86, rates: [99,95,20,80], levels: [99,96,86,0],  vel_sens: 7, right_depth: 20, ..OpPreset::neutral() },
+                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,54,32,76], levels: [99,88,0,0],   vel_sens: 3, right_depth: 8,  ..OpPreset::neutral() },
+                OpPreset { coarse:  2, fine:  0, output_level: 78, rates: [99,92,20,82], levels: [99,84,74,0],  vel_sens: 7, right_depth: 20, ..OpPreset::neutral() },
             ],
             ..PatchPreset::neutral()
         },
@@ -516,16 +563,34 @@ fn presets() -> [PatchPreset; PATCH_COUNT] {
             ..PatchPreset::neutral()
         },
         // Koto — Algorithm 5
+        //
+        // Silk over a long wooden body: the longest carrier decay of the four
+        // plucked patches, near three seconds. Same shape as the clavinet — a
+        // small settle off the pluck, then one unbroken decay 2 — with decay 2
+        // four times slower and the settle a little gentler, because a koto
+        // string is not damped and a clavinet's is.
+        //
+        // The modulators had the clavinet's problem too, reaching L3 0 about 62 ms
+        // in and leaving the remaining two and a half seconds a bare sine. They
+        // now hold, but the budget is spent the other way round: the ratio-5 OP6
+        // carries the ring and the ratio-2 pair stays low. That is measured, not a
+        // preference — OP2 and OP4 sit at an exact 2:1, so their sidebands land on
+        // the carriers' own harmonics and add coherently, and an eight-note chord
+        // at velocity 127 peaks 0.02 higher for every ten levels they gain. OP6 at
+        // 5:1 lands between harmonics and costs almost nothing — 0.10 dB for the
+        // whole climb — so it holds within 2 levels of L1 and slides to L3 87 over
+        // the first second and a half. Centroid through the ring: 1.64x the
+        // fundamental at 50 ms, 1.25x at 800 ms, against a flat 1.00x before.
         PatchPreset {
             algorithm: 5,
             feedback: 5,
             ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,80,40,72], levels: [99,65,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 78, rates: [99,90,55,65], levels: [99,55,0,0],   vel_sens: 7, right_depth: 20, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,80,40,72], levels: [99,65,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 78, rates: [99,90,55,65], levels: [99,55,0,0],   vel_sens: 7, right_depth: 20, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,90,40,85], levels: [99,55,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
-                OpPreset { coarse:  5, fine:  0, output_level: 70, rates: [99,95,60,75], levels: [99,48,0,0],   vel_sens: 6, right_depth: 20, ..OpPreset::neutral() },
+                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,46,20,72], levels: [99,88,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
+                OpPreset { coarse:  2, fine:  0, output_level: 78, rates: [99,90,12,65], levels: [99,68,60,0],  vel_sens: 7, right_depth: 20, ..OpPreset::neutral() },
+                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,46,20,72], levels: [99,88,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
+                OpPreset { coarse:  2, fine:  0, output_level: 78, rates: [99,90,12,65], levels: [99,68,60,0],  vel_sens: 7, right_depth: 20, ..OpPreset::neutral() },
+                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,48,21,85], levels: [99,88,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
+                OpPreset { coarse:  5, fine:  0, output_level: 70, rates: [99,95,12,75], levels: [99,97,87,0],  vel_sens: 6, right_depth: 20, ..OpPreset::neutral() },
             ],
             ..PatchPreset::neutral()
         },
@@ -579,30 +644,40 @@ fn presets() -> [PatchPreset; PATCH_COUNT] {
             ..PatchPreset::neutral()
         },
         // Kalimba — Algorithm 5
+        //
+        // A plucked steel tine over a gourd: shorter than the koto, longer than
+        // the clavinet, around a second and a half. The carriers used to reach
+        // decay 2 at rate 0 — 0.28 dB/s, which is not a decay at all but a
+        // 30 dB shelf that never resolves. Rate 25 lets the note actually end.
         PatchPreset {
             algorithm: 5,
             feedback: 3,
             ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,82,0,55],  levels: [99,55,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
+                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,50,25,55], levels: [99,87,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
                 OpPreset { coarse:  3, fine: 73, output_level: 68, rates: [99,90,0,65],  levels: [99,35,0,0],   vel_sens: 5, right_depth: 18, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,82,0,55],  levels: [99,55,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
+                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,50,25,55], levels: [99,87,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
                 OpPreset { coarse:  3, fine:  0, output_level: 62, rates: [99,88,0,60],  levels: [99,30,0,0],   vel_sens: 5, right_depth: 18, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,78,0,50],  levels: [99,50,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
+                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,52,28,50], levels: [99,87,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
                 OpPreset { coarse:  9, fine:  0, output_level: 50, rates: [99,95,0,70],  levels: [99,25,0,0],   vel_sens: 6, right_depth: 18, ..OpPreset::neutral() },
             ],
             ..PatchPreset::neutral()
         },
         // ── New patches ──────────────────────────────────────────────
         // Sitar — Algorithm 5 (buzzy pluck with inharmonic overtones)
+        //
+        // The longest ring in the bank, three seconds odd, for the sympathetic
+        // strings. The carriers used to park at L3 55 and hold there for as long
+        // as the key was down, which is an organ's behaviour, not a plucked
+        // string's; L3 0 with a very slow decay 2 is what actually rings out.
         PatchPreset {
             algorithm: 5,
             feedback: 7,
             ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,75,35,68], levels: [99,70,55,0],  vel_sens: 2, ..OpPreset::neutral() },
+                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,44,18,68], levels: [99,88,0,0],   vel_sens: 2, ..OpPreset::neutral() },
                 OpPreset { coarse:  1, fine:  1, output_level: 88, rates: [99,82,40,60], levels: [99,75,60,0],  vel_sens: 5, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,75,35,68], levels: [99,70,55,0],  vel_sens: 2, ..OpPreset::neutral() },
+                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,44,18,68], levels: [99,88,0,0],   vel_sens: 2, ..OpPreset::neutral() },
                 OpPreset { coarse:  5, fine:  0, output_level: 82, rates: [99,90,50,70], levels: [99,55,0,0],   vel_sens: 6, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 90, rates: [99,70,30,65], levels: [99,65,50,0],  vel_sens: 2, ..OpPreset::neutral() },
+                OpPreset { coarse:  1, fine:  0, output_level: 90, rates: [99,46,19,65], levels: [99,88,0,0],   vel_sens: 2, ..OpPreset::neutral() },
                 OpPreset { coarse:  7, fine:  0, output_level: 76, rates: [99,92,55,72], levels: [99,50,0,0],   vel_sens: 7, ..OpPreset::neutral() },
             ],
             ..PatchPreset::neutral()
@@ -2632,7 +2707,7 @@ impl Plugin for Dx7Synth {
         if outputs.is_empty() { return; }
 
         let buf_len = outputs[0].len();
-        let gain = self.params[P_GAIN];
+        let gain = self.params[P_GAIN] * OUTPUT_TRIM;
         let patch_idx = self.current_patch_index();
         // The knob trims the patch rather than replacing it, so it is folded into
         // this block's copy of the preset before any voice reads it. Doing it here
@@ -2711,8 +2786,10 @@ impl Plugin for Dx7Synth {
                 sample += v.tick(lfo);
             }
             sample *= gain;
-            // Soft-clip to prevent hot output that crashes VU rendering
-            sample = sample.clamp(-1.0, 1.0);
+            // Bound the output without hard clipping it. The trim above keeps
+            // ordinary playing under the knee, so this is the identity for
+            // everything except a patch pushed past it by the gain knob.
+            sample = soft_saturate(sample);
 
             for ch in outputs.iter_mut() { ch[i] = sample; }
         }
@@ -4380,10 +4457,12 @@ mod tests {
 
     #[test]
     fn no_patch_clips_at_full_velocity() {
-        // `process` clamps its output, so a patch that runs hot does not blow up
-        // — it flat-tops, and the flat top is the sound of a patch that was
-        // voiced without checking. At the default knob settings, no patch may
-        // reach full scale anywhere on the playable keyboard at velocity 127.
+        // A single note is measured here at the voice's own level, before the
+        // headroom trim `process` applies — so this is a check on the voicing
+        // of the patch itself, not on the output stage. A patch that reaches
+        // full scale on one note has no room left for the other seven of a
+        // chord. At the default knob settings, no patch may reach full scale
+        // anywhere on the playable keyboard at velocity 127.
         //
         // Where the bound settles it, the claim holds at every instant of the
         // note rather than at the instants a render happened to sample. Only the
@@ -4506,8 +4585,15 @@ mod tests {
         voice.note_on(60, 100, &preset, s.brightness(), s.attack_scale(),
             s.decay_scale(), s.sustain_scale(), s.release_scale(), 1);
         assert_eq!(voice.feedback_amount, feedback_depth(7));
+        // Sample for sample, not close to: the output stage is exactly the
+        // voice times the gain knob times the headroom trim, with the
+        // saturator sitting below its knee and therefore doing nothing.
+        // Knob and trim are folded into one factor before the loop, so they
+        // are bracketed the same way here — float multiplication does not
+        // associate, and this comparison is exact.
+        let out_gain = PARAM_DEFAULTS[P_GAIN] * OUTPUT_TRIM;
         let want: Vec<f32> = (0..out.len())
-            .map(|_| voice.tick(LfoFrame::default()) * PARAM_DEFAULTS[P_GAIN])
+            .map(|_| voice.tick(LfoFrame::default()) * out_gain)
             .collect();
         assert_eq!(out, want, "the centred knob must render the patch as authored");
 
@@ -4772,6 +4858,201 @@ mod tests {
         for i in 0..(2.0 * SR) as usize {
             let frame = lfo.tick();
             assert_eq!(modulated.tick(frame), still.tick(LfoFrame::default()), "sample {i}");
+        }
+    }
+
+    // ── The decay-shape audit ──
+
+    /// How one carrier's amplitude envelope behaves at the knob settings the
+    /// instrument loads with: the dB it has lost 50 ms after key-down, and the
+    /// time it takes to fall 60 dB below its own peak with the key held.
+    ///
+    /// The knobs are in because they are what the player hears — the default
+    /// decay knob is 0.5, which runs both decay stages eight times faster than
+    /// the patch authored them, so a 50 ms window here is a 400 ms window in the
+    /// preset data. That makes this the stricter of the two readings: a patch
+    /// that passes at the knobs passes on the raw preset values as well, since
+    /// a decay stage only ever loses more level over a longer window.
+    ///
+    /// Returns `f64::INFINITY` for the ring time of an envelope that is still
+    /// above -60 dB when the render runs out, which is what a patch holding at a
+    /// nonzero L3 does.
+    fn carrier_decay(op: &OpPreset, note: u8, secs: f64) -> (f64, f64) {
+        let defaults = Dx7Synth::new();
+        let mut env = DxEnvelope::new(SR);
+        env.set_from_preset_scaled(op.rates, op.levels, scale_rate(note, op.rate_scaling));
+        env.scale_sustain(defaults.sustain_scale());
+        env.scale_times(
+            defaults.attack_scale(),
+            defaults.decay_scale(),
+            defaults.release_scale(),
+        );
+        env.trigger();
+        // Attenuation in dB below full scale, so the arithmetic is subtraction
+        // rather than a log of a ratio.
+        let trace: Vec<f64> = (0..(secs * SR) as usize).map(|_| { env.tick(); env.atten_db }).collect();
+        let peak = trace.iter().copied().fold(f64::INFINITY, f64::min);
+        let lost = trace[(0.05 * SR) as usize] - peak;
+        let ring = trace.iter().position(|&a| a >= peak + 60.0)
+            .map_or(f64::INFINITY, |i| i as f64 / SR);
+        (lost, ring)
+    }
+
+    /// Worst case over a patch's carriers: the largest 50 ms loss and the
+    /// longest ring, which together are the shape of the note.
+    fn patch_decay(preset: &PatchPreset, note: u8, secs: f64) -> (f64, f64) {
+        algorithm(preset.algorithm).carriers.iter().fold((0.0f64, 0.0f64), |acc, &c| {
+            let (lost, ring) = carrier_decay(&preset.ops[c], note, secs);
+            (acc.0.max(lost), acc.1.max(ring))
+        })
+    }
+
+    #[test]
+    fn plucked_patches_decay_as_one_smooth_curve() {
+        // A plucked or struck string is a single exponential: it loses a few dB
+        // settling off the pluck and then rings down at one rate. What it must
+        // not do is collapse 25-30 dB in the first few milliseconds and trickle
+        // out afterwards, which is a click with a tail behind it.
+        //
+        // 12 dB in 50 ms is the ceiling, taken from the decoded factory CLAV 2
+        // (patch 40) at 12.7 dB — the closest thing in this bank to a measured
+        // reference for what a plucked carrier does. The ring windows are what
+        // each instrument is actually heard to do.
+        const PLUCKED: [(&str, f64, f64); 4] = [
+            // name,     ring at least, ring at most
+            ("Clav",     0.5, 1.5),
+            ("Koto",     2.0, 3.0),
+            ("Kalimba",  1.0, 2.0),
+            ("Sitar",    2.0, 4.0),
+        ];
+        for (name, ring_min, ring_max) in PLUCKED {
+            let p = PATCH_NAMES.iter().position(|&n| n == name).unwrap();
+            let (lost, ring) = patch_decay(&presets()[p], 60, 5.0);
+            assert!(lost <= 12.0,
+                "{name} loses {lost:.1} dB in the first 50 ms — that is a click, not a pluck");
+            assert!(ring >= ring_min && ring <= ring_max,
+                "{name} rings for {ring:.2} s, want {ring_min}-{ring_max} s");
+        }
+    }
+
+    #[test]
+    fn struck_patches_are_still_allowed_to_be_abrupt() {
+        // The other side of the same coin. A xylophone bar, a log drum, a
+        // pizzicato string and a marimba are struck and damped, and their
+        // carriers are meant to fall off a cliff — this is here so that the
+        // ceiling above never gets applied to them by someone reading it as a
+        // rule for the whole bank.
+        for name in ["Xylophn", "LogDrum", "Pizz", "Marimba"] {
+            let p = PATCH_NAMES.iter().position(|&n| n == name).unwrap();
+            let (lost, _) = patch_decay(&presets()[p], 60, 1.0);
+            assert!(lost >= 20.0,
+                "{name} only loses {lost:.1} dB in the first 50 ms — it is supposed to be percussive");
+        }
+    }
+
+    /// Magnitude of one DFT bin, by Goertzel. One multiply and two adds per
+    /// sample per bin, which is what makes a whole spectrum affordable here
+    /// without pulling a transform crate into the dependency list.
+    fn goertzel(windowed: &[f64], bin: usize) -> f64 {
+        let w = std::f64::consts::TAU * bin as f64 / windowed.len() as f64;
+        let coeff = 2.0 * w.cos();
+        let (mut s1, mut s2) = (0.0f64, 0.0f64);
+        for &x in windowed {
+            let s = x + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s;
+        }
+        (s1 * s1 + s2 * s2 - coeff * s1 * s2).max(0.0).sqrt()
+    }
+
+    /// Spectral centroid of one 23 ms window of a rendered note, as a multiple
+    /// of the note's own fundamental.
+    ///
+    /// Magnitude-weighted rather than power-weighted on purpose: the sidebands a
+    /// surviving modulator puts into the ring are 20-30 dB down, and squaring
+    /// the weights buries exactly the thing this is here to see. A pure sine
+    /// reads 1.0 and nothing can read lower, so 1.0 means the modulators feeding
+    /// this window may as well not be there.
+    fn ring_brightness(samples: &[f32], f0: f64) -> f64 {
+        let n = samples.len();
+        let windowed: Vec<f64> = samples.iter().enumerate()
+            .map(|(i, &x)| {
+                let hann = 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / n as f64).cos();
+                f64::from(x) * hann
+            })
+            .collect();
+        let (mut num, mut den) = (0.0f64, 0.0f64);
+        for bin in 1..n / 2 {
+            let mag = goertzel(&windowed, bin);
+            num += mag * (bin as f64 * SR / n as f64);
+            den += mag;
+        }
+        if den <= 0.0 { return 0.0; }
+        num / den / f0
+    }
+
+    /// One note held down, rendered through the whole instrument at the knob
+    /// settings it loads with, and read at three points across the ring.
+    fn brightness_through_the_ring(patch: usize, note: u8) -> [f64; 3] {
+        const WINDOW: usize = 1024;
+        let mut synth = Dx7Synth::new();
+        synth.init(SR, 256);
+        synth.set_parameter(P_PATCH, patch as f32 / (PATCH_COUNT as f32 - 0.01));
+        let events = [note_on(note, 100, 0)];
+        let mut block = vec![0.0f32; 256];
+        let mut audio = Vec::new();
+        for b in 0..200 {
+            block.fill(0.0);
+            let mut outs: [&mut [f32]; 1] = [&mut block];
+            if b == 0 {
+                synth.process(&[], &mut outs, &events);
+            } else {
+                synth.process(&[], &mut outs, &[]);
+            }
+            audio.extend_from_slice(&block);
+        }
+        let f0 = 440.0 * f64::exp2((f64::from(note) - 69.0) / 12.0);
+        let mut out = [0.0; 3];
+        for (slot, ms) in [50.0, 300.0, 800.0].iter().enumerate() {
+            let start = (ms / 1000.0 * SR) as usize;
+            out[slot] = ring_brightness(&audio[start..start + WINDOW], f0);
+        }
+        out
+    }
+
+    #[test]
+    fn plucked_modulators_do_not_leave_the_ring_a_bare_sine() {
+        // The other half of the plucked-patch fix. Giving the clavinet and the
+        // koto carriers that ring for one second and three achieved nothing on
+        // its own, because their modulators still ran to L3 0 and got there
+        // 13 ms and 62 ms after decay 1 ended. The ring the carriers had just
+        // been handed was a bare sine for all but its first few milliseconds:
+        // both patches measured 1.00x their own fundamental at 50 ms, 300 ms and
+        // 800 ms alike, which is the reading of a patch with no modulator at all.
+        // The factory CLAV 2 (patch 40) does not do this — its modulators hold at
+        // L3 89 for as long as the key is down, and that is where its bite is.
+        //
+        // Two assertions, both about shape rather than how bright a patch ought
+        // to be:
+        //
+        // * a floor that only says "an operator is still modulating this", set
+        //   well under the measured 3.42 / 2.48 / 1.91 (clavinet) and
+        //   1.64 / 1.47 / 1.25 (koto), and far above the 1.00 / 1.00 / 1.00 both
+        //   of them read before;
+        // * a fall from 50 ms to 800 ms, because a plucked string mellows as it
+        //   rings. A modulator pinned at L1 would pass the floor and is just as
+        //   wrong — it is a static, buzzy tone rather than a pluck.
+        for name in ["Clav", "Koto"] {
+            let p = PATCH_NAMES.iter().position(|&n| n == name).unwrap();
+            let b = brightness_through_the_ring(p, 60);
+            for (reading, floor) in b.iter().zip([1.35, 1.20, 1.10]) {
+                assert!(*reading >= floor,
+                    "{name} rings at {reading:.2}x its fundamental, want at least {floor:.2}x \
+                     — the modulators have died and left a bare sine: {b:.2?}");
+            }
+            assert!(b[0] > b[2] * 1.1,
+                "{name} is as bright at 800 ms as at 50 ms ({b:.2?}); a plucked string \
+                 mellows as it rings rather than holding one timbre");
         }
     }
 }

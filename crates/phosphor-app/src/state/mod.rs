@@ -114,9 +114,15 @@ pub struct NavState {
     pub undo_stack: undo::UndoStack,
     /// Quantize modal state.
     pub quantize_modal: QuantizeModal,
-    /// Whether a clip is "locked" for editing (Enter locks, Esc unlocks).
-    /// When locked, h/l moves the clip instead of navigating between elements.
-    pub clip_locked: bool,
+    /// Whether the selected track element is "locked" for editing — Enter
+    /// locks, Esc releases. While locked, h/l edits that element instead of
+    /// navigating between elements, which is the same shape as the
+    /// transport's BPM field and the loop editor.
+    ///
+    /// One flag rather than one per element: `track_element` already says
+    /// *which* element the keys go to, so a second flag would only make it
+    /// possible to have two things locked at once.
+    pub element_locked: bool,
     /// Grace counter: set to the number of armed tracks when recording stops.
     /// Decremented as each valid snapshot is accepted. Prevents stale snapshots
     /// while allowing final recording commits from all tracks to come through.
@@ -145,7 +151,7 @@ impl NavState {
             confirm_modal: ConfirmModal::new(),
             undo_stack: undo::UndoStack::new(),
             quantize_modal: QuantizeModal::new(),
-            clip_locked: false,
+            element_locked: false,
             recording_grace: 0,
         }
     }
@@ -414,5 +420,149 @@ mod tests {
         let e = TrackElement::Fx;
         assert_eq!(e.move_right(1), TrackElement::Volume);
         assert_eq!(TrackElement::Volume.move_left(), TrackElement::Fx);
+    }
+
+    // ── Fader ──
+
+    use phosphor_core::project::{TrackConfig, TrackHandle};
+
+    /// A track wired to an audio-thread handle, so the tests can check the
+    /// fader reaches it rather than only the UI mirror.
+    fn live_track() -> TrackState {
+        let mut t = TrackState::new("t", 0, false, TrackKind::Instrument, vec![]);
+        t.handle = Some(std::sync::Arc::new(TrackHandle::new(0, TrackKind::Instrument)));
+        t.mixer_id = Some(0);
+        t
+    }
+
+    fn handle_volume(t: &TrackState) -> f32 {
+        t.handle.as_ref().unwrap().config.get_volume()
+    }
+
+    /// Every press moves the readout by exactly one dB. This is the property
+    /// the dB-stepping exists for: a linear step would round to the same
+    /// displayed number several presses in a row.
+    #[test]
+    fn fader_steps_one_db_per_press() {
+        let mut t = live_track();
+        // The default is -2.5 dB, off the grid; the first press snaps onto it.
+        t.adjust_volume(1);
+        let start = t.volume_db().unwrap().round();
+        for i in 1..=6 {
+            t.adjust_volume(1);
+            let db = t.volume_db().unwrap();
+            assert!(
+                (db - (start + i as f32)).abs() < 0.01,
+                "press {i} landed at {db:.3} dB, expected {:.3}",
+                start + i as f32
+            );
+        }
+    }
+
+    /// The fader reaches unity exactly, so "no gain change" is a position the
+    /// user can actually select rather than one they can only get near.
+    #[test]
+    fn fader_lands_exactly_on_unity() {
+        let mut t = live_track();
+        for _ in 0..40 {
+            t.adjust_volume(1);
+        }
+        // At the top; walk back down to 0 dB.
+        while t.volume_db().unwrap() > 0.5 {
+            t.adjust_volume(-1);
+        }
+        assert!(
+            (t.volume - TrackConfig::UNITY_VOLUME).abs() < 1.0e-3,
+            "fader stopped at {} instead of unity",
+            t.volume
+        );
+    }
+
+    /// The travel has ends. Holding `l` cannot push the track past +6 dB, and
+    /// holding `h` reaches silence rather than an ever-smaller number.
+    #[test]
+    fn fader_travel_is_bounded_at_both_ends() {
+        let mut t = live_track();
+        for _ in 0..200 {
+            t.adjust_volume(1);
+        }
+        assert_eq!(t.volume, TrackConfig::MAX_VOLUME);
+        assert_eq!(handle_volume(&t), TrackConfig::MAX_VOLUME);
+
+        for _ in 0..200 {
+            t.adjust_volume(-1);
+        }
+        assert_eq!(t.volume, TrackConfig::MIN_VOLUME);
+        assert_eq!(handle_volume(&t), TrackConfig::MIN_VOLUME);
+
+        // And it comes back off the bottom rather than sticking there.
+        t.adjust_volume(1);
+        assert!(t.volume > 0.0, "fader stuck at silence");
+    }
+
+    /// Every press pushes the new position to the audio thread. Without this
+    /// the fader moves on screen and nothing happens in the speakers, which
+    /// is the state this control was in before.
+    #[test]
+    fn fader_syncs_to_the_audio_thread() {
+        let mut t = live_track();
+        for steps in [1, 1, -1, 3, -7] {
+            t.adjust_volume(steps);
+            assert_eq!(
+                handle_volume(&t),
+                t.volume,
+                "audio thread has {} while the UI shows {}",
+                handle_volume(&t),
+                t.volume
+            );
+        }
+    }
+
+    /// A position loaded from a session that is not on the dB grid snaps onto
+    /// it on the first press instead of carrying the offset forever.
+    #[test]
+    fn fader_snaps_a_loaded_position_onto_the_grid() {
+        let mut t = live_track();
+        t.volume = 0.6234; // -4.1 dB, as if hand-edited into a .phos file
+        t.adjust_volume(1);
+        let db = t.volume_db().unwrap();
+        assert!((db - db.round()).abs() < 0.01, "off the grid at {db:.3} dB");
+    }
+
+    /// Enter locks the fader so h/l edits it, and only on tracks that have
+    /// one — a bus track's header does not draw a fader.
+    #[test]
+    fn enter_locks_the_fader_only_on_tracks_that_have_one() {
+        let mut nav = NavState::new(initial_tracks()); // bus tracks only
+        nav.enter();
+        nav.move_right(); // Label -> Fx
+        nav.move_right(); // Fx -> Volume
+        assert_eq!(nav.track_element, TrackElement::Volume);
+        nav.enter();
+        assert!(!nav.element_locked, "locked the fader on a bus track");
+
+        nav.tracks.push(live_track());
+        nav.track_cursor = nav.tracks.len() - 1;
+        nav.enter();
+        assert!(nav.element_locked, "did not lock the fader on an instrument track");
+
+        // Esc releases, leaving the element selected.
+        nav.escape();
+        assert!(!nav.element_locked);
+        assert_eq!(nav.track_element, TrackElement::Volume);
+    }
+
+    /// The fader is not undoable — it is a continuous control, and neither
+    /// mute, solo, arm nor the synth parameters push onto the stack either.
+    #[test]
+    fn fader_does_not_push_onto_the_undo_stack() {
+        let mut nav = NavState::new(vec![live_track()]);
+        assert!(!nav.undo_stack.can_undo());
+        nav.adjust_volume(3);
+        nav.adjust_volume(-1);
+        assert!(
+            !nav.undo_stack.can_undo(),
+            "the fader pushed an undo entry; mute and solo do not"
+        );
     }
 }

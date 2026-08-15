@@ -6,8 +6,27 @@
 
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
+use crate::level::soft_saturate;
+
 const MAX_VOICES: usize = 8;
 const TWO_PI: f64 = std::f64::consts::TAU;
+
+/// Fixed headroom trim on the voice sum, applied after the gain knob.
+///
+/// Sized on ordinary playing, in step with the other four — see `OUTPUT_TRIM`
+/// in dx7.rs, which carries the full reasoning. The trim lands this synth's
+/// median patch at the same loudness as theirs.
+///
+/// Measured across the 42 presets: the worst case is patch 9 "Organ", which
+/// reaches 5.68 for an eight-note chord at velocity 127 and holds most of
+/// that through the sustain. Even that stays under the saturator knee at this
+/// trim, so nothing in this bank engages the bounding stage.
+///
+/// This replaced a divisor of `sqrt(sounding voice count)` in the poly
+/// modes. That divisor changed every time a voice finished releasing, so the
+/// remaining notes of a held chord swelled as the released ones died away —
+/// audible pumping, and it also hid how hot the patches really were.
+const OUTPUT_TRIM: f32 = 0.1309;
 
 // ── Parameter indices ──
 pub const P_PATCH: usize = 0;
@@ -1360,7 +1379,7 @@ impl Plugin for Jupiter8Synth {
         if outputs.is_empty() { return; }
 
         let buf_len = outputs[0].len();
-        let gain = self.params[P_GAIN];
+        let gain = self.params[P_GAIN] * OUTPUT_TRIM;
         let patch = self.active_patch();
         let user_cutoff = self.params[P_CUTOFF] as f64;
         let user_reso = self.params[P_RESO] as f64;
@@ -1451,18 +1470,20 @@ impl Plugin for Jupiter8Synth {
                 sample += v.tick(&patch, lfo_out, user_cutoff, user_reso, user_env_mod) as f32;
             }
 
-            // Normalize by voice count for poly modes
-            let active_count = self.voices.iter().filter(|v| v.is_sounding()).count().max(1);
-            if mode >= 2 {
-                // Poly modes: scale by number of sounding voices to prevent clipping
-                sample /= (active_count as f32).sqrt();
-            } else {
-                // Solo/Unison: scale by total voice count
+            // Solo and Unison stack every voice on the same note, so they sum
+            // coherently and need their own fixed divisor. The poly modes get
+            // no divisor at all: OUTPUT_TRIM already carries the headroom for
+            // a full eight-note chord, and anything that varies with the
+            // sounding voice count pumps.
+            if mode < 2 {
                 sample /= (MAX_VOICES as f32).sqrt();
             }
 
             sample *= gain;
-            sample = sample.clamp(-1.0, 1.0);
+            // Bound the output without hard clipping it. The trim above keeps
+            // ordinary playing under the knee, so this is the identity for
+            // everything except a patch pushed past it by the gain knob.
+            sample = soft_saturate(sample);
 
             for ch in outputs.iter_mut() { ch[i] = sample; }
         }
@@ -1544,9 +1565,12 @@ mod tests {
     fn sound_on_note_on() {
         let mut s = Jupiter8Synth::new();
         s.init(44100.0, 64);
-        let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 4);
+        // 200 buffers, not 4: the output carries a headroom trim, so five
+        // milliseconds of attack is not enough signal to tell "sounding" from
+        // "silent" with any margin.
+        let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 200);
         let peak = out.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
-        assert!(peak > 0.001, "Should produce sound, peak={peak}");
+        assert!(peak > 0.005, "Should produce sound, peak={peak}");
     }
 
     #[test]
@@ -1573,9 +1597,9 @@ mod tests {
         let mut s = Jupiter8Synth::new();
         s.init(44100.0, 64);
         let events = [note_on(60, 100, 0), note_on(64, 100, 0), note_on(67, 100, 0)];
-        let out = process_buffers(&mut s, &events, 4);
+        let out = process_buffers(&mut s, &events, 200);
         let peak = out.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
-        assert!(peak > 0.001 && peak <= 1.0, "peak={peak}");
+        assert!(peak > 0.005 && peak < 1.0, "peak={peak}");
     }
 
     #[test]

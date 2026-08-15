@@ -9,6 +9,27 @@
 
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
+use crate::level::soft_saturate;
+
+/// Fixed headroom trim on the voice sum, applied after the gain knob.
+///
+/// Sized in step with the five keyboards — see `OUTPUT_TRIM` in dx7.rs, which
+/// carries the full reasoning.
+///
+/// Trimmed to the same *peak* as the synths rather than to their RMS: drums
+/// are transients, and matching a kit's RMS to a sustained pad's would bury
+/// it. Measured worst case across the ten kits: 1.85 for eight pads struck on
+/// the same sample at velocity 127 (kit 4). Like the phosphor synth, this
+/// rack had no output bound at all and handed values above 1.0 straight to
+/// the mixer.
+///
+/// That worst case is the one voicing in the rack that crosses the saturator
+/// knee, by about the same 1.3 dB as the DX7's loudest transient. A full kit
+/// landing on one sample is a quantised fill, not ordinary playing, and the
+/// alternative — trimming the whole rack down to accommodate it — is what
+/// made every beat too quiet to use.
+const OUTPUT_TRIM: f32 = 0.5557;
+
 // ── Parameters ──
 pub const P_KIT: usize = 0;
 pub const P_DECAY: usize = 1;
@@ -941,7 +962,7 @@ impl Plugin for DrumRack {
             return;
         }
         let buf_len = outputs[0].len();
-        let gain = self.params[P_GAIN];
+        let gain = self.params[P_GAIN] * OUTPUT_TRIM;
         let sr = self.sample_rate;
         let decay = self.params[P_DECAY] as f64;
         let tone = self.params[P_TONE] as f64;
@@ -978,6 +999,10 @@ impl Plugin for DrumRack {
                 sample += voice.tick(sr, decay, tone, noise, drive);
             }
             sample *= gain;
+            // Bound the output without hard clipping it. The trim above keeps
+            // ordinary playing under the knee, so this is the identity for
+            // everything except a kit pushed past it by the gain knob.
+            sample = soft_saturate(sample);
             for ch in outputs.iter_mut() {
                 ch[i] = sample;
             }

@@ -365,7 +365,10 @@ mod tests {
         engine.process(&mut output, &transport);
 
         let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-        assert!(peak > 0.01, "Should produce sound from MIDI, peak={peak}");
+        // Threshold is "audibly not silence", not a level check: 256 frames is
+        // 6 ms, so this only catches the start of the attack, and the
+        // instruments carry a deep headroom trim on their output.
+        assert!(peak > 0.001, "Should produce sound from MIDI, peak={peak}");
     }
 
     #[test]

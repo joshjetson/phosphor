@@ -119,8 +119,14 @@ cargo run --release -- --no-midi
 - Real-time audio via cpal (CoreAudio, WASAPI, ALSA)
 - Lock-free audio thread — zero allocations, zero mutexes in the hot path
 - Per-track instrument instances with independent processing
-- Per-track and master VU metering via atomic shared state
+- Per-track and master VU metering via atomic shared state, on a dB scale
 - Configurable buffer size (default 64 samples, ~1.5ms latency at 44.1kHz)
+- Gain-staged for chords, not single notes — every instrument is sized so a
+  two-handed voicing at full velocity still has headroom
+- Soft saturation on each instrument, transparent below its knee, replacing the
+  hard clip that used to turn loud chords into a square wave
+- Stereo-linked master limiter at -1 dBFS with a non-finite guard, so nothing
+  above full scale and no NaN can ever reach the audio device
 
 **Synthesizers**
 - **Phosphor Synth**: 16-voice polyphonic subtractive — dual oscillators, SVF filter, drive, ADSR
@@ -178,7 +184,7 @@ cargo run --release -- --no-midi
 - Shared domain models via atomics (no locks between threads)
 - Command channel pattern for UI-to-audio communication
 - Plugin trait for instruments and effects — same interface for built-in and third-party
-- 293 tests covering DSP, MIDI, engine, mixer, and navigation
+- 347 tests covering DSP, MIDI, engine, mixer, and navigation
 
 ---
 
@@ -229,6 +235,19 @@ cargo run --release -- --no-midi
 | `r` | Toggle record arm |
 | `R` | Toggle loop record |
 | `1-9` | Jump to clip by number |
+
+### Volume Fader (navigate to `vol` with `h/l`, then `Enter` to lock)
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Lock the fader |
+| `h` / `l` | Down / up by 1 dB |
+| `Esc` / `Enter` | Release the fader |
+
+The fader reads out in dB relative to unity — `0` at unity, `+6` at the top, `-oo` at
+the bottom. New tracks start at `-2`. Unity is not the maximum: there is 6 dB of
+makeup gain above it, which is where to reach when a quiet patch needs to sit forward
+in a mix.
 
 ### Clip Operations (navigate to a clip with `h/l`, then `Enter` to lock)
 
@@ -429,7 +448,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace  # 293 tests
+cargo test --workspace  # 347 tests
 ```
 
 ---

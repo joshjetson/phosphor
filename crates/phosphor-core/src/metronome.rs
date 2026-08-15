@@ -20,7 +20,16 @@ pub struct Metronome {
 /// Duration of a click in seconds. Short pop.
 const CLICK_DURATION: f64 = 0.012;
 /// Volume of the click.
-const CLICK_VOLUME: f32 = 0.35;
+///
+/// Tracks the instruments' headroom trims, so the click sits where it always
+/// did relative to the music. Those trims are around 0.18 on the output
+/// stage; at the original 0.35 the click would peak near 0.59, several times
+/// a chord, and playing along to it would be unpleasant at best.
+///
+/// This has to move whenever the trims do — it is not mixed through a track
+/// and has no fader of its own, so nothing else can compensate for it. See
+/// `OUTPUT_TRIM` in phosphor-dsp's dx7.rs.
+const CLICK_VOLUME: f32 = 0.0634;
 
 impl Metronome {
     pub fn new(sample_rate: f64) -> Self {

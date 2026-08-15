@@ -61,6 +61,118 @@ pub enum MixerCommand {
     },
 }
 
+// ── Master limiter ──
+
+/// Peak ceiling the limiter holds the master bus to, −1 dBFS.
+///
+/// Not 1.0: the samples we write are points on a waveform the converter
+/// reconstructs between, and that reconstruction can overshoot the samples
+/// themselves. A dB of margin is the usual allowance for it.
+const LIMITER_CEILING: f32 = 0.891;
+
+/// Release time constant, 50 ms.
+///
+/// Long enough not to modulate the waveform of a low note — a 40 Hz cycle is
+/// 25 ms, and a release near that period distorts the fundamental instead of
+/// riding it. Short enough that a single loud transient does not duck the
+/// following bar. Attack is not a time constant at all: see [`MasterLimiter`].
+const LIMITER_RELEASE_SECONDS: f32 = 0.050;
+
+/// Stereo-linked peak limiter on the master bus.
+///
+/// The last stage before the audio device, and the only hard guarantee that
+/// nothing leaves at more than full scale. Gain staging in the instruments
+/// and the soft saturator on their outputs are what keep this idle; this is
+/// what catches everything they cannot — many loud tracks at once, a plugin
+/// with no output bound, a NaN out of a diverging filter.
+///
+/// Design notes:
+///
+/// * **Stereo-linked.** One gain, computed from `max(|L|, |R|)` and applied
+///   to both channels, so a peak in one channel does not pull the image
+///   across to the other.
+/// * **Instant attack.** The gain that a sample needs is applied to that
+///   same sample, not `n` samples later, so there is no overshoot to clean
+///   up afterwards and no lookahead buffer to pay for. The alternative — a
+///   millisecond attack — would let a millisecond of overshoot through, and
+///   the only thing left to catch it would be a hard clip.
+/// * **Smooth release.** One-pole, so the gain walks back to unity rather
+///   than stepping.
+///
+/// Real-time safe: three floats of state, no allocation, no locks, no
+/// branches that can panic.
+struct MasterLimiter {
+    /// Current gain, 0..=1. Never above unity: this only ever attenuates.
+    gain: f32,
+    /// One-pole coefficient for the release ramp.
+    release_coeff: f32,
+}
+
+impl MasterLimiter {
+    fn new(sample_rate: u32) -> Self {
+        let sr = (sample_rate as f32).max(1.0);
+        Self {
+            gain: 1.0,
+            release_coeff: 1.0 - (-1.0 / (LIMITER_RELEASE_SECONDS * sr)).exp(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.gain = 1.0;
+    }
+
+    /// Limit an interleaved stereo buffer in place.
+    ///
+    /// On return every sample is finite and within ±1.0. Any frame that was
+    /// not finite on the way in leaves as silence.
+    fn process(&mut self, output: &mut [f32]) {
+        let mut frames = output.chunks_exact_mut(2);
+        for frame in frames.by_ref() {
+            // A NaN or infinity reaching the device is a full-scale noise
+            // burst, so it is turned into silence here — and, just as
+            // important, before it can be fed into the detector below, where
+            // it would poison the gain state for every sample after it.
+            let l = if frame[0].is_finite() { frame[0] } else { 0.0 };
+            let r = if frame[1].is_finite() { frame[1] } else { 0.0 };
+
+            let peak = l.abs().max(r.abs());
+            // The backoff is not a fudge factor. `CEILING / peak` rounds to
+            // nearest, and so does the multiply that applies it, so the
+            // product can land up to three rounding steps above the ceiling.
+            // Two epsilons of headroom covers that with margin and makes "at
+            // or below the ceiling" exact rather than approximate.
+            let target = if peak > LIMITER_CEILING {
+                (LIMITER_CEILING / peak) * (1.0 - 2.0 * f32::EPSILON)
+            } else {
+                1.0
+            };
+
+            if target < self.gain {
+                self.gain = target;
+            } else {
+                self.gain += (target - self.gain) * self.release_coeff;
+            }
+
+            // Belt and braces. `gain <= CEILING / peak` holds by
+            // construction, so the product cannot exceed the ceiling and this
+            // clamp cannot fire — it is here because it is the last line
+            // before the audio device and the cost of being wrong is a
+            // speaker.
+            frame[0] = (l * self.gain).clamp(-1.0, 1.0);
+            frame[1] = (r * self.gain).clamp(-1.0, 1.0);
+        }
+
+        // An interleaved stereo buffer with an odd sample count is malformed
+        // and no device produces one, but the guarantee is unconditional: a
+        // trailing sample gets the same treatment rather than going out
+        // unchecked.
+        for tail in frames.into_remainder() {
+            let s = if tail.is_finite() { *tail } else { 0.0 };
+            *tail = (s * self.gain).clamp(-LIMITER_CEILING, LIMITER_CEILING);
+        }
+    }
+}
+
 // ── AudioTrack ──
 
 pub struct AudioTrack {
@@ -117,6 +229,8 @@ pub struct Mixer {
     scratch_r: Vec<f32>,
     /// Pre-allocated buffer for live MIDI conversion.
     live_events: Vec<MidiEvent>,
+    /// Final stage before the audio device — see [`MasterLimiter`].
+    limiter: MasterLimiter,
 }
 
 impl Mixer {
@@ -138,6 +252,7 @@ impl Mixer {
             scratch_l: vec![0.0; max_buffer_size],
             scratch_r: vec![0.0; max_buffer_size],
             live_events: Vec::with_capacity(256),
+            limiter: MasterLimiter::new(sample_rate),
         }
     }
 
@@ -330,7 +445,14 @@ impl Mixer {
         // Mix metronome click into output (after tracks, so it's always audible)
         self.metronome.process(output, transport);
 
-        // Master VU (includes metronome)
+        // ── Master limiter ──
+        // Everything that reaches the device passes through here, the
+        // metronome included: it is summed on top of the track mix, so
+        // limiting before it would leave a gap in the guarantee.
+        self.limiter.process(output);
+
+        // Master VU (includes metronome), read after limiting so the meter
+        // shows what actually left rather than what would have.
         let mut mp_l = 0.0f32;
         let mut mp_r = 0.0f32;
         for i in 0..num_frames {
@@ -364,6 +486,7 @@ impl Mixer {
             track.last_playback_tick = -1;
         }
         self.metronome.reset();
+        self.limiter.reset();
     }
 
     fn drain_commands(&mut self) {
@@ -464,6 +587,7 @@ pub fn clip_snapshot_channel() -> (Sender<ClipSnapshot>, Receiver<ClipSnapshot>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project::TrackConfig;
     use phosphor_dsp::synth::PhosphorSynth;
     use phosphor_midi::message::{MidiMessage, MidiMessageType};
 
@@ -522,7 +646,9 @@ mod tests {
         mixer.process(&mut output, &midi, &transport);
 
         let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-        assert!(peak > 0.01, "Should produce sound, peak={peak}");
+        // Threshold is "not silence", not a level check — the instruments
+        // carry a deep headroom trim on their output.
+        assert!(peak > 0.001, "Should produce sound, peak={peak}");
     }
 
     #[test]
@@ -580,7 +706,7 @@ mod tests {
         mixer.process(&mut output, &[], &transport);
 
         let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-        assert!(peak > 0.01, "Playback should produce sound, peak={peak}");
+        assert!(peak > 0.001, "Playback should produce sound, peak={peak}");
     }
 
     #[test]
@@ -658,7 +784,7 @@ mod tests {
         let midi = vec![make_note_on(60, 100)];
         mixer.process(&mut output, &midi, &transport);
         let peak_during = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-        assert!(peak_during > 0.01, "Should hear note during recording (monitoring)");
+        assert!(peak_during > 0.001, "Should hear note during recording (monitoring)");
         transport.advance(buf_frames as u32, sr);
 
         // 4. A few more buffers of sustain
@@ -798,5 +924,494 @@ mod tests {
         mixer.process(&mut output, &[], &transport);
         let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         assert!(peak > 0.001, "Should hear playback, peak={peak}");
+    }
+
+    // ── Master limiter ──
+
+    /// A plugin that writes whatever it is told to, so the limiter can be
+    /// driven with signals no real instrument would produce.
+    struct FixedOutput(f32);
+
+    impl Plugin for FixedOutput {
+        fn info(&self) -> phosphor_plugin::PluginInfo {
+            phosphor_plugin::PluginInfo {
+                name: "Fixed".into(),
+                version: "0".into(),
+                author: "test".into(),
+                category: phosphor_plugin::PluginCategory::Instrument,
+            }
+        }
+        fn init(&mut self, _sample_rate: f64, _max_buffer_size: usize) {}
+        fn process(&mut self, _inputs: &[&[f32]], outputs: &mut [&mut [f32]], _midi: &[MidiEvent]) {
+            for ch in outputs.iter_mut() {
+                ch.fill(self.0);
+            }
+        }
+        fn parameter_count(&self) -> usize { 0 }
+        fn parameter_info(&self, _index: usize) -> Option<phosphor_plugin::ParameterInfo> { None }
+        fn get_parameter(&self, _index: usize) -> f32 { 0.0 }
+        fn set_parameter(&mut self, _index: usize, _value: f32) {}
+        fn reset(&mut self) {}
+    }
+
+    fn add_fixed_track(tx: &Sender<MixerCommand>, id: usize, value: f32) -> Arc<TrackHandle> {
+        let handle = Arc::new(TrackHandle::new(id, TrackKind::Instrument));
+        handle.config.set_volume(1.0);
+        tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle: handle.clone() }).unwrap();
+        tx.send(MixerCommand::SetInstrument {
+            track_id: id,
+            instrument: Box::new(FixedOutput(value)),
+        }).unwrap();
+        handle
+    }
+
+    /// The guarantee. Six tracks each running at three quarters of full scale
+    /// sum to 4.5x — without the limiter that is what would reach the device.
+    #[test]
+    fn master_limiter_bounds_many_loud_tracks() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        for id in 0..6 {
+            add_fixed_track(&tx, id, 0.75);
+        }
+        transport.play();
+
+        let mut output = vec![0.0f32; 512];
+        for _ in 0..8 {
+            mixer.process(&mut output, &[], &transport);
+            for (i, &s) in output.iter().enumerate() {
+                assert!(s.is_finite(), "non-finite sample at {i}");
+                assert!(s.abs() <= 1.0, "sample {i} left the mixer at {s}");
+            }
+        }
+
+        // And it is actually holding the ceiling, not silencing the mix.
+        let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(peak > 0.8, "limiter over-attenuated, peak={peak}");
+    }
+
+    /// A NaN out of a diverging filter must not reach the device: at full
+    /// scale it is a noise burst, and it also poisons every sample after it
+    /// if it is allowed into the limiter's gain state.
+    #[test]
+    fn non_finite_track_output_becomes_silence() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        add_fixed_track(&tx, 0, f32::NAN);
+        transport.play();
+
+        let mut output = vec![0.0f32; 512];
+        mixer.process(&mut output, &[], &transport);
+        assert!(output.iter().all(|s| *s == 0.0), "NaN track should render as silence");
+
+        // ...and the mixer still works afterwards: the gain state was not
+        // left as NaN by the sample that was thrown away.
+        tx.send(MixerCommand::RemoveTrack { track_id: 0 }).unwrap();
+        add_fixed_track(&tx, 1, 0.5);
+        mixer.process(&mut output, &[], &transport);
+        let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!((peak - 0.5).abs() < 1.0e-6, "mixer did not recover, peak={peak}");
+    }
+
+    #[test]
+    fn infinite_track_output_becomes_silence() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        add_fixed_track(&tx, 0, f32::INFINITY);
+        transport.play();
+
+        let mut output = vec![0.0f32; 512];
+        mixer.process(&mut output, &[], &transport);
+        assert!(output.iter().all(|s| *s == 0.0), "infinite track should render as silence");
+    }
+
+    /// Below the ceiling the limiter is not a processor, it is a wire. Any
+    /// deviation here would be gain riding on material that never asked for
+    /// it — which is exactly what makes a limiter audible.
+    #[test]
+    fn limiter_is_bit_identical_below_the_ceiling() {
+        let mut limiter = MasterLimiter::new(44_100);
+
+        // A sweep of levels up to the ceiling, plus signs and denormals.
+        let mut input: Vec<f32> = Vec::new();
+        for i in 0..20_000u32 {
+            let phase = i as f32 * 0.01;
+            let amp = LIMITER_CEILING * (i as f32 / 20_000.0);
+            input.push(phase.sin() * amp);
+            input.push(phase.cos() * amp);
+        }
+        input.push(LIMITER_CEILING);
+        input.push(-LIMITER_CEILING);
+        input.push(0.0);
+        input.push(-0.0);
+        input.push(f32::MIN_POSITIVE);
+        input.push(-f32::MIN_POSITIVE);
+
+        let mut output = input.clone();
+        limiter.process(&mut output);
+
+        for (i, (a, b)) in input.iter().zip(output.iter()).enumerate() {
+            assert_eq!(a.to_bits(), b.to_bits(), "limiter altered sample {i}: {a} -> {b}");
+        }
+    }
+
+    /// The ceiling holds for anything, including levels no instrument in the
+    /// project can produce.
+    #[test]
+    fn limiter_holds_the_ceiling_under_abuse() {
+        let mut limiter = MasterLimiter::new(44_100);
+        for amplitude in [1.0f32, 2.0, 10.0, 1.0e3, 1.0e6, 1.0e30] {
+            let mut buf: Vec<f32> = (0..4_096)
+                .map(|i| (i as f32 * 0.05).sin() * amplitude)
+                .collect();
+            limiter.process(&mut buf);
+            for (i, &s) in buf.iter().enumerate() {
+                assert!(s.is_finite(), "amplitude {amplitude}: sample {i} is {s}");
+                assert!(
+                    s.abs() <= LIMITER_CEILING,
+                    "amplitude {amplitude}: sample {i} reached {s}, above the ceiling"
+                );
+            }
+        }
+    }
+
+    /// A step from silence to well over the ceiling: the very first sample of
+    /// the step must already be limited. Anything else means overshoot, and
+    /// the only thing left to catch overshoot is a hard clip.
+    #[test]
+    fn limiter_attack_has_no_overshoot() {
+        let mut limiter = MasterLimiter::new(44_100);
+        let mut buf = vec![0.0f32; 64];
+        limiter.process(&mut buf);
+        let mut step = vec![4.0f32; 64];
+        limiter.process(&mut step);
+        assert!(
+            step[0].abs() <= LIMITER_CEILING,
+            "first sample of the step overshot to {}",
+            step[0]
+        );
+    }
+
+    /// Gain reduction must come back smoothly, not step. A step would be a
+    /// click; a release faster than a low note's period would distort it.
+    #[test]
+    fn limiter_release_is_gradual() {
+        let mut limiter = MasterLimiter::new(44_100);
+        let mut loud = vec![4.0f32; 64];
+        limiter.process(&mut loud);
+        let reduced = limiter.gain;
+        assert!(reduced < 0.5, "limiter did not engage, gain={reduced}");
+
+        // 10 ms of quiet material (441 stereo frames): partly recovered, not
+        // all the way.
+        let mut quiet = vec![0.1f32; 441 * 2];
+        limiter.process(&mut quiet);
+        assert!(limiter.gain > reduced, "gain did not recover at all");
+        assert!(
+            limiter.gain < 1.0,
+            "gain snapped back to unity within 10 ms, which is a click"
+        );
+
+        // 500 ms is ten time constants: fully recovered.
+        let mut long = vec![0.1f32; 22_050 * 2];
+        limiter.process(&mut long);
+        assert!(
+            (limiter.gain - 1.0).abs() < 1.0e-4,
+            "gain never returned to unity: {}",
+            limiter.gain
+        );
+    }
+
+    /// Stereo-linked: one gain from `max(|L|, |R|)`, so a peak on one side
+    /// does not pull the image across to the other.
+    #[test]
+    fn limiter_does_not_shift_the_stereo_image() {
+        let mut limiter = MasterLimiter::new(44_100);
+        // Left twice the level of right, both well over the ceiling.
+        let mut buf: Vec<f32> = Vec::new();
+        for i in 0..1_024 {
+            let phase = i as f32 * 0.05;
+            buf.push(phase.sin() * 3.0);
+            buf.push(phase.sin() * 1.5);
+        }
+        limiter.process(&mut buf);
+        for frame in buf.chunks_exact(2) {
+            if frame[1].abs() > 1.0e-4 {
+                let ratio = frame[0] / frame[1];
+                assert!(
+                    (ratio - 2.0).abs() < 1.0e-3,
+                    "channel balance moved: L/R = {ratio}"
+                );
+            }
+        }
+    }
+
+    /// Four tracks of the loudest DX7 preset, each playing a two-handed
+    /// eight-note chord at full velocity with the fader open — a heavier mix
+    /// than anything the application can produce by accident.
+    #[test]
+    fn master_limiter_bounds_four_loud_instrument_tracks() {
+        use phosphor_dsp::dx7;
+
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        for id in 0..4 {
+            let handle = Arc::new(TrackHandle::new(id, TrackKind::Instrument));
+            handle.config.midi_active.store(true, std::sync::atomic::Ordering::Relaxed);
+            handle.config.set_volume(1.0);
+            let mut synth = dx7::Dx7Synth::new();
+            // 47 "Timpani": the loudest preset in the bank.
+            synth.set_parameter(dx7::P_PATCH, 47.0 / (dx7::PATCH_COUNT as f32 - 0.01));
+            tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle }).unwrap();
+            tx.send(MixerCommand::SetInstrument {
+                track_id: id,
+                instrument: Box::new(synth),
+            }).unwrap();
+        }
+        transport.play();
+
+        let chord: Vec<MidiMessage> = [36u8, 43, 48, 55, 60, 64, 67, 72]
+            .iter()
+            .map(|&note| make_note_on(note, 127))
+            .collect();
+
+        let mut output = vec![0.0f32; 512];
+        let mut peak = 0.0f32;
+        for block in 0..200 {
+            output.fill(0.0);
+            if block == 0 {
+                mixer.process(&mut output, &chord, &transport);
+            } else {
+                mixer.process(&mut output, &[], &transport);
+            }
+            for (i, &s) in output.iter().enumerate() {
+                assert!(s.is_finite(), "block {block} sample {i} is {s}");
+                assert!(s.abs() <= 1.0, "block {block} sample {i} left the mixer at {s}");
+                peak = peak.max(s.abs());
+            }
+        }
+        assert!(peak > 0.5, "four loud tracks should be loud, peak={peak}");
+    }
+
+    /// The limiter must be inaudible in ordinary playing, which means it must
+    /// not engage at all. The worst single track the application can produce
+    /// is the loudest preset in the bank, an eight-note chord at velocity 127,
+    /// with the fader all the way open — and that still has to leave the gain
+    /// at exactly unity, so the mix is the track sum sample for sample.
+    #[test]
+    fn limiter_idle_for_the_worst_single_track() {
+        use phosphor_dsp::dx7;
+
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let handle = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
+        handle.config.midi_active.store(true, std::sync::atomic::Ordering::Relaxed);
+        handle.config.set_volume(1.0);
+        let mut synth = dx7::Dx7Synth::new();
+        synth.set_parameter(dx7::P_PATCH, 47.0 / (dx7::PATCH_COUNT as f32 - 0.01));
+        tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle }).unwrap();
+        tx.send(MixerCommand::SetInstrument { track_id: 0, instrument: Box::new(synth) }).unwrap();
+        transport.play();
+
+        let chord: Vec<MidiMessage> = [36u8, 43, 48, 55, 60, 64, 67, 72]
+            .iter()
+            .map(|&note| make_note_on(note, 127))
+            .collect();
+
+        let mut output = vec![0.0f32; 512];
+        let mut peak = 0.0f32;
+        for block in 0..200 {
+            output.fill(0.0);
+            if block == 0 {
+                mixer.process(&mut output, &chord, &transport);
+            } else {
+                mixer.process(&mut output, &[], &transport);
+            }
+            peak = peak.max(output.iter().map(|s| s.abs()).fold(0.0f32, f32::max));
+            assert_eq!(
+                mixer.limiter.gain, 1.0,
+                "limiter engaged at block {block}, peak {peak}"
+            );
+        }
+        assert!(peak > 0.3, "expected a loud chord, peak={peak}");
+    }
+
+    // ── Fader ──
+
+    /// Render the loudest thing one track in this project can produce, with
+    /// the fader at `volume`. Returns the output peak and the lowest gain the
+    /// limiter reached.
+    fn worst_track_through_the_mixer(volume: f32) -> (f32, f32) {
+        use phosphor_dsp::dx7;
+
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let handle = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
+        handle.config.midi_active.store(true, std::sync::atomic::Ordering::Relaxed);
+        handle.config.set_volume(volume);
+        let mut synth = dx7::Dx7Synth::new();
+        // 47 "Timpani": the loudest preset in the loudest bank.
+        synth.set_parameter(dx7::P_PATCH, 47.0 / (dx7::PATCH_COUNT as f32 - 0.01));
+        tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle }).unwrap();
+        tx.send(MixerCommand::SetInstrument { track_id: 0, instrument: Box::new(synth) }).unwrap();
+        transport.play();
+
+        let chord: Vec<MidiMessage> = [36u8, 43, 48, 55, 60, 64, 67, 72]
+            .iter()
+            .map(|&note| make_note_on(note, 127))
+            .collect();
+
+        let mut output = vec![0.0f32; 512];
+        let mut peak = 0.0f32;
+        let mut min_gain = 1.0f32;
+        for block in 0..200 {
+            output.fill(0.0);
+            if block == 0 {
+                mixer.process(&mut output, &chord, &transport);
+            } else {
+                mixer.process(&mut output, &[], &transport);
+            }
+            for &s in output.iter() {
+                assert!(s.is_finite(), "block {block}: non-finite sample");
+                assert!(s.abs() <= 1.0, "block {block}: sample left the mixer at {s}");
+                peak = peak.max(s.abs());
+            }
+            min_gain = min_gain.min(mixer.limiter.gain);
+        }
+        (peak, min_gain)
+    }
+
+    /// Anywhere from the bottom of the fader up to unity, the limiter is not
+    /// in the signal path at all — not "barely", not at all — even for the
+    /// loudest patch in the project played as hard as the format allows.
+    ///
+    /// This is what the instrument trims buy. Gain reduction on the master
+    /// bus is then always a mix decision (several loud tracks at once) rather
+    /// than something one instrument can cause on its own.
+    #[test]
+    fn fader_below_unity_never_engages_the_limiter() {
+        for volume in [
+            0.25,
+            TrackConfig::DEFAULT_VOLUME,
+            TrackConfig::UNITY_VOLUME,
+        ] {
+            let (peak, min_gain) = worst_track_through_the_mixer(volume);
+            assert_eq!(
+                min_gain, 1.0,
+                "limiter reduced by {:.2} dB at fader {volume} (peak {peak:.4})",
+                20.0 * min_gain.log10()
+            );
+        }
+    }
+
+    /// Above unity the fader is makeup gain the user asked for, and the
+    /// limiter is what makes asking for it safe. Two things have to hold:
+    /// the output stays bounded, and turning the fader up never makes the
+    /// track quieter than leaving it at unity — a limiter that over-ducks
+    /// would turn the top of the fader into a trap.
+    #[test]
+    fn fader_makeup_gain_is_bounded_not_wasted() {
+        let (unity_peak, _) = worst_track_through_the_mixer(TrackConfig::UNITY_VOLUME);
+        let (max_peak, min_gain) = worst_track_through_the_mixer(TrackConfig::MAX_VOLUME);
+
+        assert!(
+            max_peak <= LIMITER_CEILING,
+            "fader at maximum let {max_peak:.4} through, above the ceiling"
+        );
+        assert!(
+            max_peak >= unity_peak,
+            "turning the fader up made the track quieter: {unity_peak:.4} -> {max_peak:.4}"
+        );
+        // The limiter took back some of the boost, but not more than the
+        // fader added — otherwise it is attenuating, not limiting.
+        let reduction_db = -20.0 * min_gain.log10();
+        let boost_db = 20.0 * (TrackConfig::MAX_VOLUME / TrackConfig::UNITY_VOLUME).log10();
+        assert!(
+            reduction_db <= boost_db,
+            "limiter took {reduction_db:.2} dB off a {boost_db:.2} dB boost"
+        );
+    }
+
+    // ── Metronome balance ──
+
+    /// The click has no fader and is not mixed through a track, so nothing
+    /// downstream can compensate for it being wrong: it only sits right
+    /// relative to the music if `CLICK_VOLUME` tracks the instruments'
+    /// headroom trims. That coupling is invisible from either file and has
+    /// already drifted once, when the trims moved and the click did not.
+    ///
+    /// So: a click against the level a user hears while playing — the default
+    /// preset, a triad at velocity 100, fader at its default. Loud enough to
+    /// play to, not so loud it is the loudest thing in the mix.
+    #[test]
+    fn metronome_click_sits_with_the_music() {
+        use phosphor_dsp::dx7;
+
+        fn render(with_track: bool, metronome: bool) -> f32 {
+            let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+            let chord: Vec<MidiMessage> = if with_track {
+                let handle = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
+                handle.config.midi_active.store(true, std::sync::atomic::Ordering::Relaxed);
+                tx.send(MixerCommand::AddTrack {
+                    kind: TrackKind::Instrument,
+                    handle,
+                })
+                .unwrap();
+                tx.send(MixerCommand::SetInstrument {
+                    track_id: 0,
+                    instrument: Box::new(dx7::Dx7Synth::new()),
+                })
+                .unwrap();
+                [60u8, 64, 67].iter().map(|&n| make_note_on(n, 100)).collect()
+            } else {
+                Vec::new()
+            };
+            if metronome {
+                transport.toggle_metronome();
+            }
+            transport.play();
+
+            let mut output = vec![0.0f32; 512];
+            let mut peak = 0.0f32;
+            for block in 0..200 {
+                output.fill(0.0);
+                if block == 0 {
+                    mixer.process(&mut output, &chord, &transport);
+                } else {
+                    mixer.process(&mut output, &[], &transport);
+                }
+                peak = peak.max(output.iter().map(|s| s.abs()).fold(0.0f32, f32::max));
+                transport.advance(256, 44_100);
+            }
+            peak
+        }
+
+        let music = render(true, false);
+        let click = render(false, true);
+        assert!(music > 0.0 && click > 0.0, "music {music}, click {click}");
+
+        let relative_db = 20.0 * (click / music).log10();
+        assert!(
+            (-12.0..=0.0).contains(&relative_db),
+            "the click is {relative_db:.1} dB against a triad (click {click:.4}, \
+             music {music:.4}); it has to be audible over the music without \
+             being the loudest thing in the mix"
+        );
+    }
+
+    /// The fader reaches the audio thread. Not a tautology: `volume` is read
+    /// per buffer through the atomic, so this catches a mix path that caches
+    /// it or ignores it.
+    #[test]
+    fn fader_scales_the_track() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let handle = add_fixed_track(&tx, 0, 0.25);
+        transport.play();
+
+        let mut output = vec![0.0f32; 512];
+        for (volume, expected) in [(0.0f32, 0.0f32), (0.5, 0.125), (1.0, 0.25), (2.0, 0.5)] {
+            handle.config.set_volume(volume);
+            output.fill(0.0);
+            mixer.process(&mut output, &[], &transport);
+            let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+            assert!(
+                (peak - expected).abs() < 1.0e-6,
+                "fader at {volume} gave {peak}, expected {expected}"
+            );
+        }
     }
 }

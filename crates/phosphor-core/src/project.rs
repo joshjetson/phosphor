@@ -39,18 +39,46 @@ pub struct TrackConfig {
     /// Whether this track is currently selected for MIDI input.
     /// Only one track should be selected at a time.
     pub midi_active: AtomicBool,
-    /// Volume stored as f32 bits in an AtomicU32.
+    /// Fader position as a linear gain, stored as f32 bits in an AtomicU32.
+    ///
+    /// Written by the UI thread, read once per buffer by the audio thread.
+    /// Constrained to [`TrackConfig::MIN_VOLUME`]..=[`TrackConfig::MAX_VOLUME`]
+    /// by [`TrackConfig::set_volume`], which is the only way to write it.
     pub volume: AtomicU32,
 }
 
 impl TrackConfig {
+    /// Bottom of the fader: silence.
+    pub const MIN_VOLUME: f32 = 0.0;
+
+    /// Unity gain — the track reaches the master bus at the level the
+    /// instrument produced it.
+    pub const UNITY_VOLUME: f32 = 1.0;
+
+    /// Top of the fader, +6 dB.
+    ///
+    /// Makeup gain above unity, not decoration. The instruments are trimmed
+    /// so that ordinary playing peaks near −12 dBFS, which leaves room for
+    /// several tracks to sum; a user who is playing one quiet pad on its own
+    /// needs somewhere to get that back, and the alternative is the operating
+    /// system's volume control, which raises everything else on the machine
+    /// too. The master limiter is what makes the top of the range safe.
+    pub const MAX_VOLUME: f32 = 2.0;
+
+    /// Where a new track's fader starts, −2.5 dB.
+    ///
+    /// Below unity so that adding a second and third track does not
+    /// immediately need the limiter, and so the fader has visible travel in
+    /// both directions before it is touched.
+    pub const DEFAULT_VOLUME: f32 = 0.75;
+
     pub fn new() -> Self {
         Self {
             muted: AtomicBool::new(false),
             soloed: AtomicBool::new(false),
             armed: AtomicBool::new(false),
             midi_active: AtomicBool::new(false),
-            volume: AtomicU32::new(0.75f32.to_bits()),
+            volume: AtomicU32::new(Self::DEFAULT_VOLUME.to_bits()),
         }
     }
 
@@ -58,8 +86,22 @@ impl TrackConfig {
         f32::from_bits(self.volume.load(Ordering::Relaxed))
     }
 
+    /// Set the fader position, clamped to the fader's travel.
+    ///
+    /// The clamp is here rather than at the call sites because this value is
+    /// read on the audio thread and multiplied into every sample of the
+    /// track: a caller that computes a position wrongly would otherwise turn
+    /// a UI arithmetic slip into a full-scale burst. A NaN is not a fader
+    /// position at all, so it is ignored rather than stored — storing it
+    /// would multiply the track to NaN, which the master limiter turns into
+    /// silence, and a silent track with no visible cause is worse than a
+    /// dropped keystroke.
     pub fn set_volume(&self, v: f32) {
-        self.volume.store(v.to_bits(), Ordering::Relaxed);
+        if v.is_nan() {
+            return;
+        }
+        let clamped = v.clamp(Self::MIN_VOLUME, Self::MAX_VOLUME);
+        self.volume.store(clamped.to_bits(), Ordering::Relaxed);
     }
 
     pub fn is_muted(&self) -> bool {
@@ -116,7 +158,7 @@ mod tests {
         assert!(!cfg.is_muted());
         assert!(!cfg.is_soloed());
         assert!(!cfg.is_armed());
-        assert!((cfg.get_volume() - 0.75).abs() < 0.001);
+        assert!((cfg.get_volume() - TrackConfig::DEFAULT_VOLUME).abs() < 0.001);
     }
 
     #[test]
@@ -124,6 +166,42 @@ mod tests {
         let cfg = TrackConfig::new();
         cfg.set_volume(0.42);
         assert!((cfg.get_volume() - 0.42).abs() < 0.001);
+    }
+
+    /// The whole fader travel round-trips, including the makeup gain above
+    /// unity that the range was widened for.
+    #[test]
+    fn track_config_volume_spans_the_fader() {
+        let cfg = TrackConfig::new();
+        for v in [0.0f32, 0.25, TrackConfig::DEFAULT_VOLUME, TrackConfig::UNITY_VOLUME, 1.5, 2.0] {
+            cfg.set_volume(v);
+            assert_eq!(cfg.get_volume().to_bits(), v.to_bits(), "fader lost {v}");
+        }
+    }
+
+    /// The clamp is the reason `volume` has no other writer: whatever the UI
+    /// computes, the audio thread only ever sees a value inside the travel.
+    #[test]
+    fn track_config_volume_is_clamped() {
+        let cfg = TrackConfig::new();
+        cfg.set_volume(-1.0);
+        assert_eq!(cfg.get_volume(), TrackConfig::MIN_VOLUME);
+        cfg.set_volume(50.0);
+        assert_eq!(cfg.get_volume(), TrackConfig::MAX_VOLUME);
+        cfg.set_volume(f32::INFINITY);
+        assert_eq!(cfg.get_volume(), TrackConfig::MAX_VOLUME);
+        cfg.set_volume(f32::NEG_INFINITY);
+        assert_eq!(cfg.get_volume(), TrackConfig::MIN_VOLUME);
+    }
+
+    /// A NaN leaves the fader where it was. Storing it would multiply the
+    /// track to NaN and the master limiter would render it as silence.
+    #[test]
+    fn track_config_volume_ignores_nan() {
+        let cfg = TrackConfig::new();
+        cfg.set_volume(1.25);
+        cfg.set_volume(f32::NAN);
+        assert_eq!(cfg.get_volume(), 1.25);
     }
 
     #[test]

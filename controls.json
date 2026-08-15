@@ -46,7 +46,8 @@
       "P": "paste clip to same position on another track",
       "d": "duplicate clip (when on clip element)",
       "1-9": "jump to clip by number",
-      "Esc": "deselect track"
+      "Esc": "deselect track",
+      "Enter_on_volume": "lock fader (enter volume-locked mode)"
     },
     "clip_locked": {
       "description": "Enter on a clip enters this mode. h/l moves clip, Shift stretches, Ctrl trims.",
@@ -58,6 +59,12 @@
       "P": "paste to track",
       "d": "duplicate clip",
       "Esc": "unlock clip (back to element navigation)"
+    },
+    "volume_locked": {
+      "description": "Enter on the volume element enters this mode. The header cell shows the fader in dB relative to unity.",
+      "h/l": "fader down/up by 1 dB (bottom = silent, unity = 0 dB, top = +6 dB)",
+      "Esc": "release fader (back to element navigation)",
+      "Enter": "release fader (back to element navigation)"
     }
   },
   "clip_view": {

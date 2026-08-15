@@ -51,7 +51,7 @@ impl NavState {
     // ── Pane focus ──
 
     pub fn focus_pane(&mut self, pane: Pane) {
-        if self.focused_pane == Pane::Tracks { self.track_selected = false; self.clip_locked = false; }
+        if self.focused_pane == Pane::Tracks { self.track_selected = false; self.element_locked = false; }
         self.focused_pane = pane;
         tracing::debug!("focused pane: {:?}", pane);
     }
@@ -307,12 +307,12 @@ impl NavState {
         match self.focused_pane {
             Pane::Transport => {} // no escape action in transport
             Pane::Tracks => {
-                if self.clip_locked {
-                    // Unlock clip — back to element navigation
-                    self.clip_locked = false;
+                if self.element_locked {
+                    // Release the locked element — back to element navigation
+                    self.element_locked = false;
                 } else if self.track_selected {
                     self.track_selected = false;
-                    self.clip_locked = false;
+                    self.element_locked = false;
                     self.track_element = TrackElement::Label;
                     self.clip_view_visible = false;
                     self.clip_view_target = None;

@@ -86,6 +86,25 @@ impl App {
     /// Stop playback and silence all instruments. Called on pause, stop,
     /// and stop-recording. Prevents notes from ringing after playback ends.
 
+    /// Move the selected track's fader one press and report where it landed.
+    ///
+    /// The fader is the only makeup gain in the application, so where it is
+    /// sitting is worth saying out loud: the header cell has three characters
+    /// and rounds to the nearest dB, which is fine for reading at a glance
+    /// and not enough to tell 0.75 (the default, −2.5 dB) from −2 dB exactly.
+    pub(crate) fn step_fader(&mut self, steps: i32) {
+        use crate::debug_log as dbg;
+
+        let Some(volume) = self.nav.adjust_volume(steps) else { return };
+        let text = if volume <= 0.0 {
+            "fader: silent".to_string()
+        } else {
+            format!("fader: {:+.1} dB", 20.0 * volume.log10())
+        };
+        dbg::system(&text);
+        self.status_message = Some((text, std::time::Instant::now()));
+    }
+
     /// Create an instrument track in both the audio mixer and the TUI.
     pub(crate) fn create_instrument_track(&mut self, instrument: InstrumentType) {
         use crate::debug_log as dbg;

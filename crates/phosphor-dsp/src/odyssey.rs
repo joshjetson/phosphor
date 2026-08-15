@@ -7,7 +7,22 @@
 
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
+use crate::level::soft_saturate;
+
 const TWO_PI: f64 = std::f64::consts::TAU;
+
+/// Fixed headroom trim on the voice output, applied after the gain knob.
+///
+/// Sized on ordinary playing, in step with the other four — see `OUTPUT_TRIM`
+/// in dx7.rs, which carries the full reasoning. The trim lands this synth's
+/// median patch at the same loudness as theirs.
+///
+/// This synth is duophonic, so a chord does not stack: its worst case across
+/// the 44 presets is a *single* note on patch 1 "Funk", which reaches 2.73 —
+/// louder than the same patch's eight-note peak of 2.52. That is why the
+/// symptom here was a single note clipping on its own. At this trim that
+/// worst case is still well under the saturator knee.
+const OUTPUT_TRIM: f32 = 0.2046;
 
 // ── Parameter indices ──
 pub const P_PATCH: usize = 0;
@@ -1457,7 +1472,7 @@ impl Plugin for OdysseySynth {
         if outputs.is_empty() || self.voice.is_none() { return; }
 
         let buf_len = outputs[0].len();
-        let gain = self.params[P_GAIN];
+        let gain = self.params[P_GAIN] * OUTPUT_TRIM;
         let patch = self.active_patch();
         // Use patch values (which are already derived from user params in active_patch)
         let user_cutoff = patch.cutoff;
@@ -1511,7 +1526,10 @@ impl Plugin for OdysseySynth {
             }
 
             let sample = voice.tick(&patch, user_cutoff, user_reso, user_env_mod) as f32;
-            let sample = (sample * gain).clamp(-1.0, 1.0);
+            // Bound the output without hard clipping it. The trim above keeps
+            // ordinary playing under the knee, so this is the identity for
+            // everything except a patch pushed past it by the gain knob.
+            let sample = soft_saturate(sample * gain);
 
             for ch in outputs.iter_mut() { ch[i] = sample; }
         }

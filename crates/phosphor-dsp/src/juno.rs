@@ -6,8 +6,22 @@
 
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
+use crate::level::soft_saturate;
+
 const MAX_VOICES: usize = 6;
 const TWO_PI: f64 = std::f64::consts::TAU;
+
+/// Fixed headroom trim on the chorus output, applied after the gain knob.
+///
+/// Sized on ordinary playing, in step with the other four — see `OUTPUT_TRIM`
+/// in dx7.rs, which carries the full reasoning. The trim lands this synth's
+/// median patch at the same loudness as theirs.
+///
+/// Measured across the 18 presets: the worst case is patch 3 "Brass" at 1.45
+/// for an eight-note chord at velocity 127. Six voices, so an eight-note
+/// chord steals two of them — the peak is a six-voice peak. This bank has the
+/// lowest crest factor of the five and stays far under the saturator knee.
+const OUTPUT_TRIM: f32 = 0.1765;
 
 // ── Parameter indices ──
 pub const P_PATCH: usize = 0;
@@ -818,7 +832,7 @@ impl Plugin for Juno60Synth {
         if outputs.is_empty() { return; }
 
         let buf_len = outputs[0].len();
-        let gain = self.params[P_GAIN];
+        let gain = self.params[P_GAIN] * OUTPUT_TRIM;
         let patch = self.active_patch();
         let sr = self.sample_rate;
 
@@ -896,8 +910,11 @@ impl Plugin for Juno60Synth {
                 (mono, mono)
             };
 
-            let left = (left * gain).clamp(-1.0, 1.0);
-            let right = (right * gain).clamp(-1.0, 1.0);
+            // Bound both channels without hard clipping them. The trim above
+            // keeps ordinary playing under the knee, so this is the identity
+            // for everything except a patch pushed past it by the gain knob.
+            let left = soft_saturate(left * gain);
+            let right = soft_saturate(right * gain);
 
             if stereo {
                 outputs[0][i] = left;
@@ -987,9 +1004,12 @@ mod tests {
     fn sound_on_note_on() {
         let mut s = Juno60Synth::new();
         s.init(44100.0, 64);
-        let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 4);
+        // 200 buffers, not 4: the output carries a headroom trim, so five
+        // milliseconds of attack is not enough signal to tell "sounding" from
+        // "silent" with any margin.
+        let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 200);
         let peak = out.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
-        assert!(peak > 0.001, "peak={peak}");
+        assert!(peak > 0.005, "peak={peak}");
     }
 
     #[test]
@@ -1017,9 +1037,9 @@ mod tests {
         let mut s = Juno60Synth::new();
         s.init(44100.0, 64);
         let events = [note_on(60, 100, 0), note_on(64, 100, 0), note_on(67, 100, 0)];
-        let out = process_buffers(&mut s, &events, 4);
+        let out = process_buffers(&mut s, &events, 200);
         let peak = out.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
-        assert!(peak > 0.001 && peak <= 1.0, "peak={peak}");
+        assert!(peak > 0.005 && peak < 1.0, "peak={peak}");
     }
 
     #[test]
