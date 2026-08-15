@@ -190,7 +190,7 @@ Pick a cartridge with the `bank` parameter, then a voice with `patch`.
 - Shared domain models via atomics (no locks between threads)
 - Command channel pattern for UI-to-audio communication
 - Plugin trait for instruments and effects — same interface for built-in and third-party
-- 360 tests covering DSP, MIDI, engine, mixer, and navigation
+- 369 tests covering DSP, MIDI, engine, mixer, and navigation
 
 ---
 
@@ -454,7 +454,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace  # 360 tests
+cargo test --workspace  # 369 tests
 ```
 
 ---

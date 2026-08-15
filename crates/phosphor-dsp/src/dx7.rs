@@ -1178,6 +1178,13 @@ struct DxEnvelope {
     headroom: i32,
     /// Set once a segment has landed on a target it will not leave on its own.
     holding: bool,
+    /// Whether this envelope is required to finish. See [`DxEnvelope::advance`]:
+    /// a release that lands on a nonzero L4 holds there for ever, which is what
+    /// the hardware does and is fine for a modulator — nobody hears it, and the
+    /// voice it belongs to has already been freed by its carriers. A *carrier*
+    /// holding there is a note that never ends, so carriers are marked and keep
+    /// falling to the floor at their own R4.
+    terminating: bool,
     sample_rate: f64,
 }
 
@@ -1193,6 +1200,7 @@ impl DxEnvelope {
             rising: false,
             headroom: 0,
             holding: false,
+            terminating: false,
             sample_rate: sr,
         };
         env.set_from_preset([99, 60, 30, 60], [99, 90, 75, 0]);
@@ -1248,6 +1256,12 @@ impl DxEnvelope {
         }
     }
 
+    /// Whether a release that lands on a nonzero L4 has to carry on to silence.
+    /// Set per note, for the operators the algorithm makes carriers.
+    fn set_terminating(&mut self, terminating: bool) {
+        self.terminating = terminating;
+    }
+
     fn kill(&mut self) {
         self.stage = DxEnvStage::Idle;
         self.atten_db = SILENCE_DB;
@@ -1288,12 +1302,26 @@ impl DxEnvelope {
             // Decay 2 is the sustain: hold at L3 for as long as the key is down.
             DxEnvStage::Decay2 => self.holding = true,
             DxEnvStage::Release => {
-                // Only a release that reaches the floor frees the voice. A patch
-                // with a nonzero L4 rings on, which is what the hardware does.
+                // Only a release that reaches the floor frees the voice.
                 if self.atten_db >= SILENCE_DB - 1e-9 {
                     self.stage = DxEnvStage::Idle;
                     self.gain = 0.0;
+                } else if self.terminating {
+                    // A carrier that has landed on a nonzero L4. The hardware
+                    // holds there — four of the 256 factory voices are drones
+                    // written that way, and TRAIN's is L4 99, i.e. full level
+                    // for ever. A note that cannot end is a note the player
+                    // cannot get rid of, so the segment carries on at the same
+                    // R4 to the floor: the same slope, the same character, and
+                    // an end to it. Only a carrier does this, and only one whose
+                    // L4 is above zero — with L4 0 the branch above has already
+                    // fired, so every other voice in the bank is untouched.
+                    self.target_db[3] = SILENCE_DB;
+                    self.enter(DxEnvStage::Release);
                 } else {
+                    // A modulator is allowed to hold at L4 for ever: it is
+                    // inaudible on its own, and the voice is freed by its
+                    // carriers. 27 factory voices rely on it.
                     self.holding = true;
                 }
             }
@@ -1859,6 +1887,11 @@ struct DxVoice {
     /// Which amp-mod sensitivity settings this patch's operators actually use, so
     /// the per-sample gain table only evaluates the entries that get read.
     amp_mod_used: [bool; 4],
+    /// Voice-stop ramp: a multiplier on the whole voice, and the amount it loses
+    /// per sample. 1.0 and 0.0 mean "not stopping", which is what they are for
+    /// every voice that is simply playing. See [`DxVoice::fade_out`].
+    stop_gain: f64,
+    stop_step: f64,
 }
 
 impl DxVoice {
@@ -1875,6 +1908,8 @@ impl DxVoice {
             pitch_mod_depth: 0.0,
             amp_mod_depth: 0.0,
             amp_mod_used: [false; 4],
+            stop_gain: 1.0,
+            stop_step: 0.0,
         }
     }
 
@@ -1895,6 +1930,9 @@ impl DxVoice {
         self.age = age;
         self.algorithm = preset.algorithm;
         self.feedback_amount = feedback_depth(preset.feedback);
+        // A stolen voice may have been part-way through a stop ramp.
+        self.stop_gain = 1.0;
+        self.stop_step = 0.0;
 
         // Transpose shifts the whole keyboard, so it is applied to the note once
         // here and everything downstream — operator frequency, keyboard level
@@ -1962,6 +2000,10 @@ impl DxVoice {
             op.envelope.scale_sustain(sustain_scale);
             op.envelope.scale_times(attack_scale, decay_scale, release_scale);
 
+            // A carrier is what `is_sounding` watches, so a carrier is what has
+            // to be able to finish. A modulator keeps the hardware's hold at L4.
+            op.envelope.set_terminating(is_carrier);
+
             op.envelope.trigger();
         }
     }
@@ -1973,8 +2015,43 @@ impl DxVoice {
         self.pitch_env.keyup();
     }
 
+    /// Stop this voice over `samples`, without a step in the waveform.
+    ///
+    /// A note-off will not do. A release aims each operator at its L4, and for
+    /// the four drone voices in the factory set that is a level to hold rather
+    /// than a way out; even where it does reach the floor it can take a minute
+    /// and a half, which is what left an EXPLOSION sounding under the next four
+    /// patches the player tried. This has to be a stop.
+    ///
+    /// A straight line in amplitude down to zero, and deliberately not the
+    /// dB-domain ramp the envelopes themselves run on. Two things went wrong
+    /// with trying to do it through the envelopes:
+    ///
+    /// * Ramping an *operator* down is only a fade if that operator is a
+    ///   carrier. A modulator's level is a phase-modulation index, and an index
+    ///   falling by several cycles over 5 ms is several hundred Hz of
+    ///   instantaneous frequency added to whatever it drives — a chirp, not a
+    ///   fade. ST.HELENS, whose one carrier is driven by three modulators,
+    ///   showed a step fifty times its own slew.
+    /// * Even applied to carriers alone, a dB-linear ramp has to cover the
+    ///   whole 95 dB level range in those 5 ms, so it leaves at 20 dB per
+    ///   millisecond. That is smooth but very steep, and on a quiet
+    ///   low-frequency voice it still slews faster than the waveform does.
+    ///
+    /// A linear ramp has neither problem: constant slope, exactly zero at the
+    /// end of it, and the same behaviour whatever the patch's level.
+    ///
+    /// Never slower than a ramp already running, so a player spinning the
+    /// selector cannot keep extending one.
+    fn fade_out(&mut self, samples: f64) {
+        if !self.is_sounding() { return; }
+        self.stop_step = self.stop_step.max(1.0 / samples.max(1.0));
+    }
+
     fn kill(&mut self) {
         self.note = 255;
+        self.stop_gain = 1.0;
+        self.stop_step = 0.0;
         for op in &mut self.ops {
             op.kill();
         }
@@ -2065,17 +2142,40 @@ impl DxVoice {
 
         // Normalize by number of carriers
         let num_carriers = alg.carriers.len() as f64;
-        (out / num_carriers) as f32
+        out /= num_carriers;
+
+        // Voice-stop ramp. A subtract and a multiply on a voice that is not
+        // stopping, where the step is zero and the multiplier sits at 1.0
+        // for ever — next to six sines and the modulation routing above, it
+        // does not register. See [`DxVoice::fade_out`].
+        self.stop_gain -= self.stop_step;
+        if self.stop_gain <= 0.0 {
+            self.kill();
+            return 0.0;
+        }
+        (out * self.stop_gain) as f32
     }
 }
 
 // ── DX7 Synth ──
+
+/// How long a voice takes to ramp down when the player changes voice under it.
+///
+/// 5 ms, which is about 220 samples at 44.1 kHz. Long enough that the ramp
+/// slews more gently than the waveform under it — the whole point, since a
+/// ramp steeper than the signal is heard as the click it was meant to avoid —
+/// and short enough that the old voice does not audibly overlap the new one.
+const STOP_FADE_SECONDS: f64 = 0.005;
 
 pub struct Dx7Synth {
     voices: Vec<DxVoice>,
     sample_rate: f64,
     pub params: [f32; PARAM_COUNT],
     voice_counter: u64,
+    /// Which of the 256 factory voices the two selectors were pointing at when
+    /// `process` last ran. Anything sounding belongs to *this* voice, not to
+    /// whatever the knobs say now, which is what makes a change detectable.
+    loaded_voice: usize,
     /// The whole factory set, borrowed rather than owned: 256 voices is 40 KB,
     /// and every DX7 track in a project would otherwise carry its own copy of
     /// the same constant table.
@@ -2092,6 +2192,7 @@ impl Dx7Synth {
             sample_rate: 44100.0,
             params: PARAM_DEFAULTS,
             voice_counter: 0,
+            loaded_voice: voice_index(PARAM_DEFAULTS[P_BANK], PARAM_DEFAULTS[P_PATCH]),
             // Unpacks the ROM if this is the first instrument built. Deliberately
             // here, on whichever thread constructs the plugin, and never in
             // `process`.
@@ -2122,6 +2223,12 @@ impl Dx7Synth {
 
     fn kill_all_voices(&mut self) {
         for v in &mut self.voices { v.kill(); }
+    }
+
+    /// Ramp everything still sounding down to silence over [`STOP_FADE_SECONDS`].
+    fn fade_out_all_voices(&mut self) {
+        let samples = STOP_FADE_SECONDS * self.sample_rate;
+        for v in &mut self.voices { v.fade_out(samples); }
     }
 
     /// Resolve the brightness knob into a multiplier on every modulator's gain.
@@ -2201,6 +2308,32 @@ impl Plugin for Dx7Synth {
         let buf_len = outputs[0].len();
         let gain = self.params[P_GAIN] * OUTPUT_TRIM;
         let patch_idx = self.current_voice();
+
+        // Changing voice stops what the old voice was playing. `note_on` reads
+        // the selectors, so without this a sounding note keeps the patch it was
+        // started with for as long as its envelopes last — and TRAIN's last for
+        // ever, which is how a drone became unreachable.
+        //
+        // Detected here rather than in `set_parameter`, and on the *resolved*
+        // voice rather than on a knob, for three reasons:
+        //
+        // * A knob is a float and a voice is one of 256 steps. Only the resolved
+        //   pair can tell a move between voices from a nudge inside one.
+        // * The voice takes two parameters, which arrive as two separate
+        //   commands. Loading a session sends the whole parameter list one index
+        //   at a time, so acting on each write in turn would stop the sound on
+        //   an intermediate bank/voice pair the player never selected.
+        // * `params` is public, so a selector can be written without going
+        //   through `set_parameter` at all.
+        //
+        // Nothing here crosses a thread. Parameter changes reach an instrument
+        // through the mixer's command channel and are applied by `drain_commands`
+        // on the audio thread, in the same call that goes on to run this.
+        if patch_idx != self.loaded_voice {
+            self.loaded_voice = patch_idx;
+            self.fade_out_all_voices();
+        }
+
         // The knob trims the patch rather than replacing it, so it is folded into
         // this block's copy of the preset before any voice reads it. Doing it here
         // — once, up front — is what stops the authored value being silently
@@ -4920,6 +5053,401 @@ mod tests {
             assert!(b[0] > b[2] * 1.1,
                 "{name} is as bright at 800 ms as at 50 ms ({b:.2?}); a plucked string \
                  mellows as it rings rather than holding one timbre");
+        }
+    }
+
+    // ── Every note has to be able to end ──
+    //
+    // Two separate things made a voice unreachable, and the bank contains
+    // examples of each.
+    //
+    // A DX7 EG's release aims at L4 and stops there, so a patch whose L4 is
+    // above zero holds at that level for as long as the machine is on. On a
+    // modulator that is harmless and 27 factory voices use it. On a *carrier*
+    // it is a note that never ends: `is_sounding` watches the carriers, so the
+    // voice is never freed. TRAIN's carrier L4 is 99 — full level, for ever.
+    //
+    // The second is slower but reaches further: thirteen voices have a carrier
+    // R4 so low that the release takes tens of seconds as authored. That is not
+    // a defect — bells and sound effects are supposed to ring — but with a
+    // note-on reading the selectors and a sounding voice not, an EXPLOSION was
+    // still audible under the next four patches the player tried.
+    //
+    // So a note-off is not the only way out that has to work. The three tested
+    // below are: a note-off must finish (which is the fix in `advance`), a
+    // change of voice must stop what is sounding (the fade in `process`), and
+    // panic must be immediate.
+
+    /// One block of 64 samples at 44.1 kHz.
+    const BLOCK: usize = 64;
+
+    /// Blocks needed to cover `secs`, rounded up.
+    fn blocks(secs: f64) -> usize {
+        (secs * SR / BLOCK as f64).ceil() as usize
+    }
+
+    /// Peak magnitude of a rendered stretch.
+    fn peak(samples: &[f32]) -> f32 {
+        samples.iter().map(|v| v.abs()).fold(0.0f32, f32::max)
+    }
+
+    /// Every factory voice with an operator that holds at a nonzero L4, split by
+    /// whether the algorithm makes that operator a carrier.
+    fn voices_holding_at_l4() -> (Vec<usize>, Vec<usize>) {
+        let (mut carriers, mut modulators) = (Vec::new(), Vec::new());
+        for v in 0..VOICE_COUNT {
+            let preset = &presets()[v];
+            let alg = algorithm(preset.algorithm);
+            let holds = |i: &usize| preset.ops[*i].levels[3] > 0;
+            if alg.carriers.iter().any(holds) {
+                carriers.push(v);
+            }
+            if (0..NUM_OPERATORS).filter(|i| !alg.carriers.contains(i)).any(|i| holds(&i)) {
+                modulators.push(v);
+            }
+        }
+        (carriers, modulators)
+    }
+
+    #[test]
+    fn four_factory_voices_have_a_carrier_that_holds_after_the_release() {
+        // The diagnosis, pinned. These four are authentic ROM data — TRAIN and
+        // ST.HELENS are drone sound effects, and a drone is what their author
+        // wrote. The engine has to be able to end them anyway.
+        //
+        // Named rather than counted so that a ROM or algorithm-table change that
+        // moves the set is a failure here rather than a silent behaviour change
+        // three modules away.
+        const EXPECTED: [(usize, &str, &str, u8, u8); 4] = [
+            // index, cartridge, name,        carrier L4, carrier R4
+            (30,  "ROM1A", "TRAIN",     99, 53),
+            (126, "ROM2B", "ST.HELENS", 86, 32),
+            (157, "ROM3A", "TRAIN",     99, 53),
+            (254, "ROM4B", "ST.HELENS", 86, 32),
+        ];
+
+        let (carriers, modulators) = voices_holding_at_l4();
+        assert_eq!(
+            carriers,
+            EXPECTED.iter().map(|e| e.0).collect::<Vec<_>>(),
+            "the set of voices whose carrier holds after a release has moved"
+        );
+        for (index, bank, name, l4, r4) in EXPECTED {
+            assert_eq!(BANK_NAMES[index / PATCH_COUNT], bank, "voice {index}");
+            assert_eq!(voice_name(index), name, "voice {index}");
+            let preset = &presets()[index];
+            let held = algorithm(preset.algorithm).carriers.iter()
+                .map(|&i| &preset.ops[i])
+                .find(|op| op.levels[3] > 0)
+                .expect("a carrier that holds");
+            assert_eq!((held.levels[3], held.rates[3]), (l4, r4), "{name} carrier EG");
+        }
+
+        // The other half of the diagnosis, and the reason the fix is scoped to
+        // carriers: a great many ordinary voices — pianos, harpsichords, horns —
+        // have a *modulator* that holds at L4, and their release tails depend on
+        // it. Making every envelope run to silence would have changed all of
+        // these; making only carriers do it changes exactly the four above.
+        assert_eq!(modulators.len(), 27, "modulators holding at L4: {modulators:?}");
+        for (index, name) in [(129, "HARPSICH 1"), (136, "PIANO   1"), (199, "HORNS")] {
+            assert_eq!(voice_name(index), name);
+            assert!(modulators.contains(&index), "{name} should be in the modulator set");
+        }
+    }
+
+    /// How long a carrier's release takes to cover the whole level range at its
+    /// own R4, as the patch is written — no keyboard rate scaling and no user
+    /// release knob, both of which are properties of the performance rather than
+    /// of the cartridge. A straight line in dB, so this is a division.
+    fn release_seconds(preset: &PatchPreset) -> f64 {
+        algorithm(preset.algorithm).carriers.iter()
+            .map(|&c| SILENCE_DB / dx_rate_to_db_per_sec(preset.ops[c].rates[3]))
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn thirteen_factory_voices_ring_for_more_than_twenty_seconds() {
+        // The shape of the bank, not a defect. A tubular bell that rings for 21
+        // seconds is a tubular bell; EXPLOSION taking 85 seconds to fall the
+        // last 90 dB is what an explosion's tail is. This is here so that
+        // anything that shortens them has to say so out loud — a "fix" that
+        // clamped the release range would pass every other test in this file
+        // and quietly flatten the whole sound-effects half of the cartridges.
+        //
+        // The figures are the patch as authored. In play they are shorter: the
+        // release knob the instrument loads with runs the release about
+        // eighteen times faster, and keyboard rate scaling takes another factor
+        // off the top half of the keyboard, so an EXPLOSION played at middle C
+        // is silent 2.2 s after key-up rather than 85 s.
+        const RINGING: [(usize, &str, f64); 13] = [
+            (25,  "TUB BELLS",  21.2),
+            (88,  "CHIMES",     21.2),
+            (91,  "BELLS",      21.2),
+            (115, "T.BL-EXPA",  21.2),
+            (121, "WASP STING", 21.2),
+            (127, "EXPLOSION",  84.8),
+            (153, "LASERSWEEP", 67.8),
+            (154, "TUB ERUPT",  21.2),
+            (212, "BELLS",      21.2),
+            (213, "TUB BELLS",  21.2),
+            (215, "CHIMES",     21.2),
+            (249, "WASP STING", 21.2),
+            (255, "EXPLOSION",  84.8),
+        ];
+        let measured: Vec<usize> = (0..VOICE_COUNT)
+            .filter(|&v| release_seconds(&presets()[v]) > 20.0)
+            .collect();
+        assert_eq!(measured, RINGING.iter().map(|r| r.0).collect::<Vec<_>>(),
+            "the set of long-ringing voices has moved");
+        for (index, name, secs) in RINGING {
+            assert_eq!(voice_name(index), name, "voice {index}");
+            let got = release_seconds(&presets()[index]);
+            assert!((got - secs).abs() < 0.1, "{name} rings for {got:.1} s, was {secs} s");
+        }
+        // Three of them are past a minute, and none of them is one of the four
+        // that holds at L4 — a slow release and a release that does not finish
+        // are two different faults with two different fixes.
+        assert_eq!(measured.iter().filter(|&&v| release_seconds(&presets()[v]) > 60.0).count(), 3);
+        let (holding, _) = voices_holding_at_l4();
+        assert!(measured.iter().all(|v| !holding.contains(v)));
+    }
+
+    /// Render one factory voice through the whole instrument: `hold` seconds of
+    /// held note, then a note-off, then `tail` seconds.
+    ///
+    /// `terminating` false pins every carrier back to holding at L4 — exactly
+    /// what the engine did before a carrier's release was required to reach the
+    /// floor — so the two renders of the same voice are the before and after.
+    fn render_note_off(voice: usize, hold: f64, tail: f64, terminating: bool) -> Vec<f32> {
+        let mut s = Dx7Synth::new();
+        s.init(SR, BLOCK);
+        select(&mut s, voice);
+        let mut audio = process_buffers(&mut s, &[note_on(60, 100, 0)], 1);
+        if !terminating {
+            for v in &mut s.voices {
+                for op in &mut v.ops { op.envelope.set_terminating(false); }
+            }
+        }
+        audio.extend(process_buffers(&mut s, &[], blocks(hold)));
+        audio.extend(process_buffers(&mut s, &[note_off(60, 0)], blocks(tail)));
+        audio
+    }
+
+    #[test]
+    fn a_note_off_silences_even_the_drone_voices() {
+        // Measured: at the release knob the instrument loads with, TRAIN is
+        // silent 0.39 s after key-up and ST.HELENS 0.57 s. ST.HELENS is the
+        // slower of the two because its release *rises* — its L3 is 0 and its
+        // L4 is 86, so key-up re-opens the carrier before the tail takes it
+        // back down, which is the eruption the voice is named for.
+        for (voice, name) in [(30, "TRAIN"), (126, "ST.HELENS"), (157, "TRAIN"), (254, "ST.HELENS")] {
+            let audio = render_note_off(voice, 0.2, 1.0, true);
+            let last = &audio[audio.len() - BLOCK..];
+            assert!(peak(last) == 0.0,
+                "voice {voice} ({name}) is still sounding a second after key-up, \
+                 peak={}", peak(last));
+
+            // And the same render with the old behaviour really does drone, so
+            // the assertion above is testing the fix rather than a voice that
+            // was going to stop anyway.
+            let before = render_note_off(voice, 0.2, 1.0, false);
+            let last = &before[before.len() - BLOCK..];
+            assert!(peak(last) > 0.001,
+                "voice {voice} ({name}) was supposed to drone without the fix");
+        }
+    }
+
+    #[test]
+    fn a_release_that_has_to_finish_changes_only_the_four_drone_voices() {
+        // The bit-identity guarantee. Every voice in the factory set is rendered
+        // twice through the whole instrument — note on, held, note off, tail —
+        // once with carriers required to reach the floor and once with them
+        // pinned back to the hold that was there before. For 252 of the 256 the
+        // two renders must agree *sample for sample*, not approximately: with
+        // L4 0 the release lands on the floor and the new branch is never taken,
+        // so there is nothing for it to change.
+        let (holding, _) = voices_holding_at_l4();
+        for voice in 0..VOICE_COUNT {
+            let after = render_note_off(voice, 0.05, 0.25, true);
+            let before = render_note_off(voice, 0.05, 0.25, false);
+            assert_eq!(after.len(), before.len());
+            if holding.contains(&voice) {
+                assert!(after != before,
+                    "voice {voice} ({}) holds at L4 and should have changed", voice_name(voice));
+                continue;
+            }
+            for (i, (a, b)) in after.iter().zip(&before).enumerate() {
+                assert_eq!(a.to_bits(), b.to_bits(),
+                    "voice {voice} ({}) changed at sample {i}: {a:e} vs {b:e}",
+                    voice_name(voice));
+            }
+        }
+    }
+
+    /// Hold a note on `voice` for a quarter of a second, then move one selector
+    /// so that `to` is chosen. Returns the whole render and the sample the
+    /// selector moved at.
+    fn render_voice_change(voice: usize, to: usize, param: usize) -> (Vec<f32>, usize) {
+        let mut s = Dx7Synth::new();
+        s.init(SR, BLOCK);
+        select(&mut s, voice);
+        let mut audio = process_buffers(&mut s, &[note_on(60, 100, 0)], blocks(0.25));
+        let switch = audio.len();
+        let (bank, patch) = voice_knobs(to);
+        s.set_parameter(param, if param == P_BANK { bank } else { patch });
+        audio.extend(process_buffers(&mut s, &[], blocks(0.25)));
+        (audio, switch)
+    }
+
+    /// The steepest sample-to-sample step in a window.
+    fn slew(window: &[f32]) -> f32 {
+        window.windows(2).map(|p| (p[1] - p[0]).abs()).fold(0.0f32, f32::max)
+    }
+
+    /// Samples the stop ramp lasts, and the most it can add to the signal's own
+    /// slew while it runs.
+    ///
+    /// Scaling `x` by a factor `g` that falls by `1/n` per sample gives
+    /// `|Δ(x·g)| <= |Δx|·g + |x|·|Δg|`, and `g <= 1`, so the ramp can add at
+    /// most the signal's amplitude divided by the length of the ramp.
+    fn ramp_length() -> usize {
+        (STOP_FADE_SECONDS * SR).ceil() as usize
+    }
+    fn ramp_step_bound(amplitude: f32) -> f32 {
+        amplitude / ramp_length() as f32
+    }
+
+    #[test]
+    fn changing_voice_stops_what_is_sounding() {
+        // The bug as the player met it, on both of its causes: TRAIN and
+        // ST.HELENS, which never stop at all, and EXPLOSION and LASERSWEEP,
+        // which stop 85 and 68 seconds later — long enough that they bleed
+        // through the next several patches the player auditions.
+        //
+        // Both selectors, because the voice is chosen by the pair of them:
+        // moving the patch knob one step and moving the bank knob one cartridge
+        // have to do the same thing.
+        for (from, name) in [
+            (30usize, "TRAIN"), (157, "TRAIN"),
+            (126, "ST.HELENS"), (254, "ST.HELENS"),
+            (127, "EXPLOSION"), (255, "EXPLOSION"),
+            (153, "LASERSWEEP"),
+        ] {
+            assert_eq!(voice_name(from), name);
+            for (param, what) in [(P_PATCH, "patch"), (P_BANK, "bank")] {
+                // XOR moves exactly one selector by one step in whichever
+                // direction stays inside the bank.
+                let to = if param == P_PATCH { from ^ 1 } else { from ^ PATCH_COUNT };
+                let (audio, switch) = render_voice_change(from, to, param);
+                let amplitude = peak(&audio[switch - BLOCK * 8..switch]);
+                assert!(amplitude > 0.001, "{name} was not sounding when the {what} changed");
+
+                // It is a ramp, and it is the ramp it says it is: the voice goes
+                // on sounding into the ramp and stops at the end of it. A hard
+                // cut would be silent from the next sample; a release would run
+                // on for seconds.
+                let tail = &audio[switch..];
+                let stopped_after = tail.iter().rposition(|&v| v != 0.0).map_or(0, |i| i + 1);
+                assert!(stopped_after <= ramp_length(),
+                    "{name} took {stopped_after} samples to stop after a {what} change, \
+                     longer than the {} the ramp is", ramp_length());
+                assert!(stopped_after > ramp_length() / 2,
+                    "{name} stopped in {stopped_after} samples — that is a cut, not a ramp");
+
+                // And it must not click on the way out. The ramp is continuous,
+                // so the only step it can add is its own slope.
+                let bound = slew(&audio[switch - BLOCK * 8..switch]) + ramp_step_bound(amplitude);
+                let after = slew(&audio[switch..switch + BLOCK * 8]);
+                assert!(after <= bound,
+                    "the {what} change put a step of {after:e} into {name}, past the {bound:e} \
+                     a 5 ms ramp can account for");
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_tail_cannot_pile_up_past_the_voice_count() {
+        // EXPLOSION rings for 85 seconds as authored, so "does a held-down key
+        // repeat stack tails until the mix disappears?" is a fair question.
+        // It cannot: `allocate_voice` takes a free voice, then the oldest
+        // unheld one, then the oldest of all, so the sixteenth note-on is the
+        // last one that can add anything. Confirmed rather than assumed.
+        let mut s = Dx7Synth::new();
+        s.init(SR, BLOCK);
+        select(&mut s, 127);
+        let mut worst = 0.0f32;
+        for n in 0..64u8 {
+            let out = process_buffers(&mut s, &[note_on(48 + n % 24, 110, 0)], blocks(0.01));
+            worst = worst.max(peak(&out));
+            assert!(s.voices.iter().filter(|v| v.is_sounding()).count() <= MAX_VOICES);
+        }
+        // And so the headroom guarantee is not at risk from it either: the
+        // saturator's knee is where the bounding stage starts working, and
+        // sixteen overlapping explosions stay a long way under it.
+        assert!(worst < crate::level::SATURATION_KNEE,
+            "64 stacked EXPLOSION tails peaked at {worst}");
+    }
+
+    #[test]
+    fn a_voice_change_is_a_move_and_not_a_knob_touch() {
+        // The other side of it. The fade has to fire on a *move* between voices,
+        // not on every write to a selector: a knob nudged within its own step,
+        // or set to the value it already had, selects the same voice and must
+        // leave a held note running bit for bit. Two synths given identical
+        // treatment except for the extra writes, so any difference at all is the
+        // fade firing when it should not have.
+        let mut left = Dx7Synth::new();
+        let mut right = Dx7Synth::new();
+        for s in [&mut left, &mut right] {
+            s.init(SR, BLOCK);
+            select(s, 30);
+            process_buffers(s, &[note_on(60, 100, 0)], blocks(0.05));
+        }
+        // Voice 30 is patch 30 of ROM1A, and a step of the patch selector is
+        // 1/32 wide, so both of these still land on it.
+        select(&mut right, 30);
+        right.set_parameter(P_PATCH, 30.9 / PATCH_COUNT as f32);
+        assert_eq!(right.current_voice(), 30, "the nudge left the voice it was on");
+
+        let untouched = process_buffers(&mut left, &[], blocks(0.1));
+        let nudged = process_buffers(&mut right, &[], blocks(0.1));
+        for (i, (a, b)) in untouched.iter().zip(&nudged).enumerate() {
+            assert_eq!(a.to_bits(), b.to_bits(), "a knob touch stopped the note at sample {i}");
+        }
+    }
+
+    #[test]
+    fn panic_silences_a_drone() {
+        // `cc120_kills_all` covers the default voice, whose note would have
+        // ended on its own. This is the case that needs the escape hatch: a
+        // voice that has no other way out at all.
+        for voice in [30usize, 126, 127, 153, 157, 254, 255] {
+            let mut s = Dx7Synth::new();
+            s.init(SR, BLOCK);
+            select(&mut s, voice);
+            let held = process_buffers(&mut s, &[note_on(60, 100, 0)], blocks(0.2));
+            assert!(peak(&held[held.len() - BLOCK..]) > 0.001, "voice {voice} should be sounding");
+            process_buffers(&mut s, &[cc(120, 0, 0)], 1);
+            let after = process_buffers(&mut s, &[], blocks(0.05));
+            assert!(after.iter().all(|&v| v == 0.0),
+                "CC 120 left voice {voice} ({}) sounding", voice_name(voice));
+        }
+    }
+
+    #[test]
+    fn all_notes_off_silences_a_drone() {
+        // CC 123 is a release, not a kill, so this is the fix in `advance`
+        // rather than the fade: the release lands on L4 99 and has to keep
+        // going by itself.
+        for voice in [30usize, 126, 157, 254] {
+            let mut s = Dx7Synth::new();
+            s.init(SR, BLOCK);
+            select(&mut s, voice);
+            process_buffers(&mut s, &[note_on(60, 100, 0)], blocks(0.2));
+            process_buffers(&mut s, &[cc(123, 0, 0)], 1);
+            let after = process_buffers(&mut s, &[], blocks(1.0));
+            assert!(peak(&after[after.len() - BLOCK..]) == 0.0,
+                "CC 123 left voice {voice} ({}) sounding", voice_name(voice));
         }
     }
 
