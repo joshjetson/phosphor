@@ -140,6 +140,10 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                     phosphor_dsp::odyssey::discrete_label(i, val)
                 } else if is_juno {
                     phosphor_dsp::juno::discrete_label(i, val)
+                } else if is_dx7 {
+                    // Both selectors, and the voice name needs the bank as well
+                    // as the patch knob, so this one reads the whole block.
+                    phosphor_dsp::dx7::discrete_label(&params, i)
                 } else if i == 0 {
                     // Index 0 is always a discrete selector for non-Jupiter instruments
                     Some(if is_drum {
@@ -147,9 +151,6 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                             0 => "808", 1 => "909", 2 => "707", 3 => "606", 4 => "777",
                             5 => "tsty-1", 6 => "tsty-2", 7 => "tsty-3", 8 => "tsty-4", _ => "tsty-5",
                         }
-                    } else if is_dx7 {
-                        let idx = (val * (phosphor_dsp::dx7::PATCH_COUNT as f32 - 0.01)) as usize;
-                        phosphor_dsp::dx7::PATCH_NAMES[idx.min(phosphor_dsp::dx7::PATCH_COUNT - 1)]
                     } else {
                         match (val * 4.0) as u8 {
                             0 => "sine", 1 => "saw", 2 => "square", _ => "tri",
@@ -630,3 +631,33 @@ fn render_settings(frame: &mut Frame, area: Rect, nav: &NavState) {
 
 // ── Space Menu Overlay ──
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The DX7's voice names come from the ROM and run to ten characters —
+    /// longer than any other instrument's patch names, and long enough to fall
+    /// off the end of the panel if the layout is ever tightened.
+    #[test]
+    fn every_dx7_voice_name_fits_the_fx_panel() {
+        // A selector row is " \u{25B6} " plus the parameter name padded to 8,
+        // plus a space; whatever is left is the label's.
+        const LABEL_COLUMN: usize = 12;
+        let room = FX_PANEL_W as usize - LABEL_COLUMN;
+
+        for voice in 0..phosphor_dsp::dx7::VOICE_COUNT {
+            let name = phosphor_dsp::dx7::voice_name(voice);
+            assert!(name.chars().count() <= room,
+                "voice {voice} {name:?} needs {} of the {room} columns the panel leaves",
+                name.chars().count());
+        }
+        for bank in phosphor_dsp::dx7::BANK_NAMES {
+            assert!(bank.chars().count() <= room, "bank {bank:?} does not fit");
+        }
+        // The parameter names have to fit their own column too, or the label
+        // is pushed right and the assertion above stops meaning anything.
+        for name in phosphor_dsp::dx7::PARAM_NAMES {
+            assert!(name.chars().count() <= 8, "parameter name {name:?} overflows its column");
+        }
+    }
+}

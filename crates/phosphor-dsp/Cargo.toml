@@ -15,6 +15,10 @@ tracing.workspace = true
 [dev-dependencies]
 criterion.workspace = true
 proptest.workspace = true
+# Reads tests/data/dx7_reference.json, the decoded-voice fixture the DX7's ROM
+# decoder is checked against. Test-only: the fixture is compared as data rather
+# than transcribed into Rust, so the decoder cannot pass by agreeing with a typo.
+serde_json.workspace = true
 
 [[bench]]
 name = "dsp_bench"

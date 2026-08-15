@@ -82,7 +82,7 @@ const VOICINGS: [(&str, &[u8]); 5] = [
 ];
 
 const INSTRUMENTS: [(&str, usize); 5] = [
-    ("dx7", dx7::PATCH_COUNT),
+    ("dx7", dx7::VOICE_COUNT),
     ("jupiter", jupiter::PATCH_COUNT),
     ("odyssey", odyssey::PATCH_COUNT),
     ("juno", juno::PATCH_COUNT),
@@ -92,7 +92,7 @@ const INSTRUMENTS: [(&str, usize); 5] = [
 /// The loudest preset of each bank, measured on an eight-note chord at
 /// velocity 127. Re-derive with the `scan` mode after editing a bank.
 const LOUDEST: [(&str, usize); 5] = [
-    ("dx7", 47),
+    ("dx7", 147),
     ("jupiter", 9),
     ("odyssey", 1),
     ("juno", 3),
@@ -104,7 +104,10 @@ fn build(name: &str, patch: usize, count: usize) -> Box<dyn Plugin> {
     match name {
         "dx7" => {
             let mut s = dx7::Dx7Synth::new();
-            s.set_parameter(dx7::P_PATCH, value);
+            // Two selectors, so a sweep index is a cartridge and a voice.
+            let (bank, voice) = dx7::voice_knobs(patch);
+            s.set_parameter(dx7::P_BANK, bank);
+            s.set_parameter(dx7::P_PATCH, voice);
             Box::new(s)
         }
         "jupiter" => {
@@ -128,7 +131,7 @@ fn build(name: &str, patch: usize, count: usize) -> Box<dyn Plugin> {
 
 fn patch_name(name: &str, index: usize) -> &'static str {
     match name {
-        "dx7" => dx7::PATCH_NAMES[index],
+        "dx7" => dx7::voice_name(index),
         "jupiter" => jupiter::PATCH_NAMES[index],
         "odyssey" => odyssey::PATCH_NAMES[index],
         "juno" => juno::PATCH_NAMES[index],
@@ -193,12 +196,12 @@ const ORDINARY: &[u8] = &[60, 64, 67];
 /// `tests/headroom.rs` uses to check the instruments are level-matched, so
 /// the RMS column here and that assertion move together.
 const MEDIAN: [(&str, usize); 5] =
-    [("dx7", 2), ("jupiter", 1), ("odyssey", 4), ("juno", 1), ("phosphor", 0)];
+    [("dx7", 8), ("jupiter", 1), ("odyssey", 4), ("juno", 1), ("phosphor", 0)];
 
 /// The worst case each bank can be driven to. Voicing included, because the
 /// duophonic Odyssey peaks on a single note rather than on a chord.
 const WORST: [(&str, usize, &str, &[u8]); 5] = [
-    ("dx7", 47, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
+    ("dx7", 147, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
     ("jupiter", 9, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
     ("odyssey", 1, "single", &[60]),
     ("juno", 3, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
@@ -233,7 +236,8 @@ fn stage() {
     println!("\n== ordinary playing: default preset, triad @100 ==");
     println!("{:<10} {:>9} {:>8} {:>9} {:>8}", "instrument", "peak", "dBFS", "rms", "dBFS");
     for (name, count) in INSTRUMENTS {
-        let mut plugin = build(name, 0, count);
+        let index = if name == "dx7" { 10 } else { 0 }; // the DX7 loads E.PIANO 1
+        let mut plugin = build(name, index, count);
         let m = render(plugin.as_mut(), ORDINARY, 100);
         println!(
             "{name:<10} {:>9.4} {:>8.1} {:>9.5} {:>8.1}",

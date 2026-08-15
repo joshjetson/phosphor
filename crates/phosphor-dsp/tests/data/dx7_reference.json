@@ -1,0 +1,1206 @@
+[
+ {
+  "index": 0,
+  "bank": "ROM1A",
+  "name": "BRASS   1",
+  "algorithm": 22,
+  "feedback": 7,
+  "transpose": 24,
+  "osc_key_sync": 1,
+  "lfo": {
+   "speed": 37,
+   "delay": 0,
+   "pmd": 5,
+   "amd": 0,
+   "wave": 4,
+   "pms": 3,
+   "sync": 0
+  },
+  "pitch_eg": {
+   "rates": [
+    84,
+    95,
+    95,
+    60
+   ],
+   "levels": [
+    50,
+    50,
+    50,
+    50
+   ]
+  },
+  "op1": {
+   "rates": [
+    72,
+    76,
+    99,
+    71
+   ],
+   "levels": [
+    99,
+    88,
+    96,
+    0
+   ],
+   "break_point": 39,
+   "left_depth": 0,
+   "right_depth": 14,
+   "left_curve": 3,
+   "right_curve": 3,
+   "rate_scaling": 0,
+   "detune": 14,
+   "amp_mod_sens": 0,
+   "vel_sens": 0,
+   "output_level": 98,
+   "mode": 0,
+   "coarse": 0,
+   "fine": 0
+  },
+  "op6": {
+   "rates": [
+    49,
+    99,
+    28,
+    68
+   ],
+   "levels": [
+    98,
+    98,
+    91,
+    0
+   ],
+   "break_point": 39,
+   "left_depth": 54,
+   "right_depth": 50,
+   "left_curve": 1,
+   "right_curve": 1,
+   "rate_scaling": 4,
+   "detune": 7,
+   "amp_mod_sens": 0,
+   "vel_sens": 2,
+   "output_level": 82,
+   "mode": 0,
+   "coarse": 1,
+   "fine": 0
+  }
+ },
+ {
+  "index": 10,
+  "bank": "ROM1A",
+  "name": "E.PIANO 1",
+  "algorithm": 5,
+  "feedback": 6,
+  "transpose": 24,
+  "osc_key_sync": 0,
+  "lfo": {
+   "speed": 34,
+   "delay": 33,
+   "pmd": 0,
+   "amd": 0,
+   "wave": 4,
+   "pms": 3,
+   "sync": 0
+  },
+  "pitch_eg": {
+   "rates": [
+    94,
+    67,
+    95,
+    60
+   ],
+   "levels": [
+    50,
+    50,
+    50,
+    50
+   ]
+  },
+  "op1": {
+   "rates": [
+    96,
+    25,
+    25,
+    67
+   ],
+   "levels": [
+    99,
+    75,
+    0,
+    0
+   ],
+   "break_point": 0,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 3,
+   "detune": 10,
+   "amp_mod_sens": 0,
+   "vel_sens": 2,
+   "output_level": 99,
+   "mode": 0,
+   "coarse": 1,
+   "fine": 0
+  },
+  "op6": {
+   "rates": [
+    95,
+    29,
+    20,
+    50
+   ],
+   "levels": [
+    99,
+    95,
+    0,
+    0
+   ],
+   "break_point": 41,
+   "left_depth": 0,
+   "right_depth": 19,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 3,
+   "detune": 14,
+   "amp_mod_sens": 0,
+   "vel_sens": 6,
+   "output_level": 79,
+   "mode": 0,
+   "coarse": 1,
+   "fine": 0
+  }
+ },
+ {
+  "index": 31,
+  "bank": "ROM1A",
+  "name": "TAKE OFF",
+  "algorithm": 10,
+  "feedback": 0,
+  "transpose": 0,
+  "osc_key_sync": 1,
+  "lfo": {
+   "speed": 65,
+   "delay": 0,
+   "pmd": 0,
+   "amd": 0,
+   "wave": 2,
+   "pms": 5,
+   "sync": 1
+  },
+  "pitch_eg": {
+   "rates": [
+    32,
+    30,
+    94,
+    16
+   ],
+   "levels": [
+    50,
+    7,
+    81,
+    99
+   ]
+  },
+  "op1": {
+   "rates": [
+    9,
+    14,
+    17,
+    34
+   ],
+   "levels": [
+    61,
+    96,
+    0,
+    0
+   ],
+   "break_point": 0,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 0,
+   "detune": 7,
+   "amp_mod_sens": 0,
+   "vel_sens": 0,
+   "output_level": 99,
+   "mode": 0,
+   "coarse": 4,
+   "fine": 1
+  },
+  "op6": {
+   "rates": [
+    89,
+    22,
+    20,
+    41
+   ],
+   "levels": [
+    99,
+    92,
+    0,
+    0
+   ],
+   "break_point": 0,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 0,
+   "detune": 7,
+   "amp_mod_sens": 0,
+   "vel_sens": 0,
+   "output_level": 99,
+   "mode": 0,
+   "coarse": 0,
+   "fine": 0
+  }
+ },
+ {
+  "index": 32,
+  "bank": "ROM1B",
+  "name": "PIANO   4",
+  "algorithm": 18,
+  "feedback": 5,
+  "transpose": 24,
+  "osc_key_sync": 0,
+  "lfo": {
+   "speed": 30,
+   "delay": 0,
+   "pmd": 0,
+   "amd": 0,
+   "wave": 0,
+   "pms": 2,
+   "sync": 0
+  },
+  "pitch_eg": {
+   "rates": [
+    94,
+    67,
+    95,
+    60
+   ],
+   "levels": [
+    50,
+    50,
+    50,
+    50
+   ]
+  },
+  "op1": {
+   "rates": [
+    80,
+    24,
+    0,
+    50
+   ],
+   "levels": [
+    99,
+    62,
+    0,
+    0
+   ],
+   "break_point": 0,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 3,
+   "detune": 7,
+   "amp_mod_sens": 0,
+   "vel_sens": 2,
+   "output_level": 90,
+   "mode": 0,
+   "coarse": 1,
+   "fine": 0
+  },
+  "op6": {
+   "rates": [
+    92,
+    71,
+    58,
+    36
+   ],
+   "levels": [
+    99,
+    0,
+    0,
+    0
+   ],
+   "break_point": 36,
+   "left_depth": 0,
+   "right_depth": 98,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 3,
+   "detune": 8,
+   "amp_mod_sens": 0,
+   "vel_sens": 1,
+   "output_level": 78,
+   "mode": 0,
+   "coarse": 0,
+   "fine": 0
+  }
+ },
+ {
+  "index": 63,
+  "bank": "ROM1B",
+  "name": "BASS    4",
+  "algorithm": 17,
+  "feedback": 7,
+  "transpose": 12,
+  "osc_key_sync": 1,
+  "lfo": {
+   "speed": 34,
+   "delay": 33,
+   "pmd": 0,
+   "amd": 0,
+   "wave": 4,
+   "pms": 1,
+   "sync": 0
+  },
+  "pitch_eg": {
+   "rates": [
+    94,
+    67,
+    95,
+    60
+   ],
+   "levels": [
+    50,
+    50,
+    50,
+    50
+   ]
+  },
+  "op1": {
+   "rates": [
+    84,
+    29,
+    28,
+    76
+   ],
+   "levels": [
+    99,
+    89,
+    0,
+    0
+   ],
+   "break_point": 46,
+   "left_depth": 97,
+   "right_depth": 32,
+   "left_curve": 3,
+   "right_curve": 0,
+   "rate_scaling": 4,
+   "detune": 7,
+   "amp_mod_sens": 0,
+   "vel_sens": 0,
+   "output_level": 99,
+   "mode": 0,
+   "coarse": 0,
+   "fine": 0
+  },
+  "op6": {
+   "rates": [
+    94,
+    56,
+    24,
+    55
+   ],
+   "levels": [
+    96,
+    78,
+    0,
+    0
+   ],
+   "break_point": 0,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 1,
+   "detune": 7,
+   "amp_mod_sens": 0,
+   "vel_sens": 5,
+   "output_level": 82,
+   "mode": 0,
+   "coarse": 4,
+   "fine": 0
+  }
+ },
+ {
+  "index": 64,
+  "bank": "ROM2A",
+  "name": "PICCOLO",
+  "algorithm": 5,
+  "feedback": 0,
+  "transpose": 36,
+  "osc_key_sync": 1,
+  "lfo": {
+   "speed": 35,
+   "delay": 0,
+   "pmd": 0,
+   "amd": 0,
+   "wave": 4,
+   "pms": 2,
+   "sync": 0
+  },
+  "pitch_eg": {
+   "rates": [
+    99,
+    71,
+    95,
+    60
+   ],
+   "levels": [
+    50,
+    50,
+    50,
+    50
+   ]
+  },
+  "op1": {
+   "rates": [
+    68,
+    73,
+    28,
+    68
+   ],
+   "levels": [
+    99,
+    99,
+    92,
+    0
+   ],
+   "break_point": 39,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 0,
+   "detune": 7,
+   "amp_mod_sens": 0,
+   "vel_sens": 0,
+   "output_level": 93,
+   "mode": 0,
+   "coarse": 1,
+   "fine": 0
+  },
+  "op6": {
+   "rates": [
+    99,
+    78,
+    75,
+    98
+   ],
+   "levels": [
+    80,
+    64,
+    64,
+    0
+   ],
+   "break_point": 39,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 0,
+   "detune": 7,
+   "amp_mod_sens": 0,
+   "vel_sens": 7,
+   "output_level": 44,
+   "mode": 0,
+   "coarse": 5,
+   "fine": 11
+  }
+ },
+ {
+  "index": 100,
+  "bank": "ROM2B",
+  "name": "SYN-CLAV 1",
+  "algorithm": 16,
+  "feedback": 7,
+  "transpose": 12,
+  "osc_key_sync": 1,
+  "lfo": {
+   "speed": 37,
+   "delay": 0,
+   "pmd": 0,
+   "amd": 0,
+   "wave": 4,
+   "pms": 5,
+   "sync": 0
+  },
+  "pitch_eg": {
+   "rates": [
+    84,
+    95,
+    95,
+    60
+   ],
+   "levels": [
+    50,
+    50,
+    50,
+    50
+   ]
+  },
+  "op1": {
+   "rates": [
+    99,
+    37,
+    17,
+    71
+   ],
+   "levels": [
+    99,
+    70,
+    55,
+    0
+   ],
+   "break_point": 27,
+   "left_depth": 50,
+   "right_depth": 0,
+   "left_curve": 3,
+   "right_curve": 0,
+   "rate_scaling": 0,
+   "detune": 7,
+   "amp_mod_sens": 0,
+   "vel_sens": 1,
+   "output_level": 99,
+   "mode": 0,
+   "coarse": 1,
+   "fine": 0
+  },
+  "op6": {
+   "rates": [
+    99,
+    46,
+    17,
+    71
+   ],
+   "levels": [
+    99,
+    61,
+    45,
+    0
+   ],
+   "break_point": 39,
+   "left_depth": 4,
+   "right_depth": 55,
+   "left_curve": 3,
+   "right_curve": 0,
+   "rate_scaling": 0,
+   "detune": 7,
+   "amp_mod_sens": 0,
+   "vel_sens": 0,
+   "output_level": 80,
+   "mode": 0,
+   "coarse": 21,
+   "fine": 0
+  }
+ },
+ {
+  "index": 127,
+  "bank": "ROM2B",
+  "name": "EXPLOSION",
+  "algorithm": 16,
+  "feedback": 3,
+  "transpose": 12,
+  "osc_key_sync": 1,
+  "lfo": {
+   "speed": 99,
+   "delay": 0,
+   "pmd": 0,
+   "amd": 0,
+   "wave": 0,
+   "pms": 7,
+   "sync": 0
+  },
+  "pitch_eg": {
+   "rates": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "levels": [
+    50,
+    50,
+    50,
+    50
+   ]
+  },
+  "op1": {
+   "rates": [
+    99,
+    45,
+    24,
+    13
+   ],
+   "levels": [
+    99,
+    99,
+    0,
+    0
+   ],
+   "break_point": 32,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 3,
+   "detune": 0,
+   "amp_mod_sens": 0,
+   "vel_sens": 2,
+   "output_level": 70,
+   "mode": 0,
+   "coarse": 0,
+   "fine": 0
+  },
+  "op6": {
+   "rates": [
+    95,
+    82,
+    0,
+    0
+   ],
+   "levels": [
+    99,
+    85,
+    0,
+    0
+   ],
+   "break_point": 32,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 3,
+   "detune": 7,
+   "amp_mod_sens": 0,
+   "vel_sens": 0,
+   "output_level": 99,
+   "mode": 0,
+   "coarse": 0,
+   "fine": 3
+  }
+ },
+ {
+  "index": 128,
+  "bank": "ROM3A",
+  "name": "FLUTE   1",
+  "algorithm": 16,
+  "feedback": 5,
+  "transpose": 24,
+  "osc_key_sync": 1,
+  "lfo": {
+   "speed": 33,
+   "delay": 23,
+   "pmd": 2,
+   "amd": 13,
+   "wave": 0,
+   "pms": 3,
+   "sync": 0
+  },
+  "pitch_eg": {
+   "rates": [
+    94,
+    67,
+    95,
+    60
+   ],
+   "levels": [
+    50,
+    50,
+    50,
+    50
+   ]
+  },
+  "op1": {
+   "rates": [
+    66,
+    72,
+    75,
+    61
+   ],
+   "levels": [
+    93,
+    89,
+    98,
+    0
+   ],
+   "break_point": 41,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 0,
+   "detune": 7,
+   "amp_mod_sens": 0,
+   "vel_sens": 1,
+   "output_level": 92,
+   "mode": 0,
+   "coarse": 1,
+   "fine": 0
+  },
+  "op6": {
+   "rates": [
+    99,
+    64,
+    98,
+    61
+   ],
+   "levels": [
+    99,
+    67,
+    52,
+    0
+   ],
+   "break_point": 46,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 3,
+   "rate_scaling": 0,
+   "detune": 8,
+   "amp_mod_sens": 0,
+   "vel_sens": 1,
+   "output_level": 84,
+   "mode": 0,
+   "coarse": 1,
+   "fine": 53
+  }
+ },
+ {
+  "index": 160,
+  "bank": "ROM3B",
+  "name": "PIANO   2",
+  "algorithm": 4,
+  "feedback": 5,
+  "transpose": 12,
+  "osc_key_sync": 1,
+  "lfo": {
+   "speed": 35,
+   "delay": 0,
+   "pmd": 0,
+   "amd": 0,
+   "wave": 3,
+   "pms": 0,
+   "sync": 1
+  },
+  "pitch_eg": {
+   "rates": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "levels": [
+    50,
+    50,
+    50,
+    50
+   ]
+  },
+  "op1": {
+   "rates": [
+    88,
+    28,
+    27,
+    50
+   ],
+   "levels": [
+    99,
+    90,
+    0,
+    0
+   ],
+   "break_point": 49,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 2,
+   "detune": 7,
+   "amp_mod_sens": 0,
+   "vel_sens": 4,
+   "output_level": 99,
+   "mode": 0,
+   "coarse": 1,
+   "fine": 0
+  },
+  "op6": {
+   "rates": [
+    95,
+    28,
+    27,
+    47
+   ],
+   "levels": [
+    99,
+    90,
+    0,
+    0
+   ],
+   "break_point": 5,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 1,
+   "rate_scaling": 2,
+   "detune": 7,
+   "amp_mod_sens": 0,
+   "vel_sens": 0,
+   "output_level": 59,
+   "mode": 0,
+   "coarse": 1,
+   "fine": 0
+  }
+ },
+ {
+  "index": 200,
+  "bank": "ROM4A",
+  "name": "SOLO TBONE",
+  "algorithm": 8,
+  "feedback": 7,
+  "transpose": 12,
+  "osc_key_sync": 1,
+  "lfo": {
+   "speed": 31,
+   "delay": 45,
+   "pmd": 1,
+   "amd": 0,
+   "wave": 0,
+   "pms": 1,
+   "sync": 0
+  },
+  "pitch_eg": {
+   "rates": [
+    0,
+    95,
+    95,
+    60
+   ],
+   "levels": [
+    50,
+    50,
+    50,
+    50
+   ]
+  },
+  "op1": {
+   "rates": [
+    68,
+    24,
+    19,
+    55
+   ],
+   "levels": [
+    99,
+    86,
+    86,
+    0
+   ],
+   "break_point": 0,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 2,
+   "detune": 7,
+   "amp_mod_sens": 0,
+   "vel_sens": 2,
+   "output_level": 0,
+   "mode": 0,
+   "coarse": 1,
+   "fine": 0
+  },
+  "op6": {
+   "rates": [
+    49,
+    54,
+    22,
+    50
+   ],
+   "levels": [
+    99,
+    62,
+    62,
+    0
+   ],
+   "break_point": 0,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 0,
+   "detune": 7,
+   "amp_mod_sens": 0,
+   "vel_sens": 1,
+   "output_level": 70,
+   "mode": 0,
+   "coarse": 3,
+   "fine": 5
+  }
+ },
+ {
+  "index": 224,
+  "bank": "ROM4B",
+  "name": "CLAV-E.PNO",
+  "algorithm": 9,
+  "feedback": 7,
+  "transpose": 24,
+  "osc_key_sync": 1,
+  "lfo": {
+   "speed": 35,
+   "delay": 23,
+   "pmd": 0,
+   "amd": 0,
+   "wave": 4,
+   "pms": 2,
+   "sync": 0
+  },
+  "pitch_eg": {
+   "rates": [
+    98,
+    98,
+    98,
+    98
+   ],
+   "levels": [
+    50,
+    50,
+    50,
+    50
+   ]
+  },
+  "op1": {
+   "rates": [
+    73,
+    35,
+    25,
+    61
+   ],
+   "levels": [
+    99,
+    93,
+    0,
+    0
+   ],
+   "break_point": 0,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 3,
+   "detune": 8,
+   "amp_mod_sens": 0,
+   "vel_sens": 2,
+   "output_level": 99,
+   "mode": 0,
+   "coarse": 1,
+   "fine": 0
+  },
+  "op6": {
+   "rates": [
+    85,
+    38,
+    75,
+    61
+   ],
+   "levels": [
+    88,
+    44,
+    25,
+    0
+   ],
+   "break_point": 0,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 6,
+   "detune": 4,
+   "amp_mod_sens": 0,
+   "vel_sens": 7,
+   "output_level": 98,
+   "mode": 0,
+   "coarse": 14,
+   "fine": 0
+  }
+ },
+ {
+  "index": 240,
+  "bank": "ROM4B",
+  "name": "ORG-BRS BC",
+  "algorithm": 31,
+  "feedback": 7,
+  "transpose": 12,
+  "osc_key_sync": 0,
+  "lfo": {
+   "speed": 36,
+   "delay": 33,
+   "pmd": 0,
+   "amd": 0,
+   "wave": 0,
+   "pms": 1,
+   "sync": 0
+  },
+  "pitch_eg": {
+   "rates": [
+    94,
+    67,
+    95,
+    60
+   ],
+   "levels": [
+    50,
+    50,
+    50,
+    50
+   ]
+  },
+  "op1": {
+   "rates": [
+    96,
+    25,
+    25,
+    99
+   ],
+   "levels": [
+    99,
+    99,
+    99,
+    0
+   ],
+   "break_point": 0,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 3,
+   "detune": 7,
+   "amp_mod_sens": 0,
+   "vel_sens": 2,
+   "output_level": 95,
+   "mode": 0,
+   "coarse": 1,
+   "fine": 0
+  },
+  "op6": {
+   "rates": [
+    90,
+    52,
+    25,
+    54
+   ],
+   "levels": [
+    99,
+    99,
+    98,
+    0
+   ],
+   "break_point": 7,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 2,
+   "detune": 7,
+   "amp_mod_sens": 2,
+   "vel_sens": 0,
+   "output_level": 78,
+   "mode": 0,
+   "coarse": 2,
+   "fine": 0
+  }
+ },
+ {
+  "index": 255,
+  "bank": "ROM4B",
+  "name": "EXPLOSION",
+  "algorithm": 16,
+  "feedback": 3,
+  "transpose": 12,
+  "osc_key_sync": 1,
+  "lfo": {
+   "speed": 99,
+   "delay": 0,
+   "pmd": 0,
+   "amd": 0,
+   "wave": 0,
+   "pms": 7,
+   "sync": 0
+  },
+  "pitch_eg": {
+   "rates": [
+    0,
+    0,
+    0,
+    0
+   ],
+   "levels": [
+    50,
+    50,
+    50,
+    50
+   ]
+  },
+  "op1": {
+   "rates": [
+    99,
+    45,
+    24,
+    13
+   ],
+   "levels": [
+    99,
+    99,
+    0,
+    0
+   ],
+   "break_point": 32,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 3,
+   "detune": 0,
+   "amp_mod_sens": 0,
+   "vel_sens": 2,
+   "output_level": 70,
+   "mode": 0,
+   "coarse": 0,
+   "fine": 0
+  },
+  "op6": {
+   "rates": [
+    95,
+    82,
+    0,
+    0
+   ],
+   "levels": [
+    99,
+    85,
+    0,
+    0
+   ],
+   "break_point": 32,
+   "left_depth": 0,
+   "right_depth": 0,
+   "left_curve": 0,
+   "right_curve": 0,
+   "rate_scaling": 3,
+   "detune": 7,
+   "amp_mod_sens": 0,
+   "vel_sens": 0,
+   "output_level": 99,
+   "mode": 0,
+   "coarse": 0,
+   "fine": 3
+  }
+ }
+]

@@ -2,7 +2,10 @@
 //!
 //! Authentic recreation of the Yamaha DX7's FM synthesis engine:
 //! 6 sine-wave operators, 32 algorithms, 4-rate/4-level envelopes,
-//! operator feedback, and classic preset patches.
+//! operator feedback, and the 256 factory voices decoded from the original
+//! ROM cartridges.
+
+use std::sync::OnceLock;
 
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
@@ -14,31 +17,39 @@ const TWO_PI: f64 = std::f64::consts::TAU;
 
 /// Fixed headroom trim on the voice sum, applied after the gain knob.
 ///
-/// Measured, not guessed. Sized on **ordinary playing** — the preset the
-/// instrument loads with, a triad at velocity 100 — which this value puts at
-/// a peak of −12 dBFS. That is a usable tracking level: loud enough that the
-/// OS volume control is not the only fader in the signal path, quiet enough
-/// that several tracks still sum without leaning on the master limiter.
+/// Measured, not guessed — and the one instrument in the project whose trim is
+/// sized by its **loudest** voice rather than by ordinary playing. That is a
+/// deliberate exception, and the reason is the factory bank.
 ///
-/// The extremes are deliberately *not* what sizes this constant. The worst
-/// case across the 51 presets is patch 47 "Timpani", whose attack transient
-/// reaches 5.91 for an eight-note chord at velocity 127 (the loudest
-/// *sustained* patch is 49 "Horns" at 5.40). Eight notes triggered on the
-/// same sample start with their operator phases reset together, so they sum
-/// very nearly linearly — 7.3x a single note, not the sqrt(8) = 2.8x that
-/// uncorrelated voices would give. Trimming until even that transient stayed
-/// under the saturator knee would put the whole bank 3.6 dB below where it
-/// needs to be, to accommodate the rarest input the instrument accepts.
-/// Instead the transient crosses the knee, [`soft_saturate`] rounds off about
-/// 1.3 dB of it, and the peak still lands under the master limiter's ceiling.
+/// Measured on an eight-note chord at velocity 127, at the bounding stage, the
+/// hand-voiced bank this replaced ran from 0.16 (Organ) to 1.03 (Timpani) — its
+/// loudest patch 5.8 dB above its median. The factory set has almost exactly
+/// the same median, 0.52, and runs from 0.08 (ROM1B GUITAR 4) to 1.65 (ROM3A
+/// TIMPANI): 10.1 dB above the median, and 26 dB end to end. Eight notes
+/// triggered on the same sample start with their operator phases reset
+/// together, so they sum very nearly linearly — 7.3x a single note, not the
+/// sqrt(8) = 2.8x uncorrelated voices would give.
 ///
-/// The value also lands this synth's median patch at the same loudness as
-/// the other four; see `OUTPUT_TRIM` in jupiter.rs, odyssey.rs, juno.rs and
-/// synth.rs. It is a constant on purpose: dividing by the number of sounding
-/// voices would pump as notes are released.
-const OUTPUT_TRIM: f32 = 0.1738;
+/// One constant cannot serve both ends of that, so this one serves the loud
+/// end. `SATURATION_KNEE`'s doc pins 1.07 as the input that maps to the master
+/// limiter's −1 dBFS ceiling, and 1.65 x (0.1100 / 0.1738) = 1.04 lands TIMPANI
+/// at 0.885 with 1.4 dB of saturation on its attack transient, with every other
+/// voice under it.
+///
+/// What that costs: 3.97 dB on all 256 voices, which puts ordinary playing —
+/// the voice the instrument loads with, a triad at velocity 100 — at −14.1
+/// dBFS rather than the −12 the other instruments are trimmed to. The
+/// alternative was letting 16 of the 256 voices past the ceiling by up to
+/// 0.5 dB, and a peak past the ceiling on one track ducks *every* track
+/// through the master limiter. A track fader can recover 4 dB; nothing
+/// downstream can un-duck a mix.
+///
+/// It is a constant on purpose: dividing by the number of sounding voices
+/// would pump as notes are released.
+const OUTPUT_TRIM: f32 = 0.1100;
 
 // ── Parameter indices ──
+/// Which of the 32 voices of the selected cartridge is playing.
 pub const P_PATCH: usize = 0;
 /// Feedback trim. Not an absolute setting: it is a **relative offset** on the
 /// patch's own feedback index, centred at 0.5. See [`resolve_feedback`].
@@ -51,14 +62,25 @@ pub const P_DECAY: usize = 4;
 pub const P_SUSTAIN: usize = 5;
 pub const P_RELEASE: usize = 6;
 pub const P_GAIN: usize = 7;
-pub const PARAM_COUNT: usize = 8;
+/// Which of the eight factory cartridges is loaded.
+///
+/// Appended after the gain knob rather than filed next to [`P_PATCH`], where it
+/// belongs on the panel, because a session stores `synth_params` as a positional
+/// list: inserting an index would load every saved value of every existing
+/// session into the wrong parameter.
+pub const P_BANK: usize = 8;
+pub const PARAM_COUNT: usize = 9;
 
 pub const PARAM_NAMES: [&str; PARAM_COUNT] = [
     "patch", "feedback", "bright", "attack", "decay", "sustain", "release", "gain",
+    "bank",
 ];
 
 pub const PARAM_DEFAULTS: [f32; PARAM_COUNT] = [
-    0.0,   // patch: E.Piano
+    // patch: voice 11 of the selected cartridge, which in ROM1A is E.PIANO 1 —
+    // the sound the DX7 is remembered for, and the same electric piano the
+    // instrument loaded with before the factory banks were wired up.
+    DEFAULT_PATCH_KNOB,
     0.5,   // feedback trim: centred, i.e. exactly the patch's authored index
     0.5,   // brightness trim: centred, i.e. the modulator levels as authored
     0.3,   // attack time scale
@@ -66,33 +88,47 @@ pub const PARAM_DEFAULTS: [f32; PARAM_COUNT] = [
     0.7,   // sustain level scale
     0.3,   // release time scale
     0.75,  // gain
+    0.0,   // bank: ROM1A
 ];
 
-// ── Patches ──
+/// Knob position that selects voice 11 of a cartridge, in the middle of its
+/// step. `knob_for(10, PATCH_COUNT)`, which is not a const fn.
+const DEFAULT_PATCH_KNOB: f32 = 10.5 / PATCH_COUNT as f32;
 
-pub const PATCH_COUNT: usize = 51;
-pub const PATCH_NAMES: [&str; PATCH_COUNT] = [
-    "E.Piano", "Bass", "Brass", "Bells", "Organ", "Strings",
-    "Flute", "Harpsi", "Marimba", "Clav", "TubBell",
-    "Vibes", "Koto", "SynLead", "Choir", "Harmnca", "Kalimba",
-    "Sitar", "Oboe", "Clarnet", "Trumpet", "Glock",
-    "Xylophn", "SteelPn", "SlapBas", "FrtlsBs", "Crystal",
-    "IceRain", "SynPad", "DigiPad", "Cello", "Pizz",
-    "LogDrum", "TnklBel", "Shakuha",
-    // Verified factory ROM patches (source: DX7 ROM sysex via itsjoesullivan/dx7-patches):
-    "SynBras", "Voices", "E.Pian2", "Accordn", "Harp",
-    "Clav2", "Banjo", "Guitar1", "Piano1", "Celeste",
-    "CowBell", "SynBas1", "Timpani", "PanFlut", "Horns",
-    "ToyPian",
+// ── The factory banks ──
+
+/// The eight factory ROM cartridge banks, in the order [`ROM`] stores them.
+pub const BANK_NAMES: [&str; BANK_COUNT] = [
+    "ROM1A", "ROM1B", "ROM2A", "ROM2B", "ROM3A", "ROM3B", "ROM4A", "ROM4B",
 ];
+pub const BANK_COUNT: usize = 8;
+
+/// Voices per bank. [`P_PATCH`] selects one of these; [`P_BANK`] picks the bank.
+///
+/// Two selectors rather than one 256-position knob because that is how the
+/// instrument works — a cartridge and then a voice button — and because a single
+/// knob would take 256 keypresses to walk end to end.
+pub const PATCH_COUNT: usize = 32;
+
+/// Every factory voice, across all eight banks.
+pub const VOICE_COUNT: usize = BANK_COUNT * PATCH_COUNT;
+
+/// One voice as a cartridge stores it: 128 bytes with several parameters packed
+/// into shared bytes. See [`decode_voice`] for the layout.
+const PACKED_VOICE: usize = 128;
+
+/// The four factory cartridges: eight banks of 32 voices, 4096 bytes each.
+///
+/// This is the payload of the eight original bank dumps concatenated, with the
+/// sysex header, terminator and checksum stripped — every bank was verified
+/// against its own 7-bit checksum before extraction. Kept as bytes and unpacked
+/// at startup rather than transcribed into source: 32 KB of the machine's own
+/// data plus a decoder is exact and testable, where 5,000 lines of generated
+/// struct literals is neither.
+const ROM: &[u8; VOICE_COUNT * PACKED_VOICE] = include_bytes!("dx7_roms.bin");
 
 /// How an operator gets its pitch.
-///
-/// `Fixed` is not reached by the preset table — none of the 51 patches here use
-/// a fixed-frequency operator — but it is half of the DX7's frequency model and
-/// anything loading a real sysex bank will need it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(dead_code)]
 enum OpFreqMode {
     /// Frequency tracks the played note, multiplied by the dialled ratio.
     #[default]
@@ -106,10 +142,9 @@ enum OpFreqMode {
 /// 2 = +EXP, 3 = +LIN. "Negative" curves cut as you move away from the
 /// breakpoint, positive ones boost.
 ///
-/// Only `LinNeg` appears in the preset table so far, because every preset here
-/// has both scaling depths at 0, which makes the curve choice inert.
+/// All four appear in the factory banks, and 166 of the 256 voices set a scaling
+/// depth deep enough for the choice to matter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 enum ScaleCurve {
     LinNeg,
     ExpNeg,
@@ -118,6 +153,16 @@ enum ScaleCurve {
 }
 
 impl ScaleCurve {
+    /// The two bits a packed voice stores this in.
+    fn from_bits(bits: u8) -> Self {
+        match bits & 3 {
+            0 => Self::LinNeg,
+            1 => Self::ExpNeg,
+            2 => Self::ExpPos,
+            _ => Self::LinPos,
+        }
+    }
+
     /// Curves 0 and 3 are straight lines in the level domain; 1 and 2 read the
     /// `EXP_SCALE_DATA` table instead.
     fn is_linear(self) -> bool {
@@ -132,12 +177,9 @@ impl ScaleCurve {
 
 /// The six LFO shapes, in the order the patch byte numbers them.
 ///
-/// `Square`, `SawDown`, `SawUp` and `SampleHold` are not reached by the preset
-/// table — the handful of patches here that use the LFO all want a smooth
-/// vibrato or tremolo — but all six are dialable on the hardware and any real
-/// sysex bank will contain them.
+/// All six are used by the factory banks: 129 voices ask for the sine, 90 for
+/// the triangle and the remaining 37 are spread across the other four.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(dead_code)]
 enum LfoWave {
     /// Rises from trough to peak over the first half cycle and falls back over
     /// the second. The DX7's own INIT VOICE shape.
@@ -150,6 +192,22 @@ enum LfoWave {
     Sine,
     /// Stepped random, one new value per cycle, from an 8-bit LCG.
     SampleHold,
+}
+
+impl LfoWave {
+    /// The three bits a packed voice stores this in. Only six of the eight
+    /// values name a shape; the ROM never uses the other two, and a cartridge
+    /// that did would land on the INIT VOICE triangle.
+    fn from_bits(bits: u8) -> Self {
+        match bits & 7 {
+            1 => Self::SawDown,
+            2 => Self::SawUp,
+            3 => Self::Square,
+            4 => Self::Sine,
+            5 => Self::SampleHold,
+            _ => Self::Triangle,
+        }
+    }
 }
 
 /// Patch-level LFO settings.
@@ -325,12 +383,32 @@ struct PatchPreset {
     lfo: LfoPreset,
     /// The one pitch envelope, applied to the whole voice.
     pitch_eg: PitchEgPreset,
+    /// Keyboard transpose, 0-48 with **24 as the centre**, i.e. -24 to +24
+    /// semitones on the played note. 94 of the 256 factory voices are off
+    /// centre — mostly basses an octave down and mallets an octave up — so this
+    /// is not an ornament: without it 37% of the bank plays in the wrong octave.
+    transpose: u8,
+    /// Oscillator key sync. When set, key-down resets every operator's phase, so
+    /// each note is bit-for-bit the same waveform. When clear the operators keep
+    /// running and the note starts wherever they happen to be, which is what 74
+    /// of the factory voices ask for.
+    osc_key_sync: bool,
+    /// The voice's name as the cartridge stores it: 10 bytes, space padded.
+    /// Held as bytes rather than a `&str` because a preset is `Copy` plain data
+    /// and the ROM's own padding is not worth a second representation.
+    name: [u8; NAME_LEN],
 }
 
+/// Length of a voice name in the packed format.
+const NAME_LEN: usize = 10;
+
+/// Transpose value that means "no transposition".
+const TRANSPOSE_CENTRE: i32 = 24;
+
 impl PatchPreset {
-    /// The patch every preset literal is written as a delta from. Both modulation
-    /// sections are the DX7's INIT VOICE settings, which are inert: LFO depths at
-    /// zero and every pitch EG level at the neutral 50.
+    /// The DX7's INIT VOICE, and the starting point a decoded voice overwrites.
+    /// Both modulation sections are inert: LFO depths at zero and every pitch EG
+    /// level at the neutral 50.
     const fn neutral() -> Self {
         Self {
             algorithm: 1,
@@ -338,852 +416,234 @@ impl PatchPreset {
             ops: [OpPreset::neutral(); NUM_OPERATORS],
             lfo: LfoPreset::neutral(),
             pitch_eg: PitchEgPreset::neutral(),
+            transpose: 24,
+            osc_key_sync: true,
+            name: *b"INIT VOICE",
         }
+    }
+
+    /// The voice's name, trailing padding removed.
+    ///
+    /// Cannot fail: [`decode_voice`] replaces anything outside printable ASCII
+    /// as it copies, so the stored bytes are always valid UTF-8.
+    fn name(&self) -> &str {
+        std::str::from_utf8(&self.name).unwrap_or("").trim_end()
     }
 }
 
-fn presets() -> [PatchPreset; PATCH_COUNT] {
-    [
-        // E.Piano 1 — Algorithm 5
-        //
-        // Keyboard level scaling hinged on middle C: the ratio-14 modulators lose
-        // 4.4 dB an octave above it so the tine bark thins as you climb, and the
-        // three carriers lose a gentler 1.9 dB an octave so the top is not as
-        // loud as the bottom. Below middle C both sides are untouched.
-        PatchPreset {
-            algorithm: 5,
-            feedback: 6,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [96,64,30,10], levels: [99,90,75,0],  vel_sens: 3, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse: 14, fine:  0, output_level: 75, rates: [95,50,20,10], levels: [99,60,0,0],   vel_sens: 5, right_depth: 18, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [96,64,30,10], levels: [99,90,75,0],  vel_sens: 3, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse: 14, fine:  0, output_level: 70, rates: [95,50,20,10], levels: [99,55,0,0],   vel_sens: 5, right_depth: 18, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 86, rates: [96,60,28,10], levels: [99,85,70,0],  vel_sens: 2, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 65, rates: [95,55,25,10], levels: [99,50,0,0],   vel_sens: 4, right_depth: 18, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Bass 1 — Algorithm 5
-        PatchPreset {
-            algorithm: 5,
-            feedback: 5,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [90,50,35,15], levels: [99,80,70,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 82, rates: [95,60,25,10], levels: [99,45,0,0],   vel_sens: 4, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [90,50,35,15], levels: [99,80,70,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 78, rates: [95,55,20,10], levels: [99,40,0,0],   vel_sens: 4, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 90, rates: [85,45,30,15], levels: [99,75,65,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 72, rates: [95,60,25,10], levels: [99,50,0,0],   vel_sens: 5, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Brass 1 — Algorithm 22
-        PatchPreset {
-            algorithm: 22,
-            feedback: 4,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [60,45,40,20], levels: [99,95,90,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 95, rates: [60,45,40,20], levels: [99,92,87,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 92, rates: [55,40,35,20], levels: [99,90,85,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 60, rates: [65,50,30,15], levels: [99,50,20,0],  vel_sens: 5, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 88, rates: [55,40,35,20], levels: [99,88,83,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 76, rates: [70,55,45,15], levels: [99,70,40,0],  vel_sens: 4, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Bells — Algorithm 5
-        //
-        // A small bell is purer than a big one: the inharmonic modulators come
-        // down 3.9 dB an octave above middle C, the carriers 1.9.
-        PatchPreset {
-            algorithm: 5,
-            feedback: 3,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [80,40,20,8],  levels: [99,75,50,0],  vel_sens: 3, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine: 41, output_level: 80, rates: [75,35,15,8],  levels: [99,55,0,0],   vel_sens: 5, right_depth: 16, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 95, rates: [80,40,20,8],  levels: [99,70,45,0],  vel_sens: 3, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine: 79, output_level: 78, rates: [70,30,12,8],  levels: [99,50,0,0],   vel_sens: 5, right_depth: 16, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 88, rates: [85,45,22,8],  levels: [99,60,30,0],  vel_sens: 2, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse: 13, fine:  0, output_level: 70, rates: [65,25,10,8],  levels: [99,40,0,0],   vel_sens: 6, right_depth: 16, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Organ 1 — Algorithm 32
-        PatchPreset {
-            algorithm: 32,
-            feedback: 0,
-            ops: [
-                OpPreset { coarse:  0, fine:  0, output_level: 90, rates: [99,90,90,30], levels: [99,99,99,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,90,90,30], levels: [99,99,99,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 92, rates: [99,90,90,30], levels: [99,99,99,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 85, rates: [99,90,90,30], levels: [99,99,99,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  4, fine:  0, output_level: 78, rates: [99,90,90,30], levels: [99,99,99,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  6, fine:  0, output_level: 70, rates: [99,90,90,30], levels: [99,99,99,0],  vel_sens: 1, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Strings — Algorithm 2
-        PatchPreset {
-            algorithm: 2,
-            feedback: 3,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [45,55,50,25], levels: [99,95,92,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 60, rates: [50,60,55,25], levels: [99,70,60,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 55, rates: [55,60,55,20], levels: [99,65,55,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 85, rates: [45,55,50,25], levels: [99,92,88,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 50, rates: [50,55,50,20], levels: [99,60,50,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 45, rates: [55,55,50,20], levels: [99,55,45,0],  vel_sens: 3, ..OpPreset::neutral() },
-            ],
-            // Section vibrato: shallow (44 cents peak to peak), unhurried at
-            // 3.8 Hz, and held off for 0.65 s so a short bowed note never gets
-            // any. Sync off, because a section does not vibrato in lockstep.
-            lfo: LfoPreset {
-                speed: 34, delay: 50, pmd: 14, pitch_mod_sens: 3,
-                waveform: LfoWave::Sine, sync: false, ..LfoPreset::neutral()
-            },
-            ..PatchPreset::neutral()
-        },
-        // Flute — Algorithm 5, gentle breathy tone
-        PatchPreset {
-            algorithm: 5,
-            feedback: 4,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [72,40,25,55], levels: [99,99,96,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 42, rates: [85,55,40,50], levels: [99,50,40,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 95, rates: [72,40,25,55], levels: [99,99,96,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 35, rates: [88,60,45,55], levels: [99,45,30,0],  vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 70, rates: [72,40,25,55], levels: [99,95,90,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 30, rates: [90,65,50,55], levels: [99,40,25,0],  vel_sens: 2, ..OpPreset::neutral() },
-            ],
-            // A player's vibrato: a full second of straight tone first, then
-            // 4.3 Hz at 50 cents peak to peak — a touch faster and deeper than
-            // the string section's. Sync on, so every note develops alike.
-            lfo: LfoPreset {
-                speed: 37, delay: 55, pmd: 16, pitch_mod_sens: 3,
-                waveform: LfoWave::Sine, sync: true, ..LfoPreset::neutral()
-            },
-            ..PatchPreset::neutral()
-        },
-        // Harpsichord — Algorithm 5
-        PatchPreset {
-            algorithm: 5,
-            feedback: 3,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,40,30,60], levels: [99,70,0,0],   vel_sens: 1, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  5, fine:  0, output_level: 80, rates: [99,75,60,60], levels: [99,56,0,0],   vel_sens: 5, right_depth: 16, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,40,30,60], levels: [99,70,0,0],   vel_sens: 1, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  5, fine:  0, output_level: 80, rates: [99,75,60,60], levels: [99,56,0,0],   vel_sens: 5, right_depth: 16, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,70,35,90], levels: [99,60,0,0],   vel_sens: 2, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 70, rates: [99,85,50,85], levels: [99,50,0,0],   vel_sens: 4, right_depth: 16, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Marimba — Algorithm 5
-        PatchPreset {
-            algorithm: 5,
-            feedback: 4,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,85,0,60],  levels: [99,50,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
-                OpPreset { coarse:  4, fine:  0, output_level: 72, rates: [99,92,0,70],  levels: [99,36,0,0],   vel_sens: 5, right_depth: 20, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,85,0,60],  levels: [99,50,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
-                OpPreset { coarse:  4, fine:  0, output_level: 72, rates: [99,92,0,70],  levels: [99,36,0,0],   vel_sens: 5, right_depth: 20, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,80,0,60],  levels: [99,50,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
-                OpPreset { coarse: 10, fine:  0, output_level: 60, rates: [99,90,0,70],  levels: [99,30,0,0],   vel_sens: 6, right_depth: 20, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Clavinet — Algorithm 5
-        //
-        // Carrier decay voiced against the factory CLAV 2 (patch 40), which is a
-        // decoded ROM patch rather than an authored one: L2 a dozen or so levels
-        // under L1, then a slow decay 2 with L3 at 0 carrying the whole ring.
-        // The string loses 8.3 dB settling off the pluck and the rest over about
-        // a second, instead of dropping 29 dB in 7 ms and trickling out after.
-        //
-        // The modulators follow that same reference, which holds its own at L3 89
-        // for the whole note. Theirs used to run to L3 0 and get there 13 ms after
-        // decay 1 ended, so the ring the carriers had just been given was a bare
-        // sine for all but its first few milliseconds — the spectral centroid sat
-        // at 1.00x the fundamental from 50 ms on. L2 96 into a slow decay 2 to
-        // L3 86 keeps the index falling for the first 600 ms and then holds it,
-        // which is 3.4x the fundamental at 50 ms easing to 1.9x at 800 ms.
-        //
-        // OP6 holds ten levels lower than the ratio-2.71 pair on purpose. It is
-        // the feedback operator, and sustaining it costs peak headroom out of
-        // proportion to the brightness it adds: matched to the pair at L3 86 it
-        // moves the centroid by -2% and the eight-note peak by 0.3 dB.
-        PatchPreset {
-            algorithm: 5,
-            feedback: 6,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,52,30,76], levels: [99,88,0,0],   vel_sens: 2, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine: 71, output_level: 86, rates: [99,95,20,80], levels: [99,96,86,0],  vel_sens: 7, right_depth: 20, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,52,30,76], levels: [99,88,0,0],   vel_sens: 2, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine: 71, output_level: 86, rates: [99,95,20,80], levels: [99,96,86,0],  vel_sens: 7, right_depth: 20, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,54,32,76], levels: [99,88,0,0],   vel_sens: 3, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 78, rates: [99,92,20,82], levels: [99,84,74,0],  vel_sens: 7, right_depth: 20, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Tubular Bells — Algorithm 5
-        PatchPreset {
-            algorithm: 5,
-            feedback: 4,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [72,76,99,71], levels: [99,88,96,0],  vel_sens: 2, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine: 75, output_level: 78, rates: [99,88,96,60], levels: [95,60,50,0],  vel_sens: 5, right_depth: 16, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [72,76,99,71], levels: [99,88,96,0],  vel_sens: 2, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine: 75, output_level: 78, rates: [99,88,96,60], levels: [95,60,50,0],  vel_sens: 5, right_depth: 16, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [72,76,99,71], levels: [99,88,96,0],  vel_sens: 2, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  4, fine: 78, output_level: 62, rates: [99,88,96,60], levels: [95,60,50,0],  vel_sens: 5, right_depth: 16, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Vibraphone — Algorithm 5 (sustaining metallic tone, distinct from Marimba)
-        PatchPreset {
-            algorithm: 5,
-            feedback: 4,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [72,76,99,71], levels: [99,88,96,0],  vel_sens: 2, amp_mod_sens: 1, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine: 75, output_level: 65, rates: [95,82,65,50], levels: [99,45,10,0],  vel_sens: 5, right_depth: 14, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [72,76,99,71], levels: [99,88,96,0],  vel_sens: 2, amp_mod_sens: 1, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine: 73, output_level: 58, rates: [98,85,68,52], levels: [99,38,0,0],   vel_sens: 6, right_depth: 14, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 92, rates: [72,76,99,71], levels: [99,85,93,0],  vel_sens: 2, amp_mod_sens: 1, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  5, fine: 70, output_level: 45, rates: [99,90,72,55], levels: [99,30,0,0],   vel_sens: 6, right_depth: 14, ..OpPreset::neutral() },
-            ],
-            // The motor: 4.5 Hz, about 9 dB deep. Amplitude modulation on the
-            // three carriers only, so the fan swings the volume without touching
-            // the timbre, and no delay or key sync — a real vibraphone's vanes
-            // keep turning between notes, so successive strikes land at different
-            // points in the cycle.
-            lfo: LfoPreset {
-                speed: 38, delay: 0, amd: 38,
-                waveform: LfoWave::Triangle, sync: false, ..LfoPreset::neutral()
-            },
-            ..PatchPreset::neutral()
-        },
-        // Koto — Algorithm 5
-        //
-        // Silk over a long wooden body: the longest carrier decay of the four
-        // plucked patches, near three seconds. Same shape as the clavinet — a
-        // small settle off the pluck, then one unbroken decay 2 — with decay 2
-        // four times slower and the settle a little gentler, because a koto
-        // string is not damped and a clavinet's is.
-        //
-        // The modulators had the clavinet's problem too, reaching L3 0 about 62 ms
-        // in and leaving the remaining two and a half seconds a bare sine. They
-        // now hold, but the budget is spent the other way round: the ratio-5 OP6
-        // carries the ring and the ratio-2 pair stays low. That is measured, not a
-        // preference — OP2 and OP4 sit at an exact 2:1, so their sidebands land on
-        // the carriers' own harmonics and add coherently, and an eight-note chord
-        // at velocity 127 peaks 0.02 higher for every ten levels they gain. OP6 at
-        // 5:1 lands between harmonics and costs almost nothing — 0.10 dB for the
-        // whole climb — so it holds within 2 levels of L1 and slides to L3 87 over
-        // the first second and a half. Centroid through the ring: 1.64x the
-        // fundamental at 50 ms, 1.25x at 800 ms, against a flat 1.00x before.
-        PatchPreset {
-            algorithm: 5,
-            feedback: 5,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,46,20,72], levels: [99,88,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 78, rates: [99,90,12,65], levels: [99,68,60,0],  vel_sens: 7, right_depth: 20, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,46,20,72], levels: [99,88,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 78, rates: [99,90,12,65], levels: [99,68,60,0],  vel_sens: 7, right_depth: 20, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,48,21,85], levels: [99,88,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
-                OpPreset { coarse:  5, fine:  0, output_level: 70, rates: [99,95,12,75], levels: [99,97,87,0],  vel_sens: 6, right_depth: 20, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Synth Lead — Algorithm 22
-        PatchPreset {
-            algorithm: 22,
-            feedback: 7,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [80,50,28,55], levels: [99,99,92,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [80,50,28,55], levels: [99,99,92,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 84, rates: [80,50,28,55], levels: [99,99,92,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 86, rates: [90,82,88,50], levels: [99,90,94,0],  vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 86, rates: [90,82,88,50], levels: [99,90,94,0],  vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 82, rates: [90,82,88,50], levels: [99,90,94,0],  vel_sens: 3, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Choir/Pad — Algorithm 1
-        PatchPreset {
-            algorithm: 1,
-            feedback: 6,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [35,25,20,40], levels: [99,99,96,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 68, rates: [50,45,45,45], levels: [99,72,70,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 82, rates: [38,22,20,42], levels: [99,99,96,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [35,25,20,40], levels: [99,99,96,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 60, rates: [50,45,45,45], levels: [99,72,70,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 50, rates: [55,48,48,48], levels: [99,65,60,0],  vel_sens: 3, ..OpPreset::neutral() },
-            ],
-            // Barely-there choral vibrato: 3.2 Hz at 34 cents peak to peak, a
-            // second and an eighth late, and unsynced so a sustained chord drifts
-            // rather than pulses. It is only there to stop long notes going dead.
-            lfo: LfoPreset {
-                speed: 30, delay: 60, pmd: 11, pitch_mod_sens: 3,
-                waveform: LfoWave::Sine, sync: false, ..LfoPreset::neutral()
-            },
-            ..PatchPreset::neutral()
-        },
-        // Harmonica — Algorithm 5
-        PatchPreset {
-            algorithm: 5,
-            feedback: 7,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [72,35,25,50], levels: [99,99,96,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 75, rates: [85,60,50,50], levels: [99,72,65,0],  vel_sens: 4, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [72,35,25,50], levels: [99,99,96,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 70, rates: [85,60,50,50], levels: [99,72,65,0],  vel_sens: 4, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 82, rates: [72,35,25,50], levels: [99,99,96,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  4, fine:  0, output_level: 58, rates: [85,65,55,55], levels: [99,68,60,0],  vel_sens: 4, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Kalimba — Algorithm 5
-        //
-        // A plucked steel tine over a gourd: shorter than the koto, longer than
-        // the clavinet, around a second and a half. The carriers used to reach
-        // decay 2 at rate 0 — 0.28 dB/s, which is not a decay at all but a
-        // 30 dB shelf that never resolves. Rate 25 lets the note actually end.
-        PatchPreset {
-            algorithm: 5,
-            feedback: 3,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,50,25,55], levels: [99,87,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine: 73, output_level: 68, rates: [99,90,0,65],  levels: [99,35,0,0],   vel_sens: 5, right_depth: 18, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,50,25,55], levels: [99,87,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 62, rates: [99,88,0,60],  levels: [99,30,0,0],   vel_sens: 5, right_depth: 18, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,52,28,50], levels: [99,87,0,0],   vel_sens: 2, right_depth: 10, ..OpPreset::neutral() },
-                OpPreset { coarse:  9, fine:  0, output_level: 50, rates: [99,95,0,70],  levels: [99,25,0,0],   vel_sens: 6, right_depth: 18, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // ── New patches ──────────────────────────────────────────────
-        // Sitar — Algorithm 5 (buzzy pluck with inharmonic overtones)
-        //
-        // The longest ring in the bank, three seconds odd, for the sympathetic
-        // strings. The carriers used to park at L3 55 and hold there for as long
-        // as the key was down, which is an organ's behaviour, not a plucked
-        // string's; L3 0 with a very slow decay 2 is what actually rings out.
-        PatchPreset {
-            algorithm: 5,
-            feedback: 7,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,44,18,68], levels: [99,88,0,0],   vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  1, output_level: 88, rates: [99,82,40,60], levels: [99,75,60,0],  vel_sens: 5, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,44,18,68], levels: [99,88,0,0],   vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  5, fine:  0, output_level: 82, rates: [99,90,50,70], levels: [99,55,0,0],   vel_sens: 6, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 90, rates: [99,46,19,65], levels: [99,88,0,0],   vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  7, fine:  0, output_level: 76, rates: [99,92,55,72], levels: [99,50,0,0],   vel_sens: 7, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Oboe — Algorithm 5 (nasal, reedy tone with odd harmonics)
-        PatchPreset {
-            algorithm: 5,
-            feedback: 5,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [70,40,25,50], levels: [99,99,96,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 72, rates: [88,62,52,50], levels: [99,75,70,0],  vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [70,40,25,50], levels: [99,99,96,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 68, rates: [88,62,52,50], levels: [99,70,65,0],  vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 85, rates: [70,40,25,50], levels: [99,99,96,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  5, fine:  0, output_level: 55, rates: [88,68,58,55], levels: [99,60,50,0],  vel_sens: 4, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Clarinet — Algorithm 5 (hollow tone, odd harmonics dominant)
-        PatchPreset {
-            algorithm: 5,
-            feedback: 6,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [62,32,20,48], levels: [99,99,97,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 64, rates: [82,58,48,48], levels: [99,68,62,0],  vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 80, rates: [62,32,20,48], levels: [99,99,97,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  4, fine:  0, output_level: 52, rates: [82,58,48,48], levels: [99,55,45,0],  vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 88, rates: [65,35,22,50], levels: [99,99,96,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  6, fine:  0, output_level: 42, rates: [85,65,55,55], levels: [99,50,40,0],  vel_sens: 4, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Trumpet — Algorithm 22 (bright brass, single carrier stack)
-        PatchPreset {
-            algorithm: 22,
-            feedback: 5,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [72,48,40,30], levels: [99,96,92,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [72,48,40,30], levels: [99,96,92,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 95, rates: [68,44,38,28], levels: [99,94,90,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 78, rates: [80,55,35,20], levels: [99,60,30,0],  vel_sens: 5, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 75, rates: [78,52,32,18], levels: [99,55,25,0],  vel_sens: 5, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 68, rates: [85,60,40,15], levels: [99,50,20,0],  vel_sens: 6, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Glockenspiel — Algorithm 5 (pure, bright, metallic bells)
-        //
-        // A treble instrument, so the scaling hinges at F5 (breakpoint 60) rather
-        // than middle C — a glock is *played* above middle C, and hinging there
-        // would put its whole range on the taper.
-        PatchPreset {
-            algorithm: 5,
-            feedback: 2,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,70,0,40],  levels: [99,55,0,0],   vel_sens: 3, break_point: 60, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine: 76, output_level: 72, rates: [99,80,0,50],  levels: [99,40,0,0],   vel_sens: 6, break_point: 60, right_depth: 16, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,70,0,40],  levels: [99,55,0,0],   vel_sens: 3, break_point: 60, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine: 69, output_level: 68, rates: [99,82,0,52],  levels: [99,35,0,0],   vel_sens: 6, break_point: 60, right_depth: 16, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 92, rates: [99,68,0,38],  levels: [99,50,0,0],   vel_sens: 3, break_point: 60, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  6, fine: 37, output_level: 58, rates: [99,88,0,58],  levels: [99,30,0,0],   vel_sens: 7, break_point: 60, right_depth: 16, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Xylophone — Algorithm 5 (woody attack, bright decay)
-        //
-        // Same reasoning as the glock, hinged an octave lower at C5.
-        PatchPreset {
-            algorithm: 5,
-            feedback: 4,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,88,0,62],  levels: [99,45,0,0],   vel_sens: 3, break_point: 55, right_depth: 10, ..OpPreset::neutral() },
-                OpPreset { coarse:  4, fine:  0, output_level: 78, rates: [99,94,0,72],  levels: [99,32,0,0],   vel_sens: 6, break_point: 55, right_depth: 20, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 92, rates: [99,86,0,60],  levels: [99,42,0,0],   vel_sens: 3, break_point: 55, right_depth: 10, ..OpPreset::neutral() },
-                OpPreset { coarse:  6, fine:  0, output_level: 70, rates: [99,92,0,70],  levels: [99,28,0,0],   vel_sens: 6, break_point: 55, right_depth: 20, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,85,0,58],  levels: [99,40,0,0],   vel_sens: 2, break_point: 55, right_depth: 10, ..OpPreset::neutral() },
-                OpPreset { coarse: 10, fine:  0, output_level: 62, rates: [99,96,0,75],  levels: [99,25,0,0],   vel_sens: 7, break_point: 55, right_depth: 20, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Steel Pan — Algorithm 5 (warm metallic, detuned partials)
-        PatchPreset {
-            algorithm: 5,
-            feedback: 3,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [95,65,25,45], levels: [99,72,50,0],  vel_sens: 2, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine: 38, output_level: 76, rates: [95,75,30,50], levels: [99,50,0,0],   vel_sens: 5, right_depth: 16, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [95,65,25,45], levels: [99,72,50,0],  vel_sens: 2, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine: 36, output_level: 70, rates: [95,78,32,52], levels: [99,45,0,0],   vel_sens: 5, right_depth: 16, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 92, rates: [95,62,22,42], levels: [99,68,45,0],  vel_sens: 2, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  5, fine: 23, output_level: 60, rates: [95,82,35,55], levels: [99,38,0,0],   vel_sens: 6, right_depth: 16, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Slap Bass — Algorithm 5 (punchy attack, quick decay)
-        PatchPreset {
-            algorithm: 5,
-            feedback: 6,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,78,40,70], levels: [99,58,0,0],   vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 88, rates: [99,92,55,75], levels: [99,42,0,0],   vel_sens: 7, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,78,40,70], levels: [99,58,0,0],   vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 82, rates: [99,88,48,72], levels: [99,50,0,0],   vel_sens: 5, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 92, rates: [99,75,38,68], levels: [99,55,0,0],   vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  5, fine:  0, output_level: 80, rates: [99,95,60,78], levels: [99,35,0,0],   vel_sens: 7, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Fretless Bass — Algorithm 5 (warm, round, singing mwah)
-        PatchPreset {
-            algorithm: 5,
-            feedback: 2,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [80,50,35,40], levels: [99,95,90,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 45, rates: [82,55,40,42], levels: [99,55,40,0],  vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [80,50,35,40], levels: [99,95,90,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 40, rates: [82,55,40,42], levels: [99,50,35,0],  vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 88, rates: [78,48,32,38], levels: [99,92,85,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 30, rates: [85,60,48,45], levels: [99,40,20,0],  vel_sens: 4, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Crystal — Algorithm 5 (glassy, shimmering, inharmonic partials)
-        PatchPreset {
-            algorithm: 5,
-            feedback: 2,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [85,50,20,35], levels: [99,80,60,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  7, fine:  1, output_level: 72, rates: [90,60,15,30], levels: [99,45,0,0],   vel_sens: 5, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 95, rates: [85,50,20,35], levels: [99,78,58,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse: 11, fine:  0, output_level: 65, rates: [92,65,12,28], levels: [99,38,0,0],   vel_sens: 6, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 88, rates: [85,48,18,32], levels: [99,75,55,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine: 57, output_level: 68, rates: [88,55,10,25], levels: [99,42,0,0],   vel_sens: 5, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Ice Rain — Algorithm 5 (bright cascading tones, fast arpeggiated feel)
-        PatchPreset {
-            algorithm: 5,
-            feedback: 3,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [92,55,15,30], levels: [99,72,45,0],  vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine: 73, output_level: 78, rates: [95,65,10,25], levels: [99,40,0,0],   vel_sens: 6, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 95, rates: [90,52,12,28], levels: [99,68,40,0],  vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  9, fine:  0, output_level: 70, rates: [96,70,8,22],  levels: [99,35,0,0],   vel_sens: 7, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 88, rates: [88,48,18,32], levels: [99,65,38,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse: 13, fine:  0, output_level: 62, rates: [97,75,5,20],  levels: [99,30,0,0],   vel_sens: 7, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Synth Pad — Algorithm 1 (warm, evolving, lush pad)
-        PatchPreset {
-            algorithm: 1,
-            feedback: 5,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [28,20,18,35], levels: [99,99,97,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 62, rates: [40,38,35,40], levels: [99,68,65,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 55, rates: [45,42,40,42], levels: [99,60,55,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [30,22,18,38], levels: [99,99,97,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 58, rates: [42,40,38,42], levels: [99,65,60,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 48, rates: [48,45,42,45], levels: [99,55,48,0],  vel_sens: 3, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Digital Pad — Algorithm 5 (shimmery, evolving digital texture)
-        PatchPreset {
-            algorithm: 5,
-            feedback: 3,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [30,20,15,35], levels: [99,99,95,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine: 41, output_level: 55, rates: [35,25,18,40], levels: [99,60,45,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 95, rates: [32,22,16,38], levels: [99,99,93,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine: 12, output_level: 50, rates: [38,28,20,42], levels: [99,55,35,0],  vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 85, rates: [35,25,18,40], levels: [99,95,88,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine: 57, output_level: 42, rates: [42,32,22,45], levels: [99,48,28,0],  vel_sens: 3, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Cello — Algorithm 2 (rich bowed string with rosin bite)
-        PatchPreset {
-            algorithm: 2,
-            feedback: 4,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [42,50,48,22], levels: [99,96,94,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 65, rates: [48,55,52,22], levels: [99,72,68,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 58, rates: [52,58,55,20], levels: [99,68,62,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 88, rates: [42,50,48,22], levels: [99,94,92,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 52, rates: [50,55,52,20], levels: [99,62,55,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  4, fine:  0, output_level: 42, rates: [55,58,55,18], levels: [99,55,45,0],  vel_sens: 3, ..OpPreset::neutral() },
-            ],
-            // A soloist's left hand: 3.7 Hz at 56 cents peak to peak, in after
-            // 0.58 s. Deeper and a little earlier than the string section's,
-            // which is the difference between one player and twenty.
-            lfo: LfoPreset {
-                speed: 33, delay: 45, pmd: 18, pitch_mod_sens: 3,
-                waveform: LfoWave::Sine, sync: true, ..LfoPreset::neutral()
-            },
-            ..PatchPreset::neutral()
-        },
-        // Pizzicato — Algorithm 5 (short plucked string)
-        PatchPreset {
-            algorithm: 5,
-            feedback: 3,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,85,0,65],  levels: [99,48,0,0],   vel_sens: 3, right_depth: 12, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 72, rates: [99,90,0,70],  levels: [99,35,0,0],   vel_sens: 5, right_depth: 20, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,85,0,65],  levels: [99,48,0,0],   vel_sens: 3, right_depth: 12, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 65, rates: [99,92,0,72],  levels: [99,30,0,0],   vel_sens: 5, right_depth: 20, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 92, rates: [99,82,0,62],  levels: [99,45,0,0],   vel_sens: 2, right_depth: 12, ..OpPreset::neutral() },
-                OpPreset { coarse:  5, fine:  0, output_level: 55, rates: [99,95,0,75],  levels: [99,25,0,0],   vel_sens: 6, right_depth: 20, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Log Drum — Algorithm 5 (deep woody thud, pitch drop)
-        PatchPreset {
-            algorithm: 5,
-            feedback: 4,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,90,0,50],  levels: [99,40,0,0],   vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 85, rates: [99,95,0,60],  levels: [99,30,0,0],   vel_sens: 5, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,90,0,50],  levels: [99,40,0,0],   vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine: 41, output_level: 80, rates: [99,94,0,58],  levels: [99,28,0,0],   vel_sens: 5, ..OpPreset::neutral() },
-                OpPreset { coarse:  0, fine:  0, output_level: 99, rates: [99,88,0,48],  levels: [99,45,0,0],   vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 72, rates: [99,96,0,65],  levels: [99,22,0,0],   vel_sens: 6, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Tinkle Bell — Algorithm 5 (small, bright, high bell)
-        //
-        // Hinged at C5 like the xylophone: this one lives at the top of the
-        // keyboard, and the ratio-14 modulator is the first thing that should go
-        // as it climbs — at note 96 it is already past 29 kHz and folding.
-        PatchPreset {
-            algorithm: 5,
-            feedback: 2,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,72,0,35],  levels: [99,58,0,0],   vel_sens: 3, break_point: 55, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  4, fine: 68, output_level: 70, rates: [99,82,0,45],  levels: [99,38,0,0],   vel_sens: 6, break_point: 55, right_depth: 16, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 95, rates: [99,70,0,33],  levels: [99,55,0,0],   vel_sens: 3, break_point: 55, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse:  7, fine: 52, output_level: 62, rates: [99,85,0,48],  levels: [99,32,0,0],   vel_sens: 7, break_point: 55, right_depth: 16, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 88, rates: [99,68,0,30],  levels: [99,52,0,0],   vel_sens: 3, break_point: 55, right_depth: 8,  ..OpPreset::neutral() },
-                OpPreset { coarse: 14, fine:  0, output_level: 55, rates: [99,90,0,52],  levels: [99,28,0,0],   vel_sens: 7, break_point: 55, right_depth: 16, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // Shakuhachi — Algorithm 5 (breathy Japanese flute, lots of air noise)
-        PatchPreset {
-            algorithm: 5,
-            feedback: 7,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [55,30,20,45], levels: [99,99,96,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 72, rates: [80,55,45,45], levels: [99,75,70,0],  vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 82, rates: [58,32,22,48], levels: [99,99,95,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 60, rates: [82,58,48,48], levels: [99,65,55,0],  vel_sens: 4, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 78, rates: [52,28,18,42], levels: [99,99,94,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse: 11, fine:  0, output_level: 52, rates: [90,70,60,55], levels: [99,58,45,0],  vel_sens: 5, ..OpPreset::neutral() },
-            ],
-            // Yuri: the slow, wide vibrato a shakuhachi player leans into at the
-            // end of a held note — 3.4 Hz at 68 cents peak to peak, and a full
-            // 1.55 s late so only a sustained note ever gets it. Triangle rather
-            // than sine, which gives it the push the technique has.
-            lfo: LfoPreset {
-                speed: 31, delay: 75, pmd: 22, pitch_mod_sens: 3,
-                waveform: LfoWave::Triangle, sync: true, ..LfoPreset::neutral()
-            },
-            ..PatchPreset::neutral()
-        },
-        // ── Verified factory ROM patches ──
-        // Source: Yamaha DX7 ROM sysex decoded via github.com/itsjoesullivan/dx7-patches
-        // Frequency mapping: JSON "frequency":0 = ratio 0.5, "frequency":N = ratio N.0
+// ── Decoding the ROM ──
 
-        // SYNBRASS 1 — ROM2B — Algorithm 22, fb 7
-        PatchPreset {
-            algorithm: 22,
-            feedback: 7,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,76,99,71], levels: [99,88,96,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  0, fine:  0, output_level: 91, rates: [25,16,18,71], levels: [92,95,93,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  0, fine:  0, output_level: 99, rates: [99,76,82,71], levels: [99,98,98,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  0, fine:  0, output_level: 99, rates: [99,36,41,71], levels: [99,98,98,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  0, fine:  0, output_level: 99, rates: [99,36,41,71], levels: [99,98,98,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  0, fine:  0, output_level: 83, rates: [99,32,28,68], levels: [98,98,92,0],  vel_sens: 2, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
+/// Clamp a ROM byte into the 0-99 domain almost every DX7 patch parameter
+/// shares.
+///
+/// Four values in the factory set are genuinely out of that range — `TIMPANI`
+/// and `HORNS` carry an EG value of 127, `E.GRAND 1` an EG rate of 127, and
+/// `60-S ORGAN` a frequency fine of 100. They are clamped here rather than
+/// edited in the data, which is both what the hardware does with them and the
+/// only way the file stays the bytes the cartridges shipped with.
+fn param99(byte: u8) -> u8 {
+    byte.min(99)
+}
+
+/// Decode one packed voice.
+///
+/// Bytes 0-101 are six operators of 17 bytes each stored **OP6 first**, so the
+/// loop reads them backwards. Within an operator:
+///
+/// | byte | contents |
+/// |------|----------|
+/// | 0-3 | EG rates R1-R4 |
+/// | 4-7 | EG levels L1-L4 |
+/// | 8 | break point |
+/// | 9-10 | left / right depth |
+/// | 11 | bits 3-2 right curve, bits 1-0 left curve |
+/// | 12 | bits 6-3 detune, bits 2-0 rate scaling |
+/// | 13 | bits 4-2 velocity sensitivity, bits 1-0 amp mod sensitivity |
+/// | 14 | output level |
+/// | 15 | bits 5-1 frequency coarse, bit 0 oscillator mode |
+/// | 16 | frequency fine |
+///
+/// and then, for the voice as a whole:
+///
+/// | byte | contents |
+/// |------|----------|
+/// | 102-109 | pitch EG rates 1-4, then levels 1-4 |
+/// | 110 | bits 4-0 algorithm, 0-based |
+/// | 111 | bit 3 oscillator key sync, bits 2-0 feedback |
+/// | 112-115 | LFO speed, delay, pitch mod depth, amp mod depth |
+/// | 116 | bits 6-4 pitch mod sensitivity, bits 3-1 waveform, bit 0 LFO key sync |
+/// | 117 | transpose |
+/// | 118-127 | name |
+fn decode_voice(packed: &[u8]) -> PatchPreset {
+    // Every caller hands this a `chunks_exact(PACKED_VOICE)` chunk, so the
+    // indexing below cannot run off the end.
+    debug_assert_eq!(packed.len(), PACKED_VOICE);
+
+    let mut ops = [OpPreset::neutral(); NUM_OPERATORS];
+    for (i, op) in ops.iter_mut().enumerate() {
+        let b = &packed[(NUM_OPERATORS - 1 - i) * 17..];
+        *op = OpPreset {
+            rates: [param99(b[0]), param99(b[1]), param99(b[2]), param99(b[3])],
+            levels: [param99(b[4]), param99(b[5]), param99(b[6]), param99(b[7])],
+            break_point: param99(b[8]),
+            left_depth: param99(b[9]),
+            right_depth: param99(b[10]),
+            right_curve: ScaleCurve::from_bits(b[11] >> 2),
+            left_curve: ScaleCurve::from_bits(b[11]),
+            detune: ((b[12] >> 3) & 15).min(14),
+            rate_scaling: b[12] & 7,
+            vel_sens: (b[13] >> 2) & 7,
+            amp_mod_sens: b[13] & 3,
+            output_level: param99(b[14]),
+            coarse: (b[15] >> 1) & 31,
+            mode: if b[15] & 1 == 0 { OpFreqMode::Ratio } else { OpFreqMode::Fixed },
+            fine: param99(b[16]),
+        };
+    }
+
+    let mut name = [b' '; NAME_LEN];
+    for (dst, &src) in name.iter_mut().zip(&packed[118..128]) {
+        // The DX7's character set has a handful of symbols outside ASCII that a
+        // terminal cannot draw; none of the factory names use one, but a
+        // cartridge that did must not put an unprintable byte on the screen.
+        *dst = if (0x20..0x7F).contains(&src) { src } else { b'?' };
+    }
+
+    PatchPreset {
+        // Stored 0-based, displayed 1-32.
+        algorithm: (packed[110] & 31) + 1,
+        feedback: packed[111] & 7,
+        ops,
+        lfo: LfoPreset {
+            speed: param99(packed[112]),
+            delay: param99(packed[113]),
+            pmd: param99(packed[114]),
+            amd: param99(packed[115]),
+            pitch_mod_sens: (packed[116] >> 4) & 7,
+            waveform: LfoWave::from_bits(packed[116] >> 1),
+            sync: packed[116] & 1 != 0,
         },
-        // VOICES — ROM4A — Algorithm 5, fb 7
-        PatchPreset {
-            algorithm: 5,
-            feedback: 7,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [31,20,53,57], levels: [99,94,97,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 54, rates: [19,26,53,25], levels: [46,56,71,46], vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [31,20,53,39], levels: [99,94,97,0],  vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 92, rates: [10,19,41,12], levels: [48,58,20,9],  vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 99, rates: [31,21,36,63], levels: [99,90,85,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 84, rates: [14,72,48,17], levels: [53,47,41,0],  vel_sens: 2, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
+        pitch_eg: PitchEgPreset {
+            rates: [param99(packed[102]), param99(packed[103]),
+                    param99(packed[104]), param99(packed[105])],
+            levels: [param99(packed[106]), param99(packed[107]),
+                     param99(packed[108]), param99(packed[109])],
         },
-        // E.PIANO 2 — ROM1B — Algorithm 12, fb 7
-        PatchPreset {
-            algorithm: 12,
-            feedback: 7,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [90,85,20,54], levels: [99,93,0,0],   vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 75, rates: [85,85,20,54], levels: [99,93,0,0],   vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [80,70,35,55], levels: [99,90,0,0],   vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  0, fine:  0, output_level: 93, rates: [95,61,50,78], levels: [99,0,0,0],    vel_sens: 7, ..OpPreset::neutral() },
-                OpPreset { coarse: 11, fine:  0, output_level: 53, rates: [94,38,34,68], levels: [87,55,0,0],   vel_sens: 6, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 86, rates: [94,99,0,85],  levels: [99,99,0,0],   vel_sens: 0, break_point: 34, right_depth: 40, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // ACCORDION — ROM1B — Algorithm 3, fb 7
-        PatchPreset {
-            algorithm: 3,
-            feedback: 7,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 87, rates: [55,15,10,76], levels: [99,92,82,0],  vel_sens: 0, break_point: 68, right_depth: 68, ..OpPreset::neutral() },
-                OpPreset { coarse:  0, fine:  0, output_level: 91, rates: [91,15,10,70], levels: [99,92,71,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 56, rates: [87,15,10,46], levels: [99,92,71,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 90, rates: [55,15,10,69], levels: [99,92,99,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 75, rates: [63,15,10,46], levels: [99,92,68,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  6, fine:  0, output_level: 69, rates: [98,15,10,50], levels: [90,92,68,0],  vel_sens: 0, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // HARP 1 — ROM1B — Algorithm 3, fb 7
-        //
-        // The ROM has both carriers (OP1 and OP4) at level 99 with velocity
-        // sensitivity 7, at the same ratio. That is authentic, and on the hardware
-        // it is fine — six operator slots share one full-scale output, so two
-        // maxed carriers are a third of it. Here carriers are summed and divided
-        // by their own count, so two of them at 99 arrive at exactly 1.0 before
-        // velocity's +5.27 dB is added on top, and every note clipped. Both are
-        // trimmed by the same six levels (-4.5 dB) so the doubling, the timbre and
-        // the velocity response are all untouched and only the patch's absolute
-        // level moves.
-        PatchPreset {
-            algorithm: 3,
-            feedback: 7,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 93, rates: [95,27,45,31], levels: [99,70,0,0],   vel_sens: 7, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 75, rates: [95,30,99,30], levels: [99,70,0,0],   vel_sens: 3, break_point: 52, left_depth: 8, left_curve: ScaleCurve::LinPos, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 87, rates: [95,42,44,35], levels: [99,70,0,0],   vel_sens: 0, break_point: 58, right_depth: 37, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 93, rates: [95,29,49,30], levels: [99,70,0,0],   vel_sens: 7, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 55, rates: [95,38,99,17], levels: [99,70,0,0],   vel_sens: 4, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 86, rates: [95,46,28,23], levels: [94,79,0,0],   vel_sens: 1, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // CLAV 2 — ROM1B — Algorithm 4, fb 5
-        PatchPreset {
-            algorithm: 4,
-            feedback: 5,
-            ops: [
-                OpPreset { coarse:  2, fine:  0, output_level: 99, rates: [95,75,28,60], levels: [99,85,0,0],   vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  0, fine:  0, output_level: 99, rates: [95,95,0,0],   levels: [99,96,89,0],  vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  6, fine:  0, output_level: 80, rates: [98,50,0,0],   levels: [87,86,0,0],   vel_sens: 4, break_point: 32, right_depth: 21, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 99, rates: [95,64,28,60], levels: [99,85,0,0],   vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  0, fine:  0, output_level: 99, rates: [95,95,0,0],   levels: [99,78,89,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  8, fine:  0, output_level: 78, rates: [98,87,0,0],   levels: [87,86,0,0],   vel_sens: 5, break_point: 32, right_depth: 6, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // BANJO — ROM1B — Algorithm 8, fb 7
-        PatchPreset {
-            algorithm: 8,
-            feedback: 7,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [95,62,28,58], levels: [99,60,0,0],   vel_sens: 0, break_point: 36, right_depth: 14, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 80, rates: [99,20,0,0],   levels: [99,0,0,0],    vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 91, rates: [98,36,44,56], levels: [99,99,0,0],   vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  5, fine:  0, output_level: 78, rates: [99,30,20,54], levels: [99,95,0,0],   vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 75, rates: [99,77,26,48], levels: [99,98,0,0],   vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse: 15, fine:  0, output_level: 87, rates: [99,85,43,71], levels: [99,77,0,0],   vel_sens: 0, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // GUITAR 1 — ROM1A — Algorithm 8, fb 7
-        PatchPreset {
-            algorithm: 8,
-            feedback: 7,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [74,85,27,70], levels: [99,95,0,0],   vel_sens: 5, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 93, rates: [91,25,39,60], levels: [99,86,0,0],   vel_sens: 7, break_point: 0, right_depth: 65, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [78,87,22,75], levels: [99,92,0,0],   vel_sens: 7, break_point: 34, left_depth: 9, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 89, rates: [81,87,22,75], levels: [99,92,0,0],   vel_sens: 4, break_point: 0, right_depth: 14, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 99, rates: [81,87,22,75], levels: [99,92,0,0],   vel_sens: 7, break_point: 0, right_depth: 15, ..OpPreset::neutral() },
-                OpPreset { coarse: 12, fine:  0, output_level: 57, rates: [99,57,99,75], levels: [99,0,0,0],    vel_sens: 6, break_point: 39, left_depth: 53, right_depth: 20, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // PIANO 1 — ROM1A — Algorithm 19, fb 6
-        PatchPreset {
-            algorithm: 19,
-            feedback: 6,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [81,25,20,48], levels: [99,82,0,0],   vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 87, rates: [99,0,25,0],   levels: [99,75,0,0],   vel_sens: 0, break_point: 0, right_depth: 13, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 57, rates: [81,25,25,14], levels: [99,99,99,0],  vel_sens: 0, break_point: 47, left_depth: 32, left_curve: ScaleCurve::LinPos, right_depth: 74, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [81,23,22,45], levels: [99,78,0,0],   vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 93, rates: [81,58,36,39], levels: [99,14,0,0],   vel_sens: 1, break_point: 48, right_depth: 66, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 82, rates: [99,0,25,0],   levels: [99,75,0,0],   vel_sens: 0, break_point: 0, right_depth: 10, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // CELESTE — ROM1B — Algorithm 31, fb 5
-        PatchPreset {
-            algorithm: 31,
-            feedback: 5,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [96,30,25,40], levels: [99,80,0,0],   vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 86, rates: [96,30,25,40], levels: [99,80,0,0],   vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 88, rates: [96,30,25,40], levels: [99,80,0,0],   vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 97, rates: [96,30,25,40], levels: [99,80,0,0],   vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [96,82,25,40], levels: [99,80,0,0],   vel_sens: 7, ..OpPreset::neutral() },
-                OpPreset { coarse:  5, fine:  0, output_level: 65, rates: [96,30,25,40], levels: [99,80,0,0],   vel_sens: 7, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // COW BELL — ROM2A — Algorithm 6, fb 0
-        PatchPreset {
-            algorithm: 6,
-            feedback: 0,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [96,45,50,50], levels: [99,90,0,0],   vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  7, fine:  0, output_level: 99, rates: [96,80,50,33], levels: [78,75,0,0],   vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [96,65,65,50], levels: [99,0,0,0],    vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  4, fine:  0, output_level: 80, rates: [96,98,44,33], levels: [99,96,97,0],  vel_sens: 0, break_point: 0, right_depth: 6, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [96,76,50,46], levels: [99,90,0,0],   vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  8, fine:  0, output_level: 74, rates: [96,66,99,33], levels: [99,96,89,0],  vel_sens: 0, break_point: 0, right_depth: 6, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // SYN-BASS 1 — ROM2B — Algorithm 3, fb 7
-        PatchPreset {
-            algorithm: 3,
-            feedback: 7,
-            ops: [
-                OpPreset { coarse:  2, fine:  0, output_level: 99, rates: [99,76,99,99], levels: [99,88,96,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 76, rates: [61,38,25,47], levels: [99,72,72,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 83, rates: [99,39,25,35], levels: [99,71,64,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,76,99,99], levels: [99,88,96,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 78, rates: [99,39,25,71], levels: [99,71,64,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 75, rates: [61,38,25,32], levels: [99,72,72,0],  vel_sens: 0, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // TIMPANI — ROM1A — Algorithm 16, fb 7
-        PatchPreset {
-            algorithm: 16,
-            feedback: 7,
-            ops: [
-                OpPreset { coarse:  0, fine:  0, output_level: 99, rates: [99,36,98,33], levels: [99,0,0,0],    vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  0, fine:  0, output_level: 86, rates: [99,74,0,0],   levels: [99,0,0,0],    vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  0, fine:  0, output_level: 85, rates: [99,77,26,23], levels: [99,72,0,0],   vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  0, fine:  0, output_level: 87, rates: [99,31,17,30], levels: [99,75,0,0],   vel_sens: 7, ..OpPreset::neutral() },
-                OpPreset { coarse:  0, fine:  0, output_level: 73, rates: [99,50,26,19], levels: [99,0,0,0],    vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  0, fine:  0, output_level: 73, rates: [98,2,26,27],  levels: [98,0,0,0],    vel_sens: 1, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // PAN FLUTE — ROM4A — Algorithm 3, fb 7
-        PatchPreset {
-            algorithm: 3,
-            feedback: 7,
-            ops: [
-                OpPreset { coarse:  2, fine:  0, output_level: 97, rates: [67,41,28,75], levels: [99,99,80,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  8, fine:  0, output_level: 75, rates: [99,72,31,17], levels: [60,70,0,0],   vel_sens: 0, break_point: 48, right_depth: 67, ..OpPreset::neutral() },
-                OpPreset { coarse:  7, fine:  0, output_level: 98, rates: [57,72,31,17], levels: [60,70,0,0],   vel_sens: 4, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 90, rates: [67,41,28,75], levels: [99,99,80,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  8, fine:  0, output_level: 94, rates: [99,72,31,17], levels: [60,70,0,0],   vel_sens: 0, break_point: 48, right_depth: 67, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 88, rates: [57,72,31,17], levels: [60,70,0,0],   vel_sens: 0, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // HORNS — ROM4A — Algorithm 18, fb 7
-        PatchPreset {
-            algorithm: 18,
-            feedback: 7,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [55,24,19,55], levels: [99,86,86,0],  vel_sens: 3, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 70, rates: [37,34,15,70], levels: [85,0,0,0],    vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 77, rates: [39,35,22,50], levels: [99,86,86,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 79, rates: [66,92,22,50], levels: [53,61,62,0],  vel_sens: 2, ..OpPreset::neutral() },
-                OpPreset { coarse:  3, fine:  0, output_level: 70, rates: [48,55,22,50], levels: [98,61,62,0],  vel_sens: 1, ..OpPreset::neutral() },
-                OpPreset { coarse:  8, fine:  0, output_level: 79, rates: [77,56,20,70], levels: [99,0,0,0],    vel_sens: 2, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-        // TOY PIANO — ROM1B — Algorithm 30, fb 7
-        PatchPreset {
-            algorithm: 30,
-            feedback: 7,
-            ops: [
-                OpPreset { coarse:  1, fine:  0, output_level: 99, rates: [99,99,36,41], levels: [99,99,0,0],   vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  2, fine:  0, output_level: 98, rates: [99,71,30,42], levels: [99,70,0,0],   vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  4, fine:  0, output_level: 99, rates: [99,71,39,42], levels: [99,70,0,0],   vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse: 12, fine:  0, output_level: 68, rates: [99,99,29,30], levels: [99,99,99,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse: 12, fine:  0, output_level: 66, rates: [99,99,99,42], levels: [99,99,99,0],  vel_sens: 0, ..OpPreset::neutral() },
-                OpPreset { coarse:  1, fine:  0, output_level: 85, rates: [99,99,36,41], levels: [99,99,0,0],   vel_sens: 0, ..OpPreset::neutral() },
-            ],
-            ..PatchPreset::neutral()
-        },
-    ]
+        transpose: packed[117].min(48),
+        osc_key_sync: packed[111] & 0x08 != 0,
+        name,
+    }
+}
+
+/// The 256 factory voices, unpacked once for the whole process.
+///
+/// Decoding is 32 KB of bit-shifting — nothing, but it happens exactly once and
+/// never on the audio thread. Every instance borrows the same table rather than
+/// carrying its own 40 KB copy, and [`Dx7Synth::new`] touches it so the one-time
+/// work lands on whichever thread built the instrument.
+fn presets() -> &'static [PatchPreset; VOICE_COUNT] {
+    static DECODED: OnceLock<Box<[PatchPreset; VOICE_COUNT]>> = OnceLock::new();
+    DECODED.get_or_init(|| {
+        let mut bank = Box::new([PatchPreset::neutral(); VOICE_COUNT]);
+        for (slot, packed) in bank.iter_mut().zip(ROM.chunks_exact(PACKED_VOICE)) {
+            *slot = decode_voice(packed);
+        }
+        bank
+    })
+}
+
+// ── Voice selection ──
+
+/// One knob into one of `count` equal steps.
+///
+/// Total by construction: `params` is public, so the knob can arrive as
+/// anything at all. The float-to-int cast saturates in both directions and
+/// turns NaN into zero, so every input lands on a real voice.
+fn selector(value: f32, count: usize) -> usize {
+    ((value * (count as f32 - 0.01)) as usize).min(count - 1)
+}
+
+/// The knob position in the middle of step `index` of `count` — the one
+/// position in the step that no amount of float rounding can push into a
+/// neighbouring step. The inverse of [`selector`].
+fn knob_for(index: usize, count: usize) -> f32 {
+    (index as f32 + 0.5) / count as f32
+}
+
+/// Which of the eight cartridges the bank knob is pointing at.
+pub fn bank_index(value: f32) -> usize {
+    selector(value, BANK_COUNT)
+}
+
+/// Which voice of the selected cartridge the patch knob is pointing at.
+pub fn patch_index(value: f32) -> usize {
+    selector(value, PATCH_COUNT)
+}
+
+/// The absolute voice number, 0-255, that the two knobs select together.
+pub fn voice_index(bank: f32, patch: f32) -> usize {
+    bank_index(bank) * PATCH_COUNT + patch_index(patch)
+}
+
+/// The `(bank, patch)` knob positions that select voice number `voice`.
+///
+/// The inverse of [`voice_index`], for anything that walks the factory set by
+/// number — a level sweep, a headroom test — rather than by knob.
+pub fn voice_knobs(voice: usize) -> (f32, f32) {
+    let voice = voice.min(VOICE_COUNT - 1);
+    (
+        knob_for(voice / PATCH_COUNT, BANK_COUNT),
+        knob_for(voice % PATCH_COUNT, PATCH_COUNT),
+    )
+}
+
+/// A factory voice's ROM name, trailing padding removed.
+///
+/// 194 of the 256 names are distinct; the repeats are the cartridges' own —
+/// several voices appear on more than one card — which is why the bank selector
+/// is part of the display rather than a hidden index.
+pub fn voice_name(voice: usize) -> &'static str {
+    presets()[voice.min(VOICE_COUNT - 1)].name()
+}
+
+/// Which parameter indices are discrete selectors (rendered as labels, not bars).
+pub fn is_discrete(index: usize) -> bool {
+    matches!(index, P_PATCH | P_BANK)
+}
+
+/// The knob position one step up or down from `value`, for one of the two
+/// selectors. Anything else is left alone.
+///
+/// Steps by *index* rather than by adding a fraction of the travel. Adding
+/// 1/32 of the range 32 times does not arrive at 1.0 — the error is a few ulps
+/// either way, and a step boundary missed by one ulp is a keypress that visibly
+/// does nothing.
+pub fn step_discrete(index: usize, value: f32, up: bool) -> f32 {
+    let count = match index {
+        P_BANK => BANK_COUNT,
+        P_PATCH => PATCH_COUNT,
+        _ => return value,
+    };
+    let current = selector(value, count);
+    knob_for(
+        if up { (current + 1).min(count - 1) } else { current.saturating_sub(1) },
+        count,
+    )
+}
+
+/// Label for a discrete selector.
+///
+/// Takes the whole parameter block rather than one value, unlike the other
+/// instruments, because the two selectors are one control between them: the
+/// voice name depends on the cartridge as much as on the voice button.
+pub fn discrete_label(params: &[f32], index: usize) -> Option<&'static str> {
+    let bank = params.get(P_BANK).copied().unwrap_or(0.0);
+    let patch = params.get(P_PATCH).copied().unwrap_or(0.0);
+    match index {
+        P_PATCH => Some(voice_name(voice_index(bank, patch))),
+        P_BANK => Some(BANK_NAMES[bank_index(bank)]),
+        _ => None,
+    }
 }
 
 // ── Algorithm routing ──
@@ -2436,6 +1896,16 @@ impl DxVoice {
         self.algorithm = preset.algorithm;
         self.feedback_amount = feedback_depth(preset.feedback);
 
+        // Transpose shifts the whole keyboard, so it is applied to the note once
+        // here and everything downstream — operator frequency, keyboard level
+        // scaling and keyboard rate scaling — reads the shifted note. The
+        // *untransposed* note stays in `self.note`, because that is what a
+        // note-off will name. Clamped rather than wrapped: a bass voice two
+        // octaves down played at the bottom of the keyboard would otherwise ask
+        // for a negative note number.
+        let sounding = (i32::from(note) + i32::from(preset.transpose) - TRANSPOSE_CENTRE)
+            .clamp(0, 127) as u8;
+
         let alg = algorithm(preset.algorithm);
 
         // Voice-global modulation. Both depths collapse to zero unless the patch
@@ -2451,9 +1921,25 @@ impl DxVoice {
 
         for (i, op_preset) in preset.ops.iter().enumerate() {
             let op = &mut self.ops[i];
-            op.phase = 0.0;
-            op.prev = [0.0; 2];
-            op.freq = op_preset.frequency(note);
+            // Oscillator key sync. Resetting the phase is what makes every note
+            // of a patch identical; leaving it alone is what the other 74
+            // factory voices ask for, and it is the whole running oscillator —
+            // phase and the two samples the feedback loop averages — that has
+            // to carry over, not just the phase.
+            //
+            // One difference from the hardware, and it is deliberate: the
+            // OPS's 96 phase accumulators keep counting while a voice is idle,
+            // where these stop. So a free-running voice picked up after a
+            // silence starts where its last note left it rather than where it
+            // would have got to, and the very first note after a reset starts
+            // from zero either way. Modelling the difference means advancing
+            // six accumulators per idle voice per sample, for a phase offset
+            // that is arbitrary in both cases.
+            if preset.osc_key_sync {
+                op.phase = 0.0;
+                op.prev = [0.0; 2];
+            }
+            op.freq = op_preset.frequency(sounding);
             op.amp_mod_sens = op_preset.amp_mod_sens.min(3);
             op.pitch_tracks = op_preset.mode == OpFreqMode::Ratio;
 
@@ -2462,14 +1948,14 @@ impl DxVoice {
             // don't.
             let is_carrier = alg.carriers.contains(&i);
             let bright = if is_carrier { 1.0 } else { brightness };
-            op.gain = operator_gain(op_preset, note, vel) * bright;
+            op.gain = operator_gain(op_preset, sounding, vel) * bright;
 
             // Configure envelope from preset, with keyboard rate scaling folded
             // into the quantised rate so higher notes decay sooner.
             op.envelope.set_from_preset_scaled(
                 op_preset.rates,
                 op_preset.levels,
-                scale_rate(note, op_preset.rate_scaling),
+                scale_rate(sounding, op_preset.rate_scaling),
             );
 
             // Apply user-facing envelope scaling
@@ -2590,7 +2076,10 @@ pub struct Dx7Synth {
     sample_rate: f64,
     pub params: [f32; PARAM_COUNT],
     voice_counter: u64,
-    presets: [PatchPreset; PATCH_COUNT],
+    /// The whole factory set, borrowed rather than owned: 256 voices is 40 KB,
+    /// and every DX7 track in a project would otherwise carry its own copy of
+    /// the same constant table.
+    presets: &'static [PatchPreset; VOICE_COUNT],
     /// One LFO for the whole instrument, as on the hardware — every voice reads
     /// the same phase.
     lfo: Lfo,
@@ -2603,14 +2092,17 @@ impl Dx7Synth {
             sample_rate: 44100.0,
             params: PARAM_DEFAULTS,
             voice_counter: 0,
+            // Unpacks the ROM if this is the first instrument built. Deliberately
+            // here, on whichever thread constructs the plugin, and never in
+            // `process`.
             presets: presets(),
             lfo: Lfo::new(44100.0),
         }
     }
 
-    fn current_patch_index(&self) -> usize {
-        let idx = (self.params[P_PATCH] * (PATCH_COUNT as f32 - 0.01)) as usize;
-        idx.min(PATCH_COUNT - 1)
+    /// The voice the bank and patch knobs select between them, 0-255.
+    fn current_voice(&self) -> usize {
+        voice_index(self.params[P_BANK], self.params[P_PATCH])
     }
 
     fn next_age(&mut self) -> u64 { self.voice_counter += 1; self.voice_counter }
@@ -2708,7 +2200,7 @@ impl Plugin for Dx7Synth {
 
         let buf_len = outputs[0].len();
         let gain = self.params[P_GAIN] * OUTPUT_TRIM;
-        let patch_idx = self.current_patch_index();
+        let patch_idx = self.current_voice();
         // The knob trims the patch rather than replacing it, so it is folded into
         // this block's copy of the preset before any voice reads it. Doing it here
         // — once, up front — is what stops the authored value being silently
@@ -2812,6 +2304,10 @@ impl Plugin for Dx7Synth {
                 // Also a trim on the patch, in dB on the modulator levels:
                 // -18 hard left, 0 centred, +6 hard right.
                 P_BRIGHTNESS => "dB".into(),
+                // The two selectors read as names, not numbers; see
+                // [`discrete_label`].
+                P_PATCH => "voice".into(),
+                P_BANK => "cartridge".into(),
                 _ => "".into(),
             },
         })
@@ -2919,30 +2415,37 @@ mod tests {
         assert!(peak > 0.001 && peak <= 2.0, "peak={peak}");
     }
 
+    /// Point a synth at one of the 256 factory voices by number.
+    fn select(s: &mut Dx7Synth, voice: usize) {
+        let (bank, patch) = voice_knobs(voice);
+        s.set_parameter(P_BANK, bank);
+        s.set_parameter(P_PATCH, patch);
+    }
+
     #[test]
-    fn all_patches_produce_sound() {
-        for patch_idx in 0..PATCH_COUNT {
+    fn every_factory_voice_produces_sound() {
+        // 1.5 s, which covers the slowest attack in the factory set: the
+        // rendered peak of the quietest voice here arrives at 0.9 s.
+        for voice in 0..VOICE_COUNT {
             let mut s = Dx7Synth::new();
             s.init(44100.0, 64);
-            let patch_val = patch_idx as f32 / (PATCH_COUNT as f32 - 0.01);
-            s.set_parameter(P_PATCH, patch_val);
-            let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 2000);
+            select(&mut s, voice);
+            let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 1024);
             let peak = out.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
-            assert!(peak > 0.001, "Patch {} ({}) should produce sound, peak={peak}",
-                patch_idx, PATCH_NAMES[patch_idx]);
+            assert!(peak > 0.001, "voice {voice} ({}) should produce sound, peak={peak}",
+                voice_name(voice));
         }
     }
 
     #[test]
-    fn all_patches_finite() {
-        for patch_idx in 0..PATCH_COUNT {
+    fn every_factory_voice_is_finite() {
+        for voice in 0..VOICE_COUNT {
             let mut s = Dx7Synth::new();
             s.init(44100.0, 64);
-            let patch_val = patch_idx as f32 / (PATCH_COUNT as f32 - 0.01);
-            s.set_parameter(P_PATCH, patch_val);
-            let out = process_buffers(&mut s, &[note_on(60, 127, 0)], 500);
+            select(&mut s, voice);
+            let out = process_buffers(&mut s, &[note_on(60, 127, 0)], 200);
             assert!(out.iter().all(|v| v.is_finite()),
-                "Patch {} ({}) must produce finite output", patch_idx, PATCH_NAMES[patch_idx]);
+                "voice {voice} ({}) must produce finite output", voice_name(voice));
         }
     }
 
@@ -2987,14 +2490,70 @@ mod tests {
     }
 
     #[test]
-    fn patch_selector_range() {
-        let s = Dx7Synth::new();
-        // Min
-        assert_eq!(s.current_patch_index(), 0);
+    fn the_two_selectors_span_the_whole_factory_set() {
+        let mut s = Dx7Synth::new();
+        s.set_parameter(P_BANK, 0.0);
+        s.set_parameter(P_PATCH, 0.0);
+        assert_eq!(s.current_voice(), 0);
+        s.set_parameter(P_PATCH, 1.0);
+        assert_eq!(s.current_voice(), PATCH_COUNT - 1, "the patch knob stops at the bank's edge");
+        s.set_parameter(P_BANK, 1.0);
+        assert_eq!(s.current_voice(), VOICE_COUNT - 1);
+        s.set_parameter(P_PATCH, 0.0);
+        assert_eq!(s.current_voice(), VOICE_COUNT - PATCH_COUNT, "first voice of the last bank");
 
-        let mut s2 = Dx7Synth::new();
-        s2.set_parameter(P_PATCH, 1.0);
-        assert_eq!(s2.current_patch_index(), PATCH_COUNT - 1);
+        // Every voice is reachable, each from its own knob position, and the
+        // round trip through `voice_knobs` is exact — a rounding error here
+        // would silently make one voice unselectable and another appear twice.
+        for voice in 0..VOICE_COUNT {
+            let (bank, patch) = voice_knobs(voice);
+            assert_eq!(voice_index(bank, patch), voice, "voice {voice} is not selectable");
+        }
+
+        // `params` is public, so the knobs can arrive as anything at all.
+        for junk in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1e30, 1e30] {
+            s.params[P_BANK] = junk;
+            s.params[P_PATCH] = junk;
+            assert!(s.current_voice() < VOICE_COUNT, "knob {junk} escaped the bank");
+        }
+    }
+
+    #[test]
+    fn stepping_a_selector_moves_exactly_one_voice() {
+        // The defect this is here for: stepping by 1/32 of the knob's travel
+        // accumulates a rounding error, and around the fourth or fifth press
+        // the sum lands a few ulps below a step boundary — a keypress that
+        // visibly does nothing. Stepping by index cannot do that.
+        let mut knob = 0.0f32;
+        for want in 1..PATCH_COUNT {
+            knob = step_discrete(P_PATCH, knob, true);
+            assert_eq!(patch_index(knob), want, "patch step {want}");
+        }
+        knob = step_discrete(P_PATCH, knob, true);
+        assert_eq!(patch_index(knob), PATCH_COUNT - 1, "the top of the range holds");
+        for want in (0..PATCH_COUNT - 1).rev() {
+            knob = step_discrete(P_PATCH, knob, false);
+            assert_eq!(patch_index(knob), want, "patch step down to {want}");
+        }
+        assert_eq!(patch_index(step_discrete(P_PATCH, knob, false)), 0, "the bottom holds");
+
+        let mut knob = 0.0f32;
+        for want in 1..BANK_COUNT {
+            knob = step_discrete(P_BANK, knob, true);
+            assert_eq!(bank_index(knob), want, "bank step {want}");
+        }
+        // Anything that is not a selector is left exactly where it was.
+        for index in [P_FEEDBACK, P_BRIGHTNESS, P_GAIN] {
+            assert_eq!(step_discrete(index, 0.42, true), 0.42);
+        }
+    }
+
+    #[test]
+    fn the_default_voice_is_the_electric_piano() {
+        let s = Dx7Synth::new();
+        assert_eq!(s.current_voice(), 10);
+        assert_eq!(voice_name(s.current_voice()), "E.PIANO 1");
+        assert_eq!(BANK_NAMES[bank_index(s.params[P_BANK])], "ROM1A");
     }
 
     /// Run one envelope, held down, and return `(atten_db, stage)` per sample.
@@ -3417,111 +2976,270 @@ mod tests {
         assert!(post_peak > 0.001, "Should sound after note: {post_peak}");
     }
 
-    // ── Operator frequency ──
+    // ── The factory ROM ──
 
-    /// The `freq_ratio` every preset operator carried before it was converted to
-    /// a coarse/fine pair. A DX7 can only dial `coarse * (1 + fine/100)`, so eight
-    /// of the ratios below were never reachable on hardware and had to move; this
-    /// table is what pins how far they were allowed to move.
-    // The 3.14 entries are Crystal's and DigiPad's OP6 frequency ratios, which
-    // clippy reads as a botched pi.
-    #[allow(clippy::approx_constant)]
-    const PRE_CONVERSION_RATIOS: [[f64; NUM_OPERATORS]; PATCH_COUNT] = [
-        [  1.0,  14.0,   1.0,  14.0,   1.0,   1.0], // E.Piano
-        [  1.0,   1.0,   1.0,   1.0,   1.0,   2.0], // Bass
-        [  1.0,   1.0,   1.0,   3.0,   1.0,   1.0], // Brass
-        [  1.0,  4.23,   1.0,  5.37,   1.0,  13.0], // Bells
-        [  0.5,   1.0,   2.0,   3.0,   4.0,   6.0], // Organ
-        [  1.0,   1.0,   1.0,   2.0,   2.0,   3.0], // Strings
-        [  1.0,   1.0,   1.0,   2.0,   1.0,   1.0], // Flute
-        [  1.0,   5.0,   1.0,   5.0,   1.0,   3.0], // Harpsi
-        [  1.0,   4.0,   1.0,   4.0,   1.0,  10.0], // Marimba
-        [  1.0,  3.41,   1.0,  3.41,   1.0,   2.0], // Clav
-        [  1.0,   3.5,   1.0,   3.5,   1.0,  7.12], // TubBell
-        [  1.0,   3.5,   1.0,  5.19,   1.0,   8.5], // Vibes
-        [  1.0,   2.0,   1.0,   2.0,   1.0,   5.0], // Koto
-        [  1.0,   1.0,   2.0,   1.0,   1.0,   3.0], // SynLead
-        [  1.0,   1.0,   1.0,   1.0,   2.0,   3.0], // Choir
-        [  1.0,   1.0,   1.0,   2.0,   3.0,   4.0], // Harmnca
-        [  1.0,  5.19,   1.0,   3.0,   1.0,   9.0], // Kalimba
-        [  1.0,  1.01,   1.0,   5.0,   1.0,   7.0], // Sitar
-        [  1.0,   1.0,   1.0,   3.0,   1.0,   5.0], // Oboe
-        [  1.0,   2.0,   3.0,   4.0,   1.0,   6.0], // Clarnet
-        [  1.0,   1.0,   1.0,   1.0,   1.0,   3.0], // Trumpet
-        [  1.0,  3.52,   1.0,  5.06,   1.0,  8.21], // Glock
-        [  1.0,   4.0,   3.0,   6.0,   1.0,  10.0], // Xylophn
-        [  1.0,  2.76,   1.0,  4.07,   1.0,  6.14], // SteelPn
-        [  1.0,   3.0,   1.0,   1.0,   1.0,   5.0], // SlapBas
-        [  1.0,   1.0,   1.0,   1.0,   1.0,   2.0], // FrtlsBs
-        [  1.0,  7.07,   1.0,  11.0,   2.0,  3.14], // Crystal
-        [  1.0,  5.19,   2.0,   9.0,   1.0,  13.0], // IceRain
-        [  1.0,   1.0,   2.0,   1.0,   2.0,   3.0], // SynPad
-        [  1.0,  1.41,   1.0,  2.23,   1.0,  3.14], // DigiPad
-        [  1.0,   1.0,   2.0,   1.0,   3.0,   4.0], // Cello
-        [  1.0,   2.0,   1.0,   3.0,   1.0,   5.0], // Pizz
-        [  1.0,   2.0,   1.0,  1.41,   0.5,   3.0], // LogDrum
-        [  1.0,  6.73,   1.0, 10.65,   2.0,  14.0], // TnklBel
-        [  1.0,   1.0,   2.0,   3.0,   1.0,  11.0], // Shakuha
-        [  1.0,   0.5,   0.5,   0.5,   0.5,   0.5], // SynBras
-        [  1.0,   2.0,   1.0,   1.0,   2.0,   2.0], // Voices
-        [  1.0,   1.0,   1.0,   0.5,  11.0,   1.0], // E.Pian2
-        [  1.0,   0.5,   3.0,   2.0,   1.0,   6.0], // Accordn
-        [  1.0,   1.0,   1.0,   1.0,   1.0,   2.0], // Harp
-        [  2.0,   0.5,   6.0,   2.0,   0.5,   8.0], // Clav2
-        [  1.0,   1.0,   1.0,   5.0,   1.0,  15.0], // Banjo
-        [  1.0,   3.0,   1.0,   3.0,   3.0,  12.0], // Guitar1
-        [  1.0,   1.0,   3.0,   1.0,   1.0,   1.0], // Piano1
-        [  1.0,   1.0,   1.0,   1.0,   1.0,   5.0], // Celeste
-        [  1.0,   7.0,   1.0,   4.0,   1.0,   8.0], // CowBell
-        [  2.0,   1.0,   1.0,   1.0,   1.0,   1.0], // SynBas1
-        [  0.5,   0.5,   0.5,   0.5,   0.5,   0.5], // Timpani
-        [  2.0,   8.0,   7.0,   2.0,   8.0,   3.0], // PanFlut
-        [  1.0,   1.0,   1.0,   1.0,   3.0,   8.0], // Horns
-        [  1.0,   2.0,   4.0,  12.0,  12.0,   1.0], // ToyPian
-    ];
+    /// The 14 fully decoded reference voices, spread across all eight banks.
+    ///
+    /// Included verbatim rather than transcribed into Rust so that the fixture
+    /// stays the artifact it was checked against, and so a decoder that agrees
+    /// with itself cannot pass by agreeing with a typo.
+    const REFERENCE: &str = include_str!("../tests/data/dx7_reference.json");
 
-    fn cents(a: f64, b: f64) -> f64 {
-        1200.0 * (a / b).log2()
+    fn u8_at(v: &serde_json::Value, key: &str) -> u8 {
+        v[key].as_u64().unwrap_or_else(|| panic!("missing {key} in {v}")) as u8
+    }
+
+    fn quad(v: &serde_json::Value, key: &str) -> [u8; 4] {
+        let a = v[key].as_array().unwrap_or_else(|| panic!("missing {key}"));
+        std::array::from_fn(|i| a[i].as_u64().unwrap_or_default() as u8)
+    }
+
+    /// The parameter value a decoded scaling curve came from, written out
+    /// here rather than read back through `ScaleCurve::from_bits` so that the
+    /// documented mapping — 0 = -LIN, 1 = -EXP, 2 = +EXP, 3 = +LIN — is
+    /// asserted rather than assumed.
+    fn curve_bits(curve: ScaleCurve) -> u8 {
+        match curve {
+            ScaleCurve::LinNeg => 0,
+            ScaleCurve::ExpNeg => 1,
+            ScaleCurve::ExpPos => 2,
+            ScaleCurve::LinPos => 3,
+        }
+    }
+
+    /// The same, for the six LFO shapes.
+    fn wave_bits(wave: LfoWave) -> u8 {
+        match wave {
+            LfoWave::Triangle => 0,
+            LfoWave::SawDown => 1,
+            LfoWave::SawUp => 2,
+            LfoWave::Square => 3,
+            LfoWave::Sine => 4,
+            LfoWave::SampleHold => 5,
+        }
+    }
+
+    /// Compare one decoded operator against its reference block.
+    fn check_op(got: &OpPreset, want: &serde_json::Value, where_: &str) {
+        assert_eq!(got.rates, quad(want, "rates"), "{where_}: EG rates");
+        assert_eq!(got.levels, quad(want, "levels"), "{where_}: EG levels");
+        assert_eq!(got.break_point, u8_at(want, "break_point"), "{where_}: break point");
+        assert_eq!(got.left_depth, u8_at(want, "left_depth"), "{where_}: left depth");
+        assert_eq!(got.right_depth, u8_at(want, "right_depth"), "{where_}: right depth");
+        assert_eq!(curve_bits(got.left_curve), u8_at(want, "left_curve"), "{where_}: left curve");
+        assert_eq!(curve_bits(got.right_curve), u8_at(want, "right_curve"), "{where_}: right curve");
+        assert_eq!(got.rate_scaling, u8_at(want, "rate_scaling"), "{where_}: rate scaling");
+        assert_eq!(got.detune, u8_at(want, "detune"), "{where_}: detune");
+        assert_eq!(got.amp_mod_sens, u8_at(want, "amp_mod_sens"), "{where_}: amp mod sens");
+        assert_eq!(got.vel_sens, u8_at(want, "vel_sens"), "{where_}: velocity sens");
+        assert_eq!(got.output_level, u8_at(want, "output_level"), "{where_}: output level");
+        assert_eq!(got.coarse, u8_at(want, "coarse"), "{where_}: coarse");
+        assert_eq!(got.fine, u8_at(want, "fine"), "{where_}: fine");
+        let mode = if u8_at(want, "mode") == 0 { OpFreqMode::Ratio } else { OpFreqMode::Fixed };
+        assert_eq!(got.mode, mode, "{where_}: oscillator mode");
     }
 
     #[test]
-    fn every_preset_ratio_is_dialable_on_hardware() {
-        // The point of the coarse/fine model: no preset may ask for a ratio the
-        // instrument cannot produce. Anything that used to be off-grid has to
-        // land on the nearest grid point, and stay close enough not to be a
-        // different interval.
-        let mut exact = 0;
-        let mut worst = 0.0f64;
-        for (p, patch) in presets().iter().enumerate() {
+    fn the_decoder_reproduces_the_reference_voices() {
+        let reference: Vec<serde_json::Value> =
+            serde_json::from_str(REFERENCE).expect("reference fixture is not valid JSON");
+        assert_eq!(reference.len(), 14, "the fixture covers 14 voices");
+
+        for want in &reference {
+            let index = want["index"].as_u64().expect("index") as usize;
+            let got = &presets()[index];
+            let where_ = format!("{} voice {index}", want["bank"].as_str().unwrap_or("?"));
+
+            assert_eq!(got.name(), want["name"].as_str().unwrap_or(""), "{where_}: name");
+            assert_eq!(BANK_NAMES[index / PATCH_COUNT], want["bank"].as_str().unwrap_or(""),
+                "{where_}: bank");
+            assert_eq!(got.algorithm, u8_at(want, "algorithm"), "{where_}: algorithm");
+            assert_eq!(got.feedback, u8_at(want, "feedback"), "{where_}: feedback");
+            assert_eq!(got.transpose, u8_at(want, "transpose"), "{where_}: transpose");
+            assert_eq!(got.osc_key_sync, u8_at(want, "osc_key_sync") != 0, "{where_}: key sync");
+
+            let lfo = &want["lfo"];
+            assert_eq!(got.lfo.speed, u8_at(lfo, "speed"), "{where_}: LFO speed");
+            assert_eq!(got.lfo.delay, u8_at(lfo, "delay"), "{where_}: LFO delay");
+            assert_eq!(got.lfo.pmd, u8_at(lfo, "pmd"), "{where_}: LFO PMD");
+            assert_eq!(got.lfo.amd, u8_at(lfo, "amd"), "{where_}: LFO AMD");
+            assert_eq!(got.lfo.pitch_mod_sens, u8_at(lfo, "pms"), "{where_}: LFO PMS");
+            assert_eq!(got.lfo.sync, u8_at(lfo, "sync") != 0, "{where_}: LFO key sync");
+            assert_eq!(wave_bits(got.lfo.waveform), u8_at(lfo, "wave"), "{where_}: LFO waveform");
+
+            let peg = &want["pitch_eg"];
+            assert_eq!(got.pitch_eg.rates, quad(peg, "rates"), "{where_}: pitch EG rates");
+            assert_eq!(got.pitch_eg.levels, quad(peg, "levels"), "{where_}: pitch EG levels");
+
+            // OP1 and OP6 are the two ends of the packed operator block, so a
+            // decoder that reversed the order or lost its place would show up
+            // in one or the other.
+            check_op(&got.ops[0], &want["op1"], &format!("{where_} op1"));
+            check_op(&got.ops[5], &want["op6"], &format!("{where_} op6"));
+        }
+    }
+
+    #[test]
+    fn every_factory_voice_decodes_in_range() {
+        // Four values in the ROM are out of range — `TIMPANI` and `HORNS` carry
+        // an EG level of 127, `E.GRAND 1` an EG rate of 127 and `60-S ORGAN` a
+        // frequency fine of 100 — and they are clamped on the way in. After
+        // that every field of every voice is inside the domain its parameter
+        // is defined on, which is the property the rest of the engine assumes.
+        for (voice, patch) in presets().iter().enumerate() {
+            let name = patch.name();
+            let at = |what: &str| format!("voice {voice} ({name}): {what}");
+            assert!((1..=32).contains(&patch.algorithm), "{}", at("algorithm out of range"));
+            assert!(patch.feedback <= 7, "{}", at("feedback out of range"));
+            assert!(patch.transpose <= 48, "{}", at("transpose out of range"));
+            assert!(patch.lfo.speed <= 99 && patch.lfo.delay <= 99, "{}", at("LFO time"));
+            assert!(patch.lfo.pmd <= 99 && patch.lfo.amd <= 99, "{}", at("LFO depth"));
+            assert!(patch.lfo.pitch_mod_sens <= 7, "{}", at("pitch mod sensitivity"));
+            for (i, (&rate, &level)) in
+                patch.pitch_eg.rates.iter().zip(&patch.pitch_eg.levels).enumerate()
+            {
+                assert!(rate <= 99, "{}", at(&format!("pitch EG rate {i}")));
+                assert!(level <= 99, "{}", at(&format!("pitch EG level {i}")));
+            }
+            assert!(patch.name.iter().all(|c| (0x20..0x7F).contains(c)),
+                "{}", at("name is not printable ASCII"));
+
             for (o, op) in patch.ops.iter().enumerate() {
-                let where_ = format!("{} op{}", PATCH_NAMES[p], o + 1);
-                assert!(op.coarse <= 31, "{where_}: coarse {} out of range", op.coarse);
-                assert!(op.fine <= 99, "{where_}: fine {} out of range", op.fine);
-                // The ratio really is the grid expression, not a stored decimal.
+                let at = |what: &str| format!("voice {voice} ({name}) op{}: {what}", o + 1);
+                assert!(op.rates.iter().all(|&r| r <= 99), "{}", at("EG rate out of range"));
+                assert!(op.levels.iter().all(|&l| l <= 99), "{}", at("EG level out of range"));
+                assert!(op.output_level <= 99, "{}", at("output level out of range"));
+                assert!(op.break_point <= 99, "{}", at("break point out of range"));
+                assert!(op.left_depth <= 99 && op.right_depth <= 99, "{}", at("depth out of range"));
+                assert!(op.rate_scaling <= 7, "{}", at("rate scaling out of range"));
+                assert!(op.vel_sens <= 7, "{}", at("velocity sensitivity out of range"));
+                assert!(op.amp_mod_sens <= 3, "{}", at("amp mod sensitivity out of range"));
+                assert!(op.detune <= 14, "{}", at("detune out of range"));
+                assert!(op.coarse <= 31, "{}", at("coarse out of range"));
+                assert!(op.fine <= 99, "{}", at("fine out of range"));
+                // The ratio is the coarse/fine grid expression and nothing else,
+                // which is all a DX7 can dial.
                 let base = if op.coarse == 0 { 0.5 } else { f64::from(op.coarse) };
-                assert!((op.ratio() - base * (1.0 + f64::from(op.fine) / 100.0)).abs() < 1e-12);
-                // A ratio that is a whole number must be written the readable
-                // way — coarse 3 / fine 0, not the identical coarse 2 / fine 50.
-                let r = op.ratio();
-                if r.fract() == 0.0 && r <= 31.0 {
-                    assert_eq!(op.fine, 0, "{where_}: whole ratio {r} written as coarse {} fine {}",
-                        op.coarse, op.fine);
-                }
-                let old = PRE_CONVERSION_RATIOS[p][o];
-                let shift = cents(r, old);
-                // A handful of the grid expressions land a unit or two of the
-                // last mantissa bit away from the old decimal literal; 1e-6 of a
-                // cent is nine orders of magnitude below the smallest real snap
-                // here, so it separates float noise from an actual move.
-                if shift.abs() < 1e-6 { exact += 1; }
-                worst = worst.max(shift.abs());
-                assert!(shift.abs() < 8.0, "{where_}: {old} snapped to {r}, {shift:.2} cents");
+                assert!((op.ratio() - base * (1.0 + f64::from(op.fine) / 100.0)).abs() < 1e-12,
+                    "{}", at("ratio is off the hardware grid"));
             }
         }
-        // Most of the table was already on the grid; only nine entries moved, and
-        // the largest move is ratio 2.23 -> 2.24 on DigiPad.
-        assert_eq!(exact, 297, "expected 9 off-grid ratios, found {}", 306 - exact);
-        assert!((worst - 7.746).abs() < 0.01, "worst snap is now {worst:.3} cents");
+    }
+
+    #[test]
+    fn the_four_out_of_spec_rom_values_are_clamped() {
+        // Named individually because they are the only four, and because a
+        // decoder that silently stopped clamping would otherwise only show up
+        // as a wrong envelope somewhere in a 256-voice bank.
+        let at = |bank: usize, voice: usize| &presets()[bank * PATCH_COUNT + voice];
+        // ROM3A:19 TIMPANI, op2 EG level 3.
+        let timpani = at(4, 19);
+        assert_eq!(timpani.name(), "TIMPANI");
+        assert_eq!(timpani.ops[1].levels[2], 99);
+        // ROM3B:01 E.GRAND 1, op6 EG rate 1.
+        let grand = at(5, 1);
+        assert_eq!(grand.name(), "E.GRAND 1");
+        assert_eq!(grand.ops[5].rates[0], 99);
+        // ROM3B:14 60-S ORGAN, op1 frequency fine.
+        let organ = at(5, 14);
+        assert_eq!(organ.name(), "60-S ORGAN");
+        assert_eq!(organ.ops[0].fine, 99);
+        // ROM4A:07 HORNS, op5 EG level 4.
+        let horns = at(6, 7);
+        assert_eq!(horns.name(), "HORNS");
+        assert_eq!(horns.ops[4].levels[3], 99);
+    }
+
+    #[test]
+    fn the_factory_set_is_the_shape_the_cartridges_are() {
+        // A census rather than a spot check: these counts are what the eight
+        // cartridges contain, and every one of them is a feature of the engine
+        // that the hand-authored bank this replaced never exercised. A decoder
+        // that lost a bit somewhere would move at least one of them.
+        let bank = presets();
+        let count = |f: fn(&PatchPreset) -> bool| bank.iter().filter(|p| f(p)).count();
+
+        assert_eq!(count(|p| p.transpose != 24), 94, "voices transposed off centre");
+        assert_eq!(count(|p| !p.osc_key_sync), 74, "voices with free-running operators");
+        assert_eq!(count(|p| p.ops.iter().any(|o| o.left_depth > 0 || o.right_depth > 0)),
+            166, "voices using keyboard level scaling");
+        assert_eq!(count(|p| p.ops.iter().any(|o| o.rate_scaling > 0)),
+            200, "voices using keyboard rate scaling");
+        assert_eq!(count(|p| p.lfo.pmd > 0 || p.lfo.amd > 0), 109, "voices using the LFO");
+        assert_eq!(count(|p| p.pitch_eg.levels != [50; 4]), 37, "voices using the pitch EG");
+        assert_eq!(count(|p| p.ops.iter().any(|o| o.amp_mod_sens > 0)),
+            40, "voices using amplitude modulation");
+        assert_eq!(
+            bank.iter().flat_map(|p| p.ops.iter()).filter(|o| o.mode == OpFreqMode::Fixed).count(),
+            37, "fixed-frequency operators");
+
+        // All four scaling curves and all six LFO shapes are reached.
+        for curve in [ScaleCurve::LinNeg, ScaleCurve::ExpNeg, ScaleCurve::ExpPos, ScaleCurve::LinPos] {
+            assert!(bank.iter().any(|p| p.ops.iter().any(|o| o.left_curve == curve)),
+                "no voice uses curve {curve:?}");
+        }
+        for wave in [LfoWave::Triangle, LfoWave::SawDown, LfoWave::SawUp, LfoWave::Square,
+                     LfoWave::Sine, LfoWave::SampleHold] {
+            assert!(bank.iter().any(|p| p.lfo.waveform == wave), "no voice uses {wave:?}");
+        }
+
+        // Transpose only ever appears in the seven positions the factory set
+        // uses, all of them whole intervals: -24, -12, -7, -3, 0, +12, +24.
+        let mut transposes: Vec<u8> = bank.iter().map(|p| p.transpose).collect();
+        transposes.sort_unstable();
+        transposes.dedup();
+        assert_eq!(transposes, [0, 12, 17, 21, 24, 36, 48]);
+    }
+
+    #[test]
+    fn voice_names_come_from_the_rom() {
+        assert_eq!(voice_name(0), "BRASS   1");
+        assert_eq!(voice_name(10), "E.PIANO 1");
+        assert_eq!(voice_name(VOICE_COUNT - 1), "EXPLOSION");
+        // Out of range saturates rather than panicking; `params` is public.
+        assert_eq!(voice_name(VOICE_COUNT), voice_name(VOICE_COUNT - 1));
+
+        // Names are padded in the ROM and trimmed here, never longer than the
+        // 10 characters the display is sized for, and never blank.
+        for voice in 0..VOICE_COUNT {
+            let name = voice_name(voice);
+            assert!(!name.is_empty(), "voice {voice} has no name");
+            assert!(name.len() <= NAME_LEN, "voice {voice} name {name:?} is too long");
+            assert!(!name.ends_with(' '), "voice {voice} name {name:?} is padded");
+        }
+        // 194 of the 256 are distinct: several voices appear on more than one
+        // cartridge, which is the cartridges' doing and why the bank is part of
+        // the display.
+        let unique: std::collections::BTreeSet<&str> =
+            (0..VOICE_COUNT).map(voice_name).collect();
+        assert_eq!(unique.len(), 194);
+    }
+
+    #[test]
+    fn the_selector_labels_name_the_voice_and_the_cartridge() {
+        let mut params = PARAM_DEFAULTS;
+        assert_eq!(discrete_label(&params, P_PATCH), Some("E.PIANO 1"));
+        assert_eq!(discrete_label(&params, P_BANK), Some("ROM1A"));
+        assert_eq!(discrete_label(&params, P_GAIN), None, "only the selectors are labelled");
+        assert!(is_discrete(P_PATCH) && is_discrete(P_BANK));
+        assert!(!is_discrete(P_GAIN) && !is_discrete(P_FEEDBACK));
+
+        // The same patch knob reads a different voice on a different cartridge.
+        let (bank, patch) = voice_knobs(4 * PATCH_COUNT + 19);
+        params[P_BANK] = bank;
+        params[P_PATCH] = patch;
+        assert_eq!(discrete_label(&params, P_BANK), Some("ROM3A"));
+        assert_eq!(discrete_label(&params, P_PATCH), Some("TIMPANI"));
+
+        // A short parameter block — a session saved before the bank knob
+        // existed — reads as the first cartridge rather than panicking.
+        assert_eq!(discrete_label(&params[..P_BANK], P_BANK), Some("ROM1A"));
+    }
+
+    // ── Operator frequency ──
+
+    fn cents(a: f64, b: f64) -> f64 {
+        1200.0 * (a / b).log2()
     }
 
     #[test]
@@ -3805,56 +3523,39 @@ mod tests {
 
     // ── The neutral-defaults contract ──
 
-    /// Every patch that voices a keyboard taper, and nothing else. Sixteen of
-    /// these carry the depths their ROM sysex was authored with; the rest are the
-    /// pitched-percussion family, where a real instrument thins and quietens as
-    /// it climbs and a flat keyboard is the giveaway that it is a synth.
-    const LEVEL_SCALED: [&str; 23] = [
-        // ROM-authored
-        "E.Pian2", "Accordn", "Harp", "Clav2", "Banjo", "Guitar1", "Piano1",
-        "CowBell", "PanFlut",
-        // Voiced here
-        "E.Piano", "Bells", "Harpsi", "Marimba", "Clav", "TubBell", "Vibes",
-        "Koto", "Kalimba", "Glock", "Xylophn", "SteelPn", "Pizz", "TnklBel",
-    ];
-
+    /// Keyboard level scaling cannot make an operator louder than a
+    /// full-level one, however deep the taper.
+    ///
+    /// The hand-authored bank this replaced only ever cut, and the test here
+    /// asserted exactly that — no patch louder at the top of the keyboard than
+    /// at the bottom. The factory set uses all four curves at depths up to 99,
+    /// and the two positive ones deliberately boost as the keyboard climbs, so
+    /// the property worth holding is the one the hardware guarantees instead:
+    /// scaling is summed into the coarse level domain and clamped at its top
+    /// *before* velocity is added, so the deepest +LIN curve in the bank can
+    /// reach level 99 and no further.
     #[test]
-    fn only_the_intended_patches_are_level_scaled() {
-        // The rest of the operator model is still meant to be neutral across the
-        // whole bank, so check the fields rather than trusting struct-update
-        // syntax — and pin exactly which patches carry a taper.
-        for (p, patch) in presets().iter().enumerate() {
-            let name = PATCH_NAMES[p];
+    fn key_level_scaling_cannot_exceed_a_full_level_operator() {
+        for (voice, patch) in presets().iter().enumerate() {
             for (o, op) in patch.ops.iter().enumerate() {
-                let where_ = format!("{name} op{}", o + 1);
-                assert_eq!(op.detune, 7, "{where_}: detune is not centred");
-                assert_eq!(op.mode, OpFreqMode::Ratio, "{where_}: not in ratio mode");
-                assert_eq!(op.rate_scaling, 0, "{where_}: rate scaling set");
-                assert!(op.left_depth <= 99 && op.right_depth <= 99, "{where_}: depth out of range");
-                assert!(op.break_point <= 99, "{where_}: breakpoint out of range");
-            }
-            let scaled = patch.ops.iter().any(|op| op.left_depth > 0 || op.right_depth > 0);
-            assert_eq!(scaled, LEVEL_SCALED.contains(&name),
-                "{name}: unexpected level-scaling state");
-        }
-        assert_eq!(LEVEL_SCALED.len(), presets().iter().enumerate()
-            .filter(|(_, pa)| pa.ops.iter().any(|op| op.left_depth > 0 || op.right_depth > 0))
-            .count(), "the list has a name in it that no longer matches a patch");
-    }
-
-    #[test]
-    fn no_patch_is_louder_at_the_top_of_the_keyboard() {
-        // Every taper in the bank cuts as it ascends. A positive curve pointing
-        // the wrong way would boost the top of the keyboard instead, which is
-        // both wrong for the voicing and the one way level scaling could push a
-        // patch into clipping.
-        for (p, patch) in presets().iter().enumerate() {
-            for (o, op) in patch.ops.iter().enumerate() {
-                let where_ = format!("{} op{}", PATCH_NAMES[p], o + 1);
-                let (mid, top) = (operator_gain(op, 60, 100), operator_gain(op, 96, 100));
-                assert!(top <= mid, "{where_}: louder at note 96 than at note 60");
+                // Same velocity sensitivity, so the only difference between the
+                // two is the output level and the keyboard taper.
+                let full = OpPreset { output_level: 99, vel_sens: op.vel_sens,
+                                      ..OpPreset::neutral() };
+                for note in (0..=127u8).step_by(3) {
+                    let ceiling = operator_gain(&full, note, 127);
+                    assert!(operator_gain(op, note, 127) <= ceiling,
+                        "voice {voice} ({}) op{}: note {note} is louder than a full-level \
+                         operator", patch.name(), o + 1);
+                }
             }
         }
+        // ...and the boost really is reached, so the clamp above is being tested
+        // against something rather than against a bank that only ever cuts.
+        let boosting = presets().iter().filter(|p| p.ops.iter().any(|op| {
+            operator_gain(op, 96, 100) > operator_gain(op, 60, 100)
+        })).count();
+        assert!(boosting > 20, "only {boosting} voices boost up the keyboard");
     }
 
     #[test]
@@ -4229,10 +3930,12 @@ mod tests {
 
     #[test]
     fn vibrato_arrives_at_the_lfo_rate_and_only_after_the_delay() {
-        // End to end through the plugin: a patch with a delayed vibrato must be
-        // dead steady early on and wobbling later.
-        let mut patch = presets()[5];
-        assert_eq!(PATCH_NAMES[5], "Strings");
+        // End to end on a factory voice with a delayed vibrato: ROM1A's
+        // STRINGS 2, which asks for a slow section wobble that a short bowed
+        // note never reaches. Its own LFO settings, its own operators replaced
+        // by six steady carriers so nothing but the modulation can move.
+        let mut patch = presets()[4];
+        assert_eq!(patch.name(), "STRINGS 2");
         assert!(patch.lfo.pmd > 0 && patch.lfo.delay > 0);
         patch.ops = [OpPreset { rates: [99, 99, 99, 99], levels: [99, 99, 99, 0],
                                 ..OpPreset::neutral() }; NUM_OPERATORS];
@@ -4257,14 +3960,20 @@ mod tests {
             }
             (hi - lo) * 1200.0
         };
-        // Strings asks for a 0.65 s delay, which is 0.31 s shut followed by
-        // 0.33 s of opening, so nothing at all reaches the pitch before 0.3 s.
-        let early = spread(0.3);
+        // The delay is a two-stage ramp — shut, then opening — so nothing at
+        // all reaches the pitch before the first stage ends. Both stages are
+        // read from the model rather than written down, because they are a
+        // property of the voice's delay setting rather than of this test.
+        let (shut, open) = delay_stages(patch.lfo.delay);
+        assert!(shut > 0.5, "this test needs a voice whose vibrato is held off");
+        let early = spread(shut * 0.9);
         assert_eq!(early, 0.0, "vibrato should not have started yet, saw {early:.1} cents");
-        spread(0.4); // the arrival ramp
+        spread(open - shut * 0.9 + 0.1); // the arrival ramp
         let late = spread(2.0);
-        assert!(late > 40.0 && late < 47.0,
-            "vibrato should settle near 44 cents peak to peak, saw {late:.1}");
+        // Peak to peak is twice the depth the patch dials, in cents.
+        let want = 2.0 * patch.lfo.pitch_mod_depth() * 1200.0;
+        assert!((late - want).abs() < 0.08 * want,
+            "vibrato should settle near {want:.1} cents peak to peak, saw {late:.1}");
 
         // And it wobbles at the speed the patch asks for.
         let want = LFO_RATE_HZ[usize::from(patch.lfo.speed)];
@@ -4418,10 +4127,11 @@ mod tests {
 
     // ── Headroom ──
 
-    /// Peak of one note, in the units `process` writes to the output buffer: one
-    /// voice at the default knob settings, times the default gain. Driving the
-    /// voice directly rather than the synth keeps a 51-patch sweep affordable —
-    /// `process` would tick fifteen silent voices for every sounding one.
+    /// Peak of one note, at the voice's own level: one voice at the default
+    /// knob settings, times the default gain, but *not* times the headroom trim
+    /// `process` applies. Driving the voice directly rather than the synth is
+    /// what keeps a sweep over the factory set affordable — `process` would
+    /// tick fifteen silent voices for every sounding one.
     fn note_peak(preset: &PatchPreset, note: u8, vel: u8, secs: f64) -> f32 {
         let defaults = Dx7Synth::new();
         let mut voice = DxVoice::new(44100.0);
@@ -4456,55 +4166,191 @@ mod tests {
     }
 
     #[test]
-    fn no_patch_clips_at_full_velocity() {
-        // A single note is measured here at the voice's own level, before the
-        // headroom trim `process` applies — so this is a check on the voicing
-        // of the patch itself, not on the output stage. A patch that reaches
-        // full scale on one note has no room left for the other seven of a
-        // chord. At the default knob settings, no patch may reach full scale
-        // anywhere on the playable keyboard at velocity 127.
+    fn no_factory_voice_clips_on_one_note() {
+        // One note, measured at the instrument's output: the analytic bound on
+        // the voice, times the headroom trim `process` applies. The bound holds
+        // at every instant of the note rather than at the instants a render
+        // happened to sample, which is what makes a 256-voice sweep over the
+        // whole playable keyboard affordable.
         //
-        // Where the bound settles it, the claim holds at every instant of the
-        // note rather than at the instants a render happened to sample. Only the
-        // patches the bound cannot settle get rendered.
+        // A single note is no longer what sizes the trim — an eight-note chord
+        // is, and by a wide margin — so this is the check that the wide margin
+        // is really there. The loudest single note in the factory set is
+        // ROM1B's HARP 1 at the bottom of the keyboard.
         let mut loudest = (0.0f32, "", 0u8);
-        let mut rendered = 0;
-        for (p, preset) in presets().iter().enumerate() {
+        for preset in presets().iter() {
             for note in 36..=96u8 {
-                let bound = peak_bound(preset, note, 127);
-                if bound < 1.0 {
-                    if bound > loudest.0 { loudest = (bound, PATCH_NAMES[p], note); }
-                    continue;
-                }
-                rendered += 1;
-                let peak = note_peak(preset, note, 127, 0.4);
+                let peak = peak_bound(preset, note, 127) * OUTPUT_TRIM;
                 assert!(peak < 1.0,
-                    "{} clips at note {note}, velocity 127: peak {peak:.4}", PATCH_NAMES[p]);
-                if peak > loudest.0 { loudest = (peak, PATCH_NAMES[p], note); }
+                    "{} can clip at note {note}, velocity 127: bound {peak:.4}", preset.name());
+                if peak > loudest.0 { loudest = (peak, preset.name(), note); }
             }
         }
-        assert!(loudest.0 > 0.5, "nothing in the bank reaches half scale: {loudest:?}");
-        // Guitar 1 is the only patch loose enough in the bound to need rendering;
-        // if that changes, this test just got slower and someone should know.
-        assert!(rendered <= 61, "{rendered} note renders — the bound is not doing its job");
+        let headroom_db = -20.0 * loudest.0.log10();
+        assert!((6.0..30.0).contains(&headroom_db),
+            "the loudest single note in the bank ({loudest:?}) leaves {headroom_db:.1} dB \
+             of headroom, which is either no margin at all or a trim that has collapsed");
+
+        // The bound is only worth sweeping with if it really is an upper bound,
+        // so the voice it picks out gets rendered and checked against it. Loose
+        // is fine — carriers at different ratios never do line up — but under
+        // is not.
+        let hottest = presets().iter().find(|p| p.name() == loudest.1).expect("a named voice");
+        let rendered = note_peak(hottest, loudest.2, 127, 0.4) * OUTPUT_TRIM;
+        assert!(rendered <= loudest.0,
+            "{} renders at {rendered:.4}, above its own bound of {:.4}", loudest.1, loudest.0);
+    }
+
+    // ── Transpose and oscillator key sync ──
+
+    /// A voice built from `preset`, keyed on `note`, with everything else at
+    /// the neutral settings that make a comparison exact.
+    fn keyed(preset: &PatchPreset, note: u8) -> DxVoice {
+        let mut v = DxVoice::new(SR);
+        v.note_on(note, 100, preset, 1.0, 1.0, 1.0, 1.0, 1.0, 1);
+        v
     }
 
     #[test]
-    fn the_harp_has_headroom() {
-        // Two carriers at the same ratio, both at level 99, both at velocity
-        // sensitivity 7: the ROM's own voicing, which lands at exactly 1.0 before
-        // velocity adds 5.27 dB on top of it. The trim on both carriers has to
-        // leave real headroom, not shave the peak to 0.999.
-        let harp = presets()[PATCH_NAMES.iter().position(|&n| n == "Harp").unwrap()];
-        let peak = (36..=96u8).step_by(6)
-            .map(|note| note_peak(&harp, note, 127, 0.4))
-            .fold(0.0f32, f32::max);
-        let headroom_db = -20.0 * peak.log10();
-        assert!(headroom_db > 1.0,
-            "harp headroom is only {headroom_db:.2} dB (peak {peak:.4})");
-        // ...and it is still a harp: both carriers, still matched.
-        assert_eq!(harp.ops[0].output_level, harp.ops[3].output_level);
-        assert_eq!(harp.ops[0].vel_sens, 7);
+    fn transpose_shifts_the_note_the_whole_voice_is_built_from() {
+        // Not just the pitch: the DX7 transposes the keyboard, so the level
+        // scaling and the rate scaling see the shifted note too. The test for
+        // that is exact equality between a transposed voice and an untransposed
+        // one played at the shifted note — if any stage read the original note
+        // the two renders would diverge.
+        let scaled = OpPreset {
+            rates: [80, 60, 40, 40], levels: [99, 80, 60, 0],
+            break_point: 43, right_depth: 60, left_depth: 40,
+            right_curve: ScaleCurve::ExpNeg, rate_scaling: 5, vel_sens: 4,
+            ..OpPreset::neutral()
+        };
+        let base = additive_patch(scaled);
+
+        for (transpose, semitones) in [(0u8, -24i32), (12, -12), (21, -3), (36, 12), (48, 24)] {
+            let moved = PatchPreset { transpose, ..base };
+            let mut shifted = keyed(&moved, 60);
+            let mut plain = keyed(&base, (60 + semitones) as u8);
+            for i in 0..2048 {
+                assert_eq!(shifted.tick(LfoFrame::default()), plain.tick(LfoFrame::default()),
+                    "transpose {transpose} diverges from note {} at sample {i}", 60 + semitones);
+            }
+        }
+
+        // The centre really is inert.
+        let centred = PatchPreset { transpose: 24, ..base };
+        assert_eq!(keyed(&centred, 60).ops[0].freq, keyed(&base, 60).ops[0].freq);
+    }
+
+    #[test]
+    fn transpose_cannot_run_off_either_end_of_the_keyboard() {
+        // Two octaves down from MIDI 5, or two up from MIDI 120, is not a note.
+        // Nothing here may wrap, panic or ask for a negative frequency.
+        let low = PatchPreset { transpose: 0, ..additive_patch(OpPreset::neutral()) };
+        let high = PatchPreset { transpose: 48, ..additive_patch(OpPreset::neutral()) };
+        for note in 0..=127u8 {
+            for preset in [&low, &high] {
+                let v = keyed(preset, note);
+                let freq = v.ops[0].freq;
+                assert!(freq.is_finite() && freq > 0.0, "note {note} produced {freq} Hz");
+                assert!(freq <= note_to_freq(127) * 1.001, "note {note} ran off the top");
+            }
+        }
+        assert_eq!(keyed(&low, 5).ops[0].freq, note_to_freq(0), "clamped at the bottom");
+        assert_eq!(keyed(&high, 120).ops[0].freq, note_to_freq(127), "clamped at the top");
+    }
+
+    #[test]
+    fn a_transposed_voice_still_answers_to_the_key_that_was_pressed() {
+        // The transposed note is what the voice is built from; the note the
+        // player pressed is what a note-off names. Getting that backwards
+        // leaves the key stuck down.
+        let bass = presets().iter().position(|p| p.transpose == 12).expect("a transposed voice");
+        let mut s = Dx7Synth::new();
+        s.init(44100.0, 64);
+        select(&mut s, bass);
+        process_buffers(&mut s, &[note_on(60, 100, 0)], 2);
+        assert!(s.voices.iter().any(|v| v.is_held()), "the note should be held");
+        process_buffers(&mut s, &[note_off(60, 0)], 1);
+        assert!(!s.voices.iter().any(|v| v.is_held()), "note-off did not reach the voice");
+    }
+
+    #[test]
+    fn key_sync_decides_whether_a_note_starts_from_the_same_phase() {
+        let patch = additive_patch(OpPreset {
+            rates: [99, 99, 99, 99], levels: [99, 99, 99, 0], ..OpPreset::neutral()
+        });
+        let synced = PatchPreset { osc_key_sync: true, ..patch };
+        let free = PatchPreset { osc_key_sync: false, ..patch };
+
+        // Run a voice for an odd number of samples, then key it again. With
+        // sync on the second note is the first note over again, sample for
+        // sample; with it off the operators carry on from where they were.
+        //
+        // Both windows start 512 samples after their key-down, past the attack:
+        // an envelope retriggers from wherever it currently sits, so comparing
+        // from the key-down itself would be comparing envelopes rather than
+        // phases. By 512 samples both are held at full level and the phase is
+        // the only thing left that can differ.
+        let restart = |preset: &PatchPreset| {
+            let mut v = keyed(preset, 60);
+            let window = |v: &mut DxVoice| {
+                for _ in 0..512 { v.tick(LfoFrame::default()); }
+                (0..256).map(|_| v.tick(LfoFrame::default())).collect::<Vec<f32>>()
+            };
+            let first = window(&mut v);
+            for _ in 0..1017 { v.tick(LfoFrame::default()); }
+            v.note_on(60, 100, preset, 1.0, 1.0, 1.0, 1.0, 1.0, 2);
+            let second = window(&mut v);
+            (first, second)
+        };
+
+        let (first, second) = restart(&synced);
+        assert_eq!(first, second, "key sync on: every note must start from phase zero");
+
+        let (first, second) = restart(&free);
+        assert_ne!(first, second, "key sync off: the operators must keep running");
+        // ...and it is the phase that moved, not the level: both renders swing
+        // just as wide, they are simply not the same waveform.
+        let swing = |xs: &[f32]| xs.iter().fold(0.0f32, |a, x| a.max(x.abs()));
+        let (a, b) = (swing(&first), swing(&second));
+        assert!((a - b).abs() < 0.05 * a, "free-running note changed level: {a} -> {b}");
+    }
+
+    #[test]
+    fn free_running_voices_decorrelate_a_repeated_chord() {
+        // What key sync is worth at the output. Eight notes keyed on the same
+        // sample sum coherently when every operator restarts from phase zero —
+        // roughly 8x a single note rather than the sqrt(8) uncorrelated voices
+        // would give. A free-running voice only starts coherently the first
+        // time; after that its operators are wherever the last note left them.
+        //
+        // ROM2A's PIANO 4 is one of the 74 voices that asks for this.
+        let voice = 32;
+        assert!(!presets()[voice].osc_key_sync, "this test needs a free-running voice");
+
+        let chord = |warm: bool| {
+            let mut s = Dx7Synth::new();
+            s.init(44100.0, 64);
+            select(&mut s, voice);
+            if warm {
+                // A different chord, held and released, which leaves the
+                // operators scattered.
+                let down: Vec<MidiEvent> = [38u8, 45, 50, 57, 62, 66, 69, 74]
+                    .iter().map(|&n| note_on(n, 100, 0)).collect();
+                process_buffers(&mut s, &down, 400);
+                let up: Vec<MidiEvent> = [38u8, 45, 50, 57, 62, 66, 69, 74]
+                    .iter().map(|&n| note_off(n, 0)).collect();
+                process_buffers(&mut s, &up, 400);
+            }
+            let down: Vec<MidiEvent> = [36u8, 43, 48, 55, 60, 64, 67, 72]
+                .iter().map(|&n| note_on(n, 127, 0)).collect();
+            process_buffers(&mut s, &down, 256).iter()
+                .fold(0.0f32, |a, x| a.max(x.abs()))
+        };
+
+        let (fresh, warm) = (chord(false), chord(true));
+        assert!(warm < fresh * 0.9,
+            "the second chord should sum less coherently: {fresh:.4} -> {warm:.4}");
     }
 
     // ── The feedback trim ──
@@ -4513,10 +4359,10 @@ mod tests {
     fn centred_knob_is_the_patch_as_authored() {
         // The whole point of the trim: at the default the player hears the index
         // the patch was written with, for every patch in the bank.
-        for (p, patch) in presets().iter().enumerate() {
+        for patch in presets().iter() {
             let got = resolve_feedback(patch.feedback, PARAM_DEFAULTS[P_FEEDBACK]);
             assert_eq!(got, patch.feedback,
-                "{}: centred knob changed feedback {} -> {got}", PATCH_NAMES[p], patch.feedback);
+                "{}: centred knob changed feedback {} -> {got}", patch.name(), patch.feedback);
         }
         assert_eq!(PARAM_DEFAULTS[P_FEEDBACK], 0.5, "the trim must default to centred");
     }
@@ -4572,13 +4418,20 @@ mod tests {
         // ran at index 4 and its real setting was unreachable at any knob
         // position. Render the same note at every knob position and require the
         // centred one to match a voice built straight from the preset.
-        let harp = PATCH_NAMES.iter().position(|&n| n == "Harp").unwrap();
-        let preset = presets()[harp];
-        assert_eq!(preset.feedback, 7, "this test needs a patch authored away from centre");
+        // ROM1B's HARP 1, which the cartridge authors wrote at feedback 7 —
+        // the far end of the range from where the knob sits — and which asks
+        // for no modulation of any kind, so the reference voice below can be
+        // ticked with a dead LFO and still be the same render.
+        let brass = PATCH_COUNT + 28;
+        let preset = presets()[brass];
+        assert_eq!(preset.name(), "HARP    1");
+        assert_eq!(preset.feedback, 7, "this test needs a voice authored away from centre");
+        assert_eq!(preset.lfo.pitch_mod_depth(), 0.0, "and one the LFO cannot reach");
+        assert_eq!(preset.lfo.amp_mod_depth(), 0.0);
 
         let mut s = Dx7Synth::new();
         s.init(44100.0, 64);
-        s.set_parameter(P_PATCH, harp as f32 / (PATCH_COUNT as f32 - 0.01));
+        select(&mut s, brass);
         let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 4);
 
         let mut voice = DxVoice::new(44100.0);
@@ -4601,7 +4454,7 @@ mod tests {
         let energy = |knob: f32| {
             let mut s = Dx7Synth::new();
             s.init(44100.0, 64);
-            s.set_parameter(P_PATCH, harp as f32 / (PATCH_COUNT as f32 - 0.01));
+            select(&mut s, brass);
             s.set_parameter(P_FEEDBACK, knob);
             let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 4);
             out.iter().map(|v| f64::from(*v) * f64::from(*v)).sum::<f64>()
@@ -4816,32 +4669,45 @@ mod tests {
     // ── The modulation audit ──
 
     #[test]
-    fn only_the_intended_patches_are_modulated() {
-        // The bank is meant to be inert apart from a short, deliberate list. Any
-        // other patch picking up an LFO or a pitch envelope is a mistake.
-        const VIBRATO: [&str; 5] = ["Strings", "Flute", "Choir", "Cello", "Shakuha"];
-        const TREMOLO: [&str; 1] = ["Vibes"];
+    fn the_modulation_the_cartridges_ask_for_reaches_the_engine() {
+        // The hand-authored bank this replaced was inert apart from six patches,
+        // and the test here pinned that list by name. The factory set is the
+        // other way round: 109 voices use the LFO and 37 bend pitch, so what
+        // matters is that every one of those paths is actually wired through —
+        // a depth that never reaches an operator is the failure mode, and it is
+        // silent.
+        let bank = presets();
+        // Vibrato needs a depth *and* a sensitivity; either at zero and the LFO
+        // cannot reach the pitch at all.
+        let vibrato = bank.iter().filter(|p| p.lfo.pitch_mod_depth() > 0.0).count();
+        assert_eq!(vibrato, 98, "voices whose LFO reaches pitch");
 
-        for (p, patch) in presets().iter().enumerate() {
-            let name = PATCH_NAMES[p];
-            let has_vibrato = patch.lfo.pitch_mod_depth() > 0.0;
-            let has_tremolo = patch.lfo.amp_mod_depth() > 0.0;
-            assert_eq!(has_vibrato, VIBRATO.contains(&name), "{name}: unexpected vibrato state");
-            assert_eq!(has_tremolo, TREMOLO.contains(&name), "{name}: unexpected tremolo state");
+        // Amplitude modulation needs both halves too: a depth on the patch and
+        // a sensitivity on an operator. The cartridges set one without the
+        // other on 44 voices, which is authentic and silent — what has to be
+        // right is the 22 where both are set, because those are the ones the
+        // per-sample gain table is built for.
+        let tremolo = bank.iter().filter(|p| {
+            p.lfo.amp_mod_depth() > 0.0 && p.ops.iter().any(|op| op.amp_mod_sens > 0)
+        }).count();
+        assert_eq!(tremolo, 22, "voices where amplitude modulation is audible");
+        assert_eq!(bank.iter().filter(|p| p.lfo.amp_mod_depth() > 0.0).count(), 48,
+            "voices with an amplitude depth set at all");
 
-            // Amp-mod sensitivity only makes sense on a patch that has AMD set,
-            // and AMD only does anything if some operator has sensitivity.
-            let reachable = patch.ops.iter().any(|op| op.amp_mod_sens > 0);
-            assert_eq!(reachable, has_tremolo, "{name}: amp mod is wired up on one side only");
-
-            // Every pitch envelope is flat except where one is deliberately set.
-            assert_eq!(patch.pitch_eg.levels, [50, 50, 50, 50], "{name}: pitch envelope is not flat");
+        // Pitch envelopes: 37 voices leave the neutral 50, and every one of them
+        // produces a real offset rather than a rounding artefact.
+        for patch in bank.iter().filter(|p| p.pitch_eg.levels != [50; 4]) {
+            let extreme = patch.pitch_eg.levels.iter()
+                .map(|&l| pitch_env_offset(l).abs())
+                .fold(0.0f64, f64::max);
+            assert!(extreme > 0.0, "{}: pitch EG is set but bends nothing", patch.name());
         }
     }
 
     #[test]
     fn an_unmodulated_patch_is_untouched_by_a_running_lfo() {
-        // The contract that keeps the other 45 patches bit-for-bit identical: with
+        // The contract that keeps the 147 unmodulated voices bit-for-bit
+        // identical to what they were before the LFO existed: with
         // both depths at zero, no LFO output can reach the audio, however hard the
         // oscillator is swinging.
         let patch = steady_patch();
@@ -4907,27 +4773,34 @@ mod tests {
         })
     }
 
+    /// A factory voice by name, so the decay audit reads as the voices a
+    /// player would name rather than as indices into a 256-entry bank.
+    fn voice_by_name(name: &str) -> &'static PatchPreset {
+        let index = (0..VOICE_COUNT).find(|&v| voice_name(v) == name)
+            .unwrap_or_else(|| panic!("no factory voice called {name}"));
+        &presets()[index]
+    }
+
     #[test]
-    fn plucked_patches_decay_as_one_smooth_curve() {
+    fn plucked_factory_voices_decay_as_one_smooth_curve() {
         // A plucked or struck string is a single exponential: it loses a few dB
         // settling off the pluck and then rings down at one rate. What it must
         // not do is collapse 25-30 dB in the first few milliseconds and trickle
-        // out afterwards, which is a click with a tail behind it.
+        // out afterwards, which is a click with a tail behind it — the failure
+        // the hand-authored bank had and the reason this audit exists.
         //
-        // 12 dB in 50 ms is the ceiling, taken from the decoded factory CLAV 2
-        // (patch 40) at 12.7 dB — the closest thing in this bank to a measured
-        // reference for what a plucked carrier does. The ring windows are what
-        // each instrument is actually heard to do.
+        // The windows are measured from the cartridges themselves, at the knob
+        // settings the instrument loads with. They are here to catch the
+        // envelope engine drifting, not to grade Yamaha's voicing.
         const PLUCKED: [(&str, f64, f64); 4] = [
-            // name,     ring at least, ring at most
-            ("Clav",     0.5, 1.5),
-            ("Koto",     2.0, 3.0),
-            ("Kalimba",  1.0, 2.0),
-            ("Sitar",    2.0, 4.0),
+            // name,        ring at least, ring at most
+            ("CLAV    1",   0.4, 0.8),
+            ("SITAR",       0.7, 1.2),
+            ("HARPSICH 1",  0.5, 0.9),
+            ("GUITAR  1",   0.8, 1.3),
         ];
         for (name, ring_min, ring_max) in PLUCKED {
-            let p = PATCH_NAMES.iter().position(|&n| n == name).unwrap();
-            let (lost, ring) = patch_decay(&presets()[p], 60, 5.0);
+            let (lost, ring) = patch_decay(voice_by_name(name), 60, 5.0);
             assert!(lost <= 12.0,
                 "{name} loses {lost:.1} dB in the first 50 ms — that is a click, not a pluck");
             assert!(ring >= ring_min && ring <= ring_max,
@@ -4936,15 +4809,13 @@ mod tests {
     }
 
     #[test]
-    fn struck_patches_are_still_allowed_to_be_abrupt() {
-        // The other side of the same coin. A xylophone bar, a log drum, a
-        // pizzicato string and a marimba are struck and damped, and their
-        // carriers are meant to fall off a cliff — this is here so that the
-        // ceiling above never gets applied to them by someone reading it as a
-        // rule for the whole bank.
-        for name in ["Xylophn", "LogDrum", "Pizz", "Marimba"] {
-            let p = PATCH_NAMES.iter().position(|&n| n == name).unwrap();
-            let (lost, _) = patch_decay(&presets()[p], 60, 1.0);
+    fn struck_factory_voices_are_still_allowed_to_be_abrupt() {
+        // The other side of the same coin. A xylophone bar, a marimba and a
+        // pizzicato string are struck and damped, and their carriers are meant
+        // to fall off a cliff — this is here so that the ceiling above never
+        // gets applied to them by someone reading it as a rule for the bank.
+        for name in ["XYLOPHONE", "MARIMBA", "PIZZ STGS", "KOTO", "BANJO"] {
+            let (lost, _) = patch_decay(voice_by_name(name), 60, 1.0);
             assert!(lost >= 20.0,
                 "{name} only loses {lost:.1} dB in the first 50 ms — it is supposed to be percussive");
         }
@@ -4993,11 +4864,11 @@ mod tests {
 
     /// One note held down, rendered through the whole instrument at the knob
     /// settings it loads with, and read at three points across the ring.
-    fn brightness_through_the_ring(patch: usize, note: u8) -> [f64; 3] {
+    fn brightness_through_the_ring(voice: usize, note: u8) -> [f64; 3] {
         const WINDOW: usize = 1024;
         let mut synth = Dx7Synth::new();
         synth.init(SR, 256);
-        synth.set_parameter(P_PATCH, patch as f32 / (PATCH_COUNT as f32 - 0.01));
+        select(&mut synth, voice);
         let events = [note_on(note, 100, 0)];
         let mut block = vec![0.0f32; 256];
         let mut audio = Vec::new();
@@ -5022,29 +4893,25 @@ mod tests {
 
     #[test]
     fn plucked_modulators_do_not_leave_the_ring_a_bare_sine() {
-        // The other half of the plucked-patch fix. Giving the clavinet and the
-        // koto carriers that ring for one second and three achieved nothing on
-        // its own, because their modulators still ran to L3 0 and got there
-        // 13 ms and 62 ms after decay 1 ended. The ring the carriers had just
-        // been handed was a bare sine for all but its first few milliseconds:
-        // both patches measured 1.00x their own fundamental at 50 ms, 300 ms and
-        // 800 ms alike, which is the reading of a patch with no modulator at all.
-        // The factory CLAV 2 (patch 40) does not do this — its modulators hold at
-        // L3 89 for as long as the key is down, and that is where its bite is.
+        // The other half of the plucked-patch audit. Carriers that ring for a
+        // second achieve nothing on their own if the modulators run to L3 0 and
+        // get there in the first few milliseconds: the ring the carriers have
+        // just been handed is a bare sine, which measures 1.00x its own
+        // fundamental at every point across the note — the reading of a patch
+        // with no modulator at all. The factory clavinet does not do this; its
+        // modulators hold at a nonzero L3 for as long as the key is down, and
+        // that is where its bite is.
         //
-        // Two assertions, both about shape rather than how bright a patch ought
+        // Two assertions, both about shape rather than how bright a voice ought
         // to be:
         //
-        // * a floor that only says "an operator is still modulating this", set
-        //   well under the measured 3.42 / 2.48 / 1.91 (clavinet) and
-        //   1.64 / 1.47 / 1.25 (koto), and far above the 1.00 / 1.00 / 1.00 both
-        //   of them read before;
+        // * a floor that only says "an operator is still modulating this";
         // * a fall from 50 ms to 800 ms, because a plucked string mellows as it
         //   rings. A modulator pinned at L1 would pass the floor and is just as
         //   wrong — it is a static, buzzy tone rather than a pluck.
-        for name in ["Clav", "Koto"] {
-            let p = PATCH_NAMES.iter().position(|&n| n == name).unwrap();
-            let b = brightness_through_the_ring(p, 60);
+        for name in ["CLAV    1", "SITAR"] {
+            let voice = (0..VOICE_COUNT).find(|&v| voice_name(v) == name).expect("factory voice");
+            let b = brightness_through_the_ring(voice, 60);
             for (reading, floor) in b.iter().zip([1.35, 1.20, 1.10]) {
                 assert!(*reading >= floor,
                     "{name} rings at {reading:.2}x its fundamental, want at least {floor:.2}x \
@@ -5055,4 +4922,5 @@ mod tests {
                  mellows as it rings rather than holding one timbre");
         }
     }
+
 }

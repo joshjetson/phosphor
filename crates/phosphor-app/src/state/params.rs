@@ -15,12 +15,18 @@ impl NavState {
                 let is_jupiter = track.instrument_type == Some(InstrumentType::Jupiter8);
                 let is_odyssey = track.instrument_type == Some(InstrumentType::Odyssey);
                 let is_juno = track.instrument_type == Some(InstrumentType::Juno60);
+                let is_dx7 = track.instrument_type == Some(InstrumentType::DX7);
                 let is_discrete = if is_jupiter {
                     phosphor_dsp::jupiter::is_discrete(idx)
                 } else if is_odyssey {
                     phosphor_dsp::odyssey::is_discrete(idx)
                 } else if is_juno {
                     phosphor_dsp::juno::is_discrete(idx)
+                } else if is_dx7 {
+                    // Two selectors, not one: the bank knob is as discrete as
+                    // the patch knob, and stepping it by a continuous delta
+                    // would walk through cartridges a fraction at a time.
+                    phosphor_dsp::dx7::is_discrete(idx)
                 } else {
                     idx == 0
                 };
@@ -45,7 +51,6 @@ impl NavState {
                     } else {
                         match track.instrument_type {
                             Some(InstrumentType::DrumRack) => 0.1, // 10 kits
-                            Some(InstrumentType::DX7) => 1.0 / (phosphor_dsp::dx7::PATCH_COUNT as f32 - 0.01),
                             _ => 0.25,
                         }
                     };
@@ -53,7 +58,16 @@ impl NavState {
                 } else {
                     delta
                 };
-                let new_val = (track.synth_params[idx] + actual_delta).clamp(0.0, 1.0);
+                let new_val = if is_dx7 && is_discrete {
+                    // The DX7 steps its two selectors by index rather than by
+                    // adding a fraction of the knob's travel: 32 voices and 8
+                    // cartridges are coarse enough that an accumulated rounding
+                    // error lands on the wrong side of a step boundary, which
+                    // reads as a keypress that did nothing.
+                    phosphor_dsp::dx7::step_discrete(idx, track.synth_params[idx], delta > 0.0)
+                } else {
+                    (track.synth_params[idx] + actual_delta).clamp(0.0, 1.0)
+                };
                 track.synth_params[idx] = new_val;
 
                 // When patch selector changes, sync all params from preset
@@ -130,4 +144,66 @@ impl NavState {
         }
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phosphor_dsp::dx7;
+
+    /// A nav state whose selected track is a DX7 at its default parameters.
+    fn dx7_track() -> NavState {
+        let mut nav = NavState::new(super::super::initial_tracks());
+        let mut track = TrackState::new("dx7", 0, true, TrackKind::Instrument, vec![]);
+        track.instrument_type = Some(InstrumentType::DX7);
+        track.synth_params = dx7::PARAM_DEFAULTS.to_vec();
+        nav.tracks.insert(0, track);
+        nav.track_cursor = 0;
+        nav
+    }
+
+    fn selected(nav: &NavState) -> (usize, usize) {
+        let p = &nav.tracks[0].synth_params;
+        (dx7::bank_index(p[dx7::P_BANK]), dx7::patch_index(p[dx7::P_PATCH]))
+    }
+
+    #[test]
+    fn dx7_selectors_move_one_step_per_keypress() {
+        // Both DX7 selectors are discrete: a keypress is one voice or one
+        // cartridge, not a fraction of the knob's travel. The patch knob alone
+        // would otherwise take 256 presses to cross the factory set.
+        let mut nav = dx7_track();
+        nav.clip_view.synth_param_cursor = dx7::P_PATCH;
+        let (bank, patch) = selected(&nav);
+        for step in 1..=5 {
+            nav.adjust_synth_param(0.05);
+            assert_eq!(selected(&nav), (bank, patch + step), "patch knob step {step}");
+        }
+        for step in (0..5).rev() {
+            nav.adjust_synth_param(-0.05);
+            assert_eq!(selected(&nav), (bank, patch + step), "patch knob back to {step}");
+        }
+
+        nav.clip_view.synth_param_cursor = dx7::P_BANK;
+        for step in 1..dx7::BANK_COUNT {
+            nav.adjust_synth_param(0.05);
+            assert_eq!(selected(&nav), (step, patch), "bank knob step {step}");
+        }
+        // ...and neither runs off its end.
+        for _ in 0..4 {
+            nav.adjust_synth_param(0.05);
+        }
+        assert_eq!(selected(&nav), (dx7::BANK_COUNT - 1, patch));
+    }
+
+    #[test]
+    fn the_dx7_bank_knob_is_the_last_parameter() {
+        // Sessions store `synth_params` positionally, so the bank selector was
+        // appended rather than filed next to the patch selector: inserting it
+        // would load every saved value of every existing session one slot out.
+        let nav = dx7_track();
+        assert_eq!(nav.tracks[0].synth_params.len(), dx7::PARAM_COUNT);
+        assert_eq!(dx7::P_BANK, dx7::PARAM_COUNT - 1);
+        assert_eq!(dx7::PARAM_NAMES[dx7::P_GAIN], "gain", "index 0-7 must not move");
+    }
 }

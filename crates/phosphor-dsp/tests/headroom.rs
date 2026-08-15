@@ -25,6 +25,13 @@
 //! plays 3.6 dB. The extremes are allowed to cross the knee; what is asserted
 //! instead is how far, since the point of a soft knee is that a little of it
 //! is inaudible and a lot of it is not.
+//!
+//! The DX7 is the exception, and it is the factory bank that made it one: its
+//! loudest ROM voice sits 10 dB above the bank's median where the hand-voiced
+//! bank it replaced managed 6, so its trim *is* sized by its hottest voice —
+//! see `OUTPUT_TRIM` in dx7.rs. Sixteen voices would otherwise cross the
+//! ceiling by up to 0.5 dB, and a peak past the ceiling on one track ducks
+//! every other track with it.
 
 use phosphor_dsp::level::{saturation_input, SATURATION_KNEE};
 use phosphor_dsp::{drum_rack, dx7, juno, jupiter, odyssey, synth};
@@ -32,6 +39,10 @@ use phosphor_plugin::{MidiEvent, Plugin};
 
 const SAMPLE_RATE: f64 = 44_100.0;
 const BLOCK: usize = 256;
+/// The factory voice whose triad RMS is the median of the DX7's 256: ROM1A's
+/// PIANO 2. Re-derive with `cargo run --example levels -- stage` after the
+/// bank or the trim moves.
+const DX7_MEDIAN_VOICE: usize = 8;
 /// 1.16 s. Every peak measured across the four preset banks lands inside the
 /// first 200 ms; this covers the attack, the decay and well into the sustain.
 const BLOCKS: usize = 200;
@@ -51,9 +62,9 @@ const TARGET_PEAK: f32 = 0.891;
 ///
 /// Above roughly this the curve stops being a rounded-off peak and starts
 /// being a timbre change. The two voicings in the whole project that reach
-/// the knee at all — the DX7's "Timpani" attack and a full drum kit on one
-/// sample — measure 1.33 dB, so this leaves margin for a preset edit without
-/// leaving room for a mis-sized trim to hide.
+/// the knee at all — ROM3A's TIMPANI on the DX7 and a full drum kit on one
+/// sample — measure 1.44 and 1.33 dB, so this leaves margin for a preset edit
+/// without leaving room for a mis-sized trim to hide.
 const MAX_SATURATION_DB: f32 = 2.0;
 
 // The voicings. A chord in this application is quantised, so all the note-ons
@@ -124,17 +135,27 @@ fn patch_value(index: usize, count: usize) -> f32 {
     index as f32 / (count as f32 - 0.01)
 }
 
+/// Point a DX7 at one of the 256 factory voices by number. The instrument has
+/// two selectors — a cartridge and a voice — so a sweep index is split.
+fn dx7_voice(index: usize) -> dx7::Dx7Synth {
+    let mut synth = dx7::Dx7Synth::new();
+    let (bank, patch) = dx7::voice_knobs(index);
+    synth.set_parameter(dx7::P_BANK, bank);
+    synth.set_parameter(dx7::P_PATCH, patch);
+    synth
+}
+
 /// The instruments, each with the patch that measured loudest in its bank on
 /// an eight-note chord at velocity 127.
 ///
-/// The DX7 entry is 47 "Timpani" — its attack transient reached 5.91 before
-/// the trim, above 49 "Horns" at 5.40. Horns is the loudest *sustained*
-/// patch, so both are covered here.
+/// The DX7 entries are the two loudest of the 256 factory voices: ROM3A's
+/// TIMPANI (voice 147) and ROM1B's HARP 1 (voice 60), whose attack transients
+/// reach 1.65 and 1.62 before the bounding stage. ROM4A's CLARINET (voice 195)
+/// is the loudest *sustained* voice, so it is here too.
 fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
-    let mut dx7_timpani = dx7::Dx7Synth::new();
-    dx7_timpani.set_parameter(dx7::P_PATCH, patch_value(47, dx7::PATCH_COUNT));
-    let mut dx7_horns = dx7::Dx7Synth::new();
-    dx7_horns.set_parameter(dx7::P_PATCH, patch_value(49, dx7::PATCH_COUNT));
+    let dx7_timpani = dx7_voice(147);
+    let dx7_harp = dx7_voice(60);
+    let dx7_clarinet = dx7_voice(195);
     let mut jupiter_organ = jupiter::Jupiter8Synth::new();
     jupiter_organ.set_parameter(jupiter::P_PATCH, patch_value(9, jupiter::PATCH_COUNT));
     let mut odyssey_funk = odyssey::OdysseySynth::new();
@@ -143,8 +164,9 @@ fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
     juno_brass.set_parameter(juno::P_PATCH, patch_value(3, juno::PATCH_COUNT));
 
     vec![
-        ("dx7 47 Timpani", Box::new(dx7_timpani)),
-        ("dx7 49 Horns", Box::new(dx7_horns)),
+        ("dx7 147 TIMPANI", Box::new(dx7_timpani)),
+        ("dx7 60 HARP 1", Box::new(dx7_harp)),
+        ("dx7 195 CLARINET", Box::new(dx7_clarinet)),
         ("jupiter 9 Organ", Box::new(jupiter_organ)),
         ("odyssey 1 Funk", Box::new(odyssey_funk)),
         ("juno 3 Brass", Box::new(juno_brass)),
@@ -233,18 +255,18 @@ fn default_patches_have_headroom_on_every_voicing() {
 /// revoiced above the target is caught here rather than in a speaker.
 #[test]
 fn no_patch_in_any_bank_exceeds_the_target() {
-    // Shorter render than the per-voicing tests: this is a sweep over 155
-    // presets, and the latest peak measured anywhere in the four banks
-    // arrives at 192 ms, so 370 ms leaves the attack and decay well covered.
+    // Shorter render than the per-voicing tests: this is a sweep over 360
+    // presets, 256 of them the DX7's factory voices, and the latest peak
+    // measured anywhere in the banks arrives at 192 ms, so 370 ms leaves the
+    // attack and decay well covered.
     const SWEEP_BLOCKS: usize = 64;
 
     let mut worst = (0.0f32, String::new());
 
-    for index in 0..dx7::PATCH_COUNT {
-        let mut s = dx7::Dx7Synth::new();
-        s.set_parameter(dx7::P_PATCH, patch_value(index, dx7::PATCH_COUNT));
+    for index in 0..dx7::VOICE_COUNT {
+        let mut s = dx7_voice(index);
         let m = render(&mut s, TWO_HAND_EIGHT, 127, SWEEP_BLOCKS);
-        check_patch(&m, "dx7", dx7::PATCH_NAMES[index], &mut worst);
+        check_patch(&m, "dx7", dx7::voice_name(index), &mut worst);
     }
     for index in 0..jupiter::PATCH_COUNT {
         let mut s = jupiter::Jupiter8Synth::new();
@@ -395,17 +417,25 @@ fn ordinary_playing_is_at_a_usable_level() {
 /// the other five are set relative to it — so the one number the whole
 /// structure hangs from gets pinned here rather than left to drift.
 ///
-/// A ±2 dB window around −12 dBFS: wide enough that a preset edit or a
-/// rounded trim constant does not trip it, narrow enough that the 3.6 dB
-/// re-target this test was written for could not happen silently.
+/// The target used to be −12 dBFS, and the whole project is trimmed around
+/// it. The DX7 no longer meets it, and that is a decision rather than a drift:
+/// its loudest factory voice sits 10 dB above the bank's median, so the trim
+/// is now sized by that voice instead of by ordinary playing. See
+/// `OUTPUT_TRIM` in dx7.rs. The cost is 4 dB on everything the instrument
+/// plays; the alternative was 16 voices reaching past the master limiter's
+/// ceiling, where a single track's transient ducks the whole mix.
+///
+/// A ±1.5 dB window around the measured −14.1 dBFS: wide enough that a
+/// rounded trim constant does not trip it, narrow enough that another
+/// re-target cannot happen silently.
 #[test]
-fn dx7_default_triad_hits_the_minus_twelve_dbfs_target() {
+fn dx7_default_triad_lands_where_the_trim_puts_it() {
     let (peak, _) = peak_and_rms(&mut dx7::Dx7Synth::new(), TRIAD, 100);
     let dbfs = 20.0 * peak.log10();
     assert!(
-        (-14.0..=-10.0).contains(&dbfs),
-        "DX7 default preset, triad @100, peaks at {peak:.4} ({dbfs:.1} dBFS); \
-         the target for ordinary playing is -12 dBFS"
+        (-15.6..=-12.6).contains(&dbfs),
+        "DX7 default voice, triad @100, peaks at {peak:.4} ({dbfs:.1} dBFS); \
+         the trim puts ordinary playing at -14.1 dBFS"
     );
 }
 
@@ -477,8 +507,7 @@ fn instruments_are_level_matched() {
 
     // The median preset of each bank, so one unusual patch cannot skew the
     // comparison. Indices picked by measuring the triad RMS of every preset.
-    let mut dx7_mid = dx7::Dx7Synth::new();
-    dx7_mid.set_parameter(dx7::P_PATCH, patch_value(2, dx7::PATCH_COUNT));
+    let mut dx7_mid = dx7_voice(DX7_MEDIAN_VOICE);
     let mut jupiter_mid = jupiter::Jupiter8Synth::new();
     jupiter_mid.set_parameter(jupiter::P_PATCH, patch_value(1, jupiter::PATCH_COUNT));
     let mut odyssey_mid = odyssey::OdysseySynth::new();

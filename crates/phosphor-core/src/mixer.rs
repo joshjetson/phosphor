@@ -1143,21 +1143,33 @@ mod tests {
         }
     }
 
-    /// Four tracks of the loudest DX7 preset, each playing a two-handed
+    /// The loudest single voice in the project: ROM3A's TIMPANI, voice 147 of
+    /// the DX7's 256 factory voices, which is what `phosphor-dsp`'s headroom
+    /// sweep measures as the hottest thing any instrument here can produce.
+    ///
+    /// The DX7 has two selectors — a cartridge and a voice — so picking one by
+    /// number goes through `voice_knobs`.
+    fn loudest_dx7_voice() -> phosphor_dsp::dx7::Dx7Synth {
+        use phosphor_dsp::dx7;
+        let mut synth = dx7::Dx7Synth::new();
+        let (bank, patch) = dx7::voice_knobs(147);
+        synth.set_parameter(dx7::P_BANK, bank);
+        synth.set_parameter(dx7::P_PATCH, patch);
+        debug_assert_eq!(dx7::voice_name(147), "TIMPANI");
+        synth
+    }
+
+    /// Four tracks of the loudest DX7 voice, each playing a two-handed
     /// eight-note chord at full velocity with the fader open — a heavier mix
     /// than anything the application can produce by accident.
     #[test]
     fn master_limiter_bounds_four_loud_instrument_tracks() {
-        use phosphor_dsp::dx7;
-
         let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
         for id in 0..4 {
             let handle = Arc::new(TrackHandle::new(id, TrackKind::Instrument));
             handle.config.midi_active.store(true, std::sync::atomic::Ordering::Relaxed);
             handle.config.set_volume(1.0);
-            let mut synth = dx7::Dx7Synth::new();
-            // 47 "Timpani": the loudest preset in the bank.
-            synth.set_parameter(dx7::P_PATCH, 47.0 / (dx7::PATCH_COUNT as f32 - 0.01));
+            let synth = loudest_dx7_voice();
             tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle }).unwrap();
             tx.send(MixerCommand::SetInstrument {
                 track_id: id,
@@ -1196,14 +1208,11 @@ mod tests {
     /// at exactly unity, so the mix is the track sum sample for sample.
     #[test]
     fn limiter_idle_for_the_worst_single_track() {
-        use phosphor_dsp::dx7;
-
         let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
         let handle = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
         handle.config.midi_active.store(true, std::sync::atomic::Ordering::Relaxed);
         handle.config.set_volume(1.0);
-        let mut synth = dx7::Dx7Synth::new();
-        synth.set_parameter(dx7::P_PATCH, 47.0 / (dx7::PATCH_COUNT as f32 - 0.01));
+        let synth = loudest_dx7_voice();
         tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle }).unwrap();
         tx.send(MixerCommand::SetInstrument { track_id: 0, instrument: Box::new(synth) }).unwrap();
         transport.play();
@@ -1237,15 +1246,11 @@ mod tests {
     /// the fader at `volume`. Returns the output peak and the lowest gain the
     /// limiter reached.
     fn worst_track_through_the_mixer(volume: f32) -> (f32, f32) {
-        use phosphor_dsp::dx7;
-
         let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
         let handle = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
         handle.config.midi_active.store(true, std::sync::atomic::Ordering::Relaxed);
         handle.config.set_volume(volume);
-        let mut synth = dx7::Dx7Synth::new();
-        // 47 "Timpani": the loudest preset in the loudest bank.
-        synth.set_parameter(dx7::P_PATCH, 47.0 / (dx7::PATCH_COUNT as f32 - 0.01));
+        let synth = loudest_dx7_voice();
         tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle }).unwrap();
         tx.send(MixerCommand::SetInstrument { track_id: 0, instrument: Box::new(synth) }).unwrap();
         transport.play();

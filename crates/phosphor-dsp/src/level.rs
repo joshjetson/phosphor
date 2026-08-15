@@ -18,6 +18,11 @@
 //!   user actually plays 3.6 dB, which is what made the instruments too
 //!   quiet to use without the OS volume control.
 //!
+//!   The DX7 is the one exception, and its own `OUTPUT_TRIM` says why: its
+//!   256 factory ROM voices run 26 dB from the quietest to the loudest, wide
+//!   enough that one constant cannot serve both ends. Its trim serves the
+//!   loud end, which puts its ordinary playing at −14 dBFS rather than −12.
+//!
 //! * **Bounding.** Whatever is left after the trim goes through
 //!   [`soft_saturate`], which is the identity below the knee and bends
 //!   smoothly towards ±1 above it. It replaces the `clamp(-1.0, 1.0)` that
