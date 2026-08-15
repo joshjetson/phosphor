@@ -84,7 +84,7 @@ cargo run --release -- --no-midi
 | **DX7** | FM | 16 | **256** | All 8 original factory cartridges, decoded from the ROM dumps |
 | **Jupiter-8** | Analog poly | 8 | 42 | Dual polyBLEP VCOs, IR3109 OTA ladder filter, 4 voice modes |
 | **ARP Odyssey** | Duophonic | 2 | 44 | 3 selectable filter types (4023/4035/4075), hard sync, ring mod, S&H |
-| **Juno-60** | DCO poly | 6 | 18 | Single DCO, BBD stereo chorus (I/II/I+II), sub-oscillator |
+| **Juno-60** | DCO poly | 6 | 18 | Complete 25-control front panel, measured against the hardware |
 
 ### Drum Rack
 
@@ -139,7 +139,7 @@ Pick a cartridge with the `bank` parameter, then a voice with `patch`.
 - **DX7**: all 256 original factory voices, decoded from the ROM cartridge dumps and played on a 6-operator engine modelled on the YM21280/YM21290 chipset — all 32 algorithms decoded from the hardware table (including the multi-operator feedback loops in algorithms 4 and 6), log-domain envelopes with the hardware rate curve and its distinct attack shape, coarse/fine/detune frequency on the real parameter grid, keyboard level and rate scaling, global LFO with six waveforms and two-stage delay, and a per-voice pitch envelope
 - **Jupiter-8**: Dual polyBLEP VCOs, IR3109 4-pole OTA ladder filter with tanh saturation, per-voice analog drift, 4 voice modes (Solo/Unison/Poly1/Poly2)
 - **ARP Odyssey**: Duophonic split, 3 selectable filters (12dB SVF / 24dB Moog ladder / 24dB Norton), XOR ring mod, hard sync, Sample & Hold
-- **Juno-60**: Single DCO per voice, BBD stereo chorus (Chorus I / II / I+II), sub-oscillator, 4-position HPF, single ADSR shared VCF+VCA
+- **Juno-60**: the full front panel — LFO rate/delay, DCO with PWM depth and mode, saw/pulse/sub/noise and a 16'/8'/4' range switch, 4-position HPF, IR3109-style 24 dB/oct resonant VCF with env polarity, LFO and keyboard follow, ENV/GATE VCA, shared ADSR, and BBD stereo chorus (I / II / I+II). Envelope taper, filter corner frequencies and chorus rates are calibrated against measurements of the hardware rather than approximated
 - **Drum Rack**: 10 kits including circuit-accurate 808/909/707/606, creative 777, warm tape-saturated tsty series, and resonator-based physical modeling
 
 **Session Management**
@@ -190,7 +190,7 @@ Pick a cartridge with the `bank` parameter, then a voice with `patch`.
 - Shared domain models via atomics (no locks between threads)
 - Command channel pattern for UI-to-audio communication
 - Plugin trait for instruments and effects — same interface for built-in and third-party
-- 369 tests covering DSP, MIDI, engine, mixer, and navigation
+- 389 tests covering DSP, MIDI, engine, mixer, and navigation
 
 ---
 
@@ -454,7 +454,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace  # 369 tests
+cargo test --workspace  # 389 tests
 ```
 
 ---

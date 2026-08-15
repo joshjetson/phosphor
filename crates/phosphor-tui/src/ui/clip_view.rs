@@ -172,10 +172,20 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                     let bar: String = "\u{2588}".repeat(filled)
                         + &"\u{2591}".repeat(bar_w.saturating_sub(filled));
 
-                    // Format value nicely
-                    let display_val = match i {
-                        7 | 8 | 10 => format!("{:.0}ms", val * 2000.0), // attack/decay/release
-                        _ => format!("{:.0}%", val * 100.0),
+                    // Format value nicely. The Juno's envelope sliders are not
+                    // linear in time and do not sit at the same indices as the
+                    // other instruments', so it reports its own seconds.
+                    let display_val = if is_juno {
+                        match phosphor_dsp::juno::param_seconds(i, val) {
+                            Some(secs) if secs < 1.0 => format!("{:.0}ms", secs * 1000.0),
+                            Some(secs) => format!("{secs:.1}s"),
+                            None => format!("{:.0}%", val * 100.0),
+                        }
+                    } else {
+                        match i {
+                            7 | 8 | 10 => format!("{:.0}ms", val * 2000.0), // attack/decay/release
+                            _ => format!("{:.0}%", val * 100.0),
+                        }
                     };
 
                     lines.push(Line::from(vec![

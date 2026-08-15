@@ -176,11 +176,20 @@ impl App {
                 track.volume = st.volume;
                 track.color_index = st.color_index;
 
-                // Restore synth params
-                for (i, &val) in st.synth_params.iter().enumerate() {
-                    if i < track.synth_params.len() {
-                        track.synth_params[i] = val;
-                    }
+                // Restore synth params. The block is positional, so a saved
+                // block of a different length is a different panel — the
+                // Juno's grew from 16 controls to 25 when its front panel was
+                // finished — and copying it in slot by slot would load every
+                // value into the wrong control. A mismatch keeps the
+                // instrument's defaults instead.
+                if st.synth_params.len() == track.synth_params.len() {
+                    track.synth_params.copy_from_slice(&st.synth_params);
+                } else {
+                    tracing::warn!(
+                        "track '{}': saved {} parameters, instrument has {} — \
+                         loading its defaults",
+                        st.name, st.synth_params.len(), track.synth_params.len()
+                    );
                 }
 
                 // Send all params to audio thread

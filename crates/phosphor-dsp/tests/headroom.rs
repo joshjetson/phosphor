@@ -160,8 +160,8 @@ fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
     jupiter_organ.set_parameter(jupiter::P_PATCH, patch_value(9, jupiter::PATCH_COUNT));
     let mut odyssey_funk = odyssey::OdysseySynth::new();
     odyssey_funk.set_parameter(odyssey::P_PATCH, patch_value(1, odyssey::PATCH_COUNT));
-    let mut juno_brass = juno::Juno60Synth::new();
-    juno_brass.set_parameter(juno::P_PATCH, patch_value(3, juno::PATCH_COUNT));
+    let mut juno_clav = juno::Juno60Synth::new();
+    juno_clav.set_parameter(juno::P_PATCH, patch_value(15, juno::PATCH_COUNT));
 
     vec![
         ("dx7 147 TIMPANI", Box::new(dx7_timpani)),
@@ -169,7 +169,7 @@ fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
         ("dx7 195 CLARINET", Box::new(dx7_clarinet)),
         ("jupiter 9 Organ", Box::new(jupiter_organ)),
         ("odyssey 1 Funk", Box::new(odyssey_funk)),
-        ("juno 3 Brass", Box::new(juno_brass)),
+        ("juno 15 Clav", Box::new(juno_clav)),
         ("phosphor", Box::new(synth::PhosphorSynth::new())),
     ]
 }

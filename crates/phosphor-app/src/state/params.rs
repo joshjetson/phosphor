@@ -42,12 +42,6 @@ impl NavState {
                             6 => 0.34, // 3 filter types
                             _ => 0.5,
                         }
-                    } else if is_juno {
-                        match idx {
-                            0 => 1.0 / (phosphor_dsp::juno::PATCH_COUNT as f32 - 0.01),
-                            12 => 0.25, // 4 chorus modes
-                            _ => 0.5,   // on/off switches
-                        }
                     } else {
                         match track.instrument_type {
                             Some(InstrumentType::DrumRack) => 0.1, // 10 kits
@@ -58,35 +52,43 @@ impl NavState {
                 } else {
                     delta
                 };
-                let new_val = if is_dx7 && is_discrete {
-                    // The DX7 steps its two selectors by index rather than by
-                    // adding a fraction of the knob's travel: 32 voices and 8
-                    // cartridges are coarse enough that an accumulated rounding
-                    // error lands on the wrong side of a step boundary, which
-                    // reads as a keypress that did nothing.
+                // The DX7 and the Juno step their selectors by index rather
+                // than by adding a fraction of the knob's travel: 256 voices,
+                // or 18 patches and a three-position range switch, are coarse
+                // enough that an accumulated rounding error lands on the wrong
+                // side of a step boundary, which reads as a keypress that did
+                // nothing.
+                let new_val = if is_discrete && is_dx7 {
                     phosphor_dsp::dx7::step_discrete(idx, track.synth_params[idx], delta > 0.0)
+                } else if is_discrete && is_juno {
+                    phosphor_dsp::juno::step_discrete(idx, track.synth_params[idx], delta > 0.0)
                 } else {
                     (track.synth_params[idx] + actual_delta).clamp(0.0, 1.0)
                 };
                 track.synth_params[idx] = new_val;
 
-                // When patch selector changes, sync all params from preset
+                // When patch selector changes, sync all params from preset.
+                // The banks no longer agree on how many parameters an
+                // instrument has, so this collects rather than matching on a
+                // fixed-size array, and writes through a zip so a track
+                // carrying a shorter block than its instrument now has cannot
+                // index off the end of itself.
                 if idx == 0 {
-                    let new_params = match track.instrument_type {
+                    let new_params: Option<Vec<f32>> = match track.instrument_type {
                         Some(InstrumentType::Jupiter8) => {
-                            Some(phosphor_dsp::jupiter::Jupiter8Synth::params_for_patch(new_val))
+                            Some(phosphor_dsp::jupiter::Jupiter8Synth::params_for_patch(new_val).to_vec())
                         }
                         Some(InstrumentType::Odyssey) => {
-                            Some(phosphor_dsp::odyssey::OdysseySynth::params_for_patch(new_val))
+                            Some(phosphor_dsp::odyssey::OdysseySynth::params_for_patch(new_val).to_vec())
                         }
                         Some(InstrumentType::Juno60) => {
-                            Some(phosphor_dsp::juno::Juno60Synth::params_for_patch(new_val))
+                            Some(phosphor_dsp::juno::Juno60Synth::params_for_patch(new_val).to_vec())
                         }
                         _ => None,
                     };
                     if let Some(preset_params) = new_params {
-                        for (i, &v) in preset_params.iter().enumerate() {
-                            track.synth_params[i] = v;
+                        for (slot, v) in track.synth_params.iter_mut().zip(preset_params) {
+                            *slot = v;
                         }
                     }
                 }
