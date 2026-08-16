@@ -95,7 +95,7 @@ const INSTRUMENTS: [(&str, usize); 5] = [
     ("jupiter", jupiter::PATCH_COUNT),
     ("odyssey", odyssey::PATCH_COUNT),
     ("juno", juno::PATCH_COUNT),
-    ("phosphor", 1),
+    ("phosphor", synth::PATCH_COUNT),
 ];
 
 /// The loudest preset of each bank, measured on an eight-note chord at
@@ -105,7 +105,7 @@ const LOUDEST: [(&str, usize); 5] = [
     ("jupiter", 40), // 61 STARTING UP, whose peak needs `BLOCKS` past 5.5 s
     ("odyssey", 1),
     ("juno", 27), // 44 TUBA
-    ("phosphor", 0),
+    ("phosphor", 8), // SYNTH KIT
 ];
 
 fn build(name: &str, patch: usize) -> Box<dyn Plugin> {
@@ -141,7 +141,11 @@ fn build(name: &str, patch: usize) -> Box<dyn Plugin> {
             s.set_parameter(juno::P_PATCH, juno::patch_knob(patch));
             Box::new(s)
         }
-        _ => Box::new(synth::PhosphorSynth::new()),
+        _ => {
+            let mut s = synth::PhosphorSynth::new();
+            s.set_parameter(synth::P_PATCH, synth::patch_knob(patch));
+            Box::new(s)
+        }
     }
 }
 
@@ -151,6 +155,7 @@ fn patch_name(name: &str, index: usize) -> &'static str {
         "jupiter" => jupiter::PATCH_LABELS[index],
         "odyssey" => odyssey::PATCH_NAMES[index],
         "juno" => juno::PATCH_LABELS[index],
+        "phosphor" => synth::PATCH_NAMES[index],
         _ => "-",
     }
 }
@@ -230,7 +235,7 @@ const WORST: [(&str, usize, &str, &[u8]); 5] = [
     ("jupiter", 40, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
     ("odyssey", 1, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
     ("juno", 27, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
-    ("phosphor", 0, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
+    ("phosphor", 8, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]), // SYNTH KIT
 ];
 
 /// Kick, snare and closed hat on one sample — a downbeat, which is the drum

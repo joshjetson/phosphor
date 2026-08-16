@@ -80,7 +80,7 @@ cargo run --release -- --no-midi
 
 | Instrument | Type | Voices | Patches | Description |
 |-----------|------|--------|---------|-------------|
-| **Phosphor Synth** | Subtractive | 16 | 4 waveforms | Dual oscillators, SVF filter, drive, ADSR |
+| **Phosphor Synth** | Wavetable / vector | 8 | 9 | Four oscillators with vector mixing, 16 wavetables, Moog-style ladder, 6-slot mod matrix, keymapped drum patches |
 | **DX7** | FM | 16 | **256** | All 8 original factory cartridges, decoded from the ROM dumps |
 | **Jupiter-8** | Analog poly | 8 | **64** | All 64 factory patch names, full 32-control panel, two envelopes |
 | **ARP Odyssey** | Duophonic | 2 | 44 | Complete 59-control front panel, all three filter revisions (4023/4035/4075), ADSR *and* AR envelopes, sample and hold |
@@ -156,7 +156,7 @@ Names and spellings are Roland's, Glockenspeil included.
   above full scale and no NaN can ever reach the audio device
 
 **Synthesizers**
-- **Phosphor Synth**: 16-voice polyphonic subtractive — dual oscillators, SVF filter, drive, ADSR
+- **Phosphor Synth**: the house synth, and the one instrument here that models nothing — the best ideas from three machines instead. Four oscillators mixed on a vector square, each an analog shape or one of 16 generated wavetables; a four-pole Moog-style ladder that self-oscillates and keeps its bass loss; a driven mixer ahead of it; two LFOs, two envelopes and a six-slot modulation matrix of eleven sources against nine destinations. Patches can be keymapped, so a single patch holds a whole drum kit built from the same oscillators and filter as the pads
 - **DX7**: all 256 original factory voices, decoded from the ROM cartridge dumps and played on a 6-operator engine modelled on the YM21280/YM21290 chipset — all 32 algorithms decoded from the hardware table (including the multi-operator feedback loops in algorithms 4 and 6), log-domain envelopes with the hardware rate curve and its distinct attack shape, coarse/fine/detune frequency on the real parameter grid, keyboard level and rate scaling, global LFO with six waveforms and two-stage delay, and a per-voice pitch envelope
 - **Jupiter-8**: the full front panel — dual VCOs with sync and exponential cross-modulation, switchable 12/24 dB IR3109 filter with resonance to self-oscillation, non-resonant HPF, two independent ADSR envelopes, LFO with four waveforms and a two-stage delay, portamento, and 4 voice modes (Solo/Unison/Poly1/Poly2). Envelope times follow Roland's published 1 ms-10 s specification; filter corners, LFO taper and keyboard follow are measured rather than approximated
 - **ARP Odyssey**: the full front panel — two VCOs with coarse and fine tuning over the panel's 20 Hz-2 kHz range, hard sync, per-oscillator pulse width and PWM, two frequency-mod inputs each, a keyboard switch that drops VCO-1 into the LFO range, the sample-and-hold mixer with its own sources, clock and lag, an XOR ring modulator sharing a fader with white or pink noise, all three filter revisions (12 dB 4023 SVF / 24 dB 4035 ladder / 24 dB 4075 Norton) on one 16 Hz-16 kHz sweep and each resonating to self-oscillation, a non-resonant HPF, three filter modulation slots, VCA gain and drive, and both envelope generators — the ADSR and the AR — with their own sliders and their own LFO-repeat gating. Envelope times follow ARP's published 5 ms-10 s specification and the pitch pads are mapped to pitch bend and the modulation wheel
@@ -230,7 +230,7 @@ Names and spellings are Roland's, Glockenspeil included.
 - Shared domain models via atomics (no locks between threads)
 - Command channel pattern for UI-to-audio communication
 - Plugin trait for instruments and effects — same interface for built-in and third-party
-- 559 tests covering DSP, MIDI, engine, mixer, navigation, and persistence
+- 594 tests covering DSP, MIDI, engine, mixer, navigation, and persistence
 
 ---
 
@@ -527,7 +527,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace  # 559 tests
+cargo test --workspace  # 594 tests
 ```
 
 ---

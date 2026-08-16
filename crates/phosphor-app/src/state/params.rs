@@ -36,6 +36,9 @@ impl NavState {
                 // index off the end of itself.
                 if idx == 0 {
                     let new_params: Option<Vec<f32>> = match track.instrument_type {
+                        Some(InstrumentType::Synth | InstrumentType::Sampler) => {
+                            Some(phosphor_dsp::synth::PhosphorSynth::params_for_patch(new_val).to_vec())
+                        }
                         Some(InstrumentType::Jupiter8) => {
                             Some(phosphor_dsp::jupiter::Jupiter8Synth::params_for_patch(new_val).to_vec())
                         }

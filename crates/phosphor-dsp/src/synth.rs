@@ -1,218 +1,923 @@
-//! Polyphonic subtractive synth with vintage character.
+//! The Phosphor synth: four oscillators, vector mixing, a ladder filter and a
+//! virtual patch matrix.
 //!
-//! Features: dual oscillators with detune, sub oscillator, noise generator,
-//! resonant low-pass filter, drive/saturation, and ADSR envelope.
+//! Every other instrument in the rack is a model of a particular machine,
+//! which leaves this one free to be the opposite — three ideas taken from
+//! three instruments and put in one signal path:
+//!
+//! * **the Minimoog's front half.** A four-pole transistor ladder with the
+//!   bass loss that comes with its resonance, and a drive stage *before* it
+//!   rather than after, because a Minimoog's growl is its mixer pushed past
+//!   unity into the filter. One oscillator can also be given up to the
+//!   modulation matrix, the way that instrument trades its third for an LFO.
+//! * **the microKORG's matrix and its wavetables.** Assignable source →
+//!   destination → amount, and a bank of digital single-cycle waveforms
+//!   sitting alongside the analog shapes on the same oscillator.
+//! * **the Prophet VS / Wavestation's vector mix.** Four oscillators balanced
+//!   by a position on a square rather than by four faders — and that position
+//!   is itself a modulation destination, so the balance can move.
+//!
+//! ```text
+//!   OSC A ─┐
+//!   OSC B ─┤                                        ┌── AMP ──►
+//!   OSC C ─┼─ vector mix ── DRIVE ── LADDER FILTER ─┘
+//!   OSC D ─┘                   ▲          ▲
+//!                              │          │
+//!                        ┌─────┴──────────┴─────┐
+//!                        │      MOD MATRIX      │
+//!                        │  src → dest → amount │
+//!                        └──────────────────────┘
+//! ```
+//!
+//! ## Melodic and keymapped patches
+//!
+//! A patch declares how it reads the keyboard, in `KeyMap`. A melodic patch
+//! maps a note to a pitch, which is what a synthesizer normally does. A
+//! **keymapped** patch maps a note to an entire voice recipe — its own
+//! oscillator shapes and wavetable positions, tuning, vector balance, filter
+//! and envelopes — which is what a Wavestation, an M1 or any other rompler
+//! calls a drum kit.
+//!
+//! That is an engine capability rather than patch data, and it is here in
+//! phase one for a reason: an engine that can only transpose one recipe cannot
+//! be given drum patches later without being rebuilt. The point of having
+//! drums here rather than only in the drum rack is that they come out of the
+//! same four oscillators, the same ladder and the same envelopes as the pads,
+//! so they sit in the same sonic world.
+//!
+//! ## The wavetables
+//!
+//! The sixteen digital waveforms in [`WAVE_NAMES`] are **generated here**, from
+//! the harmonic tables in `WAVES`, in the spirit of the DW-8000's set rather
+//! than copied from it. Nothing in this file is sampled from, transcribed from
+//! or derived from Korg's ROM; what is borrowed is the idea — a small bank of
+//! additive single-cycle shapes, mostly drawbar organ, reed, brass, vocal and
+//! bell spectra, reachable from the same oscillator that makes a sawtooth.
+//!
+//! ## Real-time safety
+//!
+//! Nothing in `process` allocates, locks or panics. The voices are a fixed
+//! array rather than a `Vec`, the MIDI sort runs in a fixed buffer, the key
+//! map is a `'static` table read by a bounded scan at note-on, and the
+//! wavetable bank is built once per process behind a `OnceLock` that the
+//! constructor resolves into a `&'static` — so the audio thread never touches
+//! the cell at all.
+//!
+//! That is checked rather than claimed. `the_audio_path_does_not_allocate`
+//! counts allocations on its own thread across a buffer with three times as
+//! many simultaneous keys as there are voices, and asserts the count is zero.
+//! The Odyssey had a `Vec` that could reallocate inside the callback on the
+//! seventeenth simultaneous key, and nothing caught it, because "no allocation
+//! in `process`" is a property of the code rather than of its output.
+
+use std::sync::OnceLock;
 
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
 use crate::level::soft_saturate;
-use crate::oscillator::{Oscillator, Waveform};
 
-const MAX_VOICES: usize = 16;
+const TWO_PI: f64 = std::f64::consts::TAU;
+const PI: f64 = std::f64::consts::PI;
+
+/// Eight voices, the same as the Jupiter.
+///
+/// The instrument this replaced carried sixteen, on one oscillator pair and a
+/// two-pole filter. Four oscillators and a four-pole ladder is roughly four
+/// times that per voice, and eight is what the other polysynths in the rack
+/// hold — an eight-note chord, which is what the headroom sweep plays, fits
+/// exactly.
+const MAX_VOICES: usize = 8;
 
 /// Fixed headroom trim on the voice sum, applied after the gain knob.
 ///
-/// Sized on ordinary playing, in step with the other four — see `OUTPUT_TRIM`
-/// in dx7.rs, which carries the full reasoning. The trim lands this synth at
-/// the same typical loudness as theirs.
+/// Sized on ordinary playing, in step with the other five — see `OUTPUT_TRIM`
+/// in dx7.rs, which carries the full reasoning. The trim lands this synth's
+/// default patch at the same typical loudness as theirs: a triad at velocity
+/// 100 measures 0.0286 RMS against their 0.0187 to 0.0314, and peaks at
+/// 0.1397.
 ///
-/// Measured worst case at default parameters: 1.39 for an eight-note chord
-/// at velocity 127, which used to leave the buffer — this synth had no
-/// output bound of any kind, so it handed values above 1.0 straight to the
-/// mixer. At this trim that worst case is well under the saturator knee.
+/// Sized on the *extremes* as well, which is unusual here and is because this
+/// is the instrument whose predecessor failed exactly there. With sub, noise,
+/// cutoff, resonance and sustain all at maximum that one reached 0.9470 on an
+/// eight-note chord — past the master limiter's ceiling, burning 5 dB of
+/// saturation against a 2 dB budget — and nothing measured it.
+/// `the_panel_at_its_extremes_stays_under_the_ceiling` is what replaced that
+/// silence: fourteen deliberately hostile panels, each on five voicings at two
+/// velocities, covering every oscillator shape at full level, every corner of
+/// the vector, every matrix slot at full depth pointed at cutoff, resonance
+/// and the vector at once, and the filter self-oscillating with no oscillator
+/// at all. The worst of the 140 renders measures 0.6982, which is *under* the
+/// saturator's knee — so even the extremes are the trimmed voice sum sample
+/// for sample, and the bounding stage never engages anywhere on the panel.
 ///
-/// The second factor is the GAIN knob's old default. Everything above was
-/// measured with that knob at 0.75, so the quarter of its travel above 0.75
-/// was a boost into headroom nothing had measured — an eight-note chord with
-/// DRIVE at the top reached 0.9379 with GAIN at the top, past the master
-/// limiter's ceiling. Folding it in here leaves the default render identical
-/// sample for sample and makes GAIN a control that can only cut, which is the
-/// same reasoning the drum rack's GAIN was pinned at the top of its travel
-/// for.
-const OUTPUT_TRIM: f32 = 0.2481 * 0.75;
+/// Holding to the knee rather than to the 2 dB saturation budget the other
+/// banks are allowed costs about 1.3 dB of level. It is worth it here: the
+/// budget is a statement about how much of the saturator is inaudible, and
+/// "the saturator is never in circuit" needs no such judgement.
+///
+/// The second factor is the GAIN knob, which sits at the top of its travel and
+/// can therefore only cut. That is what makes the sweep above complete: a knob
+/// with travel above its default is headroom nothing has measured.
+const OUTPUT_TRIM: f32 = 0.116;
 
 // ── Parameter indices ──
-pub const P_WAVEFORM: usize = 0;
-pub const P_DETUNE: usize = 1;
-pub const P_SUB_LEVEL: usize = 2;
-pub const P_NOISE_LEVEL: usize = 3;
-pub const P_FILTER_CUTOFF: usize = 4;
-pub const P_FILTER_RESO: usize = 5;
-pub const P_DRIVE: usize = 6;
-pub const P_ATTACK: usize = 7;
-pub const P_DECAY: usize = 8;
-pub const P_SUSTAIN: usize = 9;
-pub const P_RELEASE: usize = 10;
-pub const P_GAIN: usize = 11;
-pub const PARAM_COUNT: usize = 12;
+//
+// Front-panel order, which here means signal order: the four oscillators, the
+// vector that mixes them, the drive and filter they run into, the amplifier,
+// then the modulation sources and the matrix that routes them. `patch` is
+// first because that is where the editor looks for a preset selector.
 
-pub const PARAM_NAMES: [&str; PARAM_COUNT] = [
-    "waveform", "detune", "sub", "noise",
-    "cutoff", "reso", "drive",
-    "attack", "decay", "sustain", "release", "gain",
-];
+pub const P_PATCH: usize = 0;
 
-pub const PARAM_DEFAULTS: [f32; PARAM_COUNT] = [
-    0.25,  // waveform: saw
-    0.05,  // detune: slight
-    0.0,   // sub level: off
-    0.0,   // noise: off
-    0.8,   // filter cutoff: mostly open
-    0.0,   // filter resonance: none
-    0.0,   // drive: clean
-    0.01,  // attack: 20ms
-    0.15,  // decay
-    0.7,   // sustain
-    0.1,   // release: 200ms
-    1.0,   // gain: the top of its travel, so the knob can only cut — see OUTPUT_TRIM
-];
+// OSC A
+pub const P_A_WAVE: usize = 1;
+pub const P_A_TABLE: usize = 2;
+pub const P_A_TUNE: usize = 3;
+pub const P_A_FINE: usize = 4;
+pub const P_A_LEVEL: usize = 5;
+// OSC B
+pub const P_B_WAVE: usize = 6;
+pub const P_B_TABLE: usize = 7;
+pub const P_B_TUNE: usize = 8;
+pub const P_B_FINE: usize = 9;
+pub const P_B_LEVEL: usize = 10;
+// OSC C
+pub const P_C_WAVE: usize = 11;
+pub const P_C_TABLE: usize = 12;
+pub const P_C_TUNE: usize = 13;
+pub const P_C_FINE: usize = 14;
+pub const P_C_LEVEL: usize = 15;
+// OSC D
+pub const P_D_WAVE: usize = 16;
+pub const P_D_TABLE: usize = 17;
+pub const P_D_TUNE: usize = 18;
+pub const P_D_FINE: usize = 19;
+pub const P_D_LEVEL: usize = 20;
+pub const P_D_MODE: usize = 21;
 
-// ── ADSR Envelope ──
+// MIX
+pub const P_VECTOR_X: usize = 22;
+pub const P_VECTOR_Y: usize = 23;
+pub const P_PULSE_WIDTH: usize = 24;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum EnvStage { Idle, Attack, Decay, Sustain, Release }
+// FILTER
+pub const P_DRIVE: usize = 25;
+pub const P_CUTOFF: usize = 26;
+pub const P_RESO: usize = 27;
+pub const P_FILTER_ENV: usize = 28;
+pub const P_KEY_FOLLOW: usize = 29;
 
-#[derive(Debug, Clone)]
-struct Envelope {
-    stage: EnvStage,
-    level: f64,
-    attack: f64,
-    decay: f64,
-    sustain: f64,
-    release: f64,
-    sample_rate: f64,
+// AMP
+pub const P_VELOCITY: usize = 30;
+pub const P_GAIN: usize = 31;
+
+// LFOs
+pub const P_LFO1_WAVE: usize = 32;
+pub const P_LFO1_RATE: usize = 33;
+pub const P_LFO2_WAVE: usize = 34;
+pub const P_LFO2_RATE: usize = 35;
+
+// ENVELOPES
+pub const P_ATTACK1: usize = 36;
+pub const P_DECAY1: usize = 37;
+pub const P_SUSTAIN1: usize = 38;
+pub const P_RELEASE1: usize = 39;
+pub const P_ATTACK2: usize = 40;
+pub const P_DECAY2: usize = 41;
+pub const P_SUSTAIN2: usize = 42;
+pub const P_RELEASE2: usize = 43;
+
+/// The first of the matrix's slots. Slot `i` is three consecutive indices from
+/// here: source, destination, amount.
+pub const P_MOD_BASE: usize = 44;
+
+/// How many source → destination → amount slots the matrix has.
+///
+/// Six. The microKORG's four is the reference and is famously just barely
+/// enough, but four of the routes a microKORG patch spends a slot on are
+/// hard-wired here — envelope 2 to cutoff, keyboard to cutoff, velocity to
+/// amplitude, envelope 1 to amplitude — so six free slots go further than
+/// four do there. Past six the panel starts to be mostly matrix: at three
+/// parameters a slot, six is already 18 of the 62 controls.
+pub const MOD_SLOTS: usize = 6;
+
+pub const PARAM_COUNT: usize = P_MOD_BASE + MOD_SLOTS * 3;
+
+/// The source knob of matrix slot `slot`, counting from zero.
+#[must_use]
+pub const fn p_mod_src(slot: usize) -> usize {
+    P_MOD_BASE + slot * 3
 }
 
-impl Envelope {
-    fn new(sr: f64) -> Self {
-        Self { stage: EnvStage::Idle, level: 0.0, attack: 0.005, decay: 0.1, sustain: 0.7, release: 0.15, sample_rate: sr }
-    }
-    fn trigger(&mut self) { self.stage = EnvStage::Attack; }
-    fn release(&mut self) { if self.stage != EnvStage::Idle { self.stage = EnvStage::Release; } }
-    fn kill(&mut self) { self.stage = EnvStage::Idle; self.level = 0.0; }
-    fn is_active(&self) -> bool { self.stage != EnvStage::Idle }
+/// The destination knob of matrix slot `slot`.
+#[must_use]
+pub const fn p_mod_dest(slot: usize) -> usize {
+    P_MOD_BASE + slot * 3 + 1
+}
 
-    fn tick(&mut self) -> f64 {
-        match self.stage {
-            EnvStage::Idle => 0.0,
-            EnvStage::Attack => {
-                self.level += 1.0 / (self.attack * self.sample_rate).max(1.0);
-                if self.level >= 1.0 { self.level = 1.0; self.stage = EnvStage::Decay; }
-                self.level
+/// The amount knob of matrix slot `slot`. Bipolar: the middle is no routing.
+#[must_use]
+pub const fn p_mod_amount(slot: usize) -> usize {
+    P_MOD_BASE + slot * 3 + 2
+}
+
+pub const PARAM_NAMES: [&str; PARAM_COUNT] = [
+    "patch",
+    "a wave", "a table", "a tune", "a fine", "a level",
+    "b wave", "b table", "b tune", "b fine", "b level",
+    "c wave", "c table", "c tune", "c fine", "c level",
+    "d wave", "d table", "d tune", "d fine", "d level", "d mode",
+    "vector x", "vector y", "pw",
+    "drive", "cutoff", "reso", "vcf env", "kybd",
+    "vel", "gain",
+    "lfo1", "lfo1 hz", "lfo2", "lfo2 hz",
+    "attack 1", "decay 1", "sustain1", "release1",
+    "attack 2", "decay 2", "sustain2", "release2",
+    "m1 src", "m1 dest", "m1 amt",
+    "m2 src", "m2 dest", "m2 amt",
+    "m3 src", "m3 dest", "m3 amt",
+    "m4 src", "m4 dest", "m4 amt",
+    "m5 src", "m5 dest", "m5 amt",
+    "m6 src", "m6 dest", "m6 amt",
+];
+
+/// Patch 0, INIT SAW, the panel the instrument loads with.
+///
+/// Derived from the first row of the bank rather than written out beside it,
+/// so the default and the patch cannot drift apart.
+pub const PARAM_DEFAULTS: [f32; PARAM_COUNT] = chart_params(0);
+
+// ── Discrete controls ──
+//
+// Everything that picks a thing rather than sets a level: the patch selector,
+// the four oscillator shape switches, the oscillator D mode switch, the two
+// LFO shape switches, the four coarse tune knobs and the matrix's twelve
+// source and destination selectors. All of them are stored in the same 0..1
+// parameter block as the sliders, so a selector is a knob divided into `n`
+// equal steps.
+
+/// How many positions a selector has, or `None` for a slider.
+fn discrete_steps(index: usize) -> Option<usize> {
+    if index >= P_MOD_BASE {
+        return match (index - P_MOD_BASE) % 3 {
+            0 => Some(SOURCE_COUNT),
+            1 => Some(DEST_COUNT),
+            _ => None,
+        };
+    }
+    match index {
+        P_PATCH => Some(PATCH_COUNT),
+        P_A_WAVE | P_B_WAVE | P_C_WAVE | P_D_WAVE => Some(SHAPE_COUNT),
+        P_A_TUNE | P_B_TUNE | P_C_TUNE | P_D_TUNE => Some(TUNE_STEPS),
+        P_D_MODE => Some(3),
+        P_LFO1_WAVE | P_LFO2_WAVE => Some(LFO_SHAPE_COUNT),
+        _ => None,
+    }
+}
+
+/// One knob into one of `count` equal steps.
+///
+/// Total by construction: `params` is public, so the knob can arrive as
+/// anything at all. The float-to-int cast saturates in both directions and
+/// turns NaN into zero, so every input lands on a real position.
+const fn selector(value: f32, count: usize) -> usize {
+    let step = (value * (count as f32 - 0.01)) as usize;
+    if step >= count {
+        count - 1
+    } else {
+        step
+    }
+}
+
+/// The knob position in the middle of step `index` of `count` — the one
+/// position in the step that no amount of float rounding can push into a
+/// neighbour. The inverse of [`selector`].
+const fn knob_for(index: usize, count: usize) -> f32 {
+    (index as f32 + 0.5) / count as f32
+}
+
+/// Which parameter indices are selectors (rendered as labels, not bars).
+#[must_use]
+pub fn is_discrete(index: usize) -> bool {
+    discrete_steps(index).is_some()
+}
+
+/// The knob position one step up or down from `value`. Sliders are unchanged.
+///
+/// Steps by *index* rather than by adding a fraction of the travel. Adding
+/// 1/49 of the range 49 times does not arrive at 1.0 — the error is a few ulps
+/// either way, and a step boundary missed by one ulp is a keypress that
+/// visibly does nothing. The DX7's bank knob stalled that way.
+#[must_use]
+pub fn step_discrete(index: usize, value: f32, up: bool) -> f32 {
+    let Some(count) = discrete_steps(index) else { return value };
+    let current = selector(value, count);
+    knob_for(
+        if up { (current + 1).min(count - 1) } else { current.saturating_sub(1) },
+        count,
+    )
+}
+
+/// Label for a selector position, or `None` for a slider.
+#[must_use]
+pub fn discrete_label(index: usize, value: f32) -> Option<&'static str> {
+    let count = discrete_steps(index)?;
+    let step = selector(value, count);
+    if index >= P_MOD_BASE {
+        return Some(match (index - P_MOD_BASE) % 3 {
+            0 => SOURCE_LABELS[step],
+            _ => DEST_LABELS[step],
+        });
+    }
+    Some(match index {
+        P_PATCH => PATCH_LABELS[step],
+        P_A_WAVE | P_B_WAVE | P_C_WAVE | P_D_WAVE => SHAPE_LABELS[step],
+        P_A_TUNE | P_B_TUNE | P_C_TUNE | P_D_TUNE => TUNE_LABELS[step],
+        P_D_MODE => ["audio", "mod", "mod lo"][step],
+        P_LFO1_WAVE | P_LFO2_WAVE => LFO_SHAPE_LABELS[step],
+        _ => return None,
+    })
+}
+
+/// A slider's value in seconds, for the six that measure time. `None` for the
+/// ones that read as a percentage.
+#[must_use]
+pub fn param_seconds(index: usize, value: f32) -> Option<f64> {
+    match index {
+        P_ATTACK1 | P_ATTACK2 => Some(attack_seconds(f64::from(value))),
+        P_DECAY1 | P_RELEASE1 | P_DECAY2 | P_RELEASE2 => Some(decay_seconds(f64::from(value))),
+        _ => None,
+    }
+}
+
+// ── Panel tapers ──
+
+/// A slider into 0..1 with an exponential feel: `curve` sets how much of the
+/// range is spent in the top half of the travel.
+fn taper(curve: f64, slider: f64) -> f64 {
+    (curve * slider.clamp(0.0, 1.0)).exp_m1() / curve.exp_m1()
+}
+
+/// Attack: 1 ms at the bottom to 6 s at the top.
+const ATTACK_MIN: f64 = 0.001;
+const ATTACK_MAX: f64 = 6.0;
+const ATTACK_CURVE: f64 = 5.0;
+
+fn attack_seconds(slider: f64) -> f64 {
+    ATTACK_MIN + taper(ATTACK_CURVE, slider) * ATTACK_MAX
+}
+
+/// Decay and release share one taper: 2 ms to 12 s.
+const DECAY_MIN: f64 = 0.002;
+const DECAY_MAX: f64 = 12.0;
+const DECAY_CURVE: f64 = 5.0;
+
+fn decay_seconds(slider: f64) -> f64 {
+    DECAY_MIN + taper(DECAY_CURVE, slider) * DECAY_MAX
+}
+
+/// LFO rate, exponential end to end: 0.05 Hz to 30 Hz.
+const LFO_MIN_HZ: f64 = 0.05;
+const LFO_MAX_HZ: f64 = 30.0;
+
+fn lfo_hz(slider: f64) -> f64 {
+    LFO_MIN_HZ * (LFO_MAX_HZ / LFO_MIN_HZ).powf(slider.clamp(0.0, 1.0))
+}
+
+/// Oscillator D in its low-frequency mode, from the coarse tune selector:
+/// 0.1 Hz at the bottom of the knob to 25.6 Hz at the top, 1.6 Hz in the
+/// middle. The Minimoog's third oscillator in LO range, on the same knob that
+/// tunes it when it is making sound.
+fn mod_lo_hz(semitones: f64) -> f64 {
+    0.1 * 2.0f64.powf((semitones + f64::from(TUNE_RANGE)) / 6.0)
+}
+
+/// Cutoff slider to Hz: 16 Hz to 16 kHz, exponential. Three decades, the same
+/// span the Odyssey's panel legend prints, chosen so the top of the travel is
+/// still well under Nyquist at 44.1 kHz — a corner placed above it folds, and
+/// a filter whose sweep folds *closes* at the top of its own travel.
+const CUTOFF_MIN_HZ: f64 = 16.0;
+const CUTOFF_DECADES: f64 = 3.0;
+/// How many octaves the cutoff slider covers end to end, which is what turns a
+/// keyboard-follow amount into a slider offset.
+const CUTOFF_OCTAVES: f64 = CUTOFF_DECADES * std::f64::consts::LOG2_10;
+
+fn cutoff_hz(slider: f64) -> f64 {
+    CUTOFF_MIN_HZ * 10.0f64.powf(CUTOFF_DECADES * slider.clamp(0.0, 1.0))
+}
+
+/// Coarse tune, in semitones either way. 49 positions from -24 to +24.
+const TUNE_RANGE: i32 = 24;
+const TUNE_STEPS: usize = (TUNE_RANGE * 2 + 1) as usize;
+
+const TUNE_LABELS: [&str; TUNE_STEPS] = [
+    "-24", "-23", "-22", "-21", "-20", "-19", "-18", "-17", "-16", "-15", "-14", "-13",
+    "-12", "-11", "-10", "-9", "-8", "-7", "-6", "-5", "-4", "-3", "-2", "-1",
+    "0",
+    "+1", "+2", "+3", "+4", "+5", "+6", "+7", "+8", "+9", "+10", "+11", "+12",
+    "+13", "+14", "+15", "+16", "+17", "+18", "+19", "+20", "+21", "+22", "+23", "+24",
+];
+
+fn tune_semitones(value: f32) -> f64 {
+    f64::from(selector(value, TUNE_STEPS) as i32 - TUNE_RANGE)
+}
+
+const fn tune_knob(semitones: i32) -> f32 {
+    knob_for((semitones + TUNE_RANGE) as usize, TUNE_STEPS)
+}
+
+/// Fine tune: 50 cents either side of the coarse setting.
+const FINE_CENTS: f64 = 50.0;
+
+fn fine_cents(value: f32) -> f64 {
+    (f64::from(value) - 0.5) * 2.0 * FINE_CENTS
+}
+
+const fn fine_knob(cents: f32) -> f32 {
+    cents / (2.0 * FINE_CENTS as f32) + 0.5
+}
+
+/// The pulse width knob runs from square down to a 5% sliver, which is where
+/// the pulse stops having a fundamental worth speaking of.
+const PW_MIN: f64 = 0.05;
+
+fn pulse_width(slider: f64) -> f64 {
+    0.5 - slider.clamp(0.0, 1.0) * (0.5 - PW_MIN)
+}
+
+/// A bipolar knob: the middle is zero and the ends are ±1.
+fn bipolar(value: f32) -> f64 {
+    (f64::from(value) - 0.5) * 2.0
+}
+
+const fn bipolar_knob(amount: f32) -> f32 {
+    amount * 0.5 + 0.5
+}
+
+/// How far a full-scale modulation moves the pitch: an octave either way.
+const PITCH_MOD_SEMITONES: f64 = 12.0;
+
+// ── The wavetable bank ──
+//
+// Sixteen single-cycle waveforms, generated from the harmonic tables below.
+// Sixteen because that is the DW-8000's count, and because a bank that has to
+// be swept through by a knob and by the matrix wants to be small enough that
+// every position is a different sound rather than a different shade of one.
+//
+// The content is chosen for what those machines are actually used for: two
+// drawbar organs, a hollow woodwind, a reed, a brass, two vowels, a bell, an
+// electric piano, a clavinet and a digital wash, with the four analog shapes
+// at the bottom of the bank so a sweep starts somewhere familiar. Nothing here
+// is sampled, transcribed or otherwise taken from any instrument's ROM.
+
+/// How many waveforms the bank holds.
+pub const WAVE_COUNT: usize = 16;
+
+/// What each waveform in the bank is, in bank order. The WAVE knob sweeps
+/// through these and crossfades between neighbours, so the order is part of
+/// the design: related timbres sit next to each other.
+pub const WAVE_NAMES: [&str; WAVE_COUNT] = [
+    "saw", "square", "triangle", "pulse 25", "pulse 10",
+    "organ", "drawbar", "hollow", "reed", "brass",
+    "vox ah", "vox oo", "bell", "e.piano", "clav", "digital",
+];
+
+/// Points per cycle. The sine that every partial is summed from is sampled at
+/// exactly these points, so a partial's contribution is a table lookup rather
+/// than a `sin` call: at sixteen waveforms by nine mip levels by 2048 points
+/// the direct form would be seventeen million library calls at startup.
+const TABLE_LEN: usize = 2048;
+
+/// The highest harmonic the bank carries. At the bottom of a keyboard — MIDI
+/// 36, 65 Hz — 256 harmonics reach 16.7 kHz, so nothing musically useful is
+/// missing from the bottom octave and nothing above it needs this many.
+const MAX_HARMONICS: usize = 256;
+
+/// Band-limited copies, each with half the harmonics of the one below: 256,
+/// 128, ... 1. A note picks the first level whose top harmonic is under
+/// Nyquist, so the bank never aliases however high it is played.
+const MIP_LEVELS: usize = 9;
+
+/// What one generated waveform is made of.
+///
+/// Described by harmonic content rather than by a sample list because that is
+/// how a machine with a wavetable ROM had its waveforms designed, and because
+/// a spectrum can be band-limited exactly where a sample list cannot.
+#[derive(Debug, Clone, Copy)]
+enum Spectrum {
+    /// Every harmonic at 1/n.
+    Saw,
+    /// The odd harmonics at 1/n.
+    Square,
+    /// The odd harmonics at 1/n², alternating in sign.
+    Triangle,
+    /// A rectangle of the given duty cycle.
+    Pulse(f64),
+    /// A named list of (harmonic, amplitude): the drawbar, bell and struck
+    /// shapes, which are a handful of partials and nothing between them.
+    Partials(&'static [(usize, f64)]),
+    /// n^-slope up to `top`, over every harmonic or only the odd ones.
+    Tilt { slope: f64, top: usize, odd: bool },
+    /// A 1/sqrt(n) spectrum shaped by gaussian bumps at (centre harmonic,
+    /// width, weight). The bumps sit at fixed *harmonics* rather than fixed
+    /// frequencies, because a single-cycle waveform transposes with the note —
+    /// which is exactly what a wavetable machine's vowels do.
+    Formants(&'static [(f64, f64, f64)]),
+    /// Deterministic pseudo-random amplitudes and phases up to `top`: the
+    /// inharmonic-sounding wash a digital bank is expected to have somewhere.
+    Digital { seed: u32, top: usize },
+}
+
+const WAVES: [Spectrum; WAVE_COUNT] = [
+    Spectrum::Saw,
+    Spectrum::Square,
+    Spectrum::Triangle,
+    Spectrum::Pulse(0.25),
+    Spectrum::Pulse(0.10),
+    // 8' + 4' + 2', the three-drawbar organ.
+    Spectrum::Partials(&[(1, 1.0), (2, 0.7), (4, 0.5)]),
+    // A fuller drawbar registration, with the quint and the twenty-second.
+    Spectrum::Partials(&[(1, 1.0), (2, 0.8), (3, 0.6), (4, 0.5), (6, 0.35), (8, 0.25)]),
+    // Odd harmonics only, falling fast: a stopped pipe or a clarinet.
+    Spectrum::Tilt { slope: 1.3, top: 32, odd: true },
+    // Odd harmonics, barely falling: the buzz of a reed.
+    Spectrum::Tilt { slope: 0.5, top: 16, odd: true },
+    // Energy peaking around the fourth harmonic, which is what makes a brass
+    // instrument read as brass.
+    Spectrum::Formants(&[(4.0, 3.0, 1.0)]),
+    Spectrum::Formants(&[(3.0, 1.5, 1.0), (7.0, 2.5, 0.6)]),
+    Spectrum::Formants(&[(1.5, 1.2, 1.0), (4.0, 1.0, 0.15)]),
+    // Sparse, widely spaced partials: a struck bar.
+    Spectrum::Partials(&[(1, 1.0), (5, 0.7), (9, 0.5), (13, 0.35), (17, 0.25)]),
+    // A fundamental, two low partials and a bell-like pair up at the twelfth.
+    Spectrum::Partials(&[(1, 1.0), (2, 0.35), (3, 0.12), (12, 0.28), (14, 0.12)]),
+    // Everything, hardly falling at all: a clavinet's rasp.
+    Spectrum::Tilt { slope: 0.3, top: 24, odd: false },
+    Spectrum::Digital { seed: 0x9E37_79B9, top: 48 },
+];
+
+impl Spectrum {
+    /// Amplitude and phase — the latter in table steps — of harmonic `n`.
+    fn harmonic(self, n: usize) -> (f64, usize) {
+        let nf = n as f64;
+        const HALF: usize = TABLE_LEN / 2;
+        const QUARTER: usize = TABLE_LEN / 4;
+        match self {
+            Self::Saw => (1.0 / nf, 0),
+            Self::Square => (if n % 2 == 1 { 1.0 / nf } else { 0.0 }, 0),
+            Self::Triangle => (
+                if n % 2 == 1 { 1.0 / (nf * nf) } else { 0.0 },
+                if (n / 2) % 2 == 1 { HALF } else { 0 },
+            ),
+            // The Fourier series of a rectangle of duty d, on a cosine basis.
+            // Harmonics at multiples of 1/d vanish, which is what gives a
+            // narrow pulse its hollow middle.
+            Self::Pulse(duty) => ((nf * PI * duty).sin() / nf, QUARTER),
+            Self::Partials(list) => {
+                let mut amplitude = 0.0;
+                for (harmonic, value) in list {
+                    if *harmonic == n {
+                        amplitude = *value;
+                    }
+                }
+                (amplitude, 0)
             }
-            EnvStage::Decay => {
-                self.level -= (1.0 - self.sustain) / (self.decay * self.sample_rate).max(1.0);
-                if self.level <= self.sustain { self.level = self.sustain; self.stage = EnvStage::Sustain; }
-                self.level
+            Self::Tilt { slope, top, odd } => {
+                if n > top || (odd && n % 2 == 0) {
+                    (0.0, 0)
+                } else {
+                    (nf.powf(-slope), 0)
+                }
             }
-            EnvStage::Sustain => self.sustain,
-            EnvStage::Release => {
-                self.level -= self.level / (self.release * self.sample_rate).max(1.0);
-                if self.level <= 0.001 { self.level = 0.0; self.stage = EnvStage::Idle; }
-                self.level
+            Self::Formants(bumps) => {
+                let mut amplitude = 0.0;
+                for (centre, width, weight) in bumps {
+                    let x = (nf - centre) / width;
+                    amplitude += weight * (-x * x).exp();
+                }
+                (amplitude / nf.sqrt(), 0)
+            }
+            Self::Digital { seed, top } => {
+                if n > top {
+                    return (0.0, 0);
+                }
+                // A hash of the harmonic number rather than a running
+                // generator, so the spectrum is the same whatever order the
+                // harmonics are asked for.
+                let mut state = seed ^ (n as u32).wrapping_mul(2_654_435_761);
+                state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                let amplitude = 0.25 + 0.75 * f64::from(state >> 16) / 65_535.0;
+                let phase = (state >> 5) as usize & (TABLE_LEN - 1);
+                (amplitude / nf.powf(0.6), phase)
             }
         }
     }
 }
 
-// ── Simple resonant low-pass filter (State Variable Filter) ──
+/// The Lanczos sigma factor for harmonic `n` of a series truncated at `top`.
+///
+/// A truncated Fourier series overshoots at its discontinuities by about 9% of
+/// the step, whatever the truncation — Gibbs' phenomenon — and the overshoot
+/// is what a peak-normalised table would end up scaled by. Tapering the
+/// harmonics with `sinc(n/(top+1))` removes it, at the cost of very slightly
+/// softening the edge.
+fn sigma(n: usize, top: usize) -> f64 {
+    if top <= 1 {
+        return 1.0;
+    }
+    let x = PI * n as f64 / (top as f64 + 1.0);
+    x.sin() / x
+}
 
+/// The generated bank: `WAVE_COUNT` waveforms, each in `MIP_LEVELS`
+/// band-limited copies of `TABLE_LEN` points.
+struct WaveBank {
+    samples: Vec<f32>,
+}
+
+/// Built once per process, on whatever thread first constructs an instrument,
+/// and shared by every instance from there. 1.2 MB, which is not worth a copy
+/// per track.
+///
+/// The audio thread never touches the cell: `PhosphorSynth::new` resolves it
+/// once and keeps the `&'static`, so `process` reads a plain reference — no
+/// lock, no atomic, and nothing that can be the first caller.
+static BANK_CELL: OnceLock<WaveBank> = OnceLock::new();
+
+fn wave_bank() -> &'static WaveBank {
+    BANK_CELL.get_or_init(WaveBank::generate)
+}
+
+impl WaveBank {
+    fn generate() -> Self {
+        let mut sine = [0.0f64; TABLE_LEN];
+        for (i, value) in sine.iter_mut().enumerate() {
+            *value = (TWO_PI * i as f64 / TABLE_LEN as f64).sin();
+        }
+
+        let mut samples = vec![0.0f32; WAVE_COUNT * MIP_LEVELS * TABLE_LEN];
+        for (wave, spectrum) in WAVES.iter().enumerate() {
+            let mut amplitude = [0.0f64; MAX_HARMONICS + 1];
+            let mut phase = [0usize; MAX_HARMONICS + 1];
+            for n in 1..=MAX_HARMONICS {
+                let (a, p) = spectrum.harmonic(n);
+                amplitude[n] = a;
+                phase[n] = p;
+            }
+
+            // Every level is scaled by the *full* band's peak, so that playing
+            // a note high enough to drop a level does not step its loudness.
+            // A level whose own peak would then pass 1 is taken down further:
+            // every waveform in the bank is bounded by 1, which is what the
+            // vector mix's headroom argument rests on.
+            let mut full_band_peak = 1.0f64;
+            for level in 0..MIP_LEVELS {
+                let top = (MAX_HARMONICS >> level).max(1);
+                let base = (wave * MIP_LEVELS + level) * TABLE_LEN;
+                let mut tapered = [0.0f64; MAX_HARMONICS + 1];
+                for (n, value) in tapered.iter_mut().enumerate().take(top + 1).skip(1) {
+                    *value = amplitude[n] * sigma(n, top);
+                }
+
+                let mut peak = 0.0f64;
+                for i in 0..TABLE_LEN {
+                    let mut acc = 0.0;
+                    for (n, weight) in tapered.iter().enumerate().take(top + 1).skip(1) {
+                        if *weight == 0.0 {
+                            continue;
+                        }
+                        acc += weight * sine[(n * i + phase[n]) & (TABLE_LEN - 1)];
+                    }
+                    samples[base + i] = acc as f32;
+                    peak = peak.max(acc.abs());
+                }
+                if level == 0 {
+                    full_band_peak = peak.max(1e-12);
+                }
+                let scale = (1.0 / full_band_peak).min(1.0 / peak.max(1e-12)) as f32;
+                for value in &mut samples[base..base + TABLE_LEN] {
+                    *value *= scale;
+                }
+            }
+        }
+        Self { samples }
+    }
+
+    /// One waveform at one band limit, linearly interpolated.
+    #[inline]
+    fn sample(&self, wave: usize, level: usize, phase: f64) -> f64 {
+        let base = (wave * MIP_LEVELS + level) * TABLE_LEN;
+        let x = phase * TABLE_LEN as f64;
+        let index = x as usize & (TABLE_LEN - 1);
+        let frac = x - x.floor();
+        let a = f64::from(self.samples[base + index]);
+        let b = f64::from(self.samples[base + ((index + 1) & (TABLE_LEN - 1))]);
+        a + frac * (b - a)
+    }
+
+    /// A *position* in the bank rather than a waveform from it: the knob
+    /// crossfades between neighbours, which is what makes it worth pointing
+    /// the matrix at.
+    #[inline]
+    fn at(&self, position: f64, level: usize, phase: f64) -> f64 {
+        let p = position.clamp(0.0, 1.0) * (WAVE_COUNT - 1) as f64;
+        let index = (p as usize).min(WAVE_COUNT - 1);
+        let frac = p - index as f64;
+        let a = self.sample(index, level, phase);
+        if frac <= 0.0 {
+            return a;
+        }
+        let b = self.sample((index + 1).min(WAVE_COUNT - 1), level, phase);
+        a + frac * (b - a)
+    }
+}
+
+/// Which band-limited copy a note at `freq` should read.
+///
+/// Level `l` holds harmonics up to `MAX_HARMONICS >> l`, so the answer is how
+/// many times that has to be halved before the top harmonic fits under
+/// Nyquist.
+#[inline]
+fn mip_level(freq: f64, sr: f64) -> usize {
+    let need = MAX_HARMONICS as f64 * 2.0 * freq.abs() / sr;
+    if need <= 1.0 {
+        return 0;
+    }
+    (need.log2().ceil() as usize).min(MIP_LEVELS - 1)
+}
+
+// ── Oscillator ──
+
+/// What one oscillator is making.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    Saw = 0,
+    Pulse = 1,
+    Triangle = 2,
+    Sine = 3,
+    Table = 4,
+    Noise = 5,
+}
+
+const SHAPE_COUNT: usize = 6;
+const SHAPE_LABELS: [&str; SHAPE_COUNT] = ["saw", "pulse", "tri", "sine", "table", "noise"];
+
+impl Shape {
+    /// Total: the switch is a public parameter, so anything can arrive here.
+    fn from_index(index: usize) -> Self {
+        match index {
+            1 => Self::Pulse,
+            2 => Self::Triangle,
+            3 => Self::Sine,
+            4 => Self::Table,
+            5 => Self::Noise,
+            _ => Self::Saw,
+        }
+    }
+}
+
+/// What oscillator D is for.
+///
+/// The Minimoog's trade: its third oscillator can be taken out of the mixer
+/// and pointed at the modulation bus instead, and giving up a third of the
+/// sound to get a modulation source is part of how that instrument is
+/// programmed. Here the oscillator leaves the vector mix — it is not
+/// redistributed among the other three, so the patch gets quieter, exactly as
+/// pulling a fader down would.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DMode {
+    /// In the mix, like the other three.
+    Audio = 0,
+    /// Out of the mix and on the matrix, tracking the keyboard.
+    Mod = 1,
+    /// Out of the mix and on the matrix, free of the keyboard and running at
+    /// the low frequency the coarse tune knob sets.
+    ModLo = 2,
+}
+
+impl DMode {
+    fn from_index(index: usize) -> Self {
+        match index {
+            1 => Self::Mod,
+            2 => Self::ModLo,
+            _ => Self::Audio,
+        }
+    }
+}
+
+#[inline]
+fn poly_blep(t: f64, dt: f64) -> f64 {
+    if t < dt {
+        let t = t / dt;
+        2.0 * t - t * t - 1.0
+    } else if t > 1.0 - dt {
+        let t = (t - 1.0) / dt;
+        t * t + 2.0 * t + 1.0
+    } else {
+        0.0
+    }
+}
+
+#[inline]
+fn tanh_approx(x: f64) -> f64 {
+    let x2 = x * x;
+    x * (27.0 + x2) / (27.0 + 9.0 * x2)
+}
+
+/// One oscillator. Free-running: the phase is not reset by a note-on, so two
+/// voices playing the same note never quite agree and a held chord does not
+/// have the phase-coherent attack a reset gives.
 #[derive(Debug, Clone)]
-struct SvfFilter {
-    low: f64,
-    band: f64,
-    cutoff: f64,  // 0..1 normalized
-    reso: f64,    // 0..1
-    sample_rate: f64,
+struct Osc {
+    phase: f64,
+    noise: u32,
 }
 
-impl SvfFilter {
-    fn new(sr: f64) -> Self {
-        Self { low: 0.0, band: 0.0, cutoff: 1.0, reso: 0.0, sample_rate: sr }
+impl Osc {
+    fn new(seed: u32) -> Self {
+        // Seeded per oscillator, so the four noise sources in a voice and the
+        // eight voices' worth of them are independent. A single shared source
+        // would sum coherently across voices — eight times the amplitude on an
+        // eight-note chord rather than the square root of eight.
+        Self { phase: 0.0, noise: seed | 1 }
     }
 
-    fn set(&mut self, cutoff: f64, reso: f64) {
-        self.cutoff = cutoff.clamp(0.0, 1.0);
-        self.reso = reso.clamp(0.0, 0.95); // cap to avoid self-oscillation blowup
-    }
+    #[inline]
+    fn tick(
+        &mut self,
+        shape: Shape,
+        freq: f64,
+        sr: f64,
+        pulse_width: f64,
+        table_pos: f64,
+        bank: &WaveBank,
+    ) -> f64 {
+        if shape == Shape::Noise {
+            self.noise = self.noise.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            return f64::from(self.noise as i32) / f64::from(i32::MAX);
+        }
 
-    fn process(&mut self, input: f64) -> f64 {
-        // Map normalized cutoff (0..1) to frequency (20Hz..20kHz), exponential
-        let freq = 20.0 * (1000.0f64).powf(self.cutoff);
-        let f = (2.0 * std::f64::consts::PI * freq / self.sample_rate).sin();
-        let f = f.clamp(0.0, 0.99); // stability
-        let q = 1.0 - self.reso;
+        let dt = (freq / sr).clamp(0.0, 0.45);
+        self.phase += dt;
+        if self.phase >= 1.0 {
+            self.phase -= self.phase.floor();
+        }
+        let t = self.phase;
 
-        self.low += f * self.band;
-        let high = input - self.low - q * self.band;
-        self.band += f * high;
-
-        // Flush denormals
-        if self.low.abs() < 1e-18 { self.low = 0.0; }
-        if self.band.abs() < 1e-18 { self.band = 0.0; }
-
-        self.low
-    }
-
-    fn reset(&mut self) {
-        self.low = 0.0;
-        self.band = 0.0;
-    }
-}
-
-// ── Noise generator (simple LCG, deterministic) ──
-
-#[derive(Debug, Clone)]
-struct NoiseGen {
-    state: u32,
-}
-
-impl NoiseGen {
-    fn new() -> Self { Self { state: 12345 } }
-
-    fn tick(&mut self) -> f32 {
-        // Linear congruential generator → white noise
-        self.state = self.state.wrapping_mul(1103515245).wrapping_add(12345);
-        // Map to -1..1
-        (self.state as i32) as f32 / i32::MAX as f32
+        match shape {
+            Shape::Saw => 2.0 * t - 1.0 - poly_blep(t, dt),
+            Shape::Pulse => {
+                let pw = pulse_width.clamp(PW_MIN, 1.0 - PW_MIN);
+                let mut value = if t < pw { 1.0 } else { -1.0 };
+                value += poly_blep(t, dt);
+                value -= poly_blep((t - pw).rem_euclid(1.0), dt);
+                value
+            }
+            // Naive, and deliberately: a triangle's harmonics fall as 1/n², so
+            // what folds back sits 30 dB or more under the fundamental even at
+            // the top of the keyboard.
+            Shape::Triangle => {
+                if t < 0.5 {
+                    4.0 * t - 1.0
+                } else {
+                    3.0 - 4.0 * t
+                }
+            }
+            Shape::Sine => (TWO_PI * t).sin(),
+            _ => bank.at(table_pos, mip_level(freq, sr), t),
+        }
     }
 }
 
 // ── Drive ──
 
-/// The signal level the DRIVE knob holds still, in the units the filter hands
-/// it: one voice, before the envelope, the velocity and the per-voice trim.
+/// The signal level the DRIVE knob holds still, in the units it sees them:
+/// the vector mix, before the filter, before the envelope and the velocity.
 ///
 /// The knob preserves the level of a signal *at* this amplitude exactly, lifts
 /// what is quieter towards it and holds down what is louder — which is what a
 /// compressor does, and what makes a synth sound driven rather than just loud.
 ///
-/// Measured against this synth rather than picked. The four waveform settings
-/// put a voice at 1.01 (sine), 1.09 (triangle), 1.17 (saw) and 1.25 (square)
-/// out of the filter, so a voice here *is* about 1 — and the reference sits at
-/// the bottom of that band rather than in the middle of it, because holding one
-/// voice's peak still is not the same as holding a chord still: everything
-/// under that peak comes up towards it, and sixteen voices summed carry the
-/// rise. At 1.17 an eight-note chord's peak rose 1.7 dB across the knob; here
-/// it rises 0.5 dB, from 0.346 to 0.366, while its RMS gains 3.6 dB.
+/// Measured against this instrument rather than picked. The vector weights sum
+/// to one, so the mix of four oscillators is bounded by the largest level knob
+/// whatever the vector is doing — a panel with everything at the top measures
+/// 0.93 to 1.00 into the drive stage, and the eight melodic patches in the
+/// bank measure 0.30 (RESO DRONE, whose sources are two whispers of noise) to
+/// 0.83 (INIT SAW and VECTOR SWEEP).
 ///
-/// What it costs is at the other end: a patch whose resonance puts it far above
-/// the reference is held down rather than driven. The panel at its extremes —
-/// sub, noise, cutoff and resonance all at the top — leaves the filter at 8.1,
-/// 18 dB above this, and the knob takes 4.6 dB of RMS off it across its travel.
-/// That patch is 0.947 out of the instrument at DRIVE zero, already past the
-/// master limiter's ceiling, so what the knob does to it is the direction that
-/// helps.
-const DRIVE_REFERENCE: f64 = 1.0;
+/// The reference sits below the middle of that band rather than in it, because
+/// holding one voice's peak still is not the same as holding a chord still:
+/// everything under that peak comes up towards it, and eight voices summed
+/// carry the rise. What it costs is at the other end — a patch well above the
+/// reference is held down rather than driven — and that is the direction that
+/// helps, because a patch well above the reference is a loud one.
+const DRIVE_REFERENCE: f64 = 0.5;
 
-/// How hard the knob drives at the top of its travel.
-///
-/// The curve lifts a signal far below the reference by `1 + DRIVE_DEPTH *
-/// DRIVE_REFERENCE`, which at a reference of 1 is exactly the 11x the
-/// uncompensated knob this replaced applied to everything. Same low-level
-/// gain, so a patch saved with DRIVE up keeps its character; what is gone is
-/// the level that came with it.
-const DRIVE_DEPTH: f64 = 10.0;
+/// How hard the knob drives at the top of its travel. `1 + DRIVE_DEPTH *
+/// DRIVE_REFERENCE` is the gain a signal far below the reference gets, which
+/// at these two numbers is 7 — a little over 16 dB, which is about what a
+/// Minimoog's mixer has above unity.
+const DRIVE_DEPTH: f64 = 12.0;
 
 /// The DRIVE knob's waveshaper: harmonics without level.
 ///
@@ -221,221 +926,1635 @@ const DRIVE_DEPTH: f64 = 10.0;
 /// y = x * (1 + a*r) / (1 + a*|x|),   r = DRIVE_REFERENCE
 /// ```
 ///
-/// The same curve the drum rack's DRIVE uses, and for the same four reasons:
+/// The same curve the drum rack's DRIVE uses — `drive_stage_at` in
+/// drum_rack/mod.rs — and for the same four reasons:
 ///
 /// * **Identity at zero.** `a = 0` gives `y = x` exactly, in f64 and in f32,
-///   so the bottom of the knob is the patch as voiced. The curve this replaced
-///   needed a `drive < 0.01` branch to manage that, and stepped quiet signal by
-///   0.83 dB the moment the knob left it.
+///   so the bottom of the knob is the patch as voiced rather than a patch with
+///   a waveshaper switched into it.
 /// * **Level-preserving at the reference.** `|x| = r` gives `|y| = r` for
-///   every `a`. The old curve multiplied by up to 11 before its own
-///   denominator, so the knob was a level control as much as a tone control:
-///   an eight-note chord at velocity 127 went from 0.346 to 0.901 across its
-///   travel, +8.3 dB, and past the master limiter's ceiling with the rest of
-///   the panel untouched.
+///   every `a`, so the knob is a tone control rather than a fader.
 /// * **Monotonic and odd.** `dy/dx = (1 + a*r)/(1 + a|x|)^2 > 0`, so the curve
 ///   never folds back, and `y(-x) = -y(x)`, so it makes odd harmonics rather
-///   than a DC offset. The old curve was not even monotonic *in the knob*: the
-///   panel at its extremes measured 0.947 at drive 0 and 0.888 at drive 0.1,
-///   because past its own knee it took more level off than the knob put on.
-/// * **Bounded.** `|y| < r + 1/a` for `a > 0`, where the old curve grew
-///   without limit as `sqrt(x)`.
+///   than a DC offset the mixer would pass straight through.
+/// * **Bounded.** `|y| < r + 1/a` for `a > 0`.
+///
+/// The knob this replaced had none of the last three. It multiplied by up to
+/// eleven before its own denominator, so an eight-note chord went from 0.346
+/// to 0.901 across its travel, +8.3 dB and past the master limiter's ceiling;
+/// and past that denominator's knee it took more level off than the knob put
+/// on, so on a loud patch turning DRIVE up from zero made it *quieter* — 0.947
+/// at drive 0 and 0.888 at drive 0.1 — and then louder again.
 #[inline]
 fn drive_stage(x: f64, amount: f64) -> f64 {
+    drive_stage_at(x, amount, DRIVE_REFERENCE)
+}
+
+#[inline]
+fn drive_stage_at(x: f64, amount: f64, reference: f64) -> f64 {
     let a = amount * DRIVE_DEPTH;
-    x * (1.0 + a * DRIVE_REFERENCE) / (1.0 + a * x.abs())
+    x * (1.0 + a * reference) / (1.0 + a * x.abs())
+}
+
+// ── The ladder filter ──
+//
+// Four one-pole sections round a feedback loop, which is a transistor ladder's
+// own topology. The integrators are topology-preserving (the `g/(1+g)` form),
+// so a section's pole lands on the frequency it was asked for; the naive
+// `s += g*(x-s)` form sits an octave below its own coefficient and takes the
+// whole cascade with it — that is what put the Juno's corner 2.3x low and the
+// Jupiter's 1.95x before both were rewritten this way.
+//
+// There is no compensation on the input. That is the point: the resonance
+// feedback is subtracted from the signal, so the passband drops away as the
+// resonance comes up, and that loss is what a ladder sounds like. Putting it
+// back is what makes a clone sound wrong.
+//
+// Measured, at 44.1 kHz, with `measure_filter`:
+//
+// * the corner lands where the slider says. Four analog poles are 12 dB down
+//   at their own corner, and the -12 dB point measures 32.6 Hz where the
+//   slider asks for 31.9, 63.9 for 63.7, 179.6 for 179.5, 506.7 for 506.0 and
+//   2017 for 2014 — within 2.2% at the bottom of the sweep and 0.1% over the
+//   rest of it. The -3 dB point sits at 0.44 of the corner, which is where
+//   four cascaded poles put it;
+// * the slope is 23.3 dB/octave measured between four and eight times the
+//   corner, approaching the 24 dB/octave asymptote from below as the analog
+//   cascade does. Above about 4 kHz the figure steepens, which is the
+//   bilinear transform pulling the response to zero at Nyquist rather than a
+//   fifth pole;
+// * it oscillates. With no input at all the tail two seconds later measures
+//   0.114 at resonance 0.90, 0.161 at 0.95 and 0.192 at the top of the
+//   travel, and is exactly zero at 0.85 and below;
+// * it loses its bass, monotonically: at a 1 kHz corner, a 30 Hz sine comes
+//   out 6.5 dB down at a quarter of the resonance travel, 10.2 dB at half,
+//   13.7 dB at 0.85 and 15.3 dB at the top.
+
+/// How much feedback the loop can be given. Four correctly-placed poles reach
+/// half a turn of phase with a quarter of the gain left, so 4.0 is exactly
+/// marginal and the top of the travel has to sit past it to oscillate.
+const LADDER_RES_MAX: f64 = 4.5;
+
+/// Where on the resonance travel the loop stops losing and starts producing.
+const SELF_OSC_KNEE: f64 = 0.9;
+
+/// How much of its own oscillation a note starts the filter with, at the top
+/// of the resonance travel.
+///
+/// A filter with no state and no input stays silent forever however negative
+/// its damping is, because the loop multiplies zero by four and gets zero. A
+/// patch whose sound source *is* the filter — and this bank has one — would
+/// otherwise come out silent.
+const SELF_OSC_SEED: f64 = 0.05;
+
+#[derive(Debug, Clone)]
+struct Ladder {
+    s: [f64; 4],
+}
+
+impl Ladder {
+    fn new() -> Self {
+        Self { s: [0.0; 4] }
+    }
+
+    fn process(&mut self, input: f64, cutoff_norm: f64, resonance: f64, sr: f64) -> f64 {
+        let g = (PI * cutoff_hz(cutoff_norm).min(sr * 0.49) / sr).tan();
+        let gg = g / (1.0 + g);
+        let res = resonance.clamp(0.0, 1.0) * LADDER_RES_MAX;
+        let mut x = tanh_approx(input - res * tanh_approx(self.s[3]));
+
+        for s in &mut self.s {
+            let v = (x - *s) * gg;
+            let y = v + *s;
+            *s = y + v;
+            if s.abs() < 1e-18 {
+                *s = 0.0;
+            }
+            x = y;
+        }
+        // The one number that closes the loop is worth bounding outright,
+        // since a self-oscillating filter has no input to bound it.
+        self.s[3] = self.s[3].clamp(-4.0, 4.0);
+        x
+    }
+
+    fn reset(&mut self) {
+        self.s = [0.0; 4];
+    }
+
+    fn start(&mut self, resonance: f64) {
+        let past = (resonance - SELF_OSC_KNEE) / (1.0 - SELF_OSC_KNEE);
+        self.s = [past.clamp(0.0, 1.0) * SELF_OSC_SEED; 4];
+    }
+}
+
+// ── Envelopes ──
+//
+// Two per voice, both four-stage. Envelope 1 is wired to the amplifier and
+// envelope 2 to the filter, and both are on the matrix as well, so the wiring
+// is a starting point rather than a limit.
+//
+// Every segment is a capacitor charging towards something, which is why none
+// of them are straight lines: attack charges towards 1.58 and ends when it
+// passes 1.0, which is the first time constant of an exponential; decay and
+// release charge a little past their target and stop when they reach it, which
+// is 3.5 time constants across the segment and makes the slider's number the
+// time the segment actually takes.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnvStage {
+    Idle,
+    Attack,
+    Decay,
+    Sustain,
+    Release,
+}
+
+/// 1/(1-e^-1): the attack aims here so that it arrives at 1.0 after exactly
+/// one time constant.
+const ATTACK_AIM: f64 = 1.581_976_706_869_326;
+/// Time constants spanned by a decay or release segment.
+const ENV_CONSTANTS: f64 = 3.5;
+/// How far past its target a decay or release aims so that it arrives after
+/// `ENV_CONSTANTS` of them: e^-3.5 / (1 - e^-3.5).
+const ENV_UNDERSHOOT: f64 = 0.031_144_869_855_006_6;
+
+/// One-pole coefficient for a segment of `seconds` spanning `constants` time
+/// constants. Saturates at 1.0, so a zero-length segment is a jump.
+fn env_rate(seconds: f64, constants: f64, sr: f64) -> f64 {
+    if seconds <= 0.0 {
+        return 1.0;
+    }
+    (1.0 - (-constants / (seconds * sr)).exp()).min(1.0)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EnvTimes {
+    attack: f64,
+    decay: f64,
+    sustain: f64,
+    release: f64,
+}
+
+#[derive(Debug, Clone)]
+struct Envelope {
+    stage: EnvStage,
+    level: f64,
+    aim: f64,
+    times: EnvTimes,
+    /// Per-sample coefficients for the three timed segments, recomputed only
+    /// when a slider moves. The exponential in `env_rate` is not something to
+    /// evaluate sixteen times a sample for an answer that changes when a
+    /// finger does.
+    rates: [f64; 3],
+    sample_rate: f64,
+}
+
+impl Envelope {
+    fn new(sr: f64) -> Self {
+        let mut env = Self {
+            stage: EnvStage::Idle,
+            level: 0.0,
+            aim: 0.0,
+            times: EnvTimes { attack: 0.01, decay: 0.3, sustain: 0.7, release: 0.2 },
+            rates: [0.0; 3],
+            sample_rate: sr,
+        };
+        env.retime();
+        env
+    }
+
+    fn retime(&mut self) {
+        let sr = self.sample_rate;
+        self.rates = [
+            env_rate(self.times.attack, 1.0, sr),
+            env_rate(self.times.decay, ENV_CONSTANTS, sr),
+            env_rate(self.times.release, ENV_CONSTANTS, sr),
+        ];
+    }
+
+    /// Follow the panel. A no-op unless a time slider moved, which is what
+    /// keeps the exponentials off the per-sample path.
+    fn set_times(&mut self, times: EnvTimes) {
+        if times.attack != self.times.attack
+            || times.decay != self.times.decay
+            || times.release != self.times.release
+        {
+            self.times = times;
+            self.retime();
+        } else {
+            self.times.sustain = times.sustain;
+        }
+    }
+
+    fn trigger(&mut self) {
+        self.stage = EnvStage::Attack;
+        self.aim = ATTACK_AIM;
+    }
+
+    fn release_env(&mut self) {
+        if self.stage != EnvStage::Idle {
+            self.stage = EnvStage::Release;
+            self.aim = -ENV_UNDERSHOOT * self.level;
+        }
+    }
+
+    fn kill(&mut self) {
+        self.stage = EnvStage::Idle;
+        self.level = 0.0;
+    }
+
+    fn is_active(&self) -> bool {
+        self.stage != EnvStage::Idle
+    }
+
+    fn is_held(&self) -> bool {
+        matches!(self.stage, EnvStage::Attack | EnvStage::Decay | EnvStage::Sustain)
+    }
+
+    fn enter_decay(&mut self) {
+        self.stage = EnvStage::Decay;
+        self.aim = self.times.sustain - ENV_UNDERSHOOT * (self.level - self.times.sustain);
+    }
+
+    /// The decay has reached the sustain level.
+    ///
+    /// A sustain of zero means the segment ended in silence, so the note is
+    /// *finished* rather than holding a voice at nothing until the key comes
+    /// up. That matters for the percussive end of the bank and for keymapped
+    /// patches especially: a drum has no sustain by definition, and eight
+    /// voices held open by eight drum notes nobody has let go of is a kit that
+    /// stops responding after eight hits.
+    fn enter_sustain(&mut self) {
+        self.level = self.times.sustain;
+        self.stage = if self.times.sustain <= 0.0 {
+            EnvStage::Idle
+        } else {
+            EnvStage::Sustain
+        };
+    }
+
+    fn tick(&mut self) -> f64 {
+        match self.stage {
+            EnvStage::Idle => 0.0,
+            EnvStage::Attack => {
+                self.level += self.rates[0] * (self.aim - self.level);
+                if self.level >= 1.0 {
+                    self.level = 1.0;
+                    self.enter_decay();
+                    if self.level <= self.times.sustain {
+                        self.enter_sustain();
+                    }
+                }
+                self.level
+            }
+            EnvStage::Decay => {
+                self.level += self.rates[1] * (self.aim - self.level);
+                if self.level <= self.times.sustain {
+                    self.enter_sustain();
+                }
+                self.level
+            }
+            EnvStage::Sustain => self.times.sustain,
+            EnvStage::Release => {
+                self.level += self.rates[2] * (self.aim - self.level);
+                if self.level <= 0.0 {
+                    self.level = 0.0;
+                    self.stage = EnvStage::Idle;
+                }
+                self.level
+            }
+        }
+    }
+}
+
+// ── LFOs ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LfoShape {
+    Triangle = 0,
+    Sine = 1,
+    Saw = 2,
+    Square = 3,
+    SampleHold = 4,
+}
+
+const LFO_SHAPE_COUNT: usize = 5;
+const LFO_SHAPE_LABELS: [&str; LFO_SHAPE_COUNT] = ["tri", "sine", "saw", "square", "s&h"];
+
+impl LfoShape {
+    fn from_index(index: usize) -> Self {
+        match index {
+            1 => Self::Sine,
+            2 => Self::Saw,
+            3 => Self::Square,
+            4 => Self::SampleHold,
+            _ => Self::Triangle,
+        }
+    }
+}
+
+/// One free-running LFO, shared by every voice.
+///
+/// Free-running rather than retriggered per note, which is what a Minimoog and
+/// a Juno both do: a second note added to a held chord joins the vibrato
+/// already in progress rather than starting its own.
+#[derive(Debug, Clone)]
+struct Lfo {
+    phase: f64,
+    held: f64,
+    noise: u32,
+}
+
+impl Lfo {
+    fn new(seed: u32) -> Self {
+        Self { phase: 0.0, held: 0.0, noise: seed | 1 }
+    }
+
+    fn tick(&mut self, shape: LfoShape, rate: f64, sr: f64) -> f64 {
+        self.phase += rate / sr;
+        if self.phase >= 1.0 {
+            self.phase -= self.phase.floor();
+            if shape == LfoShape::SampleHold {
+                self.noise = self.noise.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                self.held = f64::from(self.noise as i32) / f64::from(i32::MAX);
+            }
+        }
+        let t = self.phase;
+        match shape {
+            LfoShape::Triangle => {
+                if t < 0.5 {
+                    4.0 * t - 1.0
+                } else {
+                    3.0 - 4.0 * t
+                }
+            }
+            LfoShape::Sine => (TWO_PI * t).sin(),
+            LfoShape::Saw => 2.0 * t - 1.0,
+            LfoShape::Square => {
+                if t < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+            LfoShape::SampleHold => self.held,
+        }
+    }
+}
+
+// ── The modulation matrix ──
+
+/// What a slot can listen to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    Off = 0,
+    Lfo1 = 1,
+    Lfo2 = 2,
+    Env1 = 3,
+    Env2 = 4,
+    Velocity = 5,
+    KeyTrack = 6,
+    Wheel = 7,
+    VectorX = 8,
+    VectorY = 9,
+    OscD = 10,
+}
+
+const SOURCE_COUNT: usize = 11;
+const SOURCE_LABELS: [&str; SOURCE_COUNT] = [
+    "off", "lfo 1", "lfo 2", "env 1", "env 2", "vel", "kybd", "wheel", "vec x", "vec y", "osc d",
+];
+
+impl Source {
+    fn from_index(index: usize) -> Self {
+        match index {
+            1 => Self::Lfo1,
+            2 => Self::Lfo2,
+            3 => Self::Env1,
+            4 => Self::Env2,
+            5 => Self::Velocity,
+            6 => Self::KeyTrack,
+            7 => Self::Wheel,
+            8 => Self::VectorX,
+            9 => Self::VectorY,
+            10 => Self::OscD,
+            _ => Self::Off,
+        }
+    }
+
+    /// Whether the source swings either side of zero. The amplitude
+    /// destination needs to know, because it folds its source to unipolar
+    /// before applying it; nothing else does.
+    fn is_bipolar(self) -> bool {
+        matches!(self, Self::Lfo1 | Self::Lfo2 | Self::KeyTrack | Self::OscD)
+    }
+}
+
+/// What a slot can move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dest {
+    Off = 0,
+    Pitch = 1,
+    PulseWidth = 2,
+    Wave = 3,
+    Cutoff = 4,
+    Resonance = 5,
+    Amplitude = 6,
+    VectorX = 7,
+    VectorY = 8,
+}
+
+const DEST_COUNT: usize = 9;
+const DEST_LABELS: [&str; DEST_COUNT] = [
+    "off", "pitch", "pw", "wave", "cutoff", "reso", "amp", "vec x", "vec y",
+];
+
+impl Dest {
+    fn from_index(index: usize) -> Self {
+        match index {
+            1 => Self::Pitch,
+            2 => Self::PulseWidth,
+            3 => Self::Wave,
+            4 => Self::Cutoff,
+            5 => Self::Resonance,
+            6 => Self::Amplitude,
+            7 => Self::VectorX,
+            8 => Self::VectorY,
+            _ => Self::Off,
+        }
+    }
+}
+
+/// One routing, resolved out of three knobs.
+#[derive(Debug, Clone, Copy)]
+struct Slot {
+    source: Source,
+    dest: Dest,
+    amount: f64,
+    bipolar: bool,
+}
+
+/// Everything a voice needs to know about the world outside itself, once per
+/// sample.
+#[derive(Debug, Clone, Copy)]
+struct Modulators {
+    lfo: [f64; 2],
+    wheel: f64,
+}
+
+// ── The panel, in engine units ──
+
+#[derive(Debug, Clone, Copy)]
+struct OscSetting {
+    shape: Shape,
+    table: f64,
+    /// Frequency multiplier from the coarse and fine tune knobs.
+    ratio: f64,
+    /// The low-frequency rate oscillator D runs at in its ModLo mode.
+    lo_hz: f64,
+    level: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Panel {
+    osc: [OscSetting; 4],
+    d_mode: DMode,
+    vector: [f64; 2],
+    pulse_width: f64,
+    drive: f64,
+    cutoff: f64,
+    resonance: f64,
+    filter_env: f64,
+    key_follow: f64,
+    velocity_depth: f64,
+    gain: f64,
+    lfo_shape: [LfoShape; 2],
+    lfo_rate: [f64; 2],
+    env: [EnvTimes; 2],
+    /// The active routings, compacted to the front so the per-sample loop
+    /// never walks a slot that is switched off.
+    slots: [Slot; MOD_SLOTS],
+    slot_count: usize,
+    /// The patch's key map: empty on a melodic patch, one entry per mapped
+    /// note on a keymapped one.
+    keys: &'static [KeyChart],
+    /// How far the CUTOFF knob has been moved from where this patch left it.
+    /// The one panel control a keymapped patch still answers, because sweeping
+    /// a whole kit is what a player does with it.
+    cutoff_trim: f64,
+}
+
+/// The vector mix: bilinear weights on the unit square, oscillator A at the
+/// bottom left and D at the top left, going round.
+///
+/// The four weights sum to exactly 1 at every position, which is the whole
+/// headroom argument for this instrument: every oscillator is bounded by 1, so
+/// the mix is bounded by the largest level knob however the vector moves and
+/// whatever the matrix is doing to it.
+#[inline]
+fn vector_weights(x: f64, y: f64) -> [f64; 4] {
+    let x = x.clamp(0.0, 1.0);
+    let y = y.clamp(0.0, 1.0);
+    [(1.0 - x) * (1.0 - y), x * (1.0 - y), x * y, (1.0 - x) * y]
 }
 
 // ── Voice ──
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Voice {
-    osc1: Oscillator,
-    osc2: Oscillator,   // detuned copy
-    sub_osc: Oscillator, // sub oscillator (one octave down, sine)
-    env: Envelope,
-    filter: SvfFilter,
-    noise: NoiseGen,
+    osc: [Osc; 4],
+    filter: Ladder,
+    env: [Envelope; 2],
+    /// Oscillator D's last sample, which is what the matrix reads when D is a
+    /// source. One sample late, because D's own pitch can be modulated by a
+    /// slot that D itself feeds — a loop that has to be broken somewhere, and
+    /// a hardware oscillator patched back into its own frequency input breaks
+    /// it in exactly the same place.
+    last_d: f64,
     note: u8,
-    velocity: f32,
+    velocity: f64,
     age: u64,
+    /// The recipe this note plays on a keymapped patch, resolved once at
+    /// note-on. `None` on a melodic patch, where the panel is the voice.
+    key: Option<KeyVoice>,
+    sample_rate: f64,
 }
 
 impl Voice {
-    fn new(sr: f64) -> Self {
+    fn new(sr: f64, index: usize) -> Self {
         Self {
-            osc1: Oscillator::new(Waveform::Saw, 440.0, sr),
-            osc2: Oscillator::new(Waveform::Saw, 440.0, sr),
-            sub_osc: Oscillator::new(Waveform::Sine, 220.0, sr),
-            env: Envelope::new(sr),
-            filter: SvfFilter::new(sr),
-            noise: NoiseGen::new(),
+            osc: std::array::from_fn(|i| {
+                Osc::new(0x9E37_79B9 ^ ((index * 4 + i) as u32).wrapping_mul(2_246_822_519))
+            }),
+            filter: Ladder::new(),
+            env: [Envelope::new(sr), Envelope::new(sr)],
+            last_d: 0.0,
             note: 255,
             velocity: 0.0,
             age: 0,
+            key: None,
+            sample_rate: sr,
         }
     }
 
-    fn note_on(&mut self, note: u8, vel: u8, waveform: Waveform, detune_cents: f64, age: u64) {
+    fn note_on(&mut self, note: u8, velocity: u8, panel: &Panel, age: u64) {
         self.note = note;
-        self.velocity = vel as f32 / 127.0;
+        self.velocity = f64::from(velocity) / 127.0;
         self.age = age;
+        // The one place the key map is read. A bounded scan of a `'static`
+        // table and a copy of the result, both off the per-sample path.
+        self.key = key_for_note(panel.keys, note).map(KeyVoice::resolve);
+        let (times, resonance) = self
+            .key
+            .map_or((panel.env, panel.resonance), |key| (key.env, key.resonance));
+        for (env, times) in self.env.iter_mut().zip(times) {
+            env.set_times(times);
+            env.trigger();
+        }
+        self.filter.start(resonance);
+    }
 
-        let freq = note_to_freq(note);
-        let detune_ratio = 2.0f64.powf(detune_cents / 1200.0);
+    fn note_off(&mut self) {
+        for env in &mut self.env {
+            env.release_env();
+        }
+    }
 
-        self.osc1.set_frequency(freq);
-        self.osc1.set_waveform(waveform);
-        self.osc1.reset();
-
-        self.osc2.set_frequency(freq * detune_ratio);
-        self.osc2.set_waveform(waveform);
-        self.osc2.reset();
-
-        self.sub_osc.set_frequency(freq * 0.5); // one octave down
-        self.sub_osc.set_waveform(Waveform::Sine);
-        self.sub_osc.reset();
-
+    fn kill(&mut self) {
+        self.note = 255;
+        for env in &mut self.env {
+            env.kill();
+        }
         self.filter.reset();
-        self.env.trigger();
+        self.last_d = 0.0;
+        self.key = None;
     }
 
-    fn note_off(&mut self) { self.env.release(); }
+    fn is_sounding(&self) -> bool {
+        self.env[0].is_active()
+    }
 
-    fn kill(&mut self) { self.env.kill(); self.note = 255; self.filter.reset(); }
-
-    fn is_sounding(&self) -> bool { self.env.is_active() }
     fn is_held(&self) -> bool {
-        matches!(self.env.stage, EnvStage::Attack | EnvStage::Decay | EnvStage::Sustain)
+        self.env[0].is_held()
     }
 
-    fn tick(&mut self, sub_level: f32, noise_level: f32, cutoff: f64, reso: f64, drive: f64) -> f32 {
-        if !self.is_sounding() { return 0.0; }
+    #[allow(clippy::too_many_lines)]
+    fn tick(&mut self, panel: &Panel, m: &Modulators, bank: &WaveBank) -> f64 {
+        if !self.is_sounding() {
+            return 0.0;
+        }
+        let sr = self.sample_rate;
+        // The recipe, on a keymapped patch. A copy rather than a borrow, so
+        // the oscillators below can still be reached mutably.
+        let key = self.key;
 
-        let env = self.env.tick() as f32;
+        // The time sliders are live on a melodic patch, so a note already
+        // sounding follows them. On a keymapped one they are the recipe's and
+        // were settled at note-on.
+        if key.is_none() {
+            for (env, times) in self.env.iter_mut().zip(panel.env) {
+                env.set_times(times);
+            }
+        }
+        let env1 = self.env[0].tick();
+        let env2 = self.env[1].tick();
+        // Envelope 2 is not wired to the amplifier, so it has to be told when
+        // the voice is finished or it would hold a released note's filter open
+        // for its own release time and no longer.
+        if !self.env[0].is_active() {
+            self.env[1].kill();
+        }
 
-        // Oscillator mix
-        let mut s1 = [0.0f32; 1];
-        let mut s2 = [0.0f32; 1];
-        let mut ss = [0.0f32; 1];
-        self.osc1.process(&mut s1);
-        self.osc2.process(&mut s2);
-        self.sub_osc.process(&mut ss);
+        let key_track = (f64::from(self.note) - 60.0) / 36.0;
 
-        let osc_mix = (s1[0] + s2[0]) * 0.5; // blend both oscillators
-        let sub = ss[0] * sub_level;
-        let noise = self.noise.tick() * noise_level;
+        // Everything from here reads the recipe on a keymapped patch and the
+        // panel on a melodic one. The recipe's pitch is a frequency rather
+        // than a note, because a drum's body is a frequency; keyboard follow
+        // is skipped for the same reason, since the note is not a pitch.
+        let oscillators = key.as_ref().map_or(&panel.osc, |k| &k.osc);
+        let vector = key.map_or(panel.vector, |k| k.vector);
+        let key_follow = if key.is_some() {
+            0.0
+        } else {
+            (f64::from(self.note) - 60.0) / 12.0 / CUTOFF_OCTAVES * panel.key_follow
+        };
+        let (cutoff_base, resonance_base, filter_env) = key.map_or(
+            (panel.cutoff, panel.resonance, panel.filter_env),
+            |k| (k.cutoff + panel.cutoff_trim, k.resonance, k.filter_env),
+        );
 
-        let raw = osc_mix + sub + noise;
+        // The matrix. Every routing lands in one accumulator per destination,
+        // so two slots pointed at the same place add rather than fight.
+        let mut bus = [0.0f64; DEST_COUNT];
+        for slot in &panel.slots[..panel.slot_count] {
+            let value = match slot.source {
+                Source::Lfo1 => m.lfo[0],
+                Source::Lfo2 => m.lfo[1],
+                Source::Env1 => env1,
+                Source::Env2 => env2,
+                Source::Velocity => self.velocity,
+                Source::KeyTrack => key_track,
+                Source::Wheel => m.wheel,
+                // The vector position as a source is its resting position,
+                // not the modulated one — a slot pointed from the vector at
+                // the vector would otherwise be reading its own output.
+                Source::VectorX => vector[0],
+                Source::VectorY => vector[1],
+                Source::OscD => self.last_d,
+                Source::Off => continue,
+            };
+            if slot.dest == Dest::Amplitude {
+                // The amplifier is the one destination that cannot be allowed
+                // to add: a matrix that could double the level would cost
+                // every patch 6 dB of headroom whether it used the slot or
+                // not. So this accumulates *attenuation* — the source is
+                // folded to 0..1, inverted when the amount is negative, and
+                // what is left of unity is taken away. A full-depth tremolo
+                // still reaches silence and unity, and nothing here can pass
+                // unity.
+                let uni = if slot.bipolar { value.mul_add(0.5, 0.5) } else { value };
+                let uni = if slot.amount >= 0.0 { uni } else { 1.0 - uni };
+                bus[Dest::Amplitude as usize] += slot.amount.abs() * (1.0 - uni);
+            } else {
+                bus[slot.dest as usize] += value * slot.amount;
+            }
+        }
 
-        // Filter (envelope modulates cutoff slightly)
-        let env_cutoff = cutoff + (env as f64 - 0.5) * 0.2; // subtle envelope → filter
-        self.filter.set(env_cutoff.clamp(0.0, 1.0), reso);
-        let filtered = self.filter.process(raw as f64);
+        let pitch_ratio = if bus[Dest::Pitch as usize] == 0.0 {
+            1.0
+        } else {
+            2.0f64.powf(bus[Dest::Pitch as usize] * PITCH_MOD_SEMITONES / 12.0)
+        };
+        let width = pulse_width_from(panel.pulse_width + bus[Dest::PulseWidth as usize]);
+        let table_shift = bus[Dest::Wave as usize];
+        let base_freq = key.map_or_else(|| note_to_freq(self.note), |k| k.base_hz) * pitch_ratio;
 
-        // Drive / saturation
-        let driven = drive_stage(filtered, drive);
+        // Oscillator D first, so that its contribution to the mix and its
+        // value on the matrix are the same sample.
+        let d = &oscillators[3];
+        let d_freq = if panel.d_mode == DMode::ModLo {
+            d.lo_hz * pitch_ratio
+        } else {
+            base_freq * d.ratio
+        };
+        let d_out = self.osc[3].tick(
+            d.shape,
+            d_freq,
+            sr,
+            width,
+            d.table + table_shift,
+            bank,
+        );
+        self.last_d = d_out;
 
-        (driven as f32) * env * self.velocity * 0.25
+        let vector_x = vector[0] + bus[Dest::VectorX as usize];
+        let vector_y = vector[1] + bus[Dest::VectorY as usize];
+        let weights = vector_weights(vector_x, vector_y);
+
+        let mut mix = 0.0;
+        for i in 0..3 {
+            let o = &oscillators[i];
+            let value = self.osc[i].tick(
+                o.shape,
+                base_freq * o.ratio,
+                sr,
+                width,
+                o.table + table_shift,
+                bank,
+            );
+            mix += weights[i] * o.level * value;
+        }
+        if panel.d_mode == DMode::Audio {
+            mix += weights[3] * d.level * d_out;
+        }
+
+        let driven = drive_stage(mix, panel.drive);
+
+        let cutoff = (cutoff_base + env2 * filter_env + key_follow + bus[Dest::Cutoff as usize])
+            .clamp(0.0, 1.0);
+        let resonance = (resonance_base + bus[Dest::Resonance as usize]).clamp(0.0, 1.0);
+        let filtered = self.filter.process(driven, cutoff, resonance, sr);
+
+        let velocity_gain = 1.0 - panel.velocity_depth * (1.0 - self.velocity);
+        let amp_mod = (1.0 - bus[Dest::Amplitude as usize]).clamp(0.0, 1.0);
+        let recipe_level = key.map_or(1.0, |k| k.level);
+        filtered * env1 * velocity_gain * amp_mod * recipe_level
     }
+}
+
+fn pulse_width_from(knob: f64) -> f64 {
+    pulse_width(knob.clamp(0.0, 1.0))
+}
+
+fn note_to_freq(note: u8) -> f64 {
+    440.0 * 2.0f64.powf((f64::from(note) - 69.0) / 12.0)
+}
+
+// ── Patches ──
+//
+// The scaffolding is the point of this bank rather than its size: the large
+// set is a separate piece of work, and what has to exist first is the
+// mechanism — a chart row per patch, a selector that steps by index, and one
+// conversion from chart to panel that the default parameter block is also
+// derived from. Adding a patch after this is a row of data.
+
+pub const PATCH_COUNT: usize = 9;
+
+/// One row of the bank: where every control sits on that patch.
+#[derive(Debug, Clone, Copy)]
+struct Chart {
+    name: &'static str,
+    /// Cut to the twelve columns the editor's selector row leaves for a label.
+    label: &'static str,
+    /// What the keyboard does on this patch.
+    keys: KeyMap,
+    osc: [OscChart; 4],
+    /// 0 = audio, 1 = mod, 2 = mod lo.
+    d_mode: u8,
+    /// The vector position: x, y.
+    vector: [f32; 2],
+    pulse_width: f32,
+    drive: f32,
+    /// Cutoff, resonance, envelope 2 depth (bipolar), keyboard follow.
+    filter: [f32; 4],
+    velocity: f32,
+    gain: f32,
+    /// Shape and rate, for each of the two LFOs.
+    lfo: [(u8, f32); 2],
+    /// Attack, decay, sustain, release, for each of the two envelopes.
+    env: [[f32; 4]; 2],
+    /// Source, destination, amount (bipolar), for each matrix slot.
+    matrix: [(u8, u8, f32); MOD_SLOTS],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OscChart {
+    /// 0 saw, 1 pulse, 2 triangle, 3 sine, 4 wavetable, 5 noise.
+    shape: u8,
+    /// Position in the wavetable bank, 0..1.
+    table: f32,
+    semitones: i32,
+    cents: f32,
+    level: f32,
+}
+
+/// A slot that is not routed anywhere.
+const NO_ROUTE: (u8, u8, f32) = (0, 0, 0.0);
+
+// ── Keymapped patches ──
+//
+// A patch where the note number picks a *sound* rather than a pitch, which is
+// what a Wavestation, an M1 or any other rompler calls a drum kit. It is an
+// engine capability rather than patch data: a melodic patch maps a note to a
+// frequency, and a keymapped one maps it to an entire voice recipe — its own
+// oscillator shapes and wavetable positions, its own tuning, its own vector
+// balance, its own filter and envelopes and level.
+//
+// What stays on the panel when a patch is keymapped is everything global or
+// downstream: DRIVE, GAIN, the velocity depth, the pulse width, the two LFOs
+// and the whole matrix. So a kit is still one instrument — driven, swept and
+// modulated as a unit — which is the point of having drums here rather than
+// only in the drum rack: they are made of the same oscillators, ladder and
+// envelopes as the pads and sit in the same sonic world.
+//
+// The CUTOFF knob is the one exception, and it is live: what it does on a
+// keymapped patch is *offset* every recipe's cutoff by however far it has been
+// moved from where the patch left it. That is the control a player reaches for
+// on a whole kit, and leaving it inert would be the wrong kind of literal.
+
+/// How a patch reads the keyboard.
+///
+/// One field rather than a flag beside a table, so a patch cannot claim to be
+/// keymapped and carry nothing, or carry a map and be played melodically.
+#[derive(Debug, Clone, Copy)]
+enum KeyMap {
+    /// The note sets the pitch and the panel is the voice.
+    Melodic,
+    /// The note selects a whole voice recipe from this table, which is sorted
+    /// by note and may be as sparse as it likes.
+    Keymapped(&'static [KeyChart]),
+}
+
+impl KeyMap {
+    /// The table, or an empty one for a melodic patch.
+    const fn table(self) -> &'static [KeyChart] {
+        match self {
+            Self::Melodic => &[],
+            Self::Keymapped(keys) => keys,
+        }
+    }
+}
+
+/// One note of a keymapped patch: the whole voice recipe that note plays.
+///
+/// The oscillators are tuned in semitones and cents from `hz` rather than from
+/// the keyboard, because a drum's body is a frequency and not a note.
+#[derive(Debug, Clone, Copy)]
+struct KeyChart {
+    /// The MIDI note this recipe is played from.
+    note: u8,
+    /// What it is. Not printed anywhere yet; it is here so that the tests and
+    /// a future editor can name a zone rather than count it.
+    name: &'static str,
+    /// Where the body of the sound sits, in hertz.
+    hz: f32,
+    osc: [OscChart; 4],
+    /// The vector position this recipe mixes its four oscillators at.
+    vector: [f32; 2],
+    /// Cutoff, resonance, envelope 2 depth (bipolar).
+    filter: [f32; 3],
+    /// Attack, decay, sustain, release, for the amplitude envelope and then
+    /// the modulation envelope.
+    env: [[f32; 4]; 2],
+    level: f32,
+}
+
+/// Which recipe a note plays.
+///
+/// **The decision this is:** a note the patch does not map plays the nearest
+/// note it does, rather than nothing.
+///
+/// Silence was the alternative and it is the more literal answer — a key with
+/// no sound assigned makes no sound. It was rejected for the reason the drum
+/// rack rejected it in `voice_606`: a part written against a General MIDI kit
+/// reaches for notes that no particular kit has, and under silence loading a
+/// kit deletes half of a finished part with no indication of why. Folding
+/// plays it on the closest thing the patch has, which is what a player with
+/// that kit in front of them would do anyway.
+///
+/// Ties — a note exactly between two entries — go to the lower one, because
+/// the scan runs in note order and only takes a strictly closer entry.
+///
+/// Bounded and allocation-free: a linear scan of a table that is `'static`,
+/// run once at note-on.
+fn key_for_note(keys: &'static [KeyChart], note: u8) -> Option<&'static KeyChart> {
+    let mut best: Option<&'static KeyChart> = None;
+    let mut best_distance = u16::MAX;
+    for entry in keys {
+        let distance = u16::from(entry.note.abs_diff(note));
+        if distance < best_distance {
+            best_distance = distance;
+            best = Some(entry);
+        }
+    }
+    best
+}
+
+/// A recipe in the units the engine runs on, resolved once at note-on.
+#[derive(Debug, Clone, Copy)]
+struct KeyVoice {
+    osc: [OscSetting; 4],
+    base_hz: f64,
+    vector: [f64; 2],
+    cutoff: f64,
+    resonance: f64,
+    filter_env: f64,
+    env: [EnvTimes; 2],
+    level: f64,
+}
+
+impl KeyVoice {
+    fn resolve(chart: &KeyChart) -> Self {
+        Self {
+            osc: std::array::from_fn(|i| osc_setting(&chart.osc[i])),
+            base_hz: f64::from(chart.hz),
+            vector: [f64::from(chart.vector[0]), f64::from(chart.vector[1])],
+            cutoff: f64::from(chart.filter[0]),
+            resonance: f64::from(chart.filter[1]),
+            filter_env: bipolar(chart.filter[2]),
+            env: [env_times(chart.env[0]), env_times(chart.env[1])],
+            level: f64::from(chart.level),
+        }
+    }
+}
+
+/// One oscillator chart row in engine units. Shared by the panel and by the
+/// keymap, so a recipe's oscillator and a panel oscillator cannot end up
+/// meaning different things.
+fn osc_setting(chart: &OscChart) -> OscSetting {
+    let semitones = f64::from(chart.semitones);
+    let cents = f64::from(chart.cents);
+    OscSetting {
+        shape: Shape::from_index(chart.shape as usize),
+        table: f64::from(chart.table),
+        ratio: 2.0f64.powf(semitones / 12.0 + cents / 1200.0),
+        lo_hz: mod_lo_hz(semitones) * 2.0f64.powf(cents / 1200.0),
+        level: f64::from(chart.level),
+    }
+}
+
+/// Four sliders in panel units as four times in seconds.
+fn env_times(chart: [f32; 4]) -> EnvTimes {
+    EnvTimes {
+        attack: attack_seconds(f64::from(chart[0])),
+        decay: decay_seconds(f64::from(chart[1])),
+        sustain: f64::from(chart[2]),
+        release: decay_seconds(f64::from(chart[3])),
+    }
+}
+
+const BANK: [Chart; PATCH_COUNT] = [
+    // Four sawtooths, one an octave down, spread a few cents apart. The panel
+    // the instrument loads with, and the one every headroom figure quoted at
+    // OUTPUT_TRIM is measured against.
+    Chart {
+        name: "INIT SAW", label: "INIT SAW",
+        keys: KeyMap::Melodic,
+        osc: [
+            OscChart { shape: 0, table: 0.0, semitones: 0, cents: 0.0, level: 0.85 },
+            OscChart { shape: 0, table: 0.0, semitones: 0, cents: 7.0, level: 0.85 },
+            OscChart { shape: 0, table: 0.0, semitones: 0, cents: -7.0, level: 0.85 },
+            OscChart { shape: 0, table: 0.0, semitones: -12, cents: 0.0, level: 0.85 },
+        ],
+        d_mode: 0, vector: [0.5, 0.5], pulse_width: 0.0, drive: 0.0,
+        filter: [0.66, 0.12, 0.58, 0.35], velocity: 0.6, gain: 1.0,
+        lfo: [(0, 0.35), (0, 0.15)],
+        env: [[0.02, 0.35, 0.75, 0.22], [0.0, 0.40, 0.30, 0.30]],
+        matrix: [NO_ROUTE; MOD_SLOTS],
+    },
+    // The Minimoog end of the instrument: everything low, the drive well up,
+    // the ladder resonant and swept by envelope 2, and velocity opening it
+    // further through the matrix.
+    Chart {
+        name: "LADDER BASS", label: "LADDER BASS",
+        keys: KeyMap::Melodic,
+        osc: [
+            OscChart { shape: 0, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 1, table: 0.0, semitones: 0, cents: 4.0, level: 0.9 },
+            OscChart { shape: 0, table: 0.0, semitones: -12, cents: 0.0, level: 1.0 },
+            OscChart { shape: 3, table: 0.0, semitones: -24, cents: 0.0, level: 0.8 },
+        ],
+        d_mode: 0, vector: [0.45, 0.40], pulse_width: 0.35, drive: 0.55,
+        filter: [0.28, 0.55, 0.72, 0.30], velocity: 0.75, gain: 1.0,
+        lfo: [(0, 0.30), (4, 0.55)],
+        env: [[0.004, 0.30, 0.35, 0.12], [0.0, 0.22, 0.0, 0.15]],
+        matrix: [
+            (5, 4, 0.30),   // velocity → cutoff
+            NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE,
+        ],
+    },
+    // The other Minimoog trade: oscillator D is out of the mixer and running
+    // at 5 Hz as a vibrato source, with the wheel opening the filter.
+    Chart {
+        name: "FAT LEAD", label: "FAT LEAD",
+        keys: KeyMap::Melodic,
+        osc: [
+            OscChart { shape: 0, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 0, table: 0.0, semitones: 0, cents: 12.0, level: 1.0 },
+            OscChart { shape: 1, table: 0.0, semitones: 0, cents: -12.0, level: 0.95 },
+            OscChart { shape: 3, table: 0.0, semitones: 10, cents: 0.0, level: 1.0 },
+        ],
+        d_mode: 2, vector: [0.5, 0.35], pulse_width: 0.25, drive: 0.40,
+        filter: [0.55, 0.35, 0.60, 0.40], velocity: 0.5, gain: 1.0,
+        lfo: [(0, 0.45), (1, 0.20)],
+        env: [[0.01, 0.45, 0.70, 0.20], [0.02, 0.35, 0.25, 0.25]],
+        matrix: [
+            (10, 1, 0.03),  // oscillator D → pitch: a light vibrato
+            (7, 4, 0.25),   // wheel → cutoff
+            NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE,
+        ],
+    },
+    // The Wavestation end: four wavetable positions with the vector walked
+    // round them by two slow LFOs at different rates, so the mix never repeats
+    // on any period a listener can count.
+    Chart {
+        name: "WAVE PAD", label: "WAVE PAD",
+        keys: KeyMap::Melodic,
+        osc: [
+            OscChart { shape: 4, table: 0.30, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 4, table: 0.55, semitones: 0, cents: 5.0, level: 1.0 },
+            OscChart { shape: 4, table: 0.72, semitones: 0, cents: -5.0, level: 1.0 },
+            OscChart { shape: 4, table: 0.90, semitones: -12, cents: 0.0, level: 0.9 },
+        ],
+        d_mode: 0, vector: [0.5, 0.5], pulse_width: 0.0, drive: 0.15,
+        filter: [0.62, 0.20, 0.55, 0.30], velocity: 0.4, gain: 1.0,
+        lfo: [(1, 0.16), (1, 0.10)],
+        env: [[0.45, 0.50, 0.85, 0.60], [0.30, 0.60, 0.50, 0.55]],
+        matrix: [
+            (1, 7, 0.45),   // LFO 1 → vector x
+            (2, 8, 0.45),   // LFO 2 → vector y
+            (4, 3, 0.12),   // envelope 2 → wavetable position
+            NO_ROUTE, NO_ROUTE, NO_ROUTE,
+        ],
+    },
+    // The sparse-partial end of the bank, struck rather than blown: bell and
+    // electric piano tables an octave and a twelfth apart, no sustain.
+    Chart {
+        name: "GLASS BELL", label: "GLASS BELL",
+        keys: KeyMap::Melodic,
+        osc: [
+            OscChart { shape: 4, table: 0.80, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 4, table: 0.867, semitones: 12, cents: 2.0, level: 0.7 },
+            OscChart { shape: 3, table: 0.0, semitones: 19, cents: 0.0, level: 0.5 },
+            OscChart { shape: 4, table: 1.0, semitones: 24, cents: 0.0, level: 0.35 },
+        ],
+        d_mode: 0, vector: [0.4, 0.4], pulse_width: 0.0, drive: 0.0,
+        filter: [0.80, 0.10, 0.58, 0.50], velocity: 0.85, gain: 1.0,
+        lfo: [(1, 0.55), (4, 0.65)],
+        env: [[0.0, 0.55, 0.0, 0.50], [0.0, 0.30, 0.0, 0.28]],
+        matrix: [
+            (4, 3, 0.10),   // envelope 2 → wavetable position
+            NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE,
+        ],
+    },
+    // The vector as the whole point: four unrelated tables, a square LFO
+    // stepping x and a triangle sweeping y, so the timbre moves rhythmically
+    // without an envelope doing it.
+    Chart {
+        name: "VECTOR SWEEP", label: "VECTORSWEEP",
+        keys: KeyMap::Melodic,
+        osc: [
+            OscChart { shape: 4, table: 0.07, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 4, table: 0.40, semitones: 0, cents: 6.0, level: 1.0 },
+            OscChart { shape: 4, table: 0.60, semitones: 7, cents: 0.0, level: 0.9 },
+            OscChart { shape: 4, table: 1.0, semitones: 0, cents: -6.0, level: 0.9 },
+        ],
+        d_mode: 0, vector: [0.5, 0.5], pulse_width: 0.0, drive: 0.25,
+        filter: [0.66, 0.30, 0.55, 0.30], velocity: 0.5, gain: 1.0,
+        lfo: [(3, 0.55), (0, 0.38)],
+        env: [[0.06, 0.50, 0.80, 0.35], [0.10, 0.45, 0.60, 0.35]],
+        matrix: [
+            (1, 7, 0.50),   // LFO 1 → vector x
+            (2, 8, 0.50),   // LFO 2 → vector y
+            (6, 4, 0.15),   // keyboard → cutoff
+            NO_ROUTE, NO_ROUTE, NO_ROUTE,
+        ],
+    },
+    // The filter as the sound source, which is what the top of the resonance
+    // travel is for: a whisper of noise into a ladder that is already
+    // oscillating, swept by envelope 2 and by an LFO.
+    Chart {
+        name: "RESO DRONE", label: "RESO DRONE",
+        keys: KeyMap::Melodic,
+        osc: [
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 0.35 },
+            OscChart { shape: 3, table: 0.0, semitones: 0, cents: 0.0, level: 0.30 },
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 0.35 },
+            OscChart { shape: 3, table: 0.0, semitones: -12, cents: 0.0, level: 0.30 },
+        ],
+        d_mode: 0, vector: [0.5, 0.5], pulse_width: 0.0, drive: 0.0,
+        filter: [0.30, 0.98, 0.66, 0.60], velocity: 0.4, gain: 1.0,
+        lfo: [(0, 0.22), (1, 0.12)],
+        env: [[0.25, 0.70, 0.65, 0.55], [0.35, 0.70, 0.35, 0.50]],
+        matrix: [
+            (1, 4, 0.18),   // LFO 1 → cutoff
+            NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE,
+        ],
+    },
+    // Short, bright and digital: the pseudo-random table at the top of the
+    // bank, a clavinet under it, the drive up and nothing sustaining.
+    Chart {
+        name: "DIGI PLUCK", label: "DIGI PLUCK",
+        keys: KeyMap::Melodic,
+        osc: [
+            OscChart { shape: 4, table: 1.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 4, table: 0.933, semitones: 0, cents: 8.0, level: 0.9 },
+            OscChart { shape: 0, table: 0.0, semitones: -12, cents: 0.0, level: 0.8 },
+            OscChart { shape: 4, table: 0.60, semitones: 12, cents: 0.0, level: 0.6 },
+        ],
+        d_mode: 0, vector: [0.45, 0.45], pulse_width: 0.0, drive: 0.45,
+        filter: [0.62, 0.35, 0.70, 0.45], velocity: 0.8, gain: 1.0,
+        lfo: [(2, 0.60), (4, 0.70)],
+        env: [[0.0, 0.28, 0.10, 0.18], [0.0, 0.18, 0.0, 0.15]],
+        matrix: [
+            (5, 3, 0.15),   // velocity → wavetable position
+            NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE,
+        ],
+    },
+    // The keymapped end: one patch where every note is a different sound,
+    // built out of the same four oscillators, ladder and envelopes as the
+    // pads. The panel row below is what stays live on a kit — the drive, the
+    // velocity depth, the LFOs and the matrix — plus the CUTOFF value the
+    // knob's offset is measured from. Its oscillator and envelope columns are
+    // the kick's, so that a player who opens the panel sees something
+    // plausible rather than whatever the last patch left.
+    Chart {
+        name: "SYNTH KIT", label: "SYNTH KIT",
+        keys: KeyMap::Keymapped(&SYNTH_KIT),
+        osc: [
+            OscChart { shape: 3, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 3, table: 0.0, semitones: -12, cents: 0.0, level: 0.7 },
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 0.9 },
+            OscChart { shape: 3, table: 0.0, semitones: 19, cents: 0.0, level: 0.6 },
+        ],
+        d_mode: 0, vector: [0.15, 0.15], pulse_width: 0.0, drive: 0.30,
+        filter: [0.60, 0.30, 0.50, 0.0], velocity: 0.8, gain: 1.0,
+        lfo: [(0, 0.35), (0, 0.20)],
+        env: [[0.0, 0.30, 0.0, 0.10], [0.0, 0.05, 0.0, 0.05]],
+        matrix: [
+            // The three routings that turn four oscillators into percussion,
+            // and every one of them lands differently on each note because
+            // every note brings its own envelope 2 and its own vector.
+            (4, 1, 0.35),   // envelope 2 → pitch: the drop a struck drum has
+            (4, 7, 0.60),   // envelope 2 → vector x
+            (4, 8, 0.60),   // envelope 2 → vector y: together, the noise
+                            // transient, which decays into the body
+            (5, 4, 0.20),   // velocity → cutoff
+            NO_ROUTE, NO_ROUTE,
+        ],
+    },
+];
+
+/// The starter kit.
+///
+/// Eight recipes on the General MIDI notes they belong on. Not a full kit —
+/// that is bank data and belongs with the rest of the large bank — but enough
+/// of one to prove the mechanism: a kick, a snare, two toms, two hi-hats, a
+/// clap and a crash, each a different arrangement of the same four
+/// oscillators.
+///
+/// The convention every recipe follows, because the matrix is shared across
+/// the kit and has to mean the same thing on each of them: **oscillator A is
+/// the body, B the second pitched element, C and D the noise**, with the
+/// vector resting near the A corner. Envelope 2 pushes the vector towards C at
+/// the strike and lets it fall back, so each recipe's own envelope 2 decay is
+/// how long its noise transient lasts — 25 ms on the kick, 285 ms on the
+/// snare.
+///
+/// The hi-hats are worth a note. There is no high-pass filter on this
+/// instrument, and a hi-hat made of noise through a low-pass would be a hiss
+/// with all its bottom end still attached. What makes them work is the
+/// ladder's bass loss at resonance — the thing the design brief was firm about
+/// not compensating away: at 0.72 of the resonance travel the filter is better
+/// than 12 dB down at the bottom, so noise through it comes out as a bright
+/// band. The characteristic that makes the filter sound right is also the one
+/// that makes a cymbal possible.
+const SYNTH_KIT: [KeyChart; 8] = [
+    KeyChart {
+        note: 36, name: "kick", hz: 55.0,
+        osc: [
+            OscChart { shape: 3, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 3, table: 0.0, semitones: -12, cents: 0.0, level: 0.7 },
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 0.9 },
+            OscChart { shape: 3, table: 0.0, semitones: 19, cents: 0.0, level: 0.6 },
+        ],
+        vector: [0.10, 0.10], filter: [0.45, 0.05, 0.60],
+        env: [[0.0, 0.30, 0.0, 0.10], [0.0, 0.05, 0.0, 0.05]],
+        level: 1.6,
+    },
+    KeyChart {
+        note: 38, name: "snare", hz: 190.0,
+        osc: [
+            OscChart { shape: 3, table: 0.0, semitones: 0, cents: 0.0, level: 0.8 },
+            OscChart { shape: 2, table: 0.0, semitones: 7, cents: 0.0, level: 0.6 },
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+        ],
+        vector: [0.50, 0.55], filter: [0.72, 0.30, 0.60],
+        env: [[0.0, 0.22, 0.0, 0.08], [0.0, 0.12, 0.0, 0.05]],
+        level: 1.8,
+    },
+    KeyChart {
+        note: 39, name: "clap", hz: 400.0,
+        osc: [
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+        ],
+        vector: [0.5, 0.5], filter: [0.70, 0.62, 0.55],
+        env: [[0.0, 0.20, 0.0, 0.08], [0.0, 0.06, 0.0, 0.05]],
+        level: 1.7,
+    },
+    KeyChart {
+        note: 41, name: "low tom", hz: 100.0,
+        osc: [
+            OscChart { shape: 3, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 2, table: 0.0, semitones: 0, cents: 0.0, level: 0.4 },
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 0.5 },
+            OscChart { shape: 3, table: 0.0, semitones: 12, cents: 0.0, level: 0.3 },
+        ],
+        vector: [0.20, 0.20], filter: [0.50, 0.05, 0.58],
+        env: [[0.0, 0.38, 0.0, 0.12], [0.0, 0.10, 0.0, 0.05]],
+        level: 1.6,
+    },
+    KeyChart {
+        note: 42, name: "closed hat", hz: 800.0,
+        osc: [
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 4, table: 1.0, semitones: 24, cents: 0.0, level: 0.5 },
+        ],
+        vector: [0.5, 0.5], filter: [0.92, 0.72, 0.52],
+        env: [[0.0, 0.07, 0.0, 0.04], [0.0, 0.03, 0.0, 0.03]],
+        level: 1.7,
+    },
+    KeyChart {
+        note: 45, name: "mid tom", hz: 150.0,
+        osc: [
+            OscChart { shape: 3, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 2, table: 0.0, semitones: 0, cents: 0.0, level: 0.4 },
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 0.5 },
+            OscChart { shape: 3, table: 0.0, semitones: 12, cents: 0.0, level: 0.3 },
+        ],
+        vector: [0.20, 0.20], filter: [0.54, 0.05, 0.58],
+        env: [[0.0, 0.34, 0.0, 0.12], [0.0, 0.09, 0.0, 0.05]],
+        level: 1.6,
+    },
+    KeyChart {
+        note: 46, name: "open hat", hz: 800.0,
+        osc: [
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 4, table: 1.0, semitones: 24, cents: 0.0, level: 0.5 },
+        ],
+        vector: [0.5, 0.5], filter: [0.90, 0.70, 0.52],
+        env: [[0.0, 0.28, 0.0, 0.10], [0.0, 0.05, 0.0, 0.04]],
+        level: 1.6,
+    },
+    KeyChart {
+        note: 49, name: "crash", hz: 1200.0,
+        osc: [
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 4, table: 1.0, semitones: 12, cents: 0.0, level: 0.6 },
+        ],
+        vector: [0.5, 0.5], filter: [0.95, 0.60, 0.52],
+        env: [[0.0, 0.50, 0.0, 0.30], [0.0, 0.20, 0.0, 0.10]],
+        level: 1.3,
+    },
+];
+
+/// The patch names in full.
+pub const PATCH_NAMES: [&str; PATCH_COUNT] = derive_names();
+
+/// The names cut to the twelve columns the editor's selector row leaves.
+pub const PATCH_LABELS: [&str; PATCH_COUNT] = derive_labels();
+
+const fn derive_names() -> [&'static str; PATCH_COUNT] {
+    let mut out = [""; PATCH_COUNT];
+    let mut i = 0;
+    while i < PATCH_COUNT {
+        out[i] = BANK[i].name;
+        i += 1;
+    }
+    out
+}
+
+const fn derive_labels() -> [&'static str; PATCH_COUNT] {
+    let mut out = [""; PATCH_COUNT];
+    let mut i = 0;
+    while i < PATCH_COUNT {
+        out[i] = BANK[i].label;
+        i += 1;
+    }
+    out
+}
+
+/// The knob position that selects patch `index`, for a caller sweeping the
+/// bank from outside — a level measurement, an export, a test.
+///
+/// The midpoint of the step, which is the one position in it that no amount of
+/// float rounding can push into a neighbour, and the same position
+/// [`step_discrete`] moves between.
+#[must_use]
+pub fn patch_knob(index: usize) -> f32 {
+    knob_for(index.min(PATCH_COUNT - 1), PATCH_COUNT)
+}
+
+/// Which patch a knob position selects. Total: every float lands on a patch,
+/// because `params` is public and the knob can arrive as anything.
+#[must_use]
+pub fn patch_index(value: f32) -> usize {
+    selector(value, PATCH_COUNT)
+}
+
+/// Whether a patch reads the keyboard as a set of sounds rather than as a set
+/// of pitches — a drum kit, in other words.
+///
+/// Public because an editor showing a kit's zones, or a piano roll labelling
+/// its rows, needs to know before it draws anything.
+#[must_use]
+pub fn is_keymapped(patch: usize) -> bool {
+    !BANK[patch.min(PATCH_COUNT - 1)].keys.table().is_empty()
+}
+
+/// How many notes a keymapped patch maps. Zero for a melodic one.
+#[must_use]
+pub fn key_zone_count(patch: usize) -> usize {
+    BANK[patch.min(PATCH_COUNT - 1)].keys.table().len()
+}
+
+/// The note and the name of one of a keymapped patch's zones, in note order.
+///
+/// Two calls rather than a slice of tuples so that nothing has to be built to
+/// answer them: the bank owns the table and this reads it in place.
+#[must_use]
+pub fn key_zone(patch: usize, zone: usize) -> Option<(u8, &'static str)> {
+    BANK[patch.min(PATCH_COUNT - 1)]
+        .keys
+        .table()
+        .get(zone)
+        .map(|entry| (entry.note, entry.name))
+}
+
+/// One chart row as a parameter block.
+///
+/// `const` so that [`PARAM_DEFAULTS`] can be the first row of the bank rather
+/// than a hand-copied duplicate of it — a duplicate is a thing to forget when
+/// the patch is revoiced, and the Juno's default and its patch 0 have to be
+/// held together by a test for exactly that reason.
+const fn chart_params(index: usize) -> [f32; PARAM_COUNT] {
+    let c = &BANK[index];
+    let mut p = [0.0f32; PARAM_COUNT];
+    p[P_PATCH] = knob_for(index, PATCH_COUNT);
+
+    // A `while` rather than a `for`, because iterators are not const.
+    let mut i = 0;
+    while i < 4 {
+        let o = &c.osc[i];
+        let base = P_A_WAVE + i * 5;
+        p[base] = knob_for(o.shape as usize, SHAPE_COUNT);
+        p[base + 1] = o.table;
+        p[base + 2] = tune_knob(o.semitones);
+        p[base + 3] = fine_knob(o.cents);
+        p[base + 4] = o.level;
+        i += 1;
+    }
+    p[P_D_MODE] = knob_for(c.d_mode as usize, 3);
+
+    p[P_VECTOR_X] = c.vector[0];
+    p[P_VECTOR_Y] = c.vector[1];
+    p[P_PULSE_WIDTH] = c.pulse_width;
+
+    p[P_DRIVE] = c.drive;
+    p[P_CUTOFF] = c.filter[0];
+    p[P_RESO] = c.filter[1];
+    p[P_FILTER_ENV] = c.filter[2];
+    p[P_KEY_FOLLOW] = c.filter[3];
+
+    p[P_VELOCITY] = c.velocity;
+    p[P_GAIN] = c.gain;
+
+    p[P_LFO1_WAVE] = knob_for(c.lfo[0].0 as usize, LFO_SHAPE_COUNT);
+    p[P_LFO1_RATE] = c.lfo[0].1;
+    p[P_LFO2_WAVE] = knob_for(c.lfo[1].0 as usize, LFO_SHAPE_COUNT);
+    p[P_LFO2_RATE] = c.lfo[1].1;
+
+    p[P_ATTACK1] = c.env[0][0];
+    p[P_DECAY1] = c.env[0][1];
+    p[P_SUSTAIN1] = c.env[0][2];
+    p[P_RELEASE1] = c.env[0][3];
+    p[P_ATTACK2] = c.env[1][0];
+    p[P_DECAY2] = c.env[1][1];
+    p[P_SUSTAIN2] = c.env[1][2];
+    p[P_RELEASE2] = c.env[1][3];
+
+    let mut slot = 0;
+    while slot < MOD_SLOTS {
+        let (source, dest, amount) = c.matrix[slot];
+        let base = P_MOD_BASE + slot * 3;
+        p[base] = knob_for(source as usize, SOURCE_COUNT);
+        p[base + 1] = knob_for(dest as usize, DEST_COUNT);
+        p[base + 2] = bipolar_knob(amount);
+        slot += 1;
+    }
+    p
 }
 
 // ── PhosphorSynth ──
 
 pub struct PhosphorSynth {
-    voices: Vec<Voice>,
+    voices: [Voice; MAX_VOICES],
+    lfo: [Lfo; 2],
+    bank: &'static WaveBank,
     sample_rate: f64,
-    pub waveform: Waveform,
+    /// The mod wheel, CC 1. Held here rather than per voice because the wheel
+    /// is one physical control and a note added to a held chord should join it
+    /// where it stands.
+    wheel: f64,
     pub params: [f32; PARAM_COUNT],
     voice_counter: u64,
+    last_patch_index: usize,
 }
 
 impl PhosphorSynth {
+    #[must_use]
     pub fn new() -> Self {
         Self {
-            voices: Vec::new(),
-            sample_rate: 44100.0,
-            waveform: Waveform::Saw,
+            voices: std::array::from_fn(|i| Voice::new(44_100.0, i)),
+            lfo: [Lfo::new(0x1234_5678), Lfo::new(0x8765_4321)],
+            bank: wave_bank(),
+            sample_rate: 44_100.0,
+            wheel: 0.0,
             params: PARAM_DEFAULTS,
             voice_counter: 0,
+            last_patch_index: 0,
         }
     }
 
-    fn next_age(&mut self) -> u64 { self.voice_counter += 1; self.voice_counter }
+    /// The whole panel as the chart for this patch sets it.
+    #[must_use]
+    pub fn params_for_patch(patch_value: f32) -> [f32; PARAM_COUNT] {
+        let mut params = chart_params(patch_index(patch_value));
+        params[P_PATCH] = patch_value;
+        params
+    }
+
+    fn sync_params_from_patch(&mut self) {
+        let index = patch_index(self.params[P_PATCH]);
+        if index == self.last_patch_index {
+            return;
+        }
+        self.last_patch_index = index;
+        let loaded = Self::params_for_patch(self.params[P_PATCH]);
+        for (i, value) in loaded.iter().enumerate() {
+            if i != P_PATCH {
+                self.params[i] = *value;
+            }
+        }
+    }
+
+    fn next_age(&mut self) -> u64 {
+        self.voice_counter += 1;
+        self.voice_counter
+    }
 
     fn allocate_voice(&mut self) -> usize {
-        if let Some(i) = self.voices.iter().position(|v| !v.is_sounding()) { return i; }
-        if let Some((i, _)) = self.voices.iter().enumerate()
-            .filter(|(_, v)| !v.is_held()).min_by_key(|(_, v)| v.age) { return i; }
-        self.voices.iter().enumerate().min_by_key(|(_, v)| v.age).map(|(i, _)| i).unwrap_or(0)
+        if let Some(i) = self.voices.iter().position(|v| !v.is_sounding()) {
+            return i;
+        }
+        if let Some((i, _)) = self
+            .voices
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| !v.is_held())
+            .min_by_key(|(_, v)| v.age)
+        {
+            return i;
+        }
+        self.voices
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, v)| v.age)
+            .map_or(0, |(i, _)| i)
     }
 
     fn release_note(&mut self, note: u8) {
-        for v in &mut self.voices { if v.note == note && v.is_held() { v.note_off(); } }
-    }
-
-    fn kill_all_voices(&mut self) {
-        for v in &mut self.voices { v.kill(); }
-    }
-
-    fn waveform_from_param(val: f32) -> Waveform {
-        match (val * 4.0) as u8 {
-            0 => Waveform::Sine,
-            1 => Waveform::Saw,
-            2 => Waveform::Square,
-            _ => Waveform::Triangle,
-        }
-    }
-
-    fn apply_params(&mut self) {
-        self.waveform = Self::waveform_from_param(self.params[P_WAVEFORM]);
         for v in &mut self.voices {
-            v.env.attack = self.params[P_ATTACK] as f64 * 2.0;
-            v.env.decay = self.params[P_DECAY] as f64 * 2.0;
-            v.env.sustain = self.params[P_SUSTAIN] as f64;
-            v.env.release = self.params[P_RELEASE] as f64 * 2.0;
+            if v.note == note && v.is_held() {
+                v.note_off();
+            }
         }
     }
 
-    /// Detune in cents (0..1 → 0..50 cents).
-    fn detune_cents(&self) -> f64 { self.params[P_DETUNE] as f64 * 50.0 }
+    fn kill_all(&mut self) {
+        for v in &mut self.voices {
+            v.kill();
+        }
+    }
+
+    /// The panel as it stands, in the units the engine works in. Every control
+    /// is live — the preset is only where the knobs started.
+    fn panel(&self) -> Panel {
+        let p = &self.params;
+        let chart = &BANK[patch_index(p[P_PATCH])];
+        let osc = std::array::from_fn(|i| {
+            let base = P_A_WAVE + i * 5;
+            let semitones = tune_semitones(p[base + 2]);
+            let cents = fine_cents(p[base + 3]);
+            OscSetting {
+                shape: Shape::from_index(selector(p[base], SHAPE_COUNT)),
+                table: f64::from(p[base + 1]),
+                ratio: 2.0f64.powf(semitones / 12.0 + cents / 1200.0),
+                lo_hz: mod_lo_hz(semitones) * 2.0f64.powf(cents / 1200.0),
+                level: f64::from(p[base + 4]),
+            }
+        });
+
+        let mut slots = [Slot { source: Source::Off, dest: Dest::Off, amount: 0.0, bipolar: false };
+            MOD_SLOTS];
+        let mut slot_count = 0;
+        for slot in 0..MOD_SLOTS {
+            let base = P_MOD_BASE + slot * 3;
+            let source = Source::from_index(selector(p[base], SOURCE_COUNT));
+            let dest = Dest::from_index(selector(p[base + 1], DEST_COUNT));
+            let amount = bipolar(p[base + 2]);
+            if source == Source::Off || dest == Dest::Off || amount == 0.0 {
+                continue;
+            }
+            slots[slot_count] = Slot { source, dest, amount, bipolar: source.is_bipolar() };
+            slot_count += 1;
+        }
+
+        Panel {
+            osc,
+            d_mode: DMode::from_index(selector(p[P_D_MODE], 3)),
+            vector: [f64::from(p[P_VECTOR_X]), f64::from(p[P_VECTOR_Y])],
+            pulse_width: f64::from(p[P_PULSE_WIDTH]),
+            drive: f64::from(p[P_DRIVE]),
+            cutoff: f64::from(p[P_CUTOFF]),
+            resonance: f64::from(p[P_RESO]),
+            filter_env: bipolar(p[P_FILTER_ENV]),
+            key_follow: f64::from(p[P_KEY_FOLLOW]),
+            velocity_depth: f64::from(p[P_VELOCITY]),
+            gain: f64::from(p[P_GAIN]),
+            lfo_shape: [
+                LfoShape::from_index(selector(p[P_LFO1_WAVE], LFO_SHAPE_COUNT)),
+                LfoShape::from_index(selector(p[P_LFO2_WAVE], LFO_SHAPE_COUNT)),
+            ],
+            lfo_rate: [lfo_hz(f64::from(p[P_LFO1_RATE])), lfo_hz(f64::from(p[P_LFO2_RATE]))],
+            env: [
+                env_times([p[P_ATTACK1], p[P_DECAY1], p[P_SUSTAIN1], p[P_RELEASE1]]),
+                env_times([p[P_ATTACK2], p[P_DECAY2], p[P_SUSTAIN2], p[P_RELEASE2]]),
+            ],
+            slots,
+            slot_count,
+            keys: chart.keys.table(),
+            cutoff_trim: f64::from(p[P_CUTOFF]) - f64::from(chart.filter[0]),
+        }
+    }
 }
 
 impl Default for PhosphorSynth {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Plugin for PhosphorSynth {
     fn info(&self) -> PluginInfo {
-        PluginInfo { name: "Phosphor Synth".into(), version: "0.2.0".into(), author: "Phosphor".into(), category: PluginCategory::Instrument }
+        PluginInfo {
+            name: "Phosphor Synth".into(),
+            version: "0.3.0".into(),
+            author: "Phosphor".into(),
+            category: PluginCategory::Instrument,
+        }
     }
 
     fn init(&mut self, sample_rate: f64, _max_buffer_size: usize) {
         self.sample_rate = sample_rate;
-        self.voices = (0..MAX_VOICES).map(|_| Voice::new(sample_rate)).collect();
-        self.apply_params();
+        self.voices = std::array::from_fn(|i| Voice::new(sample_rate, i));
     }
 
     fn process(&mut self, _inputs: &[&[f32]], outputs: &mut [&mut [f32]], midi_events: &[MidiEvent]) {
-        if outputs.is_empty() { return; }
+        if outputs.is_empty() {
+            return;
+        }
 
         let buf_len = outputs[0].len();
-        let gain = self.params[P_GAIN] * OUTPUT_TRIM;
-        let waveform = self.waveform;
-        let detune = self.detune_cents();
-        let sub_level = self.params[P_SUB_LEVEL];
-        let noise_level = self.params[P_NOISE_LEVEL];
-        let cutoff = self.params[P_FILTER_CUTOFF] as f64;
-        let reso = self.params[P_FILTER_RESO] as f64;
-        let drive = self.params[P_DRIVE] as f64;
+        let panel = self.panel();
+        let gain = (panel.gain as f32) * OUTPUT_TRIM;
+        let sr = self.sample_rate;
+        let bank = self.bank;
 
-        // Avoid heap allocation — use fixed-size index buffer for sorting
+        // MIDI event sorting, allocation-free: a fixed index buffer and an
+        // insertion sort, which is what a handful of events per buffer wants.
         let mut event_indices: [usize; 256] = [0; 256];
         let event_count = midi_events.len().min(256);
-        for idx in 0..event_count { event_indices[idx] = idx; }
-        for idx in 1..event_count {
-            let mut j = idx;
-            while j > 0 && midi_events[event_indices[j]].sample_offset < midi_events[event_indices[j-1]].sample_offset {
+        for (i, slot) in event_indices.iter_mut().enumerate().take(event_count) {
+            *slot = i;
+        }
+        for i in 1..event_count {
+            let mut j = i;
+            while j > 0
+                && midi_events[event_indices[j]].sample_offset
+                    < midi_events[event_indices[j - 1]].sample_offset
+            {
                 event_indices.swap(j, j - 1);
                 j -= 1;
             }
@@ -450,46 +2569,70 @@ impl Plugin for PhosphorSynth {
                         if ev.data2 > 0 {
                             self.release_note(ev.data1);
                             let age = self.next_age();
-                            let idx = self.allocate_voice();
-                            self.voices[idx].note_on(ev.data1, ev.data2, waveform, detune, age);
-                        } else { self.release_note(ev.data1); }
+                            let index = self.allocate_voice();
+                            self.voices[index].note_on(ev.data1, ev.data2, &panel, age);
+                        } else {
+                            self.release_note(ev.data1);
+                        }
                     }
                     0x80 => self.release_note(ev.data1),
                     0xB0 => match ev.data1 {
-                        120 => self.kill_all_voices(),
-                        123 => { for v in &mut self.voices { if v.is_held() { v.note_off(); } } }
+                        1 => self.wheel = f64::from(ev.data2) / 127.0,
+                        120 => self.kill_all(),
+                        123 => {
+                            for v in &mut self.voices {
+                                if v.is_held() {
+                                    v.note_off();
+                                }
+                            }
+                        }
                         _ => {}
-                    }
+                    },
                     _ => {}
                 }
                 ei += 1;
             }
 
+            let modulators = Modulators {
+                lfo: [
+                    self.lfo[0].tick(panel.lfo_shape[0], panel.lfo_rate[0], sr),
+                    self.lfo[1].tick(panel.lfo_shape[1], panel.lfo_rate[1], sr),
+                ],
+                wheel: self.wheel,
+            };
+
             let mut sample = 0.0f32;
             for v in &mut self.voices {
-                sample += v.tick(sub_level, noise_level, cutoff, reso, drive);
+                sample += v.tick(&panel, &modulators, bank) as f32;
             }
-            sample *= gain;
             // Bound the output without hard clipping it. The trim above keeps
-            // ordinary playing under the knee, so this is the identity for
-            // everything except a patch pushed past it by the gain knob.
-            sample = soft_saturate(sample);
+            // even the panel's extremes under the knee, so this is the
+            // identity for everything the instrument can currently produce.
+            let sample = soft_saturate(sample * gain);
 
-            for ch in outputs.iter_mut() { ch[i] = sample; }
+            for ch in outputs.iter_mut() {
+                ch[i] = sample;
+            }
         }
     }
 
-    fn parameter_count(&self) -> usize { PARAM_COUNT }
+    fn parameter_count(&self) -> usize {
+        PARAM_COUNT
+    }
 
     fn parameter_info(&self, index: usize) -> Option<ParameterInfo> {
-        if index >= PARAM_COUNT { return None; }
+        if index >= PARAM_COUNT {
+            return None;
+        }
         Some(ParameterInfo {
             name: PARAM_NAMES[index].into(),
-            min: 0.0, max: 1.0,
+            min: 0.0,
+            max: 1.0,
             default: PARAM_DEFAULTS[index],
             unit: match index {
-                P_ATTACK | P_DECAY | P_RELEASE => "s".into(),
-                _ => "".into(),
+                P_ATTACK1 | P_DECAY1 | P_RELEASE1 | P_ATTACK2 | P_DECAY2 | P_RELEASE2 => "s".into(),
+                P_LFO1_RATE | P_LFO2_RATE => "Hz".into(),
+                _ => String::new(),
             },
         })
     }
@@ -501,20 +2644,80 @@ impl Plugin for PhosphorSynth {
     fn set_parameter(&mut self, index: usize, value: f32) {
         if let Some(p) = self.params.get_mut(index) {
             *p = phosphor_plugin::clamp_parameter(value);
-            self.apply_params();
+        }
+        if index == P_PATCH {
+            self.sync_params_from_patch();
         }
     }
 
-    fn reset(&mut self) { self.kill_all_voices(); self.voice_counter = 0; }
-}
-
-fn note_to_freq(note: u8) -> f64 {
-    440.0 * 2.0f64.powf((note as f64 - 69.0) / 12.0)
+    fn reset(&mut self) {
+        self.kill_all();
+        self.voice_counter = 0;
+        self.wheel = 0.0;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── An allocation counter for the audio path ──
+    //
+    // The defect this exists for happened on the Odyssey: a `Vec` of held
+    // notes that could reallocate inside the callback on the seventeenth
+    // simultaneous key. Nothing caught it, because "no allocation in
+    // `process`" is a property of the code rather than of its output, and
+    // every test here only reads the output.
+    //
+    // So the test binary counts allocations. Per thread rather than globally,
+    // because cargo runs tests in parallel and a global count would see every
+    // other test's work; the thread-local is declared with `const` so that
+    // reading it cannot itself allocate, and `try_with` is used so that an
+    // allocation during thread teardown cannot panic inside the allocator.
+
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    thread_local! {
+        static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    struct Counting;
+
+    fn note_allocation() {
+        let _ = ALLOCATIONS.try_with(|c| c.set(c.get() + 1));
+    }
+
+    // SAFETY: every method forwards to the system allocator with the same
+    // pointer and layout it was given, so the allocator's contract is the
+    // system allocator's contract. The counter is a thread-local `Cell` of a
+    // plain integer, which allocates nothing and cannot re-enter.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            note_allocation();
+            System.alloc(layout)
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            System.dealloc(ptr, layout);
+        }
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            note_allocation();
+            System.alloc_zeroed(layout)
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            note_allocation();
+            System.realloc(ptr, layout, new_size)
+        }
+    }
+
+    #[global_allocator]
+    static COUNTING: Counting = Counting;
+
+    fn allocations_during(body: impl FnOnce()) -> u64 {
+        let before = ALLOCATIONS.with(Cell::get);
+        body();
+        ALLOCATIONS.with(Cell::get) - before
+    }
 
     fn note_on(note: u8, vel: u8, offset: u32) -> MidiEvent {
         MidiEvent { sample_offset: offset, status: 0x90, data1: note, data2: vel }
@@ -522,8 +2725,8 @@ mod tests {
     fn note_off(note: u8, offset: u32) -> MidiEvent {
         MidiEvent { sample_offset: offset, status: 0x80, data1: note, data2: 0 }
     }
-    fn cc(cc: u8, val: u8, offset: u32) -> MidiEvent {
-        MidiEvent { sample_offset: offset, status: 0xB0, data1: cc, data2: val }
+    fn cc(number: u8, value: u8, offset: u32) -> MidiEvent {
+        MidiEvent { sample_offset: offset, status: 0xB0, data1: number, data2: value }
     }
 
     fn process_buffers(synth: &mut PhosphorSynth, events: &[MidiEvent], count: usize) -> Vec<f32> {
@@ -539,100 +2742,712 @@ mod tests {
         all
     }
 
+    fn peak(samples: &[f32]) -> f32 {
+        samples.iter().map(|v| v.abs()).fold(0.0f32, f32::max)
+    }
+
+    fn rms(samples: &[f32]) -> f32 {
+        let sum: f64 = samples.iter().map(|v| f64::from(*v) * f64::from(*v)).sum();
+        (sum / samples.len() as f64).sqrt() as f32
+    }
+
+    // ── Real-time safety ──
+
+    #[test]
+    fn the_audio_path_does_not_allocate() {
+        let mut s = PhosphorSynth::new();
+        s.init(44_100.0, 256);
+        let mut out = vec![0.0f32; 256];
+
+        // Warm everything the first call would touch: the wavetable bank,
+        // which is built once per process behind a `OnceLock`.
+        s.process(&[], &mut [&mut out], &[note_on(60, 100, 0)]);
+
+        // More simultaneous keys than there are voices, so the allocation
+        // would land where the Odyssey's did — in the note bookkeeping under
+        // a chord too big for the instrument.
+        let events: Vec<MidiEvent> =
+            (36u8..60).map(|n| note_on(n, 127, u32::from(n) % 8)).collect();
+        let releases: Vec<MidiEvent> = (36u8..60).map(|n| note_off(n, 0)).collect();
+
+        let allocations = allocations_during(|| {
+            let mut outs: [&mut [f32]; 1] = [&mut out];
+            s.process(&[], &mut outs, &events);
+            for _ in 0..8 {
+                s.process(&[], &mut outs, &[]);
+            }
+            s.process(&[], &mut outs, &releases);
+            for _ in 0..8 {
+                s.process(&[], &mut outs, &[]);
+            }
+            s.process(&[], &mut outs, &[cc(1, 64, 0), cc(120, 0, 32)]);
+        });
+
+        assert_eq!(allocations, 0, "the audio path allocated {allocations} times");
+    }
+
+    /// The counter has to actually count, or the assertion above is vacuous.
+    #[test]
+    fn the_allocation_counter_sees_an_allocation() {
+        let allocations = allocations_during(|| {
+            let v: Vec<u8> = Vec::with_capacity(4096);
+            std::hint::black_box(&v);
+        });
+        assert!(allocations >= 1, "the counter saw nothing");
+    }
+
+    // ── The instrument ──
+
     #[test]
     fn silence_with_no_input() {
-        let mut s = PhosphorSynth::new(); s.init(44100.0, 64);
+        let mut s = PhosphorSynth::new();
+        s.init(44_100.0, 64);
         let out = process_buffers(&mut s, &[], 1);
         assert!(out.iter().all(|&v| v == 0.0));
     }
 
     #[test]
     fn sound_on_note_on() {
-        let mut s = PhosphorSynth::new(); s.init(44100.0, 64);
-        // 200 buffers, not 4: the output carries a headroom trim, so five
-        // milliseconds of attack is not enough signal to tell "sounding" from
-        // "silent" with any margin.
+        let mut s = PhosphorSynth::new();
+        s.init(44_100.0, 64);
         let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 200);
-        assert!(out.iter().map(|v| v.abs()).fold(0.0f32, f32::max) > 0.005);
+        assert!(peak(&out) > 0.005, "peak={}", peak(&out));
     }
 
     #[test]
     fn silent_after_release() {
-        let mut s = PhosphorSynth::new(); s.init(44100.0, 64);
+        let mut s = PhosphorSynth::new();
+        s.init(44_100.0, 64);
         process_buffers(&mut s, &[note_on(60, 100, 0)], 2);
         process_buffers(&mut s, &[note_off(60, 0)], 500);
         let out = process_buffers(&mut s, &[], 1);
-        let peak = out.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
-        assert!(peak < 0.001, "peak={peak}");
+        assert!(peak(&out) < 0.001, "peak={}", peak(&out));
     }
 
     #[test]
     fn output_is_finite() {
-        let mut s = PhosphorSynth::new(); s.init(44100.0, 64);
+        let mut s = PhosphorSynth::new();
+        s.init(44_100.0, 64);
         let out = process_buffers(&mut s, &[note_on(60, 127, 0)], 1000);
         assert!(out.iter().all(|v| v.is_finite()));
     }
 
     #[test]
     fn polyphony() {
-        let mut s = PhosphorSynth::new(); s.init(44100.0, 64);
+        let mut s = PhosphorSynth::new();
+        s.init(44_100.0, 64);
         let events = [note_on(60, 100, 0), note_on(64, 100, 0), note_on(67, 100, 0)];
         let out = process_buffers(&mut s, &events, 200);
-        let peak = out.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
-        assert!(peak > 0.005 && peak < 1.0, "peak={peak}");
+        assert!(peak(&out) > 0.005 && peak(&out) < 1.0, "peak={}", peak(&out));
     }
 
     #[test]
     fn sample_accurate_midi() {
-        let mut s = PhosphorSynth::new(); s.init(44100.0, 128);
+        let mut s = PhosphorSynth::new();
+        s.init(44_100.0, 128);
         let mut out = vec![0.0f32; 128];
         s.process(&[], &mut [&mut out], &[note_on(60, 100, 64)]);
         // Before the offset no voice is sounding at all, so the sum is exactly
         // zero — a stronger claim than "quiet", and one that does not move
         // when the output trim does.
         assert!(out[..64].iter().all(|&v| v == 0.0));
-        assert!(out[64..].iter().map(|v| v.abs()).fold(0.0f32, f32::max) > 0.0001);
+        assert!(peak(&out[64..]) > 0.0001);
     }
 
     #[test]
-    fn waveform_change() {
-        let mut s = PhosphorSynth::new(); s.init(44100.0, 64);
-        s.set_parameter(P_WAVEFORM, 0.0);
-        assert_eq!(s.waveform, Waveform::Sine);
-        s.set_parameter(P_WAVEFORM, 0.5);
-        assert_eq!(s.waveform, Waveform::Square);
+    fn cc120_kills_all() {
+        let mut s = PhosphorSynth::new();
+        s.init(44_100.0, 64);
+        process_buffers(&mut s, &[note_on(60, 100, 0)], 2);
+        process_buffers(&mut s, &[cc(120, 0, 0)], 1);
+        let out = process_buffers(&mut s, &[], 1);
+        assert!(out.iter().all(|&v| v == 0.0));
     }
 
     #[test]
-    fn filter_cutoff_affects_sound() {
-        let mut s = PhosphorSynth::new(); s.init(44100.0, 64);
-        // Full cutoff
-        s.set_parameter(P_FILTER_CUTOFF, 1.0);
-        let bright = process_buffers(&mut s, &[note_on(60, 100, 0)], 4);
-        let bright_energy: f32 = bright.iter().map(|v| v * v).sum();
-
-        s.reset(); s.init(44100.0, 64);
-        // Low cutoff
-        s.set_parameter(P_FILTER_CUTOFF, 0.1);
-        let dark = process_buffers(&mut s, &[note_on(60, 100, 0)], 4);
-        let dark_energy: f32 = dark.iter().map(|v| v * v).sum();
-
-        assert!(bright_energy > dark_energy * 1.5, "Filter should reduce energy: bright={bright_energy} dark={dark_energy}");
+    fn retrigger_doesnt_leak() {
+        let mut s = PhosphorSynth::new();
+        s.init(44_100.0, 64);
+        for _ in 0..100 {
+            process_buffers(&mut s, &[note_on(60, 100, 0)], 1);
+        }
+        process_buffers(&mut s, &[note_off(60, 0)], 800);
+        let out = process_buffers(&mut s, &[], 1);
+        assert!(peak(&out) < 0.001, "peak={}", peak(&out));
     }
 
     #[test]
-    fn drive_affects_sound() {
-        let mut s = PhosphorSynth::new(); s.init(44100.0, 64);
-        s.set_parameter(P_DRIVE, 0.0);
-        let clean = process_buffers(&mut s, &[note_on(60, 100, 0)], 4);
+    fn more_keys_than_voices_steals_rather_than_panics() {
+        let mut s = PhosphorSynth::new();
+        s.init(44_100.0, 64);
+        let events: Vec<MidiEvent> = (40u8..70).map(|n| note_on(n, 110, 0)).collect();
+        let out = process_buffers(&mut s, &events, 100);
+        assert!(out.iter().all(|v| v.is_finite()));
+        assert!(peak(&out) < 1.0, "peak={}", peak(&out));
+    }
 
-        s.reset(); s.init(44100.0, 64);
-        s.set_parameter(P_DRIVE, 0.8);
-        let dirty = process_buffers(&mut s, &[note_on(60, 100, 0)], 4);
+    // ── The panel ──
 
-        // Driven signal should differ from clean
-        let diff: f32 = clean.iter().zip(dirty.iter()).map(|(a, b)| (a - b).abs()).sum();
-        assert!(diff > 0.1, "Drive should change the signal, diff={diff}");
+    #[test]
+    fn the_panel_is_the_shape_the_editor_expects() {
+        assert_eq!(PARAM_NAMES.len(), PARAM_COUNT);
+        assert_eq!(PARAM_DEFAULTS.len(), PARAM_COUNT);
+        for (i, name) in PARAM_NAMES.iter().enumerate() {
+            assert!(name.len() <= 8, "{i} {name:?} is wider than the parameter column");
+        }
+        // The patch selector is at index 0 because that is where the editor
+        // looks for one.
+        assert_eq!(P_PATCH, 0);
+        assert!(is_discrete(P_PATCH));
+        // Every label the panel can print fits the twelve columns the FX panel
+        // leaves after the parameter name.
+        for (index, name) in PARAM_NAMES.iter().enumerate() {
+            let Some(count) = discrete_steps(index) else { continue };
+            for step in 0..count {
+                let label = discrete_label(index, knob_for(step, count)).unwrap();
+                assert!(
+                    label.chars().count() <= 12,
+                    "{name} position {step} label {label:?} does not fit"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn all_params_readable() {
+        let s = PhosphorSynth::new();
+        assert_eq!(s.parameter_count(), PARAM_COUNT);
+        for i in 0..PARAM_COUNT {
+            assert!(s.parameter_info(i).is_some());
+            let value = s.get_parameter(i);
+            assert!((0.0..=1.0).contains(&value), "param {i} = {value}");
+        }
+        assert!(s.parameter_info(PARAM_COUNT).is_none());
+    }
+
+    /// Every selector steps by index and lands on the position it names, from
+    /// either end, without stalling on a boundary a fraction missed by an ulp.
+    #[test]
+    fn every_selector_steps_by_index() {
+        for index in 0..PARAM_COUNT {
+            let Some(count) = discrete_steps(index) else {
+                assert_eq!(step_discrete(index, 0.42, true), 0.42, "slider {index} moved");
+                assert_eq!(step_discrete(index, 0.42, false), 0.42, "slider {index} moved");
+                continue;
+            };
+            let mut knob = 0.0f32;
+            for step in 0..count {
+                assert_eq!(selector(knob, count), step, "param {index} stalled at {step}");
+                knob = step_discrete(index, knob, true);
+            }
+            // ...and it stops at the top rather than wrapping round.
+            assert_eq!(selector(knob, count), count - 1);
+            assert_eq!(step_discrete(index, knob, true), knob);
+            for step in (0..count).rev() {
+                assert_eq!(selector(knob, count), step, "param {index} stalled at {step}");
+                knob = step_discrete(index, knob, false);
+            }
+            assert_eq!(selector(knob, count), 0);
+            assert_eq!(step_discrete(index, knob, false), knob);
+        }
+    }
+
+    #[test]
+    fn discrete_labels_read_as_the_panel_does() {
+        assert_eq!(discrete_label(P_PATCH, 0.0), Some("INIT SAW"));
+        assert_eq!(discrete_label(P_A_WAVE, knob_for(0, SHAPE_COUNT)), Some("saw"));
+        assert_eq!(discrete_label(P_A_WAVE, knob_for(4, SHAPE_COUNT)), Some("table"));
+        assert_eq!(discrete_label(P_D_MODE, knob_for(2, 3)), Some("mod lo"));
+        assert_eq!(discrete_label(P_A_TUNE, tune_knob(0)), Some("0"));
+        assert_eq!(discrete_label(P_A_TUNE, tune_knob(-12)), Some("-12"));
+        assert_eq!(discrete_label(P_A_TUNE, tune_knob(24)), Some("+24"));
+        assert_eq!(discrete_label(P_LFO1_WAVE, knob_for(4, LFO_SHAPE_COUNT)), Some("s&h"));
+        assert_eq!(discrete_label(p_mod_src(0), knob_for(1, SOURCE_COUNT)), Some("lfo 1"));
+        assert_eq!(discrete_label(p_mod_dest(0), knob_for(4, DEST_COUNT)), Some("cutoff"));
+        // The amount knob is a slider, not a selector.
+        assert_eq!(discrete_label(p_mod_amount(0), 0.5), None);
+        assert!(!is_discrete(p_mod_amount(0)));
+        assert_eq!(discrete_label(P_CUTOFF, 0.5), None);
+        // Out of range in either direction still lands on a real position.
+        assert_eq!(discrete_label(P_A_WAVE, 9.0), Some("noise"));
+        assert_eq!(discrete_label(P_A_WAVE, -1.0), Some("saw"));
+    }
+
+    #[test]
+    fn the_time_sliders_report_their_own_seconds() {
+        assert!((param_seconds(P_ATTACK1, 0.0).unwrap() - ATTACK_MIN).abs() < 1e-9);
+        assert!((param_seconds(P_ATTACK1, 1.0).unwrap() - (ATTACK_MIN + ATTACK_MAX)).abs() < 1e-6);
+        assert!((param_seconds(P_RELEASE2, 0.0).unwrap() - DECAY_MIN).abs() < 1e-9);
+        assert!((param_seconds(P_DECAY1, 1.0).unwrap() - (DECAY_MIN + DECAY_MAX)).abs() < 1e-6);
+        assert_eq!(param_seconds(P_CUTOFF, 0.5), None);
+        assert_eq!(param_seconds(P_LFO1_RATE, 0.5), None);
+        // Monotone, or the number under the bar disagrees with the sound.
+        let mut previous = 0.0;
+        for step in 0..=100 {
+            let value = step as f32 / 100.0;
+            let seconds = param_seconds(P_ATTACK1, value).unwrap();
+            assert!(seconds > previous, "the attack taper is not monotone at {value}");
+            previous = seconds;
+        }
+    }
+
+    // ── The patch bank ──
+
+    #[test]
+    fn the_patch_knob_lands_on_the_patch_it_names() {
+        for (index, label) in PATCH_LABELS.iter().enumerate() {
+            let knob = patch_knob(index);
+            assert_eq!(patch_index(knob), index, "patch {index} knob {knob}");
+            assert_eq!(discrete_label(P_PATCH, knob), Some(*label));
+            let mut s = PhosphorSynth::new();
+            s.set_parameter(P_PATCH, knob);
+            assert_eq!(patch_index(s.params[P_PATCH]), index);
+        }
+        // Past the end is the last patch, not a panic.
+        assert_eq!(patch_index(2.0), PATCH_COUNT - 1);
+        assert_eq!(patch_index(-1.0), 0);
+        assert_eq!(patch_knob(PATCH_COUNT + 10), patch_knob(PATCH_COUNT - 1));
+    }
+
+    #[test]
+    fn patch_zero_is_the_default_parameter_block() {
+        assert_eq!(PARAM_DEFAULTS, PhosphorSynth::params_for_patch(patch_knob(0)));
+        // The selector defaults to the *midpoint* of its first step rather
+        // than to zero, which is where `step_discrete` leaves it and where the
+        // session format's position walk expects to find it.
+        assert_eq!(PARAM_DEFAULTS[P_PATCH], patch_knob(0));
+        assert_eq!(patch_index(PARAM_DEFAULTS[P_PATCH]), 0);
+        assert_eq!(PhosphorSynth::new().params, PARAM_DEFAULTS);
+        // GAIN is at the top of its travel, so the knob can only cut and the
+        // headroom sweep at that setting is the whole of it.
+        assert_eq!(PARAM_DEFAULTS[P_GAIN], 1.0);
+        // DRIVE is at the bottom, where the stage is bit-for-bit the identity.
+        assert_eq!(PARAM_DEFAULTS[P_DRIVE], 0.0);
+    }
+
+    #[test]
+    fn selecting_a_patch_loads_its_whole_panel() {
+        let mut s = PhosphorSynth::new();
+        s.set_parameter(P_PATCH, patch_knob(1));
+        assert_eq!(s.params, PhosphorSynth::params_for_patch(patch_knob(1)));
+        // ...and moving another control afterwards does not reload it.
+        s.set_parameter(P_CUTOFF, 0.123);
+        assert!((s.params[P_CUTOFF] - 0.123).abs() < 1e-9);
+        assert_eq!(s.params, {
+            let mut want = PhosphorSynth::params_for_patch(patch_knob(1));
+            want[P_CUTOFF] = 0.123;
+            want
+        });
+    }
+
+    #[test]
+    fn every_patch_in_the_bank_sounds_and_none_of_them_shouts() {
+        for (index, name) in PATCH_NAMES.iter().enumerate() {
+            let mut s = PhosphorSynth::new();
+            s.init(44_100.0, 64);
+            s.set_parameter(P_PATCH, patch_knob(index));
+            let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 400);
+            assert!(peak(&out) > 0.01, "{name} is silent: peak {}", peak(&out));
+            assert!(peak(&out) < 0.891, "{name} peaks at {}", peak(&out));
+            assert!(out.iter().all(|v| v.is_finite()), "{name} produced a non-finite sample");
+        }
+    }
+
+    #[test]
+    fn patch_names_fit_the_editors_label_column() {
+        for (index, label) in PATCH_LABELS.iter().enumerate() {
+            assert!(
+                label.chars().count() <= 12,
+                "patch {index} label {label:?} needs {} of the 12 columns the panel leaves",
+                label.chars().count()
+            );
+            assert!(!label.is_empty(), "patch {index} has no label");
+            assert!(!PATCH_NAMES[index].is_empty(), "patch {index} has no name");
+        }
+    }
+
+    // ── Keymapped patches ──
+
+    /// Where SYNTH KIT sits in the bank.
+    const KIT: usize = PATCH_COUNT - 1;
+
+    fn kit() -> PhosphorSynth {
+        let mut s = PhosphorSynth::new();
+        s.init(44_100.0, 64);
+        s.set_parameter(P_PATCH, patch_knob(KIT));
+        s
+    }
+
+    /// 1.16 s of one note, which reaches past the longest recipe in the kit.
+    fn strike(patch: usize, note: u8, velocity: u8) -> Vec<f32> {
+        let mut s = PhosphorSynth::new();
+        s.init(44_100.0, 64);
+        s.set_parameter(P_PATCH, patch_knob(patch));
+        process_buffers(&mut s, &[note_on(note, velocity, 0)], 800)
+    }
+
+    /// How long the sound lasts, in samples: up to the last one above a
+    /// hundredth of its own peak.
+    fn sounding_samples(samples: &[f32]) -> usize {
+        let floor = peak(samples) * 0.01;
+        samples.iter().rposition(|v| v.abs() > floor).map_or(0, |i| i + 1)
+    }
+
+    /// Zero crossings per second over the sounding part.
+    ///
+    /// A cheap brightness measure, and the right one here: it separates a
+    /// 55 Hz sine from a band of noise by two orders of magnitude, where a
+    /// spectral centroid would need a transform per render and this file has
+    /// forty of them.
+    fn brightness(samples: &[f32]) -> f64 {
+        let n = sounding_samples(samples).max(2);
+        let window = &samples[..n];
+        let crossings = window.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count();
+        crossings as f64 * 44_100.0 / n as f64
+    }
+
+    /// The point of a keymapped patch: three notes, three *sounds*, not one
+    /// sound at three pitches.
+    ///
+    /// Asserted against a melodic patch on the same three notes, because
+    /// "different" on its own is what a transposition also gives. What
+    /// separates them is the *pattern* of the difference: on a melodic patch
+    /// brightness follows the pitch and every note lasts the same time; on the
+    /// kit the kick is fifty times darker than the hat and lasts eight times
+    /// longer, which no transposition of one recipe can produce.
+    #[test]
+    fn a_keymapped_patch_plays_a_different_sound_on_every_note() {
+        let kick = strike(KIT, 36, 110);
+        let snare = strike(KIT, 38, 110);
+        let hat = strike(KIT, 42, 110);
+
+        for (name, out) in [("kick", &kick), ("snare", &snare), ("hat", &hat)] {
+            assert!(peak(out) > 0.01, "the {name} is silent: peak {}", peak(out));
+            assert!(out.iter().all(|v| v.is_finite()));
+        }
+
+        let (kick_hz, snare_hz, hat_hz) =
+            (brightness(&kick), brightness(&snare), brightness(&hat));
+        assert!(kick_hz < 1_500.0, "the kick is not a low sound: {kick_hz:.0} crossings/s");
+        assert!(hat_hz > 6_000.0, "the hat is not a bright sound: {hat_hz:.0} crossings/s");
+        assert!(
+            snare_hz > kick_hz * 3.0 && snare_hz < hat_hz * 0.8,
+            "the snare does not sit between the kick and the hat: \
+             {kick_hz:.0}, {snare_hz:.0}, {hat_hz:.0} crossings/s"
+        );
+
+        let (kick_len, hat_len) = (sounding_samples(&kick), sounding_samples(&hat));
+        assert!(
+            kick_len > hat_len * 3,
+            "the kick and the hat are the same length: {kick_len} against {hat_len} samples"
+        );
+
+        // The contrast. On a melodic patch those same three notes are one
+        // recipe transposed: brightness tracks the pitch to within a factor of
+        // two and every note lasts the same time.
+        let melodic: Vec<Vec<f32>> = [36u8, 38, 42].iter().map(|n| strike(0, *n, 110)).collect();
+        let ratio = brightness(&melodic[2]) / brightness(&melodic[0]);
+        let pitch_ratio = 2.0f64.powf(6.0 / 12.0);
+        assert!(
+            (ratio / pitch_ratio).abs() > 0.5 && (ratio / pitch_ratio) < 2.0,
+            "the melodic patch is not transposing: brightness moved {ratio:.2}x \
+             where the pitch moved {pitch_ratio:.2}x"
+        );
+        let lengths: Vec<usize> = melodic.iter().map(|v| sounding_samples(v)).collect();
+        let spread = lengths.iter().max().unwrap() - lengths.iter().min().unwrap();
+        assert!(
+            spread * 8 < *lengths.iter().max().unwrap(),
+            "the melodic patch's notes are different lengths: {lengths:?}"
+        );
+        // ...and the kit's are not the same recipe at all: the hat is not the
+        // kick moved six semitones.
+        let kit_ratio = brightness(&hat) / brightness(&kick);
+        assert!(
+            kit_ratio > 5.0,
+            "the kit's hat is only {kit_ratio:.2}x brighter than its kick, which is \
+             what a transposition would give"
+        );
+    }
+
+    #[test]
+    fn every_zone_of_the_kit_sounds_and_they_are_all_different() {
+        assert!(is_keymapped(KIT), "the kit is not keymapped");
+        assert!(!is_keymapped(0), "the default patch is keymapped");
+        assert_eq!(key_zone_count(KIT), 8);
+        assert_eq!(key_zone_count(0), 0);
+        assert_eq!(key_zone(KIT, 0), Some((36, "kick")));
+        assert_eq!(key_zone(KIT, 8), None);
+        // Out of range in either direction still answers rather than panics.
+        assert_eq!(key_zone_count(PATCH_COUNT + 5), key_zone_count(PATCH_COUNT - 1));
+
+        let mut renders = Vec::new();
+        for zone in 0..key_zone_count(KIT) {
+            let (note, name) = key_zone(KIT, zone).unwrap();
+            let out = strike(KIT, note, 110);
+            assert!(peak(&out) > 0.01, "{name} on note {note} is silent");
+            assert!(peak(&out) < 0.891, "{name} peaks at {}", peak(&out));
+            renders.push((name, out));
+        }
+        for (i, (name_a, a)) in renders.iter().enumerate() {
+            for (name_b, b) in renders.iter().skip(i + 1) {
+                let difference: f32 =
+                    a.iter().zip(b.iter()).map(|(p, q)| (p - q).abs()).sum::<f32>()
+                        / a.len() as f32;
+                assert!(difference > 1e-4, "{name_a} and {name_b} sound the same");
+            }
+        }
+    }
+
+    /// A note the kit does not map plays the nearest one it does — not
+    /// silence, and not that note transposed.
+    #[test]
+    fn an_unmapped_note_folds_onto_the_nearest_zone() {
+        // Well above the top of the map, and well below the bottom.
+        assert_eq!(strike(KIT, 100, 110), strike(KIT, 49, 110), "the top did not fold");
+        assert_eq!(strike(KIT, 0, 110), strike(KIT, 36, 110), "the bottom did not fold");
+        // A tie goes to the lower entry, because the scan runs in note order
+        // and only takes a strictly closer one. 37 is one from 36 and one
+        // from 38.
+        assert_eq!(strike(KIT, 37, 110), strike(KIT, 36, 110), "a tie went the wrong way");
+        // ...and it really is the recipe rather than a transposition of it:
+        // the fold sounds identical, where a transposed note would not.
+        assert_ne!(strike(KIT, 100, 110), strike(KIT, 36, 110));
+    }
+
+    /// Velocity still works per note on a keymapped patch.
+    #[test]
+    fn velocity_still_works_on_every_zone() {
+        for zone in 0..key_zone_count(KIT) {
+            let (note, name) = key_zone(KIT, zone).unwrap();
+            let soft = peak(&strike(KIT, note, 40));
+            let hard = peak(&strike(KIT, note, 127));
+            assert!(hard > soft * 1.2, "{name} is not velocity sensitive: {soft} vs {hard}");
+        }
+    }
+
+    /// The CUTOFF knob is the one panel control a kit still answers, and it
+    /// answers as an offset from where the patch left it.
+    #[test]
+    fn the_cutoff_knob_sweeps_a_whole_kit() {
+        let render = |cutoff: f32| {
+            let mut s = kit();
+            s.set_parameter(P_CUTOFF, cutoff);
+            let energy: f32 = process_buffers(&mut s, &[note_on(38, 110, 0)], 400)
+                .iter()
+                .map(|v| v * v)
+                .sum();
+            energy
+        };
+        let closed = render(0.2);
+        let open = render(1.0);
+        assert!(open > closed * 1.5, "the knob did nothing: {closed} against {open}");
+        // At the patch's own setting the trim is zero, so the render is the
+        // patch as voiced.
+        let mut a = kit();
+        let mut b = kit();
+        b.set_parameter(P_CUTOFF, 0.60);
+        assert_eq!(
+            process_buffers(&mut a, &[note_on(38, 110, 0)], 100),
+            process_buffers(&mut b, &[note_on(38, 110, 0)], 100)
+        );
+    }
+
+    /// A drum has no sustain, and a voice that never ends is a kit that stops
+    /// answering after eight hits. The envelope finishes at the end of its
+    /// decay when the sustain is zero, whether or not the key has come up.
+    #[test]
+    fn a_percussive_note_frees_its_voice_without_a_note_off() {
+        let mut s = kit();
+        // Sixteen hits, none of them released, on a synth with eight voices.
+        for _ in 0..16 {
+            let out = process_buffers(&mut s, &[note_on(36, 110, 0)], 400);
+            assert!(peak(&out) > 0.01, "a hit went missing");
+        }
+        // Nothing is left holding on.
+        let out = process_buffers(&mut s, &[], 200);
+        assert!(peak(&out) < 1e-4, "a drum note is still sounding: {}", peak(&out));
+    }
+
+    /// A whole kit struck at once, at the top of the velocity range, is the
+    /// worst thing a keymapped patch can be asked for.
+    #[test]
+    fn the_whole_kit_at_once_has_headroom() {
+        let mut s = kit();
+        let events: Vec<MidiEvent> = (0..key_zone_count(KIT))
+            .map(|zone| note_on(key_zone(KIT, zone).unwrap().0, 127, 0))
+            .collect();
+        let out = process_buffers(&mut s, &events, 400);
+        assert!(out.iter().all(|v| v.is_finite()));
+        assert!(out.iter().all(|v| v.abs() < 1.0), "the kit reached full scale");
+        assert!(peak(&out) <= 0.891, "the whole kit peaks at {:.4}", peak(&out));
+        assert!(peak(&out) > 0.05, "the whole kit is inaudible: {:.4}", peak(&out));
+    }
+
+    // ── The wavetable bank ──
+
+    #[test]
+    fn every_generated_waveform_is_bounded_and_centred() {
+        let bank = wave_bank();
+        assert_eq!(WAVE_NAMES.len(), WAVE_COUNT);
+        assert_eq!(WAVES.len(), WAVE_COUNT);
+        for (wave, wave_name) in WAVE_NAMES.iter().enumerate() {
+            for level in 0..MIP_LEVELS {
+                let base = (wave * MIP_LEVELS + level) * TABLE_LEN;
+                let slice = &bank.samples[base..base + TABLE_LEN];
+                let peak = slice.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+                // Bounded by one at every level: the vector mix's headroom
+                // argument is that its weights sum to one and every source is
+                // inside the unit interval, which is only true if this is.
+                assert!(peak <= 1.0 + 1e-6, "{wave_name} level {level} peaks at {peak}");
+                // No DC: an offset would be passed straight through the filter
+                // and the amplifier and would show up as a click on every
+                // note-off.
+                let mean: f64 = slice.iter().map(|v| f64::from(*v)).sum::<f64>()
+                    / TABLE_LEN as f64;
+                assert!(mean.abs() < 1e-3, "{wave_name} level {level} has {mean} of DC");
+            }
+            // The full-band copy actually reaches the top of its range, or the
+            // waveform is quieter than every other one in the bank.
+            let base = wave * MIP_LEVELS * TABLE_LEN;
+            let peak = bank.samples[base..base + TABLE_LEN]
+                .iter()
+                .map(|v| v.abs())
+                .fold(0.0f32, f32::max);
+            assert!((peak - 1.0).abs() < 1e-5, "{wave_name} peaks at {peak}");
+        }
+    }
+
+    #[test]
+    fn no_two_waveforms_in_the_bank_are_the_same_sound() {
+        let bank = wave_bank();
+        for (a, name_a) in WAVE_NAMES.iter().enumerate() {
+            for (b, name_b) in WAVE_NAMES.iter().enumerate().skip(a + 1) {
+                let base_a = a * MIP_LEVELS * TABLE_LEN;
+                let base_b = b * MIP_LEVELS * TABLE_LEN;
+                // Compared as a spectrum rather than sample by sample, because
+                // two waveforms differing only in phase are the same sound.
+                let mut difference = 0.0f64;
+                for harmonic in 1..=32usize {
+                    let magnitude = |base: usize| {
+                        let (mut re, mut im) = (0.0f64, 0.0f64);
+                        for (i, v) in bank.samples[base..base + TABLE_LEN].iter().enumerate() {
+                            let w = TWO_PI * (harmonic * i % TABLE_LEN) as f64 / TABLE_LEN as f64;
+                            re += f64::from(*v) * w.cos();
+                            im += f64::from(*v) * w.sin();
+                        }
+                        (re * re + im * im).sqrt() / TABLE_LEN as f64
+                    };
+                    difference += (magnitude(base_a) - magnitude(base_b)).abs();
+                }
+                assert!(
+                    difference > 0.01,
+                    "{name_a} and {name_b} have the same spectrum ({difference:.5})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_band_limiting_picks_a_level_that_cannot_alias() {
+        let sr = 44_100.0;
+        for note in 0u8..128 {
+            let freq = note_to_freq(note);
+            let level = mip_level(freq, sr);
+            let top = (MAX_HARMONICS >> level).max(1);
+            assert!(
+                top as f64 * freq <= sr * 0.5 || level == MIP_LEVELS - 1,
+                "note {note} at {freq:.1} Hz reads level {level}, whose {top}th harmonic is at {}",
+                top as f64 * freq
+            );
+        }
+        // The bottom of the keyboard gets the whole band, and the level only
+        // ever rises with pitch.
+        assert_eq!(mip_level(note_to_freq(21), sr), 0);
+        let mut previous = 0;
+        for note in 0u8..128 {
+            let level = mip_level(note_to_freq(note), sr);
+            assert!(level >= previous, "the level fell between {} and {note}", note - 1);
+            previous = level;
+        }
+    }
+
+    /// The knob is a position in the bank, not a switch: halfway between two
+    /// waveforms is half of each.
+    #[test]
+    fn the_wave_knob_crossfades_between_neighbours() {
+        let bank = wave_bank();
+        let step = 1.0 / (WAVE_COUNT - 1) as f64;
+        for phase in [0.0, 0.13, 0.37, 0.61, 0.88] {
+            let a = bank.at(0.0, 0, phase);
+            let b = bank.at(step, 0, phase);
+            let middle = bank.at(step * 0.5, 0, phase);
+            assert!(
+                (middle - (a + b) * 0.5).abs() < 1e-6,
+                "at phase {phase} the midpoint is {middle}, not {}",
+                (a + b) * 0.5
+            );
+        }
+        // The ends are exactly the first and last waveform.
+        for phase in [0.0, 0.25, 0.5] {
+            assert!((bank.at(0.0, 0, phase) - bank.sample(0, 0, phase)).abs() < 1e-12);
+            assert!(
+                (bank.at(1.0, 0, phase) - bank.sample(WAVE_COUNT - 1, 0, phase)).abs() < 1e-12
+            );
+        }
+    }
+
+    // ── The vector mix ──
+
+    #[test]
+    fn the_vector_weights_always_sum_to_one() {
+        for x in 0..=20 {
+            for y in 0..=20 {
+                let w = vector_weights(f64::from(x) / 20.0, f64::from(y) / 20.0);
+                let sum: f64 = w.iter().sum();
+                assert!((sum - 1.0).abs() < 1e-12, "at ({x},{y}) the weights sum to {sum}");
+                assert!(w.iter().all(|v| *v >= 0.0), "a weight went negative at ({x},{y})");
+            }
+        }
+        // A knob that arrived as nonsense is still a position on the square.
+        for (x, y) in [(-1.0, 0.5), (2.0, 0.5), (0.5, -3.0), (0.5, 9.0)] {
+            let sum: f64 = vector_weights(x, y).iter().sum();
+            assert!((sum - 1.0).abs() < 1e-12, "({x},{y}) summed to {sum}");
+        }
+        // The corners are one oscillator each, and the centre is a quarter of
+        // each — which is what makes a vector position a mix rather than a
+        // fader bank.
+        assert_eq!(vector_weights(0.0, 0.0), [1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(vector_weights(1.0, 0.0), [0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(vector_weights(1.0, 1.0), [0.0, 0.0, 1.0, 0.0]);
+        assert_eq!(vector_weights(0.0, 1.0), [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(vector_weights(0.5, 0.5), [0.25, 0.25, 0.25, 0.25]);
+    }
+
+    /// Moving the vector to a corner has to actually silence the other three,
+    /// or the mix is not a vector mix.
+    #[test]
+    fn the_vector_position_chooses_which_oscillator_is_heard() {
+        let render = |x: f32, y: f32| {
+            let mut s = PhosphorSynth::new();
+            s.init(44_100.0, 64);
+            // Four different shapes, so the corners cannot be confused.
+            for (i, shape) in [0usize, 1, 2, 3].into_iter().enumerate() {
+                s.set_parameter(P_A_WAVE + i * 5, knob_for(shape, SHAPE_COUNT));
+            }
+            s.set_parameter(P_VECTOR_X, x);
+            s.set_parameter(P_VECTOR_Y, y);
+            process_buffers(&mut s, &[note_on(60, 100, 0)], 100)
+        };
+        let corners = [render(0.0, 0.0), render(1.0, 0.0), render(1.0, 1.0), render(0.0, 1.0)];
+        for (i, a) in corners.iter().enumerate() {
+            assert!(rms(a) > 0.001, "corner {i} is silent");
+            for (j, b) in corners.iter().enumerate().skip(i + 1) {
+                let difference: f32 =
+                    a.iter().zip(b.iter()).map(|(p, q)| (p - q).abs()).sum::<f32>()
+                        / a.len() as f32;
+                assert!(difference > 0.001, "corners {i} and {j} sound the same");
+            }
+        }
     }
 
     // ── DRIVE ──
@@ -643,13 +3458,11 @@ mod tests {
     /// has to stay what it was.
     #[test]
     fn the_drive_stage_is_the_identity_at_zero() {
-        assert_eq!(PARAM_DEFAULTS[P_DRIVE], 0.0, "the default panel now drives");
         let mut x = -8.0f64;
         while x <= 8.0 {
             assert_eq!(drive_stage(x, 0.0).to_bits(), x.to_bits(), "drive 0 altered {x}");
             x += 0.001;
         }
-        // Including the values a bit pattern comparison is fussy about.
         for x in [0.0f64, -0.0, f64::MIN_POSITIVE, -f64::MIN_POSITIVE, 1e-300, -1e-300] {
             assert_eq!(drive_stage(x, 0.0).to_bits(), x.to_bits(), "drive 0 altered {x:e}");
         }
@@ -658,8 +3471,6 @@ mod tests {
 
     /// The property that makes it a tone control rather than a fader: a signal
     /// at the reference comes out at the reference, whatever the knob says.
-    /// Before this the curve multiplied by up to 11 first, so the knob added
-    /// 8.3 dB to a chord on its way past the master limiter's ceiling.
     #[test]
     fn the_drive_stage_holds_the_reference_level() {
         for amount in [0.0f64, 0.1, 0.25, 0.5, 0.75, 1.0] {
@@ -674,8 +3485,6 @@ mod tests {
         }
     }
 
-    /// Monotonic, so the curve never folds back, and bounded, where the curve
-    /// it replaced grew as `sqrt(x)` without limit.
     #[test]
     fn the_drive_stage_is_monotonic_and_bounded() {
         for amount in [0.01f64, 0.1, 0.25, 0.5, 0.75, 1.0] {
@@ -689,27 +3498,22 @@ mod tests {
                 previous = y;
                 x += 0.001;
             }
-            // Nothing, however loud, gets past the asymptote.
             assert!(drive_stage(1e9, amount) <= bound);
         }
     }
 
     /// The knob has to be monotonic *in the knob* as well as in the signal.
-    /// The curve it replaced was not: it multiplied before its own denominator,
-    /// so on a signal past that denominator's knee turning DRIVE up from zero
-    /// made the patch quieter, then louder again.
+    /// The stage this replaced was not: on a signal past its denominator's
+    /// knee, turning DRIVE up from zero made the patch quieter and then louder
+    /// again.
     #[test]
     fn turning_the_drive_knob_up_never_steps_the_level_down() {
-        // A signal well above the reference, which is where the old curve
-        // reversed, and one below it, which is where a drive is supposed to add.
-        for x in [0.25f64, 1.0, 2.0, 8.0] {
+        for x in [0.1f64, 0.5, 1.0, 4.0] {
             let mut previous = drive_stage(x, 0.0);
             let mut amount = 0.0f64;
             while amount <= 1.0 {
                 amount += 0.005;
                 let y = drive_stage(x, amount);
-                // Above the reference the knob compresses, below it the knob
-                // lifts; either way it moves one way and keeps going.
                 let moving_up = x <= DRIVE_REFERENCE;
                 assert!(
                     if moving_up { y >= previous } else { y <= previous },
@@ -720,56 +3524,626 @@ mod tests {
         }
     }
 
-    // ── Headroom ──
-
-    /// The GAIN knob's travel above its default was headroom nothing had
-    /// measured, so the default was folded into [`OUTPUT_TRIM`] and the knob
-    /// pinned at the top. What makes that fold free is that the output stage
-    /// multiplies knob by trim, and the two ways of bracketing the same product
-    /// land on the same f32 — so the render at the new default is the old one
-    /// sample for sample rather than merely close to it.
+    /// What the knob is for, measured on the instrument rather than on the
+    /// curve: peak does not rise and loudness does.
+    ///
+    /// The two bounds are on different measurements, and deliberately. Peak
+    /// may not rise, because peak is what the ceiling is about; RMS may not
+    /// fall, because a compressor takes peaks down while bringing loudness up,
+    /// and bounding peak in both directions would assert that the knob does
+    /// not compress, which is the one thing it is for.
+    ///
+    /// Measured over 1.16 s rather than the 0.29 s the rest of this file
+    /// renders, because the default patch's four detuned oscillators beat
+    /// against each other over seconds: a short window catches some voices
+    /// near coherence and some near cancellation, and reads the difference
+    /// between them as the knob's doing. At 0.29 s the eight-note chord
+    /// appears to *lose* 0.11 dB of RMS at the first notch of the knob; over a
+    /// full beat period it gains 0.51 dB there and 2.33 dB by the top.
     #[test]
-    fn folding_the_gain_default_into_the_trim_did_not_move_the_default_render() {
-        /// The trim as it stood when GAIN defaulted to 0.75.
-        const TRIM_BEFORE_THE_FOLD: f32 = 0.2481;
+    fn driving_the_instrument_adds_loudness_without_adding_peak() {
+        for notes in [&[60u8][..], &[36, 43, 48, 55, 60, 64, 67, 72][..]] {
+            let mut undriven: Option<(f32, f32)> = None;
+            for drive in [0.0f32, 0.1, 0.25, 0.5, 0.75, 1.0] {
+                let mut s = PhosphorSynth::new();
+                s.init(44_100.0, 64);
+                s.set_parameter(P_DRIVE, drive);
+                let events: Vec<MidiEvent> = notes.iter().map(|n| note_on(*n, 127, 0)).collect();
+                let out = process_buffers(&mut s, &events, 800);
+                let Some((first_peak, first_rms)) = undriven else {
+                    undriven = Some((peak(&out), rms(&out)));
+                    continue;
+                };
+                let moved = 20.0 * (peak(&out) / first_peak).log10();
+                assert!(
+                    moved <= 0.0,
+                    "{} notes, drive {drive} added {moved:+.2} dB of peak",
+                    notes.len()
+                );
+                assert!(
+                    rms(&out) > first_rms,
+                    "{} notes, drive {drive} took loudness away: {first_rms:.5} -> {:.5}",
+                    notes.len(),
+                    rms(&out)
+                );
+            }
+        }
+    }
 
-        assert_eq!(PARAM_DEFAULTS[P_GAIN], 1.0, "GAIN has travel above its default again");
-        assert_eq!(
-            (PARAM_DEFAULTS[P_GAIN] * OUTPUT_TRIM).to_bits(),
-            (0.75f32 * TRIM_BEFORE_THE_FOLD).to_bits(),
-            "the fold moved the output stage: {} against {}",
-            PARAM_DEFAULTS[P_GAIN] * OUTPUT_TRIM,
-            0.75f32 * TRIM_BEFORE_THE_FOLD
+    // ── The ladder filter ──
+
+    /// Magnitude of an impulse response at `hz`.
+    fn magnitude_at(response: &[f64], hz: f64, sr: f64) -> f64 {
+        let w = TWO_PI * hz / sr;
+        let (mut re, mut im) = (0.0, 0.0);
+        for (n, v) in response.iter().enumerate() {
+            let p = w * n as f64;
+            re += v * p.cos();
+            im -= v * p.sin();
+        }
+        (re * re + im * im).sqrt()
+    }
+
+    fn ladder_response(cutoff_norm: f64, res: f64) -> Vec<f64> {
+        let mut f = Ladder::new();
+        (0..16_384)
+            .map(|i| f.process(if i == 0 { 1e-3 } else { 0.0 }, cutoff_norm, res, 44_100.0) / 1e-3)
+            .collect()
+    }
+
+    /// Four poles, on the frequency the slider names.
+    ///
+    /// The reference is the analog cascade itself — `1/(1+(f/f0)^2)^2` — which
+    /// is 12 dB down at the cutoff and only reaches its full 24 dB/octave
+    /// asymptote well above it. Matching the curve is the stronger claim than
+    /// matching a slope.
+    ///
+    /// The two four-pole filters that came before this one both integrated
+    /// naively, which puts a section an octave below its own coefficient and
+    /// the cascade 2.3x and 1.95x low; this one uses the topology-preserving
+    /// form those two now use.
+    #[test]
+    fn the_ladder_is_four_poles_at_the_frequency_the_slider_names() {
+        let sr = 44_100.0;
+        assert!((cutoff_hz(0.0) - CUTOFF_MIN_HZ).abs() < 1e-9);
+        assert!((cutoff_hz(1.0) - 16_000.0).abs() < 1e-6);
+        for norm in [0.2, 0.35] {
+            let f0 = cutoff_hz(norm);
+            let ir = ladder_response(norm, 0.0);
+            let at_dc = magnitude_at(&ir, 5.0, sr);
+            for multiple in [1.0f64, 2.0, 4.0, 8.0] {
+                let want = -40.0 * (1.0 + multiple * multiple).log10();
+                let got = 20.0 * (magnitude_at(&ir, f0 * multiple, sr) / at_dc).log10();
+                assert!(
+                    (got - want).abs() < 0.8,
+                    "cutoff {f0:.0} Hz at {multiple}x: {got:.1} dB, the cascade owes {want:.1} dB"
+                );
+            }
+        }
+    }
+
+    /// The sweep only ever opens, which is not free: a corner placed above
+    /// Nyquist folds back down, and a filter whose sweep folds *closes* at the
+    /// top of its own travel.
+    #[test]
+    fn the_cutoff_sweep_only_ever_opens() {
+        let sr = 44_100.0;
+        let mut previous = 0.0;
+        for step in 0..=20 {
+            let norm = f64::from(step) / 20.0;
+            let ir = ladder_response(norm, 0.0);
+            let at_dc = magnitude_at(&ir, 5.0, sr);
+            let through = magnitude_at(&ir, 8_000.0, sr) / at_dc;
+            assert!(
+                through >= previous - 1e-9,
+                "the filter closes between {} and {norm} of the slider",
+                norm - 0.05
+            );
+            previous = through;
+        }
+    }
+
+    #[test]
+    fn the_ladder_oscillates_at_the_top_of_the_resonance_travel() {
+        let sr = 44_100.0;
+        let mut f = Ladder::new();
+        for _ in 0..64 {
+            f.process(0.5, 0.5, 1.0, sr);
+        }
+        let mut tail = 0.0f64;
+        for i in 0..(sr as usize * 3) {
+            let y = f.process(0.0, 0.5, 1.0, sr);
+            assert!(y.is_finite(), "the filter diverged");
+            if i > sr as usize * 2 {
+                tail = tail.max(y.abs());
+            }
+        }
+        assert!(tail > 0.02, "the filter does not oscillate: tail {tail:.6}");
+        assert!(tail < 4.0, "the filter runs away: tail {tail:.6}");
+
+        // ...and below the knee it dies away, or every patch with the
+        // resonance up would drone.
+        let mut quiet = Ladder::new();
+        for _ in 0..64 {
+            quiet.process(0.5, 0.5, 0.6, sr);
+        }
+        let mut tail = 0.0f64;
+        for i in 0..(sr as usize) {
+            let y = quiet.process(0.0, 0.5, 0.6, sr);
+            if i > sr as usize / 2 {
+                tail = tail.max(y.abs());
+            }
+        }
+        assert!(tail < 1e-4, "the filter oscillates well below the knee: {tail:.6}");
+    }
+
+    /// The ladder's signature, and the thing a clone gets wrong: the resonance
+    /// feedback comes out of the passband, so the bass goes with it. Nothing
+    /// here compensates for that.
+    #[test]
+    fn the_ladder_loses_its_bass_as_the_resonance_comes_up() {
+        let sr = 44_100.0;
+        // Driven with a sine two and a half octaves under the corner and
+        // measured in the steady state, because the impulse response of a
+        // filter this resonant is still ringing at the end of any window short
+        // enough to transform.
+        let bass = |res: f64| {
+            let mut f = Ladder::new();
+            let (mut re, mut im) = (0.0, 0.0);
+            for i in 0..(sr as usize) {
+                let w = TWO_PI * 30.0 * i as f64 / sr;
+                let y = f.process(0.05 * w.sin(), 0.6, res, sr);
+                if i > sr as usize / 2 {
+                    re += y * w.cos();
+                    im += y * w.sin();
+                }
+            }
+            10.0 * (re * re + im * im).log10()
+        };
+        let loss = bass(0.85) - bass(0.0);
+        assert!(loss < -8.0, "the ladder keeps its bass at resonance: {loss:.1} dB");
+        // ...and it is monotone in the resonance, so the loss is the knob's
+        // rather than an artefact of one setting.
+        let mut previous = f64::INFINITY;
+        for step in 0..=8 {
+            let level = bass(f64::from(step) / 10.0);
+            assert!(level <= previous + 0.05, "the bass came back at resonance {}", step);
+            previous = level;
+        }
+    }
+
+    #[test]
+    fn keyboard_follow_tracks_an_octave_of_cutoff_per_octave_of_keyboard() {
+        let offset = |note: u8| (f64::from(note) - 60.0) / 12.0 / CUTOFF_OCTAVES;
+        assert!((cutoff_hz(0.4 + offset(72)) / cutoff_hz(0.4) - 2.0).abs() < 1e-9);
+        assert!((cutoff_hz(0.4 + offset(48)) / cutoff_hz(0.4) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn filter_cutoff_affects_sound() {
+        let render = |cutoff: f32| {
+            let mut s = PhosphorSynth::new();
+            s.init(44_100.0, 64);
+            s.set_parameter(P_FILTER_ENV, 0.5);
+            s.set_parameter(P_CUTOFF, cutoff);
+            let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 100);
+            out.iter().map(|v| v * v).sum::<f32>()
+        };
+        let bright = render(1.0);
+        let dark = render(0.1);
+        assert!(bright > dark * 1.5, "bright={bright} dark={dark}");
+    }
+
+    // ── The modulation matrix ──
+
+    /// Every source reaches every destination, and every routing changes the
+    /// sound. A matrix with a slot that quietly does nothing is worse than one
+    /// with fewer slots.
+    ///
+    /// Played at G4 rather than middle C, because keyboard tracking is zero at
+    /// middle C by definition and this test would otherwise pass `kybd` on the
+    /// strength of a note that cannot show it.
+    #[test]
+    fn every_source_reaches_every_destination() {
+        let baseline = {
+            let mut s = PhosphorSynth::new();
+            s.init(44_100.0, 64);
+            // A panel every destination can be heard through: a wavetable
+            // oscillator for `wave`, a pulse for `pw`, room above and below on
+            // the cutoff and the vector.
+            setup_matrix_panel(&mut s);
+            process_buffers(&mut s, &[note_on(67, 90, 0), cc(1, 100, 0)], 150)
+        };
+
+        for (source, source_name) in SOURCE_LABELS.iter().enumerate().skip(1) {
+            for (dest, dest_name) in DEST_LABELS.iter().enumerate().skip(1) {
+                let mut s = PhosphorSynth::new();
+                s.init(44_100.0, 64);
+                setup_matrix_panel(&mut s);
+                s.set_parameter(p_mod_src(0), knob_for(source, SOURCE_COUNT));
+                s.set_parameter(p_mod_dest(0), knob_for(dest, DEST_COUNT));
+                s.set_parameter(p_mod_amount(0), bipolar_knob(0.6));
+                let out = process_buffers(&mut s, &[note_on(67, 90, 0), cc(1, 100, 0)], 150);
+                let difference: f32 = baseline
+                    .iter()
+                    .zip(out.iter())
+                    .map(|(a, b)| (a - b).abs())
+                    .sum::<f32>()
+                    / out.len() as f32;
+                assert!(
+                    difference > 1e-5,
+                    "{source_name} → {dest_name} changed nothing ({difference:e})"
+                );
+                assert!(out.iter().all(|v| v.is_finite()));
+                assert!(
+                    peak(&out) < 0.891,
+                    "{source_name} → {dest_name} reached {}",
+                    peak(&out)
+                );
+            }
+        }
+    }
+
+    /// A panel on which every destination is audible: oscillator D on the
+    /// matrix, wavetables and a pulse in the mix, the vector off-centre and
+    /// the cutoff with room either way.
+    fn setup_matrix_panel(s: &mut PhosphorSynth) {
+        s.set_parameter(P_A_WAVE, knob_for(Shape::Table as usize, SHAPE_COUNT));
+        s.set_parameter(P_A_TABLE, 0.4);
+        s.set_parameter(P_B_WAVE, knob_for(Shape::Pulse as usize, SHAPE_COUNT));
+        s.set_parameter(P_C_WAVE, knob_for(Shape::Table as usize, SHAPE_COUNT));
+        s.set_parameter(P_C_TABLE, 0.7);
+        s.set_parameter(P_D_WAVE, knob_for(Shape::Saw as usize, SHAPE_COUNT));
+        s.set_parameter(P_D_MODE, knob_for(DMode::Mod as usize, 3));
+        s.set_parameter(P_VECTOR_X, 0.45);
+        s.set_parameter(P_VECTOR_Y, 0.55);
+        s.set_parameter(P_PULSE_WIDTH, 0.3);
+        s.set_parameter(P_CUTOFF, 0.5);
+        s.set_parameter(P_RESO, 0.35);
+        s.set_parameter(P_FILTER_ENV, 0.5);
+        s.set_parameter(P_SUSTAIN1, 0.9);
+        s.set_parameter(P_SUSTAIN2, 0.7);
+    }
+
+    /// The amplitude destination is the one that cannot be allowed to add, and
+    /// this is the assertion that it does not: whatever is routed there, at
+    /// whatever depth, the render is no louder than the same patch with the
+    /// slot switched off.
+    #[test]
+    fn nothing_routed_to_the_amplifier_can_make_a_patch_louder() {
+        let unrouted = {
+            let mut s = PhosphorSynth::new();
+            s.init(44_100.0, 64);
+            process_buffers(&mut s, &[note_on(60, 127, 0)], 200)
+        };
+        let ceiling = peak(&unrouted);
+        for (source, source_name) in SOURCE_LABELS.iter().enumerate().skip(1) {
+            for amount in [-1.0f32, -0.5, 0.5, 1.0] {
+                let mut s = PhosphorSynth::new();
+                s.init(44_100.0, 64);
+                s.set_parameter(p_mod_src(0), knob_for(source, SOURCE_COUNT));
+                s.set_parameter(p_mod_dest(0), knob_for(Dest::Amplitude as usize, DEST_COUNT));
+                s.set_parameter(p_mod_amount(0), bipolar_knob(amount));
+                let out = process_buffers(&mut s, &[note_on(60, 127, 0)], 200);
+                assert!(
+                    peak(&out) <= ceiling + 1e-6,
+                    "{source_name} at {amount} took the patch from {ceiling:.4} to {:.4}",
+                    peak(&out)
+                );
+            }
+        }
+    }
+
+    /// A full-depth tremolo has to actually reach silence *and* unity, or the
+    /// amplitude destination is only a trim.
+    ///
+    /// Measured on four sine oscillators at the same pitch rather than on the
+    /// default patch, because the default's four detuned saws beat against
+    /// each other: their peak within any one short window depends on where
+    /// that window falls in the beat, and this test needs a signal whose peak
+    /// is the same in every window so that the tremolo's own envelope is the
+    /// only thing being measured.
+    #[test]
+    fn a_full_depth_tremolo_reaches_silence_and_unity() {
+        fn steady_sine_patch() -> PhosphorSynth {
+            let mut s = PhosphorSynth::new();
+            s.init(44_100.0, 64);
+            for i in 0..4 {
+                let base = P_A_WAVE + i * 5;
+                s.set_parameter(base, knob_for(Shape::Sine as usize, SHAPE_COUNT));
+                s.set_parameter(base + 2, tune_knob(0));
+                s.set_parameter(base + 3, fine_knob(0.0));
+            }
+            s.set_parameter(P_SUSTAIN1, 1.0);
+            s.set_parameter(P_ATTACK1, 0.0);
+            s.set_parameter(P_DECAY1, 0.0);
+            s
+        }
+
+        let mut s = steady_sine_patch();
+        s.set_parameter(P_LFO1_RATE, 0.55);
+        s.set_parameter(p_mod_src(0), knob_for(Source::Lfo1 as usize, SOURCE_COUNT));
+        s.set_parameter(p_mod_dest(0), knob_for(Dest::Amplitude as usize, DEST_COUNT));
+        s.set_parameter(p_mod_amount(0), bipolar_knob(1.0));
+        let out = process_buffers(&mut s, &[note_on(60, 127, 0)], 400);
+
+        // Windows of 64 samples, because the LFO passes through its trough
+        // rather than sitting there: over a longer window the tremolo has
+        // already come back up and the "trough" is the window's own edge.
+        let mut window_peaks: Vec<f32> = out.chunks(64).map(peak).collect();
+        window_peaks.sort_by(f32::total_cmp);
+        assert!(window_peaks[0] < 1e-3, "the trough is {}", window_peaks[0]);
+
+        let mut plain = steady_sine_patch();
+        let reference = peak(&process_buffers(&mut plain, &[note_on(60, 127, 0)], 400));
+        let crest = window_peaks[window_peaks.len() - 1];
+        assert!(
+            crest > reference * 0.9,
+            "the peak of the tremolo is {crest}, well under the patch's own {reference}"
         );
     }
 
+    /// The Minimoog trade: oscillator D leaves the mixer when it goes on the
+    /// matrix, and what it modulates is audible.
     #[test]
-    fn retrigger_doesnt_leak() {
-        let mut s = PhosphorSynth::new(); s.init(44100.0, 64);
-        for _ in 0..100 { process_buffers(&mut s, &[note_on(60, 100, 0)], 1); }
-        process_buffers(&mut s, &[note_off(60, 0)], 800);
-        let out = process_buffers(&mut s, &[], 1);
-        let peak = out.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
-        assert!(peak < 0.001, "peak={peak}");
+    fn oscillator_d_can_be_given_up_to_the_matrix() {
+        let render = |mode: usize, route: bool| {
+            let mut s = PhosphorSynth::new();
+            s.init(44_100.0, 64);
+            // Only D in the mix, so its leaving is unmistakable.
+            s.set_parameter(P_VECTOR_X, 0.0);
+            s.set_parameter(P_VECTOR_Y, 1.0);
+            s.set_parameter(P_D_MODE, knob_for(mode, 3));
+            if route {
+                s.set_parameter(p_mod_src(0), knob_for(Source::OscD as usize, SOURCE_COUNT));
+                s.set_parameter(p_mod_dest(0), knob_for(Dest::Cutoff as usize, DEST_COUNT));
+                s.set_parameter(p_mod_amount(0), bipolar_knob(0.5));
+            }
+            process_buffers(&mut s, &[note_on(60, 110, 0)], 200)
+        };
+        // In the mix at the D corner, the voice sounds.
+        assert!(rms(&render(DMode::Audio as usize, false)) > 0.005);
+        // On the matrix, that corner is empty.
+        assert!(rms(&render(DMode::Mod as usize, false)) < 1e-6);
+        // ...but it is still driving the filter, from a patch that has its
+        // sound elsewhere.
+        let modulated = {
+            let mut s = PhosphorSynth::new();
+            s.init(44_100.0, 64);
+            s.set_parameter(P_D_MODE, knob_for(DMode::ModLo as usize, 3));
+            s.set_parameter(p_mod_src(0), knob_for(Source::OscD as usize, SOURCE_COUNT));
+            s.set_parameter(p_mod_dest(0), knob_for(Dest::Cutoff as usize, DEST_COUNT));
+            s.set_parameter(p_mod_amount(0), bipolar_knob(0.6));
+            process_buffers(&mut s, &[note_on(60, 110, 0)], 400)
+        };
+        let plain = {
+            let mut s = PhosphorSynth::new();
+            s.init(44_100.0, 64);
+            s.set_parameter(P_D_MODE, knob_for(DMode::ModLo as usize, 3));
+            process_buffers(&mut s, &[note_on(60, 110, 0)], 400)
+        };
+        let difference: f32 = modulated
+            .iter()
+            .zip(plain.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum::<f32>()
+            / plain.len() as f32;
+        assert!(difference > 1e-4, "oscillator D on the matrix did nothing ({difference:e})");
+        // The low-frequency mode is where the panel says it is.
+        assert!((mod_lo_hz(0.0) - 1.6).abs() < 1e-9);
+        assert!((mod_lo_hz(-24.0) - 0.1).abs() < 1e-12);
+        assert!((mod_lo_hz(24.0) - 25.6).abs() < 1e-9);
     }
 
-    #[test]
-    fn cc120_kills_all() {
-        let mut s = PhosphorSynth::new(); s.init(44100.0, 64);
-        process_buffers(&mut s, &[note_on(60, 100, 0)], 2);
-        process_buffers(&mut s, &[cc(120, 0, 0)], 1);
-        let out = process_buffers(&mut s, &[], 1);
-        assert!(out.iter().all(|&v| v == 0.0));
-    }
+    // ── Headroom ──
 
-    #[test]
-    fn all_params_readable() {
-        let s = PhosphorSynth::new();
-        assert_eq!(s.parameter_count(), PARAM_COUNT);
-        for i in 0..PARAM_COUNT {
-            assert!(s.parameter_info(i).is_some());
-            let val = s.get_parameter(i);
-            assert!(val >= 0.0 && val <= 1.0, "param {i} = {val}");
+    /// The eight panels the extremes sweep, each one a way of asking the
+    /// instrument for as much level as it will give.
+    ///
+    /// This is the measurement the instrument this replaced did not have. Its
+    /// panel at the extremes — sub, noise, cutoff, resonance and sustain all
+    /// at maximum — reached 0.9470 on an eight-note chord at velocity 127,
+    /// past the master limiter's ceiling and burning 5 dB of saturation
+    /// against a 2 dB budget, and nothing measured it.
+    fn hostile_panels() -> Vec<(&'static str, PhosphorSynth)> {
+        let mut cases = Vec::new();
+
+        for (shape_index, shape_name) in SHAPE_LABELS.iter().enumerate() {
+            // Every oscillator on one shape, every level at the top, the
+            // filter wide open and holding, the drive at the top.
+            let mut s = PhosphorSynth::new();
+            for i in 0..4 {
+                let base = P_A_WAVE + i * 5;
+                s.set_parameter(base, knob_for(shape_index, SHAPE_COUNT));
+                s.set_parameter(base + 1, 1.0);
+                s.set_parameter(base + 4, 1.0);
+            }
+            s.set_parameter(P_CUTOFF, 1.0);
+            s.set_parameter(P_RESO, 1.0);
+            s.set_parameter(P_FILTER_ENV, 1.0);
+            s.set_parameter(P_DRIVE, 1.0);
+            s.set_parameter(P_SUSTAIN1, 1.0);
+            s.set_parameter(P_SUSTAIN2, 1.0);
+            s.set_parameter(P_ATTACK1, 0.0);
+            s.set_parameter(P_DECAY1, 0.0);
+            s.set_parameter(P_VELOCITY, 0.0);
+            cases.push((*shape_name, s));
         }
+
+        // Every corner of the vector, so no single oscillator is hidden by the
+        // mix, on the loudest shape.
+        for (name, x, y) in [
+            ("corner A", 0.0, 0.0),
+            ("corner B", 1.0, 0.0),
+            ("corner C", 1.0, 1.0),
+            ("corner D", 0.0, 1.0),
+        ] {
+            let mut s = PhosphorSynth::new();
+            for i in 0..4 {
+                let base = P_A_WAVE + i * 5;
+                s.set_parameter(base, knob_for(Shape::Pulse as usize, SHAPE_COUNT));
+                s.set_parameter(base + 4, 1.0);
+            }
+            s.set_parameter(P_VECTOR_X, x);
+            s.set_parameter(P_VECTOR_Y, y);
+            s.set_parameter(P_PULSE_WIDTH, 0.0);
+            s.set_parameter(P_CUTOFF, 1.0);
+            s.set_parameter(P_RESO, 1.0);
+            s.set_parameter(P_DRIVE, 1.0);
+            s.set_parameter(P_SUSTAIN1, 1.0);
+            s.set_parameter(P_ATTACK1, 0.0);
+            s.set_parameter(P_DECAY1, 0.0);
+            s.set_parameter(P_VELOCITY, 0.0);
+            cases.push((name, s));
+        }
+
+        // Every slot in the matrix pointed at cutoff, resonance and the
+        // vector at once, at full depth, from the sources that never rest.
+        for (name, source) in [
+            ("all slots lfo", Source::Lfo1 as usize),
+            ("all slots env", Source::Env2 as usize),
+            ("all slots vel", Source::Velocity as usize),
+        ] {
+            let mut s = PhosphorSynth::new();
+            for i in 0..4 {
+                s.set_parameter(P_A_WAVE + i * 5 + 4, 1.0);
+            }
+            s.set_parameter(P_CUTOFF, 0.8);
+            s.set_parameter(P_RESO, 0.9);
+            s.set_parameter(P_DRIVE, 1.0);
+            s.set_parameter(P_SUSTAIN1, 1.0);
+            s.set_parameter(P_ATTACK1, 0.0);
+            s.set_parameter(P_DECAY1, 0.0);
+            s.set_parameter(P_VELOCITY, 0.0);
+            s.set_parameter(P_LFO1_RATE, 0.6);
+            for slot in 0..MOD_SLOTS {
+                let dest = [Dest::Cutoff, Dest::Resonance, Dest::VectorX, Dest::VectorY][slot % 4];
+                s.set_parameter(p_mod_src(slot), knob_for(source, SOURCE_COUNT));
+                s.set_parameter(p_mod_dest(slot), knob_for(dest as usize, DEST_COUNT));
+                s.set_parameter(p_mod_amount(slot), 1.0);
+            }
+            cases.push((name, s));
+        }
+
+        // The filter as the source: no oscillator at all, resonance at the top.
+        let mut self_osc = PhosphorSynth::new();
+        for i in 0..4 {
+            self_osc.set_parameter(P_A_WAVE + i * 5 + 4, 0.0);
+        }
+        self_osc.set_parameter(P_RESO, 1.0);
+        self_osc.set_parameter(P_CUTOFF, 0.5);
+        self_osc.set_parameter(P_SUSTAIN1, 1.0);
+        self_osc.set_parameter(P_ATTACK1, 0.0);
+        self_osc.set_parameter(P_DECAY1, 0.0);
+        self_osc.set_parameter(P_VELOCITY, 0.0);
+        cases.push(("self-oscillating", self_osc));
+
+        cases
+    }
+
+    const VOICINGS: [&[u8]; 5] = [
+        &[60],
+        &[60, 64, 67],
+        &[60, 64, 67, 71],
+        &[36, 48, 60, 64, 67],
+        &[36, 43, 48, 55, 60, 64, 67, 72],
+    ];
+
+    #[test]
+    fn the_panel_at_its_extremes_stays_under_the_ceiling() {
+        /// The master limiter's ceiling, -1 dBFS. The same value as
+        /// `LIMITER_CEILING` in the mixer and `TARGET_PEAK` in the headroom
+        /// test; repeated because this file cannot reach either.
+        const CEILING: f32 = 0.891;
+
+        let mut worst = (0.0f32, String::new());
+        for (name, mut s) in hostile_panels() {
+            for notes in VOICINGS {
+                for velocity in [100u8, 127] {
+                    s.init(44_100.0, 64);
+                    s.reset();
+                    let events: Vec<MidiEvent> =
+                        notes.iter().map(|n| note_on(*n, velocity, 0)).collect();
+                    let out = process_buffers(&mut s, &events, 400);
+                    let measured = peak(&out);
+                    assert!(
+                        out.iter().all(|v| v.is_finite()),
+                        "{name} {notes:?} @{velocity} produced a non-finite sample"
+                    );
+                    assert!(
+                        out.iter().all(|v| v.abs() < 1.0),
+                        "{name} {notes:?} @{velocity} reached full scale"
+                    );
+                    assert!(
+                        measured <= CEILING,
+                        "{name} {notes:?} @{velocity} peaks at {measured:.4}, past the ceiling"
+                    );
+                    if measured > worst.0 {
+                        worst = (measured, format!("{name} {notes:?} @{velocity}"));
+                    }
+                }
+            }
+        }
+        // The panel should not be so quiet that the ceiling is meaningless.
+        assert!(
+            worst.0 > 0.4,
+            "nothing on the whole panel reaches 0.4 ({}, {:.4}) — the trim is too deep",
+            worst.1,
+            worst.0
+        );
+        // ...and the worst of them is still under the saturator's knee, so
+        // even the extremes are the trimmed voice sum sample for sample.
+        assert!(
+            worst.0 < crate::level::SATURATION_KNEE,
+            "the worst panel ({}) reaches {:.4}, past the saturator's knee",
+            worst.1,
+            worst.0
+        );
+        // The number `OUTPUT_TRIM`'s comment quotes, pinned so that the two
+        // cannot drift: the worst of the 140 renders is every matrix slot at
+        // full depth from velocity, on an eight-note chord.
+        assert!(
+            (0.68..0.71).contains(&worst.0),
+            "the worst panel ({}) measures {:.4}, where OUTPUT_TRIM says 0.6982",
+            worst.1,
+            worst.0
+        );
+    }
+
+    /// The GAIN knob is a multiplier before the bounding stage, so peak is
+    /// monotone in it and the top of its travel — where it defaults — is the
+    /// only setting the sweep above has to cover.
+    #[test]
+    fn the_gain_knob_can_only_cut() {
+        let mut louder = f32::INFINITY;
+        for setting in [1.0f32, 0.75, 0.5, 0.25, 0.0] {
+            let mut s = PhosphorSynth::new();
+            s.init(44_100.0, 64);
+            s.set_parameter(P_GAIN, setting);
+            let events: Vec<MidiEvent> =
+                VOICINGS[4].iter().map(|n| note_on(*n, 127, 0)).collect();
+            let out = process_buffers(&mut s, &events, 200);
+            assert!(
+                peak(&out) < louder,
+                "the knob at {setting} is not quieter than the setting above it \
+                 ({:.4} against {louder:.4})",
+                peak(&out)
+            );
+            louder = peak(&out);
+        }
+    }
+
+    /// The other half of the guarantee: loud enough to use. A regression
+    /// guard rather than a derived quantity — the five keyboards measure
+    /// 0.0187 to 0.0314 RMS on this input, and this floor sits about 4 dB
+    /// under the quietest of them.
+    #[test]
+    fn ordinary_playing_is_at_a_usable_level() {
+        let mut s = PhosphorSynth::new();
+        s.init(44_100.0, 64);
+        let events: Vec<MidiEvent> = [60u8, 64, 67].iter().map(|n| note_on(*n, 100, 0)).collect();
+        let out = process_buffers(&mut s, &events, 200);
+        assert!(rms(&out) >= 0.0115, "a triad sits at {:.5} RMS", rms(&out));
+        assert!(peak(&out) <= 0.5, "a triad peaks at {:.4}", peak(&out));
     }
 }

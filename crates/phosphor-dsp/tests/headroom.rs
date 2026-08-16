@@ -276,7 +276,7 @@ fn default_patches_have_headroom_on_every_voicing() {
 /// revoiced above the target is caught here rather than in a speaker.
 #[test]
 fn no_patch_in_any_bank_exceeds_the_target() {
-    // Shorter render than the per-voicing tests: this is a sweep over 399
+    // Shorter render than the per-voicing tests: this is a sweep over 408
     // presets, 256 of them the DX7's factory voices and 56 the Juno's, and the
     // latest peak measured anywhere in the banks arrives at 192 ms, so 370 ms
     // leaves the attack and decay well covered.
@@ -311,10 +311,11 @@ fn no_patch_in_any_bank_exceeds_the_target() {
         let m = render(&mut s, TWO_HAND_EIGHT, 127, SWEEP_BLOCKS);
         check_patch(&m, "juno", juno::PATCH_LABELS[index], &mut worst);
     }
-    {
+    for index in 0..synth::PATCH_COUNT {
         let mut s = synth::PhosphorSynth::new();
+        s.set_parameter(synth::P_PATCH, synth::patch_knob(index));
         let m = render(&mut s, TWO_HAND_EIGHT, 127, SWEEP_BLOCKS);
-        check_patch(&m, "phosphor", "default", &mut worst);
+        check_patch(&m, "phosphor", synth::PATCH_NAMES[index], &mut worst);
     }
 
     // The banks should not all be so quiet that the ceiling is meaningless.
@@ -988,6 +989,8 @@ fn instruments_are_level_matched() {
     // The median preset of each bank, so one unusual patch cannot skew the
     // comparison. Indices picked by measuring the triad RMS of every preset.
     // The Jupiter's is 12 NEG PLUCK, the median of its 64 factory patches.
+    // The phosphor synth's is patch 0, INIT SAW, which is both its default and
+    // the middle of its nine — so `PhosphorSynth::new()` below is already it.
     let mut dx7_mid = dx7_voice(DX7_MEDIAN_VOICE);
     let mut jupiter_mid = jupiter::Jupiter8Synth::new();
     jupiter_mid.set_parameter(jupiter::P_PATCH, jupiter::patch_knob(1));

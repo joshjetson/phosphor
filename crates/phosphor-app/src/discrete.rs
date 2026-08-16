@@ -33,26 +33,17 @@ use crate::state::InstrumentType;
 
 /// A ceiling on how far a selector will be walked.
 ///
-/// The longest in the project is the DX7's 32 voices per cartridge, and the
-/// widest thing this could ever reasonably be is a bank of a few hundred. It
-/// exists so that an instrument whose stepping function does not converge
-/// cannot hang the save.
+/// The longest in the project is the phosphor synth's 49-position coarse tune,
+/// and the widest thing this could ever reasonably be is a bank of a few
+/// hundred. It exists so that an instrument whose stepping function does not
+/// converge cannot hang the save.
 const MAX_POSITIONS: usize = 1_024;
-
-/// The phosphor synth's waveform selector, which is the one discrete control
-/// in the project whose instrument does not publish `is_discrete`.
-///
-/// Four waveforms, chosen by `(value * 4) as u8` in `synth.rs`, and stepped a
-/// quarter of the travel at a time by the editor — so its positions are the
-/// bucket edges rather than the bucket centres the other five use, and the top
-/// two both select a triangle.
-const SYNTH_WAVEFORM_STEP: f32 = 0.25;
 
 /// Whether `param` picks a thing rather than sets a level.
 #[must_use]
 pub fn is_discrete(instrument: InstrumentType, param: usize) -> bool {
     match instrument {
-        InstrumentType::Synth | InstrumentType::Sampler => param == 0,
+        InstrumentType::Synth | InstrumentType::Sampler => phosphor_dsp::synth::is_discrete(param),
         InstrumentType::DrumRack => phosphor_dsp::drum_rack::is_discrete(param),
         InstrumentType::DX7 => phosphor_dsp::dx7::is_discrete(param),
         InstrumentType::Jupiter8 => phosphor_dsp::jupiter::is_discrete(param),
@@ -67,12 +58,7 @@ pub fn is_discrete(instrument: InstrumentType, param: usize) -> bool {
 pub fn step(instrument: InstrumentType, param: usize, value: f32, up: bool) -> f32 {
     match instrument {
         InstrumentType::Synth | InstrumentType::Sampler => {
-            if param == 0 {
-                let delta = if up { SYNTH_WAVEFORM_STEP } else { -SYNTH_WAVEFORM_STEP };
-                (value + delta).clamp(0.0, 1.0)
-            } else {
-                value
-            }
+            phosphor_dsp::synth::step_discrete(param, value, up)
         }
         InstrumentType::DrumRack => phosphor_dsp::drum_rack::step_discrete(param, value, up),
         InstrumentType::DX7 => phosphor_dsp::dx7::step_discrete(param, value, up),
@@ -149,7 +135,7 @@ pub fn knob_at(instrument: InstrumentType, param: usize, index: usize) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phosphor_dsp::{drum_rack, dx7, jupiter, juno, odyssey};
+    use phosphor_dsp::{drum_rack, dx7, jupiter, juno, odyssey, synth};
 
     /// Every instrument's selectors, walked with that instrument's own
     /// stepping, come out at the counts the instrument publishes.
@@ -178,9 +164,21 @@ mod tests {
         // The DX7's two selectors multiply out to its whole factory set.
         let patches = positions(InstrumentType::DX7, dx7::P_PATCH).unwrap().len();
         assert_eq!(patches * dx7::BANK_COUNT, dx7::VOICE_COUNT);
-        // ...and the phosphor synth, which has no `is_discrete` of its own.
-        assert_eq!(positions(InstrumentType::Synth, 0).unwrap().len(), 5);
-        assert!(positions(InstrumentType::Synth, 1).is_none());
+        assert_eq!(
+            positions(InstrumentType::Synth, synth::P_PATCH).unwrap().len(),
+            synth::PATCH_COUNT
+        );
+        // The phosphor synth is also the one instrument whose panel the
+        // sampler shares, so both have to walk the same way.
+        assert_eq!(
+            positions(InstrumentType::Sampler, synth::P_PATCH).unwrap().len(),
+            synth::PATCH_COUNT
+        );
+        // Its coarse tune is the longest selector in the project: 49
+        // positions, two octaves either way in semitones.
+        assert_eq!(positions(InstrumentType::Synth, synth::P_A_TUNE).unwrap().len(), 49);
+        // ...and a fader is still a fader.
+        assert!(positions(InstrumentType::Synth, synth::P_CUTOFF).is_none());
     }
 
     /// The round trip that the session format depends on: a knob position

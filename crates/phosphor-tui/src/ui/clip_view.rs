@@ -146,13 +146,14 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                     phosphor_dsp::dx7::discrete_label(&params, i)
                 } else if is_drum {
                     phosphor_dsp::drum_rack::discrete_label(i, val)
-                } else if i == 0 {
-                    // Index 0 is always a discrete selector for non-Jupiter instruments
-                    Some(match (val * 4.0) as u8 {
-                        0 => "sine", 1 => "saw", 2 => "square", _ => "tri",
-                    })
                 } else {
-                    None
+                    // The phosphor synth and the sampler, which share its
+                    // panel. This used to be a hard-coded waveform label on
+                    // index 0, from when that panel had one selector and
+                    // twelve controls; it now has 25 of them, including a
+                    // patch bank and twelve matrix selectors, and the
+                    // instrument answers for all of them.
+                    phosphor_dsp::synth::discrete_label(i, val)
                 };
                 if let Some(label) = discrete_label {
                     lines.push(Line::from(vec![
@@ -167,41 +168,38 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                     let bar: String = "\u{2588}".repeat(filled)
                         + &"\u{2591}".repeat(bar_w.saturating_sub(filled));
 
-                    // Format value nicely. The Juno's, the Jupiter's, the
-                    // Odyssey's and the drum rack's time controls are not
-                    // linear in time and do not sit at the same indices as
-                    // the other instruments', so each reports its own
-                    // seconds. The Odyssey used to fall through to the
-                    // fallback below, which reads indices 7, 8 and 10 as
-                    // milliseconds — on its panel those are two frequency-mod
-                    // depths and a source switch.
+                    // Format value nicely. No instrument's time controls are
+                    // linear in time, and no two of them sit at the same
+                    // indices, so each reports its own seconds. The DX7 is
+                    // the one panel with no time slider on it — its rates are
+                    // the operators' own — so it is the only one that falls
+                    // through to a percentage.
                     //
                     // The rack goes one further: its decay times are the
                     // selected machine's, not one machine's answer for all
                     // fifteen, so the kit selector has to be read as well as
                     // the knob.
-                    let display_val = if is_juno || is_jupiter || is_odyssey || is_drum {
+                    let display_val = if is_dx7 {
+                        format!("{:.0}%", val * 100.0)
+                    } else {
                         let secs = if is_juno {
                             phosphor_dsp::juno::param_seconds(i, val)
                         } else if is_odyssey {
                             phosphor_dsp::odyssey::param_seconds(i, val)
+                        } else if is_jupiter {
+                            phosphor_dsp::jupiter::param_seconds(i, val)
                         } else if is_drum {
                             let kit = phosphor_dsp::drum_rack::DrumKit::from_param(
                                 params.get(phosphor_dsp::drum_rack::P_KIT).copied().unwrap_or(0.0),
                             );
                             phosphor_dsp::drum_rack::param_seconds(kit, i, val)
                         } else {
-                            phosphor_dsp::jupiter::param_seconds(i, val)
+                            phosphor_dsp::synth::param_seconds(i, val)
                         };
                         match secs {
                             Some(secs) if secs < 1.0 => format!("{:.0}ms", secs * 1000.0),
                             Some(secs) => format!("{secs:.1}s"),
                             None => format!("{:.0}%", val * 100.0),
-                        }
-                    } else {
-                        match i {
-                            7 | 8 | 10 => format!("{:.0}ms", val * 2000.0), // attack/decay/release
-                            _ => format!("{:.0}%", val * 100.0),
                         }
                     };
 
