@@ -10,6 +10,13 @@
 //! so at the constant. The measurements are Andy Harman's Juno-60 analysis
 //! (github.com/pendragon-andyh/Juno60), which is a slider-by-slider capture of
 //! a working unit rather than a reading of the service notes.
+//!
+//! The preset bank is the instrument's own: all 56 factory patches, 11 to 78,
+//! read off Roland's published patch charts. Every slider position and switch
+//! state in `BANK` was measured from the printed panel of its chart rather
+//! than dialled in by ear, which is why the presets are held in panel units
+//! here and converted to seconds and hertz on the way into the engine — the
+//! chart records where the cap sat, and the seconds are what that means.
 
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
@@ -24,11 +31,22 @@ const TWO_PI: f64 = std::f64::consts::TAU;
 /// in dx7.rs, which carries the full reasoning. The trim lands this synth's
 /// median patch at the same loudness as theirs.
 ///
-/// Measured across the 18 presets: the worst case is patch 15 "Clav" at 1.61
-/// for an eight-note chord at velocity 127. Six voices, so an eight-note
-/// chord steals two of them — the peak is a six-voice peak. This bank has the
-/// lowest crest factor of the five and stays far under the saturator knee.
-const OUTPUT_TRIM: f32 = 0.1765;
+/// It moved when the factory bank replaced the hand-voiced one, because that
+/// is what it is for: the factory patches use their LEVEL slider as a mix
+/// control and sit at 0.51 in the middle of the bank where every hand-voiced
+/// patch had been left at 0.75, so the same trim put the whole instrument
+/// 3.9 dB below the other four. `instruments_are_level_matched` is the
+/// assertion that noticed.
+///
+/// Measured across all 56 on an eight-note chord at velocity 127: the loudest
+/// attack is 44 TUBA at 0.515 out of the instrument, and the loudest sample
+/// anywhere is 77 SURF at 0.687, which arrives 4.7 s into the chord because
+/// the patch is a noise wash swept by an 0.31 Hz LFO. Held for thirty seconds
+/// it goes no further. Six voices, so an eight-note chord steals two of them —
+/// these are six-voice peaks. Nothing in the bank reaches the saturator's
+/// knee, so every patch on every voicing is the trimmed voice sum sample for
+/// sample.
+const OUTPUT_TRIM: f32 = 0.277;
 
 // ── Parameter indices ──
 //
@@ -82,44 +100,76 @@ pub const PARAM_NAMES: [&str; PARAM_COUNT] = [
     "chorus",
 ];
 
-/// Patch 0 "Pad", the preset the instrument loads with, in panel units.
-/// `patch_zero_is_the_default_parameter_block` holds these two together.
+/// Patch 0, factory patch 11 "STRINGS 1", the preset the instrument loads
+/// with, in panel units. `patch_zero_is_the_default_parameter_block` holds
+/// these and the first row of `BANK` together.
 pub const PARAM_DEFAULTS: [f32; PARAM_COUNT] = [
-    0.0,      // patch: Pad
-    0.0355,   // lfo rate: 1.0 Hz
+    0.0,      // patch: 11 STRINGS 1
+    0.608,    // lfo rate: 6.9 Hz
     0.0,      // lfo delay: none
     0.0,      // dco lfo: no vibrato
-    0.7,      // pwm: 0.7 of full swing
-    0.75,     // pwm mode: LFO
-    0.75,     // pulse: on
-    0.25,     // saw: off
-    0.0,      // sub: off
+    0.0,      // pwm: none
+    0.16667,  // pwm mode: LFO
+    0.25,     // pulse: off
+    0.75,     // saw: on
+    0.0,      // sub: the button is out
     0.0,      // noise: off
     0.5,      // range: 8'
     0.125,    // hpf: 0, no filtering
-    0.5,      // freq
-    0.0,      // res
+    0.714,    // freq
+    0.014,    // res
     0.25,     // env polarity: normal
-    0.2,      // env mod
-    0.0,      // vcf lfo
-    0.5,      // kybd follow
+    0.028,    // env mod
+    0.014,    // vcf lfo
+    1.0,      // kybd follow
     0.25,     // vca: env
-    0.75,     // level
-    0.5357,   // attack: 0.3 s
-    0.6963,   // decay: 3.45 s
-    0.7,      // sustain
-    0.6963,   // release: 3.45 s
+    0.511,    // level
+    0.412,    // attack: 0.15 s
+    0.008,    // decay: 2 ms
+    0.992,    // sustain
+    0.44,     // release: 0.69 s
     0.375,    // chorus: I
 ];
 
 // ── Patches ──
+//
+// The factory bank, in the instrument's own order: seven banks of eight,
+// numbered 11-18, 21-28 and so on to 78, which is how a Juno player refers to
+// them and so how they are labelled here.
 
-pub const PATCH_COUNT: usize = 18;
-pub const PATCH_NAMES: [&str; PATCH_COUNT] = [
-    "Pad", "PWMPad", "Bass", "Brass", "String", "Hoover",
-    "Acid", "WrmLd", "Choir", "Pluck", "Organ", "SynBas",
-    "GlsBel", "ResPad", "Wind", "Clav", "SubBas", "SawPad",
-];
+pub const PATCH_COUNT: usize = 56;
+
+/// The factory names, in full. Up to twenty characters, so a caller with a
+/// column to fill wants [`PATCH_LABELS`] instead.
+pub const PATCH_NAMES: [&str; PATCH_COUNT] = derive_names();
+
+/// The patch numbers as the instrument prints them: bank digit, patch digit.
+pub const PATCH_NUMBERS: [&str; PATCH_COUNT] = derive_numbers();
+
+/// Number and name, abbreviated to the twelve columns the editor's selector
+/// row leaves for a label. `every_juno_patch_label_fits_the_fx_panel` in the
+/// editor holds these to that width.
+pub const PATCH_LABELS: [&str; PATCH_COUNT] = derive_labels();
+
+/// The knob position that selects patch `index`, for a caller sweeping the
+/// bank from outside — a level measurement, an export, a test.
+///
+/// The midpoint of the step, which is the one position in it that no amount
+/// of float rounding can push into a neighbour, and the same position
+/// [`step_discrete`] moves between. `index / (count - 0.01)`, the obvious
+/// alternative, is not reliable at every bank size: it happens to be exact
+/// for 56 and misses seven of its own indices at 42.
+#[must_use]
+pub fn patch_knob(index: usize) -> f32 {
+    knob_for(index.min(PATCH_COUNT - 1), PATCH_COUNT)
+}
+
+/// Which patch a knob position selects. Total: every float lands on a patch,
+/// because `params` is public and the knob can arrive as anything.
+#[must_use]
+pub fn patch_index(value: f32) -> usize {
+    selector(value, PATCH_COUNT)
+}
 
 // ── Discrete controls ──
 //
@@ -132,8 +182,8 @@ pub const PATCH_NAMES: [&str; PATCH_COUNT] = [
 fn discrete_steps(index: usize) -> Option<usize> {
     match index {
         P_PATCH => Some(PATCH_COUNT),
-        P_PWM_MODE | P_PULSE | P_SAW | P_ENV_POLARITY | P_VCA_MODE => Some(2),
-        P_RANGE => Some(3),
+        P_PULSE | P_SAW | P_ENV_POLARITY | P_VCA_MODE => Some(2),
+        P_PWM_MODE | P_RANGE => Some(3),
         P_HPF | P_CHORUS => Some(4),
         _ => None,
     }
@@ -163,7 +213,7 @@ pub fn is_discrete(index: usize) -> bool {
 /// The knob position one step up or down from `value`. Sliders are unchanged.
 ///
 /// Steps by *index* rather than by adding a fraction of the travel. Adding
-/// 1/18 of the range 18 times does not arrive at 1.0 — the error is a few ulps
+/// 1/56 of the range 56 times does not arrive at 1.0 — the error is a few ulps
 /// either way, and a step boundary missed by one ulp is a keypress that
 /// visibly does nothing. The DX7's bank knob stalled that way.
 pub fn step_discrete(index: usize, value: f32, up: bool) -> f32 {
@@ -180,8 +230,8 @@ pub fn discrete_label(index: usize, value: f32) -> Option<&'static str> {
     let count = discrete_steps(index)?;
     let step = selector(value, count);
     Some(match index {
-        P_PATCH => PATCH_NAMES[step],
-        P_PWM_MODE => ["MAN", "LFO"][step],
+        P_PATCH => PATCH_LABELS[step],
+        P_PWM_MODE => ["LFO", "MAN", "ENV"][step],
         P_PULSE | P_SAW => ["off", "on"][step],
         P_RANGE => ["16'", "8'", "4'"][step],
         P_HPF => ["0", "1", "2", "3"][step],
@@ -220,11 +270,6 @@ fn attack_seconds(slider: f64) -> f64 {
     ATTACK_MIN + (ATTACK_CURVE * s).exp_m1() / ATTACK_CURVE.exp_m1() * ATTACK_MAX
 }
 
-fn attack_slider(seconds: f64) -> f64 {
-    let t = (seconds - ATTACK_MIN).max(0.0) / ATTACK_MAX;
-    ((t * ATTACK_CURVE.exp_m1()).ln_1p() / ATTACK_CURVE).clamp(0.0, 1.0)
-}
-
 /// Decay and release share one taper. Measured: 0 → 2 ms, 2.5 → 96 ms,
 /// 5 → 984 ms, 7.5 → 4.45 s, 10 → 19.8 s. The fit runs to 17.5 s, which is
 /// inside the spread of the two runs that were taken at the top of the slider.
@@ -237,60 +282,42 @@ fn decay_seconds(slider: f64) -> f64 {
     DECAY_MIN + (DECAY_CURVE * s).exp_m1() / DECAY_CURVE.exp_m1() * s * DECAY_MAX
 }
 
-/// The inverse of [`decay_seconds`], by bisection — the forward curve has the
-/// slider in it twice and does not inverse in closed form. Thirty halvings of
-/// a unit interval is exact to a part in a billion, which is well past what
-/// the f32 parameter block can hold, and it runs when a patch is loaded rather
-/// than per sample.
-fn decay_slider(seconds: f64) -> f64 {
-    let target = seconds.clamp(DECAY_MIN, decay_seconds(1.0));
-    let (mut lo, mut hi) = (0.0f64, 1.0f64);
-    for _ in 0..30 {
-        let mid = 0.5 * (lo + hi);
-        if decay_seconds(mid) < target { lo = mid } else { hi = mid }
-    }
-    0.5 * (lo + hi)
+/// Straight-line interpolation into a table measured at the five slider
+/// positions the analysis used — 0, 2.5, 5, 7.5 and 10 on the instrument's own
+/// scale. Interpolated rather than fitted, because a fit through five points
+/// would only be smoothing the measurement.
+fn interpolate5(table: &[f64; 5], slider: f64) -> f64 {
+    let x = slider.clamp(0.0, 1.0) * 4.0;
+    let i = (x as usize).min(3);
+    let f = x - i as f64;
+    table[i] + f * (table[i + 1] - table[i])
 }
 
-/// LFO rate slider to Hz. Roland quote 0.3-20 Hz for the Juno-60; the shape of
-/// the taper between the two ends appears in neither the manual nor the
-/// analysis, so this is linear and says so rather than inventing a curve.
+/// LFO rate slider to Hz. Measured: 0 → 0.3 Hz, 2.5 → 0.85, 5 → 3.39,
+/// 7.5 → 11.49, 10 → 22.22, which brackets the 0.3-20 Hz Roland quote.
+///
+/// This used to be a straight line between the two ends, on the grounds that
+/// no measurement of the taper was to hand. There is one — the recordings the
+/// rest of the analysis came from — and the taper is nothing like a straight
+/// line: the middle of the slider is 3.4 Hz where a straight line puts 10.2.
+/// It matters because the factory bank leaves this slider between 0.4 and
+/// 0.65 on 38 of its 56 patches, so 38 patches were modulating three times
+/// too fast.
+const LFO_RATE_HZ: [f64; 5] = [0.3, 0.85, 3.39, 11.49, 22.22];
+
 fn lfo_hz(slider: f64) -> f64 {
-    0.3 + slider.clamp(0.0, 1.0) * 19.7
-}
-
-fn lfo_rate_slider(hz: f64) -> f64 {
-    ((hz - 0.3) / 19.7).clamp(0.0, 1.0)
+    interpolate5(&LFO_RATE_HZ, slider)
 }
 
 /// LFO delay slider to (silence, fade) seconds.
 ///
 /// Two stages, not one: the measured instrument holds the LFO off entirely and
-/// *then* fades it in. Interpolated between the five measured slider positions
-/// rather than fitted, because the fit would only be smoothing four points.
+/// *then* fades it in.
 const LFO_DELAY_HOLD: [f64; 5] = [0.0, 0.0639, 0.85, 1.2, 2.786];
 const LFO_DELAY_FADE: [f64; 5] = [0.0, 0.053, 0.188, 0.348, 1.0];
 
 fn lfo_delay_times(slider: f64) -> (f64, f64) {
-    let x = slider.clamp(0.0, 1.0) * 4.0;
-    let i = (x as usize).min(3);
-    let f = x - i as f64;
-    (
-        LFO_DELAY_HOLD[i] + f * (LFO_DELAY_HOLD[i + 1] - LFO_DELAY_HOLD[i]),
-        LFO_DELAY_FADE[i] + f * (LFO_DELAY_FADE[i + 1] - LFO_DELAY_FADE[i]),
-    )
-}
-
-/// The slider position whose hold-plus-fade is `seconds`, so that a preset can
-/// say how long its vibrato waits rather than where the slider sits.
-fn lfo_delay_slider(seconds: f64) -> f64 {
-    let (mut lo, mut hi) = (0.0f64, 1.0f64);
-    for _ in 0..30 {
-        let mid = 0.5 * (lo + hi);
-        let (hold, fade) = lfo_delay_times(mid);
-        if hold + fade < seconds { lo = mid } else { hi = mid }
-    }
-    0.5 * (lo + hi)
+    (interpolate5(&LFO_DELAY_HOLD, slider), interpolate5(&LFO_DELAY_FADE, slider))
 }
 
 /// Cutoff slider to Hz: 10 Hz to 10 kHz, exponential. This is the one range on
@@ -313,12 +340,411 @@ const LFO_PITCH_CENTS: f64 = 100.0;
 /// 0.45 the pulse collapses to nothing at the ends of the sweep.
 const PW_SWING: f64 = 0.45;
 
+// ── The factory bank ──
+//
+// One row per patch, in panel units: where each slider sat and which way each
+// switch was thrown on Roland's chart for that patch. That is what the chart
+// records, so that is what is stored — the seconds and hertz behind a row come
+// out of the same tapers a player's own hand on the panel goes through, in
+// `active_patch`.
+//
+// Two things the chart does not record, and where they came from:
+//
+// * the OCTAVE TRANSPOSE switch, which the manual says is memorised with the
+//   patch but which the printed panel on the chart leaves out. The `range`
+//   column is Andy Harman's transcription of the same bank;
+// * the HPF, drawn on the chart as a slider though the control has four
+//   detents. The caps cluster on four heights and `hpf` is which one, with
+//   the bass patches at the bottom of the travel and the reeds at the top.
+//
+// The chart also records knob positions that do nothing on their patch —
+// Roland say as much in the manual — the commonest being a SUB OSC fader left
+// up with the sub button out. `params_for_patch` gates the fader on the
+// button, since the panel here has no button to leave out.
+
+/// One row of the factory chart.
+#[derive(Debug, Clone, Copy)]
+struct Chart {
+    /// The instrument's own patch number, "11" to "78".
+    number: &'static str,
+    name: &'static str,
+    /// Number and name, cut to twelve columns for the editor.
+    label: &'static str,
+    /// RATE, DELAY TIME.
+    lfo: [f32; 2],
+    pwm_mode: PwmSource,
+    /// LFO, PWM, SUB OSC, NOISE.
+    dco: [f32; 4],
+    /// The pulse, sawtooth and sub-oscillator buttons.
+    waves: [bool; 3],
+    /// OCTAVE TRANSPOSE: 0 = down, 1 = normal, 2 = up.
+    range: u8,
+    /// HPF: 0 = no filtering, 1-3 = the three corners.
+    hpf: u8,
+    /// The VCF's ENV polarity switch.
+    invert: bool,
+    /// FREQ, RES, ENV, LFO, KYBD.
+    vcf: [f32; 5],
+    /// The VCA's ENV/GATE switch.
+    gate: bool,
+    level: f32,
+    /// A, D, S, R.
+    env: [f32; 4],
+    /// 0 = off, 1 = I, 2 = II. No factory patch presses both.
+    chorus: u8,
+}
+
+// Unqualified in the table below, where a column of `PwmSource::Manual` would
+// be three times the width of the thing it says.
+use PwmSource::{Env, Lfo, Manual};
+
+const BANK: [Chart; PATCH_COUNT] = [
+    Chart { number: "11", name: "STRINGS 1", label: "11 STRINGS 1",
+        lfo: [0.608, 0.000], pwm_mode: Lfo, dco: [0.000, 0.000, 0.008, 0.000],
+        waves: [false, true , false], range: 1, hpf: 0, invert: false,
+        vcf: [0.714, 0.014, 0.028, 0.014, 1.000], gate: false, level: 0.511,
+        env: [0.412, 0.008, 0.992, 0.440], chorus: 1 },
+    Chart { number: "12", name: "STRINGS 2", label: "12 STRINGS 2",
+        lfo: [0.398, 0.008], pwm_mode: Lfo, dco: [0.008, 0.608, 0.000, 0.014],
+        waves: [true , true , false], range: 1, hpf: 0, invert: false,
+        vcf: [0.497, 0.588, 0.000, 0.008, 0.986], gate: false, level: 0.300,
+        env: [0.406, 0.406, 0.992, 0.805], chorus: 2 },
+    Chart { number: "13", name: "STRINGS 3", label: "13 STRINGS 3",
+        lfo: [0.329, 0.805], pwm_mode: Lfo, dco: [0.008, 0.714, 0.992, 0.000],
+        waves: [true , true , true ], range: 1, hpf: 0, invert: false,
+        vcf: [0.497, 0.008, 0.008, 0.022, 1.000], gate: false, level: 0.329,
+        env: [0.315, 0.000, 0.992, 0.602], chorus: 2 },
+    Chart { number: "14", name: "ORGAN 1", label: "14 ORGAN 1",
+        lfo: [0.308, 0.805], pwm_mode: Manual, dco: [0.008, 0.511, 0.992, 0.000],
+        waves: [true , false, true ], range: 1, hpf: 0, invert: false,
+        vcf: [0.398, 0.594, 0.454, 0.008, 1.000], gate: true , level: 0.511,
+        env: [0.000, 0.000, 0.000, 0.000], chorus: 1 },
+    Chart { number: "15", name: "ORGAN 2", label: "15 ORGAN 2",
+        lfo: [0.511, 0.252], pwm_mode: Lfo, dco: [0.000, 0.560, 0.818, 0.000],
+        waves: [true , false, true ], range: 1, hpf: 0, invert: false,
+        vcf: [0.371, 0.560, 0.028, 0.014, 1.000], gate: true , level: 0.511,
+        env: [0.008, 0.126, 0.000, 0.118], chorus: 1 },
+    Chart { number: "16", name: "ORGAN 3", label: "16 ORGAN 3",
+        lfo: [0.517, 0.385], pwm_mode: Lfo, dco: [0.008, 0.566, 0.805, 0.014],
+        waves: [true , false, true ], range: 2, hpf: 0, invert: false,
+        vcf: [0.357, 0.552, 0.357, 0.000, 0.986], gate: true , level: 0.497,
+        env: [0.000, 0.000, 0.105, 0.000], chorus: 2 },
+    Chart { number: "17", name: "BRASS", label: "17 BRASS",
+        lfo: [0.511, 0.665], pwm_mode: Manual, dco: [0.168, 0.008, 0.000, 0.000],
+        waves: [false, true , false], range: 1, hpf: 0, invert: false,
+        vcf: [0.000, 0.008, 0.854, 0.022, 0.412], gate: false, level: 0.692,
+        env: [0.258, 0.398, 0.623, 0.217], chorus: 1 },
+    Chart { number: "18", name: "PHASE BRASS", label: "18 PHS BRASS",
+        lfo: [0.608, 0.000], pwm_mode: Env, dco: [0.008, 1.000, 0.992, 0.000],
+        waves: [true , true , false], range: 1, hpf: 0, invert: false,
+        vcf: [0.322, 0.105, 0.552, 0.008, 1.000], gate: true , level: 0.412,
+        env: [0.238, 0.440, 0.440, 0.322], chorus: 1 },
+    Chart { number: "21", name: "PIANO 1", label: "21 PIANO 1",
+        lfo: [0.608, 0.069], pwm_mode: Manual, dco: [0.371, 0.602, 0.008, 0.000],
+        waves: [true , false, false], range: 1, hpf: 0, invert: false,
+        vcf: [0.105, 0.000, 0.692, 0.014, 0.392], gate: false, level: 0.692,
+        env: [0.008, 0.818, 0.175, 0.315], chorus: 0 },
+    Chart { number: "22", name: "PIANO 2", label: "22 PIANO 2",
+        lfo: [0.398, 0.000], pwm_mode: Manual, dco: [0.008, 0.406, 0.440, 0.014],
+        waves: [true , false, true ], range: 2, hpf: 0, invert: false,
+        vcf: [0.357, 0.000, 0.258, 0.189, 0.783], gate: false, level: 0.805,
+        env: [0.000, 0.734, 0.000, 0.357], chorus: 0 },
+    Chart { number: "23", name: "CELESTA", label: "23 CELESTA",
+        lfo: [0.335, 0.588], pwm_mode: Env, dco: [0.000, 0.497, 0.978, 0.000],
+        waves: [true , true , false], range: 1, hpf: 0, invert: false,
+        vcf: [0.085, 0.777, 0.000, 0.008, 0.958], gate: false, level: 0.580,
+        env: [0.000, 0.651, 0.203, 0.846], chorus: 1 },
+    Chart { number: "24", name: "MELLOW PIANO", label: "24 MEL PIANO",
+        lfo: [0.511, 0.000], pwm_mode: Manual, dco: [0.008, 0.511, 0.992, 0.000],
+        waves: [true , false, false], range: 1, hpf: 0, invert: false,
+        vcf: [0.322, 0.008, 0.272, 0.105, 0.895], gate: false, level: 0.692,
+        env: [0.118, 0.762, 0.217, 0.846], chorus: 1 },
+    Chart { number: "25", name: "HARPSICHORD 1", label: "25 HARPSI 1",
+        lfo: [0.511, 0.412], pwm_mode: Manual, dco: [0.008, 0.343, 0.692, 0.008],
+        waves: [true , false, true ], range: 2, hpf: 1, invert: false,
+        vcf: [0.308, 0.000, 0.511, 0.014, 0.714], gate: false, level: 0.412,
+        env: [0.008, 0.608, 0.377, 0.280], chorus: 1 },
+    Chart { number: "26", name: "HARPSICHORD 2", label: "26 HARPSI 2",
+        lfo: [0.538, 0.588], pwm_mode: Manual, dco: [0.008, 0.203, 0.818, 0.014],
+        waves: [true , false, true ], range: 2, hpf: 1, invert: false,
+        vcf: [0.483, 0.231, 0.300, 0.000, 0.965], gate: false, level: 0.483,
+        env: [0.000, 0.511, 0.168, 0.497], chorus: 2 },
+    Chart { number: "27", name: "GUITAR", label: "27 GUITAR",
+        lfo: [0.580, 0.566], pwm_mode: Manual, dco: [0.000, 0.594, 0.992, 0.000],
+        waves: [true , false, false], range: 1, hpf: 2, invert: false,
+        vcf: [0.300, 0.008, 0.434, 0.154, 0.497], gate: false, level: 0.902,
+        env: [0.000, 0.566, 0.343, 0.629], chorus: 0 },
+    Chart { number: "28", name: "SYNTHESIZER HARP", label: "28 SYN HARP",
+        lfo: [0.308, 0.805], pwm_mode: Manual, dco: [0.008, 0.008, 1.000, 0.000],
+        waves: [false, true , false], range: 1, hpf: 0, invert: false,
+        vcf: [0.322, 0.008, 0.511, 0.008, 0.818], gate: false, level: 0.608,
+        env: [0.000, 0.580, 0.322, 0.525], chorus: 1 },
+    Chart { number: "31", name: "BASS 1", label: "31 BASS 1",
+        lfo: [0.511, 0.475], pwm_mode: Manual, dco: [0.008, 0.511, 0.308, 0.008],
+        waves: [true , true , true ], range: 0, hpf: 0, invert: false,
+        vcf: [0.308, 0.238, 0.371, 0.014, 0.008], gate: true , level: 0.511,
+        env: [0.008, 0.392, 0.118, 0.280], chorus: 1 },
+    Chart { number: "32", name: "BASS 2", label: "32 BASS 2",
+        lfo: [0.483, 0.588], pwm_mode: Manual, dco: [0.008, 0.489, 0.300, 0.014],
+        waves: [true , true , false], range: 0, hpf: 0, invert: false,
+        vcf: [0.315, 0.469, 0.440, 0.000, 0.497], gate: true , level: 0.398,
+        env: [0.000, 0.308, 0.349, 0.258], chorus: 1 },
+    Chart { number: "33", name: "CLAVICHORD 1", label: "33 CLAVI 1",
+        lfo: [0.608, 0.280], pwm_mode: Manual, dco: [0.008, 0.511, 0.014, 0.000],
+        waves: [true , false, false], range: 0, hpf: 0, invert: false,
+        vcf: [0.000, 0.308, 0.791, 0.008, 0.629], gate: false, level: 0.714,
+        env: [0.014, 0.497, 0.377, 0.175], chorus: 1 },
+    Chart { number: "34", name: "CLAVICHORD 2", label: "34 CLAVI 2",
+        lfo: [0.580, 0.791], pwm_mode: Manual, dco: [0.000, 0.497, 0.992, 0.000],
+        waves: [true , false, false], range: 0, hpf: 1, invert: false,
+        vcf: [0.566, 0.678, 0.195, 0.258, 0.678], gate: false, level: 0.986,
+        env: [0.000, 0.469, 0.203, 0.203], chorus: 0 },
+    Chart { number: "35", name: "PIZZICATO SOUND 1", label: "35 PIZZ 1",
+        lfo: [0.497, 0.462], pwm_mode: Manual, dco: [0.000, 0.335, 0.294, 0.000],
+        waves: [true , false, false], range: 1, hpf: 0, invert: false,
+        vcf: [0.440, 0.300, 0.335, 0.300, 0.986], gate: false, level: 0.805,
+        env: [0.000, 0.195, 0.343, 0.566], chorus: 1 },
+    Chart { number: "36", name: "PIZZICATO SOUND 2", label: "36 PIZZ 2",
+        lfo: [0.483, 0.588], pwm_mode: Manual, dco: [0.008, 0.203, 0.300, 0.014],
+        waves: [true , false, true ], range: 2, hpf: 0, invert: false,
+        vcf: [0.497, 0.308, 0.315, 0.000, 0.986], gate: false, level: 0.602,
+        env: [0.000, 0.308, 0.349, 0.377], chorus: 2 },
+    Chart { number: "37", name: "XYLOPHONE", label: "37 XYLOPHONE",
+        lfo: [0.511, 0.000], pwm_mode: Manual, dco: [0.008, 0.511, 0.992, 0.000],
+        waves: [false, false, true ], range: 2, hpf: 1, invert: false,
+        vcf: [0.440, 0.511, 0.308, 0.008, 0.629], gate: false, level: 1.000,
+        env: [0.014, 0.357, 0.000, 0.357], chorus: 0 },
+    Chart { number: "38", name: "GLOCKENSPEIL", label: "38 GLOCKEN",
+        lfo: [0.511, 0.000], pwm_mode: Manual, dco: [0.008, 0.028, 0.000, 0.000],
+        waves: [true , false, false], range: 2, hpf: 1, invert: false,
+        vcf: [0.580, 0.511, 0.329, 0.008, 0.594], gate: false, level: 0.895,
+        env: [0.000, 0.343, 0.300, 0.503], chorus: 0 },
+    Chart { number: "41", name: "VIOLINE", label: "41 VIOLINE",
+        lfo: [0.594, 0.475], pwm_mode: Lfo, dco: [0.231, 0.008, 0.000, 0.008],
+        waves: [false, true , false], range: 1, hpf: 1, invert: false,
+        vcf: [0.651, 0.000, 0.008, 0.000, 1.000], gate: false, level: 0.692,
+        env: [0.412, 0.008, 1.000, 0.440], chorus: 0 },
+    Chart { number: "42", name: "TRUMPET", label: "42 TRUMPET",
+        lfo: [0.258, 0.629], pwm_mode: Manual, dco: [0.168, 0.008, 0.000, 0.014],
+        waves: [false, true , false], range: 1, hpf: 0, invert: false,
+        vcf: [0.014, 0.022, 0.846, 0.000, 0.420], gate: false, level: 0.700,
+        env: [0.146, 0.406, 0.588, 0.217], chorus: 0 },
+    Chart { number: "43", name: "HORN", label: "43 HORN",
+        lfo: [0.266, 0.678], pwm_mode: Manual, dco: [0.008, 0.008, 0.014, 0.000],
+        waves: [false, true , false], range: 1, hpf: 0, invert: false,
+        vcf: [0.217, 0.008, 0.552, 0.203, 0.412], gate: false, level: 0.714,
+        env: [0.398, 0.497, 0.580, 0.343], chorus: 0 },
+    Chart { number: "44", name: "TUBA", label: "44 TUBA",
+        lfo: [0.272, 0.706], pwm_mode: Manual, dco: [0.168, 0.028, 0.000, 0.000],
+        waves: [false, true , false], range: 0, hpf: 0, invert: false,
+        vcf: [0.162, 0.008, 0.594, 0.008, 0.412], gate: false, level: 1.000,
+        env: [0.322, 0.398, 0.398, 0.322], chorus: 0 },
+    Chart { number: "45", name: "FLUTE", label: "45 FLUTE",
+        lfo: [0.538, 0.497], pwm_mode: Manual, dco: [0.000, 0.000, 0.000, 0.154],
+        waves: [false, true , false], range: 2, hpf: 1, invert: false,
+        vcf: [0.475, 0.000, 0.000, 0.182, 0.594], gate: false, level: 0.986,
+        env: [0.195, 0.594, 0.483, 0.266], chorus: 0 },
+    Chart { number: "46", name: "CLARINET", label: "46 CLARINET",
+        lfo: [0.497, 0.671], pwm_mode: Manual, dco: [0.168, 0.008, 0.000, 0.014],
+        waves: [true , false, false], range: 1, hpf: 1, invert: false,
+        vcf: [0.483, 0.308, 0.258, 0.000, 0.580], gate: false, level: 0.580,
+        env: [0.146, 0.588, 0.588, 0.258], chorus: 0 },
+    Chart { number: "47", name: "OBOE", label: "47 OBOE",
+        lfo: [0.538, 0.651], pwm_mode: Manual, dco: [0.154, 0.637, 0.000, 0.000],
+        waves: [true , false, false], range: 1, hpf: 3, invert: false,
+        vcf: [0.448, 0.497, 0.252, 0.000, 0.517], gate: false, level: 0.700,
+        env: [0.182, 0.588, 0.566, 0.266], chorus: 0 },
+    Chart { number: "48", name: "ENGLISH HORN", label: "48 ENG HORN",
+        lfo: [0.497, 0.692], pwm_mode: Manual, dco: [0.217, 0.637, 0.000, 0.000],
+        waves: [true , false, false], range: 0, hpf: 3, invert: false,
+        vcf: [0.489, 0.700, 0.000, 0.154, 0.497], gate: false, level: 0.986,
+        env: [0.189, 0.588, 0.566, 0.245], chorus: 0 },
+    Chart { number: "51", name: "FUNNY CAT", label: "51 FUNNY CAT",
+        lfo: [0.623, 0.055], pwm_mode: Manual, dco: [0.294, 0.000, 0.000, 0.000],
+        waves: [false, true , false], range: 1, hpf: 1, invert: false,
+        vcf: [0.154, 0.748, 0.497, 0.223, 0.497], gate: false, level: 0.805,
+        env: [0.258, 0.398, 0.978, 0.105], chorus: 0 },
+    Chart { number: "52", name: "WAH BRASS", label: "52 WAH BRASS",
+        lfo: [0.602, 0.189], pwm_mode: Manual, dco: [0.308, 0.008, 0.000, 0.014],
+        waves: [false, true , false], range: 1, hpf: 0, invert: false,
+        vcf: [0.315, 0.706, 0.440, 0.000, 0.580], gate: true , level: 0.678,
+        env: [0.175, 0.286, 0.406, 0.258], chorus: 0 },
+    Chart { number: "53", name: "PHASE COMBINATION", label: "53 PHS COMB",
+        lfo: [0.608, 0.217], pwm_mode: Manual, dco: [0.008, 0.811, 0.014, 0.000],
+        waves: [true , true , false], range: 1, hpf: 0, invert: false,
+        vcf: [0.643, 0.231, 0.329, 0.008, 0.203], gate: false, level: 0.308,
+        env: [0.014, 0.720, 0.217, 0.238], chorus: 1 },
+    Chart { number: "54", name: "REED 1", label: "54 REED 1",
+        lfo: [0.608, 0.217], pwm_mode: Manual, dco: [0.412, 0.008, 0.000, 0.000],
+        waves: [true , false, false], range: 1, hpf: 0, invert: false,
+        vcf: [0.098, 0.608, 0.692, 0.008, 0.511], gate: true , level: 0.608,
+        env: [0.000, 0.888, 0.503, 0.140], chorus: 1 },
+    Chart { number: "55", name: "POPCORN", label: "55 POPCORN",
+        lfo: [0.014, 0.000], pwm_mode: Manual, dco: [0.000, 0.008, 1.000, 0.008],
+        waves: [false, false, true ], range: 2, hpf: 1, invert: false,
+        vcf: [0.272, 0.217, 0.552, 0.014, 1.000], gate: false, level: 0.818,
+        env: [0.028, 0.329, 0.238, 0.014], chorus: 0 },
+    Chart { number: "56", name: "REED 2", label: "56 REED 2",
+        lfo: [0.343, 0.805], pwm_mode: Manual, dco: [0.000, 0.022, 1.000, 0.028],
+        waves: [false, false, true ], range: 2, hpf: 0, invert: false,
+        vcf: [0.231, 0.022, 0.594, 0.022, 0.818], gate: false, level: 0.511,
+        env: [0.000, 0.580, 0.322, 0.637], chorus: 1 },
+    Chart { number: "57", name: "REED 3", label: "57 REED 3",
+        lfo: [0.594, 0.203], pwm_mode: Manual, dco: [0.189, 0.517, 0.978, 0.000],
+        waves: [false, false, true ], range: 2, hpf: 0, invert: false,
+        vcf: [0.329, 0.217, 0.315, 0.000, 0.986], gate: false, level: 0.594,
+        env: [0.286, 0.000, 0.978, 0.223], chorus: 0 },
+    Chart { number: "58", name: "PWM CHORUS", label: "58 PWM CHOR",
+        lfo: [0.308, 0.000], pwm_mode: Lfo, dco: [0.008, 0.511, 0.992, 0.000],
+        waves: [true , false, true ], range: 1, hpf: 0, invert: false,
+        vcf: [0.805, 0.008, 0.028, 0.008, 0.972], gate: false, level: 0.209,
+        env: [0.300, 0.000, 0.992, 0.440], chorus: 2 },
+    Chart { number: "61", name: "SYNTHESIZER ORGAN", label: "61 SYN ORGAN",
+        lfo: [0.448, 0.462], pwm_mode: Manual, dco: [0.000, 0.637, 0.742, 0.000],
+        waves: [true , false, true ], range: 1, hpf: 0, invert: false,
+        vcf: [0.258, 0.000, 0.497, 0.203, 0.678], gate: true , level: 0.497,
+        env: [0.014, 0.195, 0.511, 0.266], chorus: 2 },
+    Chart { number: "62", name: "EFFECT SOUND 1", label: "62 EFFECT 1",
+        lfo: [0.426, 0.608], pwm_mode: Manual, dco: [0.168, 0.978, 0.678, 0.014],
+        waves: [true , true , true ], range: 2, hpf: 0, invert: true ,
+        vcf: [0.623, 0.008, 0.440, 0.008, 0.700], gate: false, level: 0.678,
+        env: [0.000, 0.511, 0.000, 0.580], chorus: 1 },
+    Chart { number: "63", name: "EFFECT SOUND 2", label: "63 EFFECT 2",
+        lfo: [0.552, 0.888], pwm_mode: Lfo, dco: [0.000, 0.315, 0.651, 0.000],
+        waves: [false, true , true ], range: 1, hpf: 0, invert: true ,
+        vcf: [0.629, 0.315, 0.398, 0.000, 0.112], gate: true , level: 0.398,
+        env: [0.629, 0.525, 0.223, 0.651], chorus: 1 },
+    Chart { number: "64", name: "SPACE HARP", label: "64 SPC HARP",
+        lfo: [0.552, 0.000], pwm_mode: Env, dco: [0.231, 0.008, 0.022, 0.000],
+        waves: [false, true , false], range: 1, hpf: 0, invert: false,
+        vcf: [0.665, 0.511, 0.552, 0.008, 0.972], gate: false, level: 0.608,
+        env: [0.022, 0.825, 0.825, 0.902], chorus: 1 },
+    Chart { number: "65", name: "FUNK", label: "65 FUNK",
+        lfo: [0.315, 0.272], pwm_mode: Manual, dco: [0.000, 0.608, 1.000, 0.008],
+        waves: [true , true , true ], range: 1, hpf: 0, invert: true ,
+        vcf: [0.734, 0.602, 0.511, 0.000, 0.469], gate: true , level: 0.209,
+        env: [0.594, 0.511, 0.014, 0.014], chorus: 1 },
+    Chart { number: "66", name: "SPACE SOUND 1", label: "66 SPACE 1",
+        lfo: [0.608, 0.692], pwm_mode: Manual, dco: [0.203, 0.448, 0.986, 0.014],
+        waves: [true , false, true ], range: 1, hpf: 0, invert: true ,
+        vcf: [0.665, 0.692, 0.560, 0.008, 0.986], gate: true , level: 0.300,
+        env: [0.000, 0.511, 0.000, 0.300], chorus: 1 },
+    Chart { number: "67", name: "MYSTERIOUS INVENTION", label: "67 MYSTERY",
+        lfo: [0.594, 0.811], pwm_mode: Env, dco: [0.189, 0.797, 0.978, 0.000],
+        waves: [true , true , false], range: 1, hpf: 0, invert: true ,
+        vcf: [0.791, 0.678, 0.594, 0.272, 0.000], gate: false, level: 0.475,
+        env: [0.000, 0.978, 0.000, 0.992], chorus: 0 },
+    Chart { number: "68", name: "SPACE SOUND 2", label: "68 SPACE 2",
+        lfo: [0.294, 0.308], pwm_mode: Manual, dco: [0.000, 0.594, 0.791, 0.000],
+        waves: [true , true , false], range: 1, hpf: 0, invert: false,
+        vcf: [0.203, 0.838, 0.594, 0.000, 0.958], gate: false, level: 0.217,
+        env: [0.992, 0.992, 0.992, 0.992], chorus: 1 },
+    Chart { number: "71", name: "PERCUSSIVE SOUND 1", label: "71 PERC 1",
+        lfo: [0.014, 0.000], pwm_mode: Env, dco: [0.000, 0.000, 0.000, 1.000],
+        waves: [false, false, false], range: 2, hpf: 1, invert: false,
+        vcf: [0.392, 1.000, 0.168, 0.000, 1.000], gate: false, level: 1.000,
+        env: [0.008, 0.329, 0.014, 0.440], chorus: 0 },
+    Chart { number: "72", name: "PERCUSSIVE SOUND 2", label: "72 PERC 2",
+        lfo: [0.022, 0.022], pwm_mode: Env, dco: [0.022, 0.000, 0.008, 0.028],
+        waves: [false, false, false], range: 1, hpf: 1, invert: true ,
+        vcf: [0.511, 1.000, 0.371, 0.022, 1.000], gate: false, level: 1.000,
+        env: [0.000, 0.322, 0.000, 0.412], chorus: 0 },
+    Chart { number: "73", name: "WHISTLE", label: "73 WHISTLE",
+        lfo: [0.552, 0.483], pwm_mode: Manual, dco: [0.000, 0.000, 0.000, 0.203],
+        waves: [false, false, false], range: 2, hpf: 1, invert: false,
+        vcf: [0.363, 0.958, 0.154, 0.217, 0.986], gate: false, level: 0.797,
+        env: [0.300, 0.000, 0.992, 0.085], chorus: 0 },
+    Chart { number: "74", name: "EFFECT SOUND 3", label: "74 EFFECT 3",
+        lfo: [0.538, 0.406], pwm_mode: Env, dco: [0.000, 0.000, 0.000, 0.000],
+        waves: [false, false, false], range: 1, hpf: 1, invert: false,
+        vcf: [0.343, 1.000, 0.014, 0.195, 0.986], gate: false, level: 0.958,
+        env: [0.000, 0.426, 0.566, 0.692], chorus: 0 },
+    Chart { number: "75", name: "UFO", label: "75 UFO",
+        lfo: [0.602, 0.000], pwm_mode: Manual, dco: [0.000, 0.000, 0.000, 0.209],
+        waves: [false, false, false], range: 2, hpf: 0, invert: false,
+        vcf: [0.008, 0.965, 0.692, 0.398, 1.000], gate: false, level: 0.426,
+        env: [0.008, 0.608, 0.992, 0.825], chorus: 1 },
+    Chart { number: "76", name: "SPACE SOUND 3", label: "76 SPACE 3",
+        lfo: [0.580, 0.022], pwm_mode: Manual, dco: [0.022, 0.000, 0.008, 0.209],
+        waves: [false, false, false], range: 2, hpf: 0, invert: true ,
+        vcf: [0.511, 0.992, 0.412, 0.022, 1.000], gate: false, level: 0.511,
+        env: [0.000, 0.992, 0.000, 0.818], chorus: 1 },
+    Chart { number: "77", name: "SURF", label: "77 SURF",
+        lfo: [0.008, 0.000], pwm_mode: Env, dco: [0.008, 0.008, 0.965, 0.965],
+        waves: [false, false, false], range: 1, hpf: 0, invert: false,
+        vcf: [0.602, 0.008, 0.022, 0.608, 1.000], gate: false, level: 0.915,
+        env: [0.000, 0.398, 1.000, 0.825], chorus: 0 },
+    Chart { number: "78", name: "SYNTHESIZER DRUM", label: "78 SYN DRUM",
+        lfo: [0.008, 0.000], pwm_mode: Env, dco: [0.008, 0.008, 0.000, 0.000],
+        waves: [false, false, false], range: 1, hpf: 0, invert: false,
+        vcf: [0.217, 1.000, 0.412, 0.008, 1.000], gate: false, level: 0.608,
+        env: [0.000, 0.525, 0.000, 0.602], chorus: 0 },
+];
+
+// The three public name tables are the bank's own columns rather than copies
+// of them, so a patch cannot be renamed in one place and not the other.
+
+const fn derive_names() -> [&'static str; PATCH_COUNT] {
+    let mut out = [""; PATCH_COUNT];
+    let mut i = 0;
+    while i < PATCH_COUNT {
+        out[i] = BANK[i].name;
+        i += 1;
+    }
+    out
+}
+
+const fn derive_numbers() -> [&'static str; PATCH_COUNT] {
+    let mut out = [""; PATCH_COUNT];
+    let mut i = 0;
+    while i < PATCH_COUNT {
+        out[i] = BANK[i].number;
+        i += 1;
+    }
+    out
+}
+
+const fn derive_labels() -> [&'static str; PATCH_COUNT] {
+    let mut out = [""; PATCH_COUNT];
+    let mut i = 0;
+    while i < PATCH_COUNT {
+        out[i] = BANK[i].label;
+        i += 1;
+    }
+    out
+}
+
 // ── Internal preset ──
 //
-// Physical units — seconds, hertz, normalised cutoff — because that is how a
-// patch is legible. The panel block above is the f32 parameter vector; these
-// two are converted into each other by `params_for_patch` and `active_patch`,
-// and `preset_round_trip` holds them together.
+// Physical units — seconds, hertz, normalised cutoff — because that is what
+// the engine runs on. The panel block above is the f32 parameter vector;
+// `params_for_patch` loads a chart row into it and `active_patch` reads the
+// whole block back out in these units, so every control stays live after a
+// preset is loaded. `preset_round_trip` holds the two directions together.
+
+/// Where the pulse width comes from. Roland's specification for the
+/// instrument gives the switch as ENV/MANUAL/LFO — three positions, which is
+/// one more than this had before the factory bank arrived using all three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PwmSource {
+    /// The LFO sweeps the width either side of square.
+    Lfo = 0,
+    /// The slider sets the width and nothing moves it.
+    Manual = 1,
+    /// The envelope sweeps the width, once per note.
+    Env = 2,
+}
+
+impl PwmSource {
+    /// Total: the switch is a public parameter, so anything can arrive here.
+    fn from_index(index: usize) -> Self {
+        match index {
+            0 => Self::Lfo,
+            2 => Self::Env,
+            _ => Self::Manual,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct JunoPatch {
@@ -327,9 +753,8 @@ struct JunoPatch {
     lfo_delay: f64,      // panel 0..1: hold and fade come from the measured table
     // DCO
     lfo_to_pitch: f64,   // 0..1, full = ±1 semitone
-    pulse_width: f64,    // static width, used when pwm_lfo is false
-    pwm_depth: f64,      // width swing either side of square, used when pwm_lfo
-    pwm_lfo: bool,
+    pwm_depth: f64,      // width swing either side of square
+    pwm_mode: PwmSource,
     pulse: bool,
     saw: bool,
     sub_level: f64,
@@ -352,165 +777,6 @@ struct JunoPatch {
     chorus: u8,          // 0 = off, 1 = I, 2 = II, 3 = I+II
 }
 
-/// The preset that answers to knob position `value`.
-fn preset(index: usize) -> JunoPatch {
-    presets()[index.min(PATCH_COUNT - 1)]
-}
-
-fn presets() -> [JunoPatch; PATCH_COUNT] {
-    // Shorthand for the fields most patches leave alone.
-    const BASE: JunoPatch = JunoPatch {
-        lfo_rate: 1.0, lfo_delay: 0.0, lfo_to_pitch: 0.0,
-        pulse_width: 0.5, pwm_depth: 0.0, pwm_lfo: false,
-        pulse: true, saw: false, sub_level: 0.0, noise_level: 0.0, range: 1,
-        hpf: 0,
-        cutoff: 0.5, resonance: 0.0, env_mod: 0.2, lfo_to_filter: 0.0, key_follow: 0.5,
-        vca_gate: false, level: 0.75,
-        attack: 0.3, decay: 3.45, sustain: 0.7, release: 3.45,
-        chorus: 1,
-    };
-    [
-        // Pad — classic Juno pad
-        JunoPatch {
-            pwm_lfo: true, pwm_depth: 0.315,
-            ..BASE
-        },
-        // PWMPad — thick PWM pad
-        JunoPatch {
-            saw: true, sub_level: 0.4, noise_level: 0.05,
-            pwm_lfo: true, pwm_depth: 0.36,
-            cutoff: 0.6, resonance: 0.1,
-            attack: 0.4, decay: 4.14, sustain: 0.8, release: 3.45,
-            chorus: 3, lfo_rate: 1.5,
-            ..BASE
-        },
-        // Bass — Juno bass
-        JunoPatch {
-            saw: true, sub_level: 0.7,
-            cutoff: 0.3, resonance: 0.2, env_mod: 0.6, key_follow: 0.3,
-            attack: 0.001, decay: 2.76, sustain: 0.0, release: 1.38,
-            chorus: 0,
-            ..BASE
-        },
-        // Brass — Juno brass
-        JunoPatch {
-            saw: true,
-            hpf: 1, cutoff: 0.3, env_mod: 0.7,
-            attack: 0.2, decay: 2.76, sustain: 0.6, release: 2.07,
-            chorus: 2, lfo_rate: 2.5, lfo_delay: lfo_delay_slider(0.5), lfo_to_pitch: 0.02,
-            ..BASE
-        },
-        // String — Juno strings
-        JunoPatch {
-            saw: true, noise_level: 0.05, pwm_lfo: true, pwm_depth: 0.27,
-            hpf: 1, cutoff: 0.55, env_mod: 0.3, key_follow: 0.7,
-            attack: 0.4, decay: 3.45, sustain: 0.7, release: 2.76,
-            chorus: 3, lfo_rate: 2.0, lfo_delay: lfo_delay_slider(0.3), lfo_to_pitch: 0.01,
-            ..BASE
-        },
-        // Hoover — rave stab
-        JunoPatch {
-            saw: true, sub_level: 1.0,
-            cutoff: 0.7, resonance: 0.4, env_mod: 0.5,
-            attack: 0.001, decay: 2.07, sustain: 0.5, release: 2.07,
-            chorus: 3,
-            ..BASE
-        },
-        // Acid — acid bass
-        JunoPatch {
-            cutoff: 0.2, resonance: 0.8, env_mod: 0.8,
-            attack: 0.001, decay: 2.76, sustain: 0.0, release: 0.69,
-            chorus: 0,
-            ..BASE
-        },
-        // WrmLd — warm lead
-        JunoPatch {
-            saw: true, pulse: false, sub_level: 0.5,
-            resonance: 0.1, env_mod: 0.4, key_follow: 0.7,
-            attack: 0.1, decay: 3.45, sustain: 0.7, release: 2.07,
-            chorus: 2, lfo_rate: 2.5, lfo_delay: lfo_delay_slider(0.4), lfo_to_pitch: 0.03,
-            ..BASE
-        },
-        // Choir — choir pad
-        JunoPatch {
-            sub_level: 0.3, noise_level: 0.1, pwm_lfo: true, pwm_depth: 0.36,
-            hpf: 1, cutoff: 0.4, resonance: 0.2, env_mod: 0.3,
-            lfo_to_filter: 0.1, key_follow: 0.7,
-            attack: 0.5, decay: 3.45, sustain: 0.8, release: 3.45,
-            lfo_rate: 1.5,
-            ..BASE
-        },
-        // Pluck
-        JunoPatch {
-            saw: true, pulse: false,
-            cutoff: 0.2, resonance: 0.3, env_mod: 0.7, key_follow: 0.7,
-            attack: 0.001, decay: 2.07, sustain: 0.0, release: 1.38,
-            ..BASE
-        },
-        // Organ — the one patch that uses the VCA gate
-        JunoPatch {
-            sub_level: 0.5,
-            hpf: 1, cutoff: 0.7, env_mod: 0.0,
-            attack: 0.001, decay: 0.002, sustain: 1.0, release: 0.069,
-            vca_gate: true, chorus: 3, lfo_rate: 2.5, lfo_to_pitch: 0.01,
-            ..BASE
-        },
-        // SynBas — synthwave bass
-        JunoPatch {
-            saw: true, sub_level: 0.6,
-            cutoff: 0.2, resonance: 0.1, env_mod: 0.5, key_follow: 0.3,
-            attack: 0.001, decay: 3.45, sustain: 0.0, release: 1.38,
-            chorus: 0,
-            ..BASE
-        },
-        // GlsBel — glass bells
-        JunoPatch {
-            pulse_width: 0.3,
-            hpf: 2, cutoff: 0.4, resonance: 0.6, env_mod: 0.6, key_follow: 1.0,
-            attack: 0.001, decay: 4.14, sustain: 0.0, release: 2.76,
-            ..BASE
-        },
-        // ResPad — resonant sweep pad
-        JunoPatch {
-            saw: true, pwm_lfo: true, pwm_depth: 0.315,
-            cutoff: 0.2, resonance: 0.5, env_mod: 0.6, lfo_to_filter: 0.3,
-            attack: 0.3, decay: 4.83, sustain: 0.4, release: 3.45,
-            chorus: 2,
-            ..BASE
-        },
-        // Wind — noise wash
-        JunoPatch {
-            pulse: false, noise_level: 1.0,
-            cutoff: 0.3, resonance: 0.3, env_mod: 0.5, lfo_to_filter: 0.4,
-            attack: 0.5, decay: 4.83, sustain: 0.5, release: 4.83,
-            ..BASE
-        },
-        // Clav — funky clavinet
-        JunoPatch {
-            pulse_width: 0.3,
-            hpf: 2, cutoff: 0.5, resonance: 0.4, env_mod: 0.5, key_follow: 0.8,
-            attack: 0.001, decay: 1.38, sustain: 0.2, release: 0.69,
-            chorus: 0,
-            ..BASE
-        },
-        // SubBas — 808-style sub bass
-        JunoPatch {
-            pulse: false, sub_level: 1.0,
-            cutoff: 0.2, env_mod: 0.3, key_follow: 0.3,
-            attack: 0.001, decay: 4.14, sustain: 0.5, release: 2.07,
-            chorus: 0,
-            ..BASE
-        },
-        // SawPad — detuned saw pad (chorus magic)
-        JunoPatch {
-            saw: true, pulse: false,
-            cutoff: 0.7, env_mod: 0.0,
-            attack: 0.3, decay: 3.45, sustain: 0.8, release: 3.45,
-            chorus: 3,
-            ..BASE
-        },
-    ]
-}
 
 // ── PolyBLEP ──
 
@@ -629,6 +895,14 @@ impl JunoFilter {
     }
 
     fn reset(&mut self) { self.s = [0.0; 4]; }
+
+    /// Start a note with the filter already ringing, if the resonance is far
+    /// enough up its travel for the loop to keep it going. See
+    /// [`SELF_OSC_SEED`].
+    fn start(&mut self, resonance: f64) {
+        let past_knee = (resonance - SELF_OSC_KNEE) / (1.0 - SELF_OSC_KNEE);
+        self.s = [past_knee.clamp(0.0, 1.0) * SELF_OSC_SEED; 4];
+    }
 }
 
 // ── HPF ──
@@ -1002,6 +1276,23 @@ impl NoiseGen {
 /// where the six-voice sum gets its room.
 const VOICE_TRIM: f64 = 0.5;
 
+/// How much of the filter's own oscillation a note starts with, and the
+/// resonance above which it gets any.
+///
+/// The VCF on the instrument is an oscillator that does not stop: with the
+/// resonance at the top of its travel it is ringing whether or not a key is
+/// down, which is why a note on one of bank 7's patches — "the patches whose
+/// sound sources are VCF self-oscillation", in Roland's words — is loud from
+/// its first sample. A filter whose state is zeroed at the note-on has
+/// nothing to ring, because the loop multiplies zero by four and gets zero,
+/// so those patches came out silent.
+///
+/// The knee is where the four-pole loop measurably starts to sustain rather
+/// than ring down: at 0.95 a kick is gone in 200 ms and at 0.9 in 50, so a
+/// patch below the knee gets nothing and hears no click for it.
+const SELF_OSC_KNEE: f64 = 0.9;
+const SELF_OSC_SEED: f64 = 0.05;
+
 #[derive(Debug, Clone)]
 struct JunoVoice {
     dco: JunoDco,
@@ -1034,7 +1325,7 @@ impl JunoVoice {
         self.env.set_times(patch.attack, patch.decay, patch.release);
         self.env.sustain = patch.sustain;
         self.env.trigger();
-        self.filter.reset();
+        self.filter.start(patch.resonance);
         self.hpf.reset();
     }
 
@@ -1070,12 +1361,18 @@ impl JunoVoice {
         };
         self.dco.set_freq(modulated_freq, sr);
 
-        // Pulse width: the LFO drives the comparator threshold, or the panel
-        // does. There is no third source on this instrument.
-        let effective_pw = if patch.pwm_lfo {
-            0.5 + lfo_out * patch.pwm_depth
-        } else {
-            patch.pulse_width
+        // Envelope, before the DCO because the PWM switch's third position
+        // hands it to the comparator.
+        let env_val = self.env.tick();
+
+        // Pulse width: the comparator threshold comes from the LFO, from the
+        // slider alone, or from the envelope, as the PWM switch says. The two
+        // moving sources start from square; the slider is the direction the
+        // panel's own scale runs, up for narrower.
+        let effective_pw = match patch.pwm_mode {
+            PwmSource::Lfo => 0.5 + lfo_out * patch.pwm_depth,
+            PwmSource::Manual => 0.5 - patch.pwm_depth,
+            PwmSource::Env => 0.5 - env_val * patch.pwm_depth,
         };
 
         let (saw, pulse, sub) = self.dco.tick(effective_pw);
@@ -1091,9 +1388,6 @@ impl JunoVoice {
         weight += patch.noise_level;
         // Scale so that adding a source raises the level rather than the peak.
         if weight > 1.0 { mixed /= weight.sqrt(); }
-
-        // Envelope
-        let env_val = self.env.tick();
 
         // HPF, ahead of the VCF as on the voice board
         let source = self.hpf.process(mixed, patch.hpf, sr);
@@ -1158,40 +1452,43 @@ impl Juno60Synth {
         selector(self.params[P_PATCH], PATCH_COUNT)
     }
 
-    /// The whole panel as the preset sets it. The inverse of [`active_patch`].
+    /// The whole panel as the factory chart for this patch sets it.
+    ///
+    /// A straight copy for the sliders — the chart's readings are panel
+    /// positions already — and a midpoint for each switch, so that a switch
+    /// loaded from a preset sits where [`step_discrete`] would leave it.
     pub fn params_for_patch(patch_value: f32) -> [f32; PARAM_COUNT] {
-        let p = preset(selector(patch_value, PATCH_COUNT));
+        let c = &BANK[selector(patch_value, PATCH_COUNT)];
         let mut params = [0.0f32; PARAM_COUNT];
         params[P_PATCH] = patch_value;
-        params[P_LFO_RATE] = lfo_rate_slider(p.lfo_rate) as f32;
-        params[P_LFO_DELAY] = p.lfo_delay as f32;
-        params[P_DCO_LFO] = p.lfo_to_pitch as f32;
-        params[P_PWM] = if p.pwm_lfo {
-            p.pwm_depth / PW_SWING
-        } else {
-            (0.5 - p.pulse_width) / PW_SWING
-        }
-        .clamp(0.0, 1.0) as f32;
-        params[P_PWM_MODE] = knob_for(usize::from(p.pwm_lfo), 2);
-        params[P_PULSE] = knob_for(usize::from(p.pulse), 2);
-        params[P_SAW] = knob_for(usize::from(p.saw), 2);
-        params[P_SUB] = p.sub_level as f32;
-        params[P_NOISE] = p.noise_level as f32;
-        params[P_RANGE] = knob_for(p.range as usize, 3);
-        params[P_HPF] = knob_for(p.hpf as usize, 4);
-        params[P_CUTOFF] = p.cutoff as f32;
-        params[P_RESO] = p.resonance as f32;
-        params[P_ENV_POLARITY] = knob_for(usize::from(p.env_mod < 0.0), 2);
-        params[P_ENV_MOD] = p.env_mod.abs() as f32;
-        params[P_VCF_LFO] = p.lfo_to_filter as f32;
-        params[P_KEY_FOLLOW] = p.key_follow as f32;
-        params[P_VCA_MODE] = knob_for(usize::from(p.vca_gate), 2);
-        params[P_LEVEL] = p.level as f32;
-        params[P_ATTACK] = attack_slider(p.attack) as f32;
-        params[P_DECAY] = decay_slider(p.decay) as f32;
-        params[P_SUSTAIN] = p.sustain as f32;
-        params[P_RELEASE] = decay_slider(p.release) as f32;
-        params[P_CHORUS] = knob_for(p.chorus as usize, 4);
+        params[P_LFO_RATE] = c.lfo[0];
+        params[P_LFO_DELAY] = c.lfo[1];
+        params[P_DCO_LFO] = c.dco[0];
+        params[P_PWM] = c.dco[1];
+        params[P_PWM_MODE] = knob_for(c.pwm_mode as usize, 3);
+        params[P_PULSE] = knob_for(usize::from(c.waves[0]), 2);
+        params[P_SAW] = knob_for(usize::from(c.waves[1]), 2);
+        // The sub is a button and a fader on the instrument and a fader alone
+        // here, so a sub switched out is a fader at zero. Three patches leave
+        // the fader up with the button out; taking the chart at face value
+        // would give them an octave of bottom end they do not have.
+        params[P_SUB] = if c.waves[2] { c.dco[2] } else { 0.0 };
+        params[P_NOISE] = c.dco[3];
+        params[P_RANGE] = knob_for(c.range as usize, 3);
+        params[P_HPF] = knob_for(c.hpf as usize, 4);
+        params[P_CUTOFF] = c.vcf[0];
+        params[P_RESO] = c.vcf[1];
+        params[P_ENV_POLARITY] = knob_for(usize::from(c.invert), 2);
+        params[P_ENV_MOD] = c.vcf[2];
+        params[P_VCF_LFO] = c.vcf[3];
+        params[P_KEY_FOLLOW] = c.vcf[4];
+        params[P_VCA_MODE] = knob_for(usize::from(c.gate), 2);
+        params[P_LEVEL] = c.level;
+        params[P_ATTACK] = c.env[0];
+        params[P_DECAY] = c.env[1];
+        params[P_SUSTAIN] = c.env[2];
+        params[P_RELEASE] = c.env[3];
+        params[P_CHORUS] = knob_for(c.chorus as usize, 4);
         params
     }
 
@@ -1235,15 +1532,13 @@ impl Juno60Synth {
     fn active_patch(&self) -> JunoPatch {
         let p = &self.params;
         let pwm = f64::from(p[P_PWM]);
-        let pwm_lfo = selector(p[P_PWM_MODE], 2) == 1;
         let env_sign = if selector(p[P_ENV_POLARITY], 2) == 1 { -1.0 } else { 1.0 };
         JunoPatch {
             lfo_rate: lfo_hz(f64::from(p[P_LFO_RATE])),
             lfo_delay: f64::from(p[P_LFO_DELAY]),
             lfo_to_pitch: f64::from(p[P_DCO_LFO]),
-            pulse_width: if pwm_lfo { 0.5 } else { 0.5 - pwm * PW_SWING },
-            pwm_depth: if pwm_lfo { pwm * PW_SWING } else { 0.0 },
-            pwm_lfo,
+            pwm_depth: pwm * PW_SWING,
+            pwm_mode: PwmSource::from_index(selector(p[P_PWM_MODE], 3)),
             pulse: selector(p[P_PULSE], 2) == 1,
             saw: selector(p[P_SAW], 2) == 1,
             sub_level: f64::from(p[P_SUB]),
@@ -1496,9 +1791,13 @@ mod tests {
         for pi in 0..PATCH_COUNT {
             let mut s = Juno60Synth::new();
             s.init(44100.0, 64);
-            s.set_parameter(P_PATCH, pi as f32 / (PATCH_COUNT as f32 - 0.01));
+            s.set_parameter(P_PATCH, patch_knob(pi));
             let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 2000);
-            assert!(peak(&out) > 0.001, "Patch {} ({}) peak={}", pi, PATCH_NAMES[pi], peak(&out));
+            assert!(
+                peak(&out) > 0.001,
+                "patch {} {} {} is silent: peak={}",
+                pi, PATCH_NUMBERS[pi], PATCH_NAMES[pi], peak(&out)
+            );
         }
     }
 
@@ -1507,9 +1806,74 @@ mod tests {
         for pi in 0..PATCH_COUNT {
             let mut s = Juno60Synth::new();
             s.init(44100.0, 64);
-            s.set_parameter(P_PATCH, pi as f32 / (PATCH_COUNT as f32 - 0.01));
+            s.set_parameter(P_PATCH, patch_knob(pi));
             let out = process_buffers(&mut s, &[note_on(60, 127, 0)], 500);
             assert!(out.iter().all(|v| v.is_finite()), "Patch {} finite", pi);
+        }
+    }
+
+    #[test]
+    fn the_patch_knob_lands_on_the_patch_it_names() {
+        // 56 patches is enough that dividing the index by the count misses:
+        // the quotient can land a hair below its own step and select the patch
+        // before it. Every index has to answer to its own name, both through
+        // the label and through the block that loads.
+        for (pi, label) in PATCH_LABELS.iter().enumerate() {
+            let knob = patch_knob(pi);
+            assert_eq!(selector(knob, PATCH_COUNT), pi, "patch {pi} knob {knob}");
+            assert_eq!(discrete_label(P_PATCH, knob), Some(*label));
+            let mut s = Juno60Synth::new();
+            s.set_parameter(P_PATCH, knob);
+            assert_eq!(s.current_patch_index(), pi);
+        }
+    }
+
+    #[test]
+    fn the_bank_is_the_factory_bank() {
+        // Seven banks of eight, numbered as the instrument numbers them, in
+        // factory order. A row inserted or dropped shows up here rather than
+        // as a patch that answers to the wrong name.
+        assert_eq!(PATCH_COUNT, 56);
+        for (i, number) in PATCH_NUMBERS.iter().enumerate() {
+            let want = format!("{}{}", i / 8 + 1, i % 8 + 1);
+            assert_eq!(*number, want, "patch {i} is numbered {number}");
+        }
+        assert_eq!(PATCH_NAMES[0], "STRINGS 1");
+        assert_eq!(PATCH_NAMES[PATCH_COUNT - 1], "SYNTHESIZER DRUM");
+        // The number is what a player calls the patch, so it leads the label.
+        for (i, label) in PATCH_LABELS.iter().enumerate() {
+            assert!(
+                label.starts_with(PATCH_NUMBERS[i]),
+                "label {label:?} does not start with its patch number"
+            );
+            assert!(label.chars().count() <= 12, "label {label:?} is too wide for the panel");
+        }
+    }
+
+    #[test]
+    fn the_self_oscillating_bank_speaks() {
+        // "Bank 7 (71 to 78) includes the patches whose sound sources are VCF
+        // self-oscillation" — the manual. Two of the eight have no oscillator,
+        // no sub and no noise at all, so the only thing that can make a sound
+        // is the filter ringing, and the only thing that can start it is the
+        // ringing it was already doing when the key went down. All eight have
+        // to speak, and inside their own attack rather than eventually: they
+        // are percussive, and the quickest of them has decayed away by 300 ms.
+        //
+        // The floor is 12 dB under the quietest of the eight as measured
+        // (0.0018, 77 SURF), not a round number: these patches are quiet, and
+        // the point of the assertion is to catch silence, not to pin a level.
+        for pi in 48..PATCH_COUNT {
+            let mut s = Juno60Synth::new();
+            s.init(44100.0, 64);
+            s.set_parameter(P_PATCH, patch_knob(pi));
+            // 116 ms, which is inside the shortest decay in the bank.
+            let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 80);
+            assert!(
+                peak(&out) > 4e-4,
+                "patch {} {} peaks at {} in its first 116 ms",
+                PATCH_NUMBERS[pi], PATCH_NAMES[pi], peak(&out)
+            );
         }
     }
 
@@ -1665,12 +2029,14 @@ mod tests {
 
     #[test]
     fn switch_labels_read_as_the_panel_does() {
-        assert_eq!(discrete_label(P_PATCH, 0.0), Some("Pad"));
+        assert_eq!(discrete_label(P_PATCH, 0.0), Some("11 STRINGS 1"));
         assert_eq!(discrete_label(P_RANGE, knob_for(0, 3)), Some("16'"));
         assert_eq!(discrete_label(P_RANGE, knob_for(1, 3)), Some("8'"));
         assert_eq!(discrete_label(P_RANGE, knob_for(2, 3)), Some("4'"));
-        assert_eq!(discrete_label(P_PWM_MODE, knob_for(0, 2)), Some("MAN"));
-        assert_eq!(discrete_label(P_PWM_MODE, knob_for(1, 2)), Some("LFO"));
+        // The PWM switch reads down the panel, LFO at the top.
+        assert_eq!(discrete_label(P_PWM_MODE, knob_for(0, 3)), Some("LFO"));
+        assert_eq!(discrete_label(P_PWM_MODE, knob_for(1, 3)), Some("MAN"));
+        assert_eq!(discrete_label(P_PWM_MODE, knob_for(2, 3)), Some("ENV"));
         assert_eq!(discrete_label(P_VCA_MODE, knob_for(0, 2)), Some("ENV"));
         assert_eq!(discrete_label(P_VCA_MODE, knob_for(1, 2)), Some("GATE"));
         assert_eq!(discrete_label(P_ENV_POLARITY, knob_for(1, 2)), Some("inv"));
@@ -1696,33 +2062,50 @@ mod tests {
 
     #[test]
     fn preset_round_trip() {
-        // Panel to engine and back again. The tapers are exponential and one
-        // of them is inverted numerically, so this is the test that catches an
-        // inverse that drifts from its forward curve.
-        for (pi, name) in PATCH_NAMES.iter().enumerate() {
+        // Chart to panel to engine. Every column of every row has to arrive in
+        // the control it belongs to and come back out in the engine's units —
+        // the defect this catches is a preset loaded one slot out, which is
+        // silent about itself and audible about nothing else.
+        for (pi, c) in BANK.iter().enumerate() {
             let mut s = Juno60Synth::new();
             s.init(44100.0, 64);
-            s.set_parameter(P_PATCH, knob_for(pi, PATCH_COUNT));
-            let want = preset(pi);
+            s.set_parameter(P_PATCH, patch_knob(pi));
+            let name = c.name;
             let got = s.active_patch();
-            assert!((got.attack - want.attack).abs() < want.attack * 0.01 + 1e-4,
-                    "{name} attack {} vs {}", got.attack, want.attack);
-            assert!((got.decay - want.decay).abs() < want.decay * 0.01 + 1e-3,
-                    "{name} decay {} vs {}", got.decay, want.decay);
-            assert!((got.release - want.release).abs() < want.release * 0.01 + 1e-3,
-                    "{name} release {} vs {}", got.release, want.release);
-            assert!((got.lfo_rate - want.lfo_rate).abs() < 0.01, "{name} lfo rate");
-            assert_eq!(got.saw, want.saw, "{name} saw");
-            assert_eq!(got.pulse, want.pulse, "{name} pulse");
-            assert_eq!(got.range, want.range, "{name} range");
-            assert_eq!(got.hpf, want.hpf, "{name} hpf");
-            assert_eq!(got.chorus, want.chorus, "{name} chorus");
-            assert_eq!(got.vca_gate, want.vca_gate, "{name} vca");
-            assert!((got.sub_level - want.sub_level).abs() < 1e-6, "{name} sub");
-            assert!((got.noise_level - want.noise_level).abs() < 1e-6, "{name} noise");
-            assert!((got.env_mod - want.env_mod).abs() < 1e-6, "{name} env mod");
-            assert!((got.pwm_depth - want.pwm_depth).abs() < 1e-6, "{name} pwm depth");
-            assert!((got.pulse_width - want.pulse_width).abs() < 1e-6, "{name} pulse width");
+            let close = |got: f64, want: f32, what: &str| {
+                assert!(
+                    (got - f64::from(want)).abs() < 1e-6,
+                    "{name} {what}: {got} where the chart says {want}"
+                );
+            };
+            assert!((got.lfo_rate - lfo_hz(f64::from(c.lfo[0]))).abs() < 1e-9, "{name} lfo rate");
+            close(got.lfo_delay, c.lfo[1], "lfo delay");
+            close(got.lfo_to_pitch, c.dco[0], "dco lfo");
+            close(got.pwm_depth, c.dco[1] * PW_SWING as f32, "pwm depth");
+            assert_eq!(got.pwm_mode, c.pwm_mode, "{name} pwm mode");
+            assert_eq!(got.pulse, c.waves[0], "{name} pulse");
+            assert_eq!(got.saw, c.waves[1], "{name} saw");
+            close(got.sub_level, if c.waves[2] { c.dco[2] } else { 0.0 }, "sub");
+            close(got.noise_level, c.dco[3], "noise");
+            assert_eq!(got.range, c.range, "{name} range");
+            assert_eq!(got.hpf, c.hpf, "{name} hpf");
+            close(got.cutoff, c.vcf[0], "cutoff");
+            close(got.resonance, c.vcf[1], "resonance");
+            close(got.env_mod.abs(), c.vcf[2], "env mod");
+            assert_eq!(got.env_mod < 0.0, c.invert && c.vcf[2] > 0.0, "{name} env polarity");
+            close(got.lfo_to_filter, c.vcf[3], "vcf lfo");
+            close(got.key_follow, c.vcf[4], "kybd");
+            assert_eq!(got.vca_gate, c.gate, "{name} vca");
+            close(got.level, c.level, "level");
+            for (i, (seconds, want)) in [
+                (got.attack, attack_seconds(f64::from(c.env[0]))),
+                (got.decay, decay_seconds(f64::from(c.env[1]))),
+                (got.release, decay_seconds(f64::from(c.env[3]))),
+            ].iter().enumerate() {
+                assert!((seconds - want).abs() < 1e-9, "{name} env time {i}");
+            }
+            close(got.sustain, c.env[2], "sustain");
+            assert_eq!(got.chorus, c.chorus, "{name} chorus");
         }
     }
 
@@ -1974,9 +2357,11 @@ mod tests {
         s.set_parameter(P_VCA_MODE, knob_for(1, 2));
         s.set_parameter(P_ATTACK, 1.0); // a slow envelope the gate must ignore
         let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 8);
-        // Open inside the gate's 3 ms, and no step at the note-on.
+        // Open inside the gate's 3 ms, and no step at the note-on. The window
+        // has to sit inside that ramp to say anything: the gate is 3.5 time
+        // constants wide, so it is already past half way after 0.7 ms.
         assert!(out[0].abs() < 0.01, "gate stepped on at the note-on: {}", out[0]);
-        assert!(peak(&out[..32]) < 0.5 * peak(&out[400..]), "gate did not ramp");
+        assert!(peak(&out[..8]) < 0.25 * peak(&out[400..]), "gate did not ramp");
         assert!(peak(&out[400..]) > 0.01, "gate never opened");
     }
 

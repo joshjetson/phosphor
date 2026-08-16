@@ -670,4 +670,33 @@ mod tests {
             assert!(name.chars().count() <= 8, "parameter name {name:?} overflows its column");
         }
     }
+
+    /// The Juno's factory names run to twenty characters — MYSTERIOUS
+    /// INVENTION — and a player refers to a patch by its number, so the panel
+    /// label is the number and as much of the name as fits. This is the test
+    /// that keeps the abbreviating honest: every label carries its number and
+    /// none of them runs off the end.
+    #[test]
+    fn every_juno_patch_label_fits_the_fx_panel() {
+        const LABEL_COLUMN: usize = 12;
+        let room = FX_PANEL_W as usize - LABEL_COLUMN;
+
+        for index in 0..phosphor_dsp::juno::PATCH_COUNT {
+            let label = phosphor_dsp::juno::PATCH_LABELS[index];
+            assert!(label.chars().count() <= room,
+                "patch {index} {label:?} needs {} of the {room} columns the panel leaves",
+                label.chars().count());
+            let number = phosphor_dsp::juno::PATCH_NUMBERS[index];
+            assert!(label.starts_with(number),
+                "patch {index} {label:?} does not lead with its number {number:?}");
+        }
+        // Every other switch on the panel shares that column.
+        for index in 0..phosphor_dsp::juno::PARAM_COUNT {
+            if let Some(label) = phosphor_dsp::juno::discrete_label(index, 0.5) {
+                assert!(label.chars().count() <= room, "switch label {label:?} does not fit");
+            }
+            let name = phosphor_dsp::juno::PARAM_NAMES[index];
+            assert!(name.chars().count() <= 8, "parameter name {name:?} overflows its column");
+        }
+    }
 }

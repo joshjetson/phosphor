@@ -54,7 +54,7 @@ impl NavState {
                 };
                 // The DX7 and the Juno step their selectors by index rather
                 // than by adding a fraction of the knob's travel: 256 voices,
-                // or 18 patches and a three-position range switch, are coarse
+                // or 56 patches and a three-position range switch, are coarse
                 // enough that an accumulated rounding error lands on the wrong
                 // side of a step boundary, which reads as a keypress that did
                 // nothing.
@@ -151,7 +151,7 @@ impl NavState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phosphor_dsp::dx7;
+    use phosphor_dsp::{dx7, juno};
 
     /// A nav state whose selected track is a DX7 at its default parameters.
     fn dx7_track() -> NavState {
@@ -196,6 +196,66 @@ mod tests {
             nav.adjust_synth_param(0.05);
         }
         assert_eq!(selected(&nav), (dx7::BANK_COUNT - 1, patch));
+    }
+
+    /// A nav state whose selected track is a Juno-60 at its default panel.
+    fn juno_track() -> NavState {
+        let mut nav = NavState::new(super::super::initial_tracks());
+        let mut track = TrackState::new("juno", 0, true, TrackKind::Instrument, vec![]);
+        track.instrument_type = Some(InstrumentType::Juno60);
+        track.synth_params = juno::PARAM_DEFAULTS.to_vec();
+        nav.tracks.insert(0, track);
+        nav.track_cursor = 0;
+        nav
+    }
+
+    fn juno_patch(nav: &NavState) -> usize {
+        juno::patch_index(nav.tracks[0].synth_params[juno::P_PATCH])
+    }
+
+    #[test]
+    fn juno_selectors_move_one_step_per_keypress() {
+        // 56 factory patches: a keypress is one patch, not a fraction of the
+        // knob's travel, and the whole bank has to be reachable from either
+        // end. The three-position PWM switch is here too, because a switch
+        // that gained a position is the one most likely to be stepped by a
+        // stale fraction.
+        let mut nav = juno_track();
+        nav.clip_view.synth_param_cursor = juno::P_PATCH;
+        for step in 1..juno::PATCH_COUNT {
+            nav.adjust_synth_param(0.05);
+            assert_eq!(juno_patch(&nav), step, "patch knob step {step}");
+        }
+        nav.adjust_synth_param(0.05);
+        assert_eq!(juno_patch(&nav), juno::PATCH_COUNT - 1, "patch knob ran off the top");
+        for step in (0..juno::PATCH_COUNT - 1).rev() {
+            nav.adjust_synth_param(-0.05);
+            assert_eq!(juno_patch(&nav), step, "patch knob back to {step}");
+        }
+
+        // Selecting a patch loads its panel: 78 SYNTHESIZER DRUM is the one
+        // with the filter at self-oscillation and no oscillator at all.
+        for _ in 0..juno::PATCH_COUNT {
+            nav.adjust_synth_param(0.05);
+        }
+        let panel = &nav.tracks[0].synth_params;
+        assert_eq!(juno_patch(&nav), juno::PATCH_COUNT - 1);
+        assert!((panel[juno::P_RESO] - 1.0).abs() < 1e-6, "res {}", panel[juno::P_RESO]);
+
+        // A fresh panel, because the switch has to start where 11 STRINGS 1
+        // leaves it rather than where the last patch of the sweep did.
+        let mut nav = juno_track();
+        nav.clip_view.synth_param_cursor = juno::P_PWM_MODE;
+        let label = |nav: &NavState| {
+            juno::discrete_label(juno::P_PWM_MODE, nav.tracks[0].synth_params[juno::P_PWM_MODE])
+        };
+        assert_eq!(label(&nav), Some("LFO"));
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            nav.adjust_synth_param(0.05);
+            seen.push(label(&nav));
+        }
+        assert_eq!(seen, [Some("MAN"), Some("ENV"), Some("ENV")]);
     }
 
     #[test]

@@ -131,8 +131,16 @@ fn render(plugin: &mut dyn Plugin, notes: &[u8], velocity: u8, blocks: usize) ->
     m
 }
 
+/// The knob position that selects patch `index` of `count`.
+///
+/// The midpoint of the step, not `index / (count - 0.01)`: the quotient form
+/// can land a hair below its own step and select the patch before it, which
+/// silently measures the wrong preset. It does that for seven of the
+/// Jupiter's 42 indices, so six of that bank's patches — 2, 4, 8, 16, 21 and
+/// 32 — were never rendered by this sweep at all, while six others were
+/// rendered twice.
 fn patch_value(index: usize, count: usize) -> f32 {
-    index as f32 / (count as f32 - 0.01)
+    (index as f32 + 0.5) / count as f32
 }
 
 /// Point a DX7 at one of the 256 factory voices by number. The instrument has
@@ -152,6 +160,10 @@ fn dx7_voice(index: usize) -> dx7::Dx7Synth {
 /// TIMPANI (voice 147) and ROM1B's HARP 1 (voice 60), whose attack transients
 /// reach 1.65 and 1.62 before the bounding stage. ROM4A's CLARINET (voice 195)
 /// is the loudest *sustained* voice, so it is here too.
+///
+/// The Juno's is 44 TUBA, the loudest of its 56 factory patches: 16' saw with
+/// the filter wide open, which is as much of the DCO as that panel can put
+/// through at once.
 fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
     let dx7_timpani = dx7_voice(147);
     let dx7_harp = dx7_voice(60);
@@ -160,8 +172,8 @@ fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
     jupiter_organ.set_parameter(jupiter::P_PATCH, patch_value(9, jupiter::PATCH_COUNT));
     let mut odyssey_funk = odyssey::OdysseySynth::new();
     odyssey_funk.set_parameter(odyssey::P_PATCH, patch_value(1, odyssey::PATCH_COUNT));
-    let mut juno_clav = juno::Juno60Synth::new();
-    juno_clav.set_parameter(juno::P_PATCH, patch_value(15, juno::PATCH_COUNT));
+    let mut juno_tuba = juno::Juno60Synth::new();
+    juno_tuba.set_parameter(juno::P_PATCH, juno::patch_knob(27));
 
     vec![
         ("dx7 147 TIMPANI", Box::new(dx7_timpani)),
@@ -169,7 +181,7 @@ fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
         ("dx7 195 CLARINET", Box::new(dx7_clarinet)),
         ("jupiter 9 Organ", Box::new(jupiter_organ)),
         ("odyssey 1 Funk", Box::new(odyssey_funk)),
-        ("juno 15 Clav", Box::new(juno_clav)),
+        ("juno 44 TUBA", Box::new(juno_tuba)),
         ("phosphor", Box::new(synth::PhosphorSynth::new())),
     ]
 }
@@ -255,10 +267,10 @@ fn default_patches_have_headroom_on_every_voicing() {
 /// revoiced above the target is caught here rather than in a speaker.
 #[test]
 fn no_patch_in_any_bank_exceeds_the_target() {
-    // Shorter render than the per-voicing tests: this is a sweep over 360
-    // presets, 256 of them the DX7's factory voices, and the latest peak
-    // measured anywhere in the banks arrives at 192 ms, so 370 ms leaves the
-    // attack and decay well covered.
+    // Shorter render than the per-voicing tests: this is a sweep over 399
+    // presets, 256 of them the DX7's factory voices and 56 the Juno's, and the
+    // latest peak measured anywhere in the banks arrives at 192 ms, so 370 ms
+    // leaves the attack and decay well covered.
     const SWEEP_BLOCKS: usize = 64;
 
     let mut worst = (0.0f32, String::new());
@@ -286,9 +298,9 @@ fn no_patch_in_any_bank_exceeds_the_target() {
     }
     for index in 0..juno::PATCH_COUNT {
         let mut s = juno::Juno60Synth::new();
-        s.set_parameter(juno::P_PATCH, patch_value(index, juno::PATCH_COUNT));
+        s.set_parameter(juno::P_PATCH, juno::patch_knob(index));
         let m = render(&mut s, TWO_HAND_EIGHT, 127, SWEEP_BLOCKS);
-        check_patch(&m, "juno", juno::PATCH_NAMES[index], &mut worst);
+        check_patch(&m, "juno", juno::PATCH_LABELS[index], &mut worst);
     }
     {
         let mut s = synth::PhosphorSynth::new();
@@ -306,6 +318,35 @@ fn no_patch_in_any_bank_exceeds_the_target() {
          the trims are too deep to be useful",
         worst.1, worst.0
     );
+}
+
+/// The peak of a slow sweep arrives long after the other banks have finished.
+///
+/// Everything else here renders 0.37 s or 1.16 s, because that is where every
+/// attack transient in the project lands. The Juno's factory bank breaks that
+/// assumption: 77 SURF is a noise wash swept by an LFO at 0.31 Hz, so its
+/// loudest sample is 4.7 s into a held chord — four times later than anything
+/// else measured anywhere in this file, and 2.3 times the peak the 0.37 s
+/// sweep sees. Held for thirty seconds it reaches 0.687 and stops there, so
+/// the number below is the whole of it, but a short render would have called
+/// this patch quiet.
+#[test]
+fn the_junos_slow_sweeps_peak_after_the_other_banks_have_finished() {
+    // 11.6 s, which is three cycles of the slowest LFO in the bank.
+    const HOLD: usize = 2000;
+    // 77 SURF, 57 REED 3 and 51 FUNNY CAT: the three patches whose peak
+    // arrives after the 1.16 s the per-voicing tests render.
+    const LATE: [(usize, &str); 3] = [(54, "77 SURF"), (38, "57 REED 3"), (32, "51 FUNNY CAT")];
+
+    let mut worst = (0.0f32, String::new());
+    for (index, name) in LATE {
+        let mut s = juno::Juno60Synth::new();
+        s.set_parameter(juno::P_PATCH, juno::patch_knob(index));
+        assert_eq!(juno::PATCH_LABELS[index], name, "the bank moved under this test");
+        let m = render(&mut s, TWO_HAND_EIGHT, 127, HOLD);
+        check_patch(&m, "juno held", name, &mut worst);
+    }
+    assert!(worst.0 > 0.5, "the slow sweeps no longer reach the level they were pinned at");
 }
 
 fn check_patch(m: &Measured, synth: &str, patch: &str, worst: &mut (f32, String)) {
@@ -372,8 +413,8 @@ fn no_drum_kit_exceeds_the_target() {
 ///   into the saturator.
 ///
 /// The floor is a regression guard, not a derived quantity — the measured
-/// values are 0.0143 (DX7, the tightest), 0.0149, 0.0166, 0.0191, 0.0298 and
-/// 0.0448 — so it sits about 2 dB under the quietest. Enough margin that a
+/// values are 0.0187 (DX7, the tightest), 0.0198, 0.0210, 0.0235, 0.0270 and
+/// 0.0314 — so it sits about 4 dB under the quietest. Enough margin that a
 /// preset edit does not trip it, not enough that another 3.6 dB of trim could
 /// hide beneath it.
 #[test]
@@ -513,7 +554,7 @@ fn instruments_are_level_matched() {
     let mut odyssey_mid = odyssey::OdysseySynth::new();
     odyssey_mid.set_parameter(odyssey::P_PATCH, patch_value(4, odyssey::PATCH_COUNT));
     let mut juno_mid = juno::Juno60Synth::new();
-    juno_mid.set_parameter(juno::P_PATCH, patch_value(1, juno::PATCH_COUNT));
+    juno_mid.set_parameter(juno::P_PATCH, juno::patch_knob(3));
 
     let levels = [
         ("dx7", triad_rms(&mut dx7_mid)),

@@ -84,7 +84,7 @@ cargo run --release -- --no-midi
 | **DX7** | FM | 16 | **256** | All 8 original factory cartridges, decoded from the ROM dumps |
 | **Jupiter-8** | Analog poly | 8 | 42 | Dual polyBLEP VCOs, IR3109 OTA ladder filter, 4 voice modes |
 | **ARP Odyssey** | Duophonic | 2 | 44 | 3 selectable filter types (4023/4035/4075), hard sync, ring mod, S&H |
-| **Juno-60** | DCO poly | 6 | 18 | Complete 25-control front panel, measured against the hardware |
+| **Juno-60** | DCO poly | 6 | **56** | All 56 factory patches, read off Roland's patch charts; complete 25-control front panel measured against the hardware |
 
 ### Drum Rack
 
@@ -115,7 +115,17 @@ Pick a cartridge with the `bank` parameter, then a voice with `patch`.
 
 **Odyssey** (44 patches): Bass, Funk, Sync Lead, Bells, Pad, S&H, Zap, Hawkshaw Funk, Bennett Atmos, Numan Cars, Sci-Fi Wobble, Percussive Pluck, Thick Lead, Filter Sweep, Noise Hit, Duo Split, Snare Drum, Kick, Resonance, Squelch, Growl, Wind, Wah Bass, Stab, Buzz, Flute, Tremolo, Siren, Brass, Organ, Conga, Tom, Clap, PWM Bass, Violin, Oboe, Choir, Trombone, Marimba, Alarm, Robot, Whistler, Sitar, Theremin
 
-**Juno-60** (18 patches): Classic Pad, PWM Pad, Bass, Brass, Strings, Hoover, Acid, Warm Lead, Choir, Pluck, Organ, Synth Bass, Glass Bells, Resonant Pad, Wind, Clav, Sub Bass, Saw Pad
+**Juno-60** (56 factory patches, in the instrument's own seven banks of eight):
+
+- **Bank 1** — 11 Strings 1, 12 Strings 2, 13 Strings 3, 14 Organ 1, 15 Organ 2, 16 Organ 3, 17 Brass, 18 Phase Brass
+- **Bank 2** — 21 Piano 1, 22 Piano 2, 23 Celesta, 24 Mellow Piano, 25 Harpsichord 1, 26 Harpsichord 2, 27 Guitar, 28 Synthesizer Harp
+- **Bank 3** — 31 Bass 1, 32 Bass 2, 33 Clavichord 1, 34 Clavichord 2, 35 Pizzicato Sound 1, 36 Pizzicato Sound 2, 37 Xylophone, 38 Glockenspeil
+- **Bank 4** — 41 Violine, 42 Trumpet, 43 Horn, 44 Tuba, 45 Flute, 46 Clarinet, 47 Oboe, 48 English Horn
+- **Bank 5** — 51 Funny Cat, 52 Wah Brass, 53 Phase Combination, 54 Reed 1, 55 Popcorn, 56 Reed 2, 57 Reed 3, 58 PWM Chorus
+- **Bank 6** — 61 Synthesizer Organ, 62 Effect Sound 1, 63 Effect Sound 2, 64 Space Harp, 65 Funk, 66 Space Sound 1, 67 Mysterious Invention, 68 Space Sound 2
+- **Bank 7** — 71 Percussive Sound 1, 72 Percussive Sound 2, 73 Whistle, 74 Effect Sound 3, 75 UFO, 76 Space Sound 3, 77 Surf, 78 Synthesizer Drum — the bank whose sound source is the VCF oscillating on its own
+
+Names and spellings are Roland's, Glockenspeil included.
 
 ---
 
@@ -139,7 +149,7 @@ Pick a cartridge with the `bank` parameter, then a voice with `patch`.
 - **DX7**: all 256 original factory voices, decoded from the ROM cartridge dumps and played on a 6-operator engine modelled on the YM21280/YM21290 chipset — all 32 algorithms decoded from the hardware table (including the multi-operator feedback loops in algorithms 4 and 6), log-domain envelopes with the hardware rate curve and its distinct attack shape, coarse/fine/detune frequency on the real parameter grid, keyboard level and rate scaling, global LFO with six waveforms and two-stage delay, and a per-voice pitch envelope
 - **Jupiter-8**: Dual polyBLEP VCOs, IR3109 4-pole OTA ladder filter with tanh saturation, per-voice analog drift, 4 voice modes (Solo/Unison/Poly1/Poly2)
 - **ARP Odyssey**: Duophonic split, 3 selectable filters (12dB SVF / 24dB Moog ladder / 24dB Norton), XOR ring mod, hard sync, Sample & Hold
-- **Juno-60**: the full front panel — LFO rate/delay, DCO with PWM depth and mode, saw/pulse/sub/noise and a 16'/8'/4' range switch, 4-position HPF, IR3109-style 24 dB/oct resonant VCF with env polarity, LFO and keyboard follow, ENV/GATE VCA, shared ADSR, and BBD stereo chorus (I / II / I+II). Envelope taper, filter corner frequencies and chorus rates are calibrated against measurements of the hardware rather than approximated
+- **Juno-60**: the full front panel — LFO rate/delay, DCO with PWM depth and a 3-position PWM mode (LFO/MANUAL/ENV), saw/pulse/sub/noise and a 16'/8'/4' range switch, 4-position HPF, IR3109-style 24 dB/oct resonant VCF with env polarity, LFO and keyboard follow, ENV/GATE VCA, shared ADSR, and BBD stereo chorus (I / II / I+II). Envelope taper, LFO rate taper, filter corner frequencies and chorus rates are calibrated against measurements of the hardware rather than approximated. All 56 factory patches are the instrument's own, transcribed from Roland's published patch charts
 - **Drum Rack**: 10 kits including circuit-accurate 808/909/707/606, creative 777, warm tape-saturated tsty series, and resonator-based physical modeling
 
 **Session Management**
@@ -190,7 +200,7 @@ Pick a cartridge with the `bank` parameter, then a voice with `patch`.
 - Shared domain models via atomics (no locks between threads)
 - Command channel pattern for UI-to-audio communication
 - Plugin trait for instruments and effects — same interface for built-in and third-party
-- 389 tests covering DSP, MIDI, engine, mixer, and navigation
+- 395 tests covering DSP, MIDI, engine, mixer, and navigation
 
 ---
 
@@ -454,7 +464,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace  # 389 tests
+cargo test --workspace  # 395 tests
 ```
 
 ---
@@ -474,7 +484,7 @@ phosphor/
 │   │       ├── dx7.rs         # DX7 FM synthesizer (51 patches)
 │   │       ├── jupiter.rs     # Jupiter-8 analog poly (42 patches)
 │   │       ├── odyssey.rs     # ARP Odyssey duophonic (44 patches)
-│   │       ├── juno.rs        # Juno-60 DCO + BBD chorus (18 patches)
+│   │       ├── juno.rs        # Juno-60 DCO + BBD chorus (56 factory patches)
 │   │       ├── drum_rack/     # Drum machine (10 kits)
 │   │       │   ├── mod.rs     # Shared types, voice, plugin impl
 │   │       │   └── racks/     # Per-kit synthesis (808, 909, 707, 606, 777, tsty1-5)

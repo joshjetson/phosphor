@@ -95,7 +95,7 @@ const LOUDEST: [(&str, usize); 5] = [
     ("dx7", 147),
     ("jupiter", 9),
     ("odyssey", 1),
-    ("juno", 15),
+    ("juno", 27), // 44 TUBA
     ("phosphor", 0),
 ];
 
@@ -122,7 +122,9 @@ fn build(name: &str, patch: usize, count: usize) -> Box<dyn Plugin> {
         }
         "juno" => {
             let mut s = juno::Juno60Synth::new();
-            s.set_parameter(juno::P_PATCH, value);
+            // 56 patches: the knob has to land on the midpoint of a step
+            // rather than on its edge, or the sweep measures the patch before.
+            s.set_parameter(juno::P_PATCH, juno::patch_knob(patch));
             Box::new(s)
         }
         _ => Box::new(synth::PhosphorSynth::new()),
@@ -134,7 +136,7 @@ fn patch_name(name: &str, index: usize) -> &'static str {
         "dx7" => dx7::voice_name(index),
         "jupiter" => jupiter::PATCH_NAMES[index],
         "odyssey" => odyssey::PATCH_NAMES[index],
-        "juno" => juno::PATCH_NAMES[index],
+        "juno" => juno::PATCH_LABELS[index],
         _ => "-",
     }
 }
@@ -196,7 +198,7 @@ const ORDINARY: &[u8] = &[60, 64, 67];
 /// `tests/headroom.rs` uses to check the instruments are level-matched, so
 /// the RMS column here and that assertion move together.
 const MEDIAN: [(&str, usize); 5] =
-    [("dx7", 8), ("jupiter", 1), ("odyssey", 4), ("juno", 1), ("phosphor", 0)];
+    [("dx7", 8), ("jupiter", 1), ("odyssey", 4), ("juno", 3), ("phosphor", 0)];
 
 /// The worst case each bank can be driven to. Voicing included, because the
 /// duophonic Odyssey peaks on a single note rather than on a chord.
@@ -204,7 +206,7 @@ const WORST: [(&str, usize, &str, &[u8]); 5] = [
     ("dx7", 147, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
     ("jupiter", 9, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
     ("odyssey", 1, "single", &[60]),
-    ("juno", 15, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
+    ("juno", 27, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
     ("phosphor", 0, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
 ];
 
