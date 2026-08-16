@@ -112,7 +112,10 @@ fn build(name: &str, patch: usize, count: usize) -> Box<dyn Plugin> {
         }
         "jupiter" => {
             let mut s = jupiter::Jupiter8Synth::new();
-            s.set_parameter(jupiter::P_PATCH, value);
+            // 42 patches: the knob has to land on the midpoint of a step
+            // rather than on its edge, or the sweep measures the patch
+            // before — it does that for seven of this bank's indices.
+            s.set_parameter(jupiter::P_PATCH, jupiter::patch_knob(patch));
             Box::new(s)
         }
         "odyssey" => {

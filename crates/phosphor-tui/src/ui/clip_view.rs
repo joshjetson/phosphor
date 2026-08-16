@@ -172,11 +172,17 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                     let bar: String = "\u{2588}".repeat(filled)
                         + &"\u{2591}".repeat(bar_w.saturating_sub(filled));
 
-                    // Format value nicely. The Juno's envelope sliders are not
-                    // linear in time and do not sit at the same indices as the
-                    // other instruments', so it reports its own seconds.
-                    let display_val = if is_juno {
-                        match phosphor_dsp::juno::param_seconds(i, val) {
+                    // Format value nicely. The Juno's and the Jupiter's time
+                    // sliders are not linear in time and do not sit at the
+                    // same indices as the other instruments', so each reports
+                    // its own seconds.
+                    let display_val = if is_juno || is_jupiter {
+                        let secs = if is_juno {
+                            phosphor_dsp::juno::param_seconds(i, val)
+                        } else {
+                            phosphor_dsp::jupiter::param_seconds(i, val)
+                        };
+                        match secs {
                             Some(secs) if secs < 1.0 => format!("{:.0}ms", secs * 1000.0),
                             Some(secs) => format!("{secs:.1}s"),
                             None => format!("{:.0}%", val * 100.0),
@@ -696,6 +702,31 @@ mod tests {
                 assert!(label.chars().count() <= room, "switch label {label:?} does not fit");
             }
             let name = phosphor_dsp::juno::PARAM_NAMES[index];
+            assert!(name.chars().count() <= 8, "parameter name {name:?} overflows its column");
+        }
+    }
+
+    /// The Jupiter's panel grew from sixteen controls to thirty-two, seven of
+    /// them switches that print a word rather than a bar. Every one of those
+    /// words, and every parameter name, has to fit the column it is given.
+    #[test]
+    fn every_jupiter_panel_label_fits_the_fx_panel() {
+        const LABEL_COLUMN: usize = 12;
+        let room = FX_PANEL_W as usize - LABEL_COLUMN;
+
+        for name in phosphor_dsp::jupiter::PATCH_NAMES {
+            assert!(name.chars().count() <= room,
+                "patch {name:?} needs {} of the {room} columns the panel leaves",
+                name.chars().count());
+        }
+        for index in 0..phosphor_dsp::jupiter::PARAM_COUNT {
+            for position in [0.0, 0.3, 0.6, 1.0] {
+                if let Some(label) = phosphor_dsp::jupiter::discrete_label(index, position) {
+                    assert!(label.chars().count() <= room,
+                        "switch label {label:?} does not fit");
+                }
+            }
+            let name = phosphor_dsp::jupiter::PARAM_NAMES[index];
             assert!(name.chars().count() <= 8, "parameter name {name:?} overflows its column");
         }
     }

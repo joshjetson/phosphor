@@ -31,12 +31,7 @@ impl NavState {
                     idx == 0
                 };
                 let actual_delta = if is_discrete {
-                    let step = if is_jupiter {
-                        match idx {
-                            0 => 1.0 / (phosphor_dsp::jupiter::PATCH_COUNT as f32 - 0.01),
-                            _ => 0.25,
-                        }
-                    } else if is_odyssey {
+                    let step = if is_odyssey {
                         match idx {
                             0 => 1.0 / (phosphor_dsp::odyssey::PATCH_COUNT as f32 - 0.01),
                             6 => 0.34, // 3 filter types
@@ -52,16 +47,18 @@ impl NavState {
                 } else {
                     delta
                 };
-                // The DX7 and the Juno step their selectors by index rather
-                // than by adding a fraction of the knob's travel: 256 voices,
-                // or 56 patches and a three-position range switch, are coarse
-                // enough that an accumulated rounding error lands on the wrong
-                // side of a step boundary, which reads as a keypress that did
-                // nothing.
+                // The DX7, the Juno and the Jupiter step their selectors by
+                // index rather than by adding a fraction of the knob's travel:
+                // 256 voices, or 56 patches and a three-position range switch,
+                // or 42 patches and seven switches, are coarse enough that an
+                // accumulated rounding error lands on the wrong side of a step
+                // boundary, which reads as a keypress that did nothing.
                 let new_val = if is_discrete && is_dx7 {
                     phosphor_dsp::dx7::step_discrete(idx, track.synth_params[idx], delta > 0.0)
                 } else if is_discrete && is_juno {
                     phosphor_dsp::juno::step_discrete(idx, track.synth_params[idx], delta > 0.0)
+                } else if is_discrete && is_jupiter {
+                    phosphor_dsp::jupiter::step_discrete(idx, track.synth_params[idx], delta > 0.0)
                 } else {
                     (track.synth_params[idx] + actual_delta).clamp(0.0, 1.0)
                 };
@@ -151,7 +148,7 @@ impl NavState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phosphor_dsp::{dx7, juno};
+    use phosphor_dsp::{dx7, juno, jupiter};
 
     /// A nav state whose selected track is a DX7 at its default parameters.
     fn dx7_track() -> NavState {
@@ -256,6 +253,58 @@ mod tests {
             seen.push(label(&nav));
         }
         assert_eq!(seen, [Some("MAN"), Some("ENV"), Some("ENV")]);
+    }
+
+    /// A nav state whose selected track is a Jupiter-8 at its default panel.
+    fn jupiter_track() -> NavState {
+        let mut nav = NavState::new(super::super::initial_tracks());
+        let mut track = TrackState::new("jupiter", 0, true, TrackKind::Instrument, vec![]);
+        track.instrument_type = Some(InstrumentType::Jupiter8);
+        track.synth_params = jupiter::PARAM_DEFAULTS.to_vec();
+        nav.tracks.insert(0, track);
+        nav.track_cursor = 0;
+        nav
+    }
+
+    #[test]
+    fn jupiter_selectors_move_one_step_per_keypress() {
+        // 42 patches and seven switches. The patch knob used to step by
+        // 1/(42 - 0.01) of the travel, which is a fraction that does not
+        // divide the bank: the accumulated error lands on the wrong side of a
+        // boundary and the keypress reads as having done nothing.
+        let mut nav = jupiter_track();
+        nav.clip_view.synth_param_cursor = jupiter::P_PATCH;
+        let patch = |nav: &NavState| {
+            jupiter::patch_index(nav.tracks[0].synth_params[jupiter::P_PATCH])
+        };
+        for step in 1..jupiter::PATCH_COUNT {
+            nav.adjust_synth_param(0.05);
+            assert_eq!(patch(&nav), step, "patch knob step {step}");
+        }
+        nav.adjust_synth_param(0.05);
+        assert_eq!(patch(&nav), jupiter::PATCH_COUNT - 1, "patch knob ran off the top");
+        for step in (0..jupiter::PATCH_COUNT - 1).rev() {
+            nav.adjust_synth_param(-0.05);
+            assert_eq!(patch(&nav), step, "patch knob back to {step}");
+        }
+
+        // A fresh panel, because the waveform switch has to start where patch
+        // 0 leaves it rather than where the last patch of the sweep did.
+        let mut nav = jupiter_track();
+        nav.clip_view.synth_param_cursor = jupiter::P_VCO2_WAVE;
+        let label = |nav: &NavState| {
+            jupiter::discrete_label(
+                jupiter::P_VCO2_WAVE,
+                nav.tracks[0].synth_params[jupiter::P_VCO2_WAVE],
+            )
+        };
+        assert_eq!(label(&nav), Some("SAW"));
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            nav.adjust_synth_param(0.05);
+            seen.push(label(&nav));
+        }
+        assert_eq!(seen, [Some("PLS"), Some("NOISE"), Some("NOISE")]);
     }
 
     #[test]

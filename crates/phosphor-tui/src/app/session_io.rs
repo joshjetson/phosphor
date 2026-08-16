@@ -179,9 +179,9 @@ impl App {
                 // Restore synth params. The block is positional, so a saved
                 // block of a different length is a different panel — the
                 // Juno's grew from 16 controls to 25 when its front panel was
-                // finished — and copying it in slot by slot would load every
-                // value into the wrong control. A mismatch keeps the
-                // instrument's defaults instead.
+                // finished, and the Jupiter's from 16 to 32 — and copying it
+                // in slot by slot would load every value into the wrong
+                // control. A mismatch keeps the instrument's defaults instead.
                 if st.synth_params.len() == track.synth_params.len() {
                     track.synth_params.copy_from_slice(&st.synth_params);
                 } else {
