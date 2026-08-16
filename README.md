@@ -91,9 +91,9 @@ cargo run --release -- --no-midi
 | Kit | Character |
 |-----|-----------|
 | **808** | Rebuilt on the service-notes circuit values — 49.4 Hz bridged-T kick, 238/476 Hz snare, one shared free-running six-oscillator metal bank |
-| **909** | Triangle snares, bit-crushed hats, longer pitch sweeps |
-| **707** | Hybrid 808/909 character |
-| **606** | Thinner, clickier, higher frequencies |
+| **909** | The hybrid it really is — analog kick/snare/toms/rim/clap, and hi-hat, ride and crash as 6-bit 18 kHz samples |
+| **707** | A PCM machine, not an analog one — sampled character through post-converter analog envelopes |
+| **606** | Its own seven analog voices, built from the service-notes component values |
 | **777** | 808/909 bass + creative FM/ring-mod/wavefolder sounds |
 | **tsty-1** | Warm vintage, tape-saturated, reel-to-reel character |
 | **tsty-2** | Acoustic modal — Bessel membrane modes, multi-phase envelopes |
@@ -206,7 +206,7 @@ Names and spellings are Roland's, Glockenspeil included.
 - Shared domain models via atomics (no locks between threads)
 - Command channel pattern for UI-to-audio communication
 - Plugin trait for instruments and effects — same interface for built-in and third-party
-- 444 tests covering DSP, MIDI, engine, mixer, and navigation
+- 461 tests covering DSP, MIDI, engine, mixer, and navigation
 
 ---
 
@@ -470,7 +470,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace  # 444 tests
+cargo test --workspace  # 461 tests
 ```
 
 ---
