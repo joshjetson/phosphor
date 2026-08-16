@@ -102,7 +102,15 @@ use crate::level::soft_saturate;
 /// landing on one sample is a quantised fill, not ordinary playing, and the
 /// alternative — trimming the whole rack down to accommodate it — is what
 /// made every beat too quiet to use.
-const OUTPUT_TRIM: f32 = 0.5557;
+///
+/// The second factor is the GAIN knob's old default. The trim was measured
+/// with that knob at 0.75, so the quarter of its travel above 0.75 was a
+/// boost into headroom nothing had measured — a full kit reached 0.928 with
+/// the knob at the top, past the master limiter's ceiling. Folding it in here
+/// leaves the default level identical to the sample and makes GAIN a control
+/// that can only cut, which is the same reasoning the twelve level knobs are
+/// pinned at the top of their travel for.
+const OUTPUT_TRIM: f32 = 0.5557 * 0.75;
 
 /// Per-voice trim, applied before the voices are summed. Unchanged from when
 /// it was written inline at the end of `DrumVoice::tick`.
@@ -220,7 +228,8 @@ pub const PARAM_NAMES: [&str; PARAM_COUNT] = [
 /// The levels sit at the top of their travel rather than in the middle so that
 /// the default kit is exactly as loud as the rack was before it had level
 /// knobs at all — a level knob that can only cut is one that cannot introduce
-/// a headroom case that `tests/headroom.rs` has not already measured.
+/// a headroom case that `tests/headroom.rs` has not already measured. GAIN is
+/// at the top for the same reason; see [`OUTPUT_TRIM`].
 pub const PARAM_DEFAULTS: [f32; PARAM_COUNT] = [
     0.0,  // kit: 808
     1.0,  // accent: the trigger bus fully open, so velocity reads as written
@@ -237,7 +246,7 @@ pub const PARAM_DEFAULTS: [f32; PARAM_COUNT] = [
     1.0, 0.5,                // open hat
     1.0, 0.5,                // closed hat
     0.0,                     // drive
-    0.75,                    // gain
+    1.0,                     // gain: the top of its travel, like the levels
 ];
 
 // ── Discrete controls ──
@@ -1131,11 +1140,98 @@ pub(crate) fn osc_triangle(phase: f64) -> f64 {
     }
 }
 
-/// Soft-clip distortion.
+/// Soft-clip distortion, at a fixed amount that is part of a voice's circuit.
+///
+/// Used with a constant: the 909's bass drum is always a little overdriven and
+/// the 808's rimshot always a little rounded, whatever the panel says. The
+/// DRIVE knob does not come through here — see [`drive_stage`], which is the
+/// same idea with the level taken back out.
 #[inline]
 pub(crate) fn soft_clip(x: f64, drive: f64) -> f64 {
     let gained = x * (1.0 + drive * 8.0);
     gained / (1.0 + gained.abs()).sqrt()
+}
+
+/// The signal level the DRIVE knob holds still, in the units a voice writes
+/// before the per-voice trim.
+///
+/// The knob preserves the level of a signal *at* this amplitude exactly, lifts
+/// what is quieter towards it and holds down what is louder — which is what a
+/// compressor does, and what makes a drum sound driven rather than just loud.
+///
+/// Measured against the rack rather than picked. The voices a full kit is
+/// struck from peak between 0.83 and 1.13 here, so a drum in this rack *is*
+/// about 1 — but holding a drum's peak still is not the same as holding a kit
+/// still, because everything under that peak comes up towards it and eight
+/// voices summed carry the rise. At a reference of 1 the SDS-V reached 0.913
+/// and the 777 0.895, both past the master limiter's ceiling; at three
+/// quarters nothing in the rack reaches 0.886 anywhere in the knob's travel,
+/// and no full kit's peak moves more than 1.1 dB across it — the SDS-V's
+/// 2.5 dB excepted, for the reason given in `no_drive_setting_exceeds_the
+/// _target`.
+///
+/// What it costs is at the other end: a *solo* bass drum sits above the
+/// reference, so the knob takes peak off one as it is turned up — 2.2 dB on
+/// the 808, 4.0 on the 909, whose kick reaches the knob through a fixed
+/// overdrive as well. Both gain RMS over the same travel, which is the
+/// direction the ear reads.
+const DRIVE_REFERENCE: f64 = 0.75;
+
+/// What [`soft_clip`] at 0.35 does to a full-scale input, which is the level
+/// the 909's and the 777's bass drums leave their fixed overdrive at.
+///
+/// `3.8 / sqrt(4.8)`, pinned here because `f64::sqrt` is not a const function;
+/// `the_fixed_kick_overdrive_level_is_what_it_says` holds it to that.
+const KICK_OVERDRIVE_LEVEL: f64 = 1.734_454_8;
+
+/// [`DRIVE_REFERENCE`] for the one signal in the rack that is not a bare
+/// voice: the 909's and the 777's bass drums, which reach the knob already
+/// through a fixed overdrive and therefore already 4.8 dB above everything
+/// else. Same rule, applied to where that signal actually sits.
+const KICK_DRIVE_REFERENCE: f64 = KICK_OVERDRIVE_LEVEL * DRIVE_REFERENCE;
+
+/// The DRIVE knob's waveshaper: harmonics without level.
+///
+/// `amount` is the knob scaled by however hard that kit's circuit is driven —
+/// the 909's bass drum takes three times the panel's reading, the rest of the
+/// rack twice.
+///
+/// ```text
+/// a = amount * 8
+/// y = x * (1 + a*r) / (1 + a*|x|),   r = DRIVE_REFERENCE
+/// ```
+///
+/// Four properties, and the knob is wrong without any of them:
+///
+/// * **Identity at zero.** `a = 0` gives `y = x` exactly, in f64 and in f32,
+///   so the bottom of the knob is the kit as voiced rather than a kit with a
+///   waveshaper switched into it.
+/// * **Level-preserving at the reference.** `|x| = r` gives `|y| = r` for
+///   every `a`. The old curve multiplied by up to 17 before its own
+///   denominator, so the knob was a level control first and a tone control
+///   second: a solo 808 kick went from 0.16 to 0.66 across its travel, and at
+///   the top of it nine of the fifteen kits crossed the master limiter's
+///   ceiling.
+/// * **Monotonic and odd.** `dy/dx = (1 + a*r)/(1 + a|x|)^2 > 0`, so the curve
+///   never folds back, and `y(-x) = -y(x)`, so it makes odd harmonics — the
+///   ones a diode pair makes — rather than a DC offset.
+/// * **Bounded.** `|y| < r + 1/a` for `a > 0`, where the old curve grew
+///   without limit as `sqrt(x)`.
+#[inline]
+pub(crate) fn drive_stage(x: f64, amount: f64) -> f64 {
+    drive_stage_at(x, amount, DRIVE_REFERENCE)
+}
+
+/// [`drive_stage`] against a level other than a bare voice's.
+///
+/// The 909's bass drum and the 777's are already through a fixed overdrive by
+/// the time the knob sees them, and that stage leaves them well above the
+/// level everything else in the rack sits at. Holding them still means holding
+/// them still *there*.
+#[inline]
+pub(crate) fn drive_stage_at(x: f64, amount: f64, reference: f64) -> f64 {
+    let a = amount * 8.0;
+    x * (1.0 + a * reference) / (1.0 + a * x.abs())
 }
 
 /// Simple one-pole low-pass filter state.
@@ -2602,6 +2698,70 @@ mod tests {
         }
         assert_eq!(P_DRIVE, PARAM_COUNT - 2);
         assert_eq!(P_GAIN, PARAM_COUNT - 1);
+    }
+
+    // ── DRIVE ──
+
+    /// The property that makes the knob safe to leave alone: at the bottom of
+    /// its travel it is not in the signal path at all, bit for bit. Every kit
+    /// in the rack was voiced with it there.
+    #[test]
+    fn the_drive_stage_is_the_identity_at_zero() {
+        let mut x = -4.0f64;
+        while x <= 4.0 {
+            assert_eq!(drive_stage(x, 0.0).to_bits(), x.to_bits(), "drive 0 altered {x}");
+            x += 0.001;
+        }
+        assert_eq!(drive_stage(0.0, 1.0), 0.0);
+    }
+
+    /// The property that makes it a tone control rather than a fader: a signal
+    /// at the reference comes out at the reference, whatever the knob says.
+    /// Before this the curve multiplied by up to 17 first, so the knob added
+    /// 12 dB to a bass drum on its way to the ceiling.
+    #[test]
+    fn the_drive_stage_holds_the_reference_level() {
+        for amount in [0.0f64, 0.1, 0.5, 1.0, 2.0, 3.0] {
+            for reference in [DRIVE_REFERENCE, KICK_DRIVE_REFERENCE] {
+                let out = drive_stage_at(reference, amount, reference);
+                assert!(
+                    (out - reference).abs() < 1e-12,
+                    "amount {amount} moved the reference {reference} to {out}"
+                );
+                // ...and it is odd, so it makes harmonics rather than a DC
+                // offset the mixer would pass straight through.
+                assert!((drive_stage_at(-reference, amount, reference) + reference).abs() < 1e-12);
+            }
+        }
+    }
+
+    /// Monotonic, so the curve never folds back, and bounded, where the curve
+    /// it replaced grew as `sqrt(x)` without limit.
+    #[test]
+    fn the_drive_stage_is_monotonic_and_bounded() {
+        for amount in [0.05f64, 0.25, 1.0, 2.0, 3.0] {
+            let bound = DRIVE_REFERENCE + 1.0 / (amount * 8.0);
+            let mut previous = f64::NEG_INFINITY;
+            let mut x = -8.0f64;
+            while x <= 8.0 {
+                let y = drive_stage(x, amount);
+                assert!(y >= previous, "amount {amount} folded back at {x}: {y} < {previous}");
+                assert!(y.abs() <= bound, "amount {amount} at {x} reached {y}, past {bound}");
+                previous = y;
+                x += 0.001;
+            }
+            // Nothing, however loud, gets past the asymptote.
+            assert!(drive_stage(1e9, amount) <= bound);
+        }
+    }
+
+    /// The 909's and the 777's bass drums reach the knob already through a
+    /// fixed overdrive, and the level it leaves them at is what their DRIVE
+    /// reference is derived from. Pinned because it is written as a literal.
+    #[test]
+    fn the_fixed_kick_overdrive_level_is_what_it_says() {
+        assert!((KICK_OVERDRIVE_LEVEL - soft_clip(1.0, 0.35)).abs() < 1e-7);
+        assert!((KICK_DRIVE_REFERENCE - KICK_OVERDRIVE_LEVEL * DRIVE_REFERENCE).abs() < 1e-12);
     }
 
     #[test]

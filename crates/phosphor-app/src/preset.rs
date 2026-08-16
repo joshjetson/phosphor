@@ -11,6 +11,15 @@
 //! value in every saved session. A preset bank sits beside the factory table
 //! and moves nothing.
 //!
+//! That reasoning applies to a preset's *own* selectors as well, and this
+//! format got it wrong for a version: a preset is a whole parameter block, and
+//! a block stores the kit, the patch and the cartridge as the same normalised
+//! fraction a session did. The layout fingerprint below does not move when a
+//! bank changes size — it is derived from parameter *names* — so a preset
+//! saved on the 909 reopened on the 707 once the rack went from ten kits to
+//! fifteen, with nothing on screen to say so. Selectors are now stored by
+//! position as well; see [`Preset::discrete`] and [`crate::discrete`].
+//!
 //! Human-readable JSON with atomic writes (tmp + rename), the same shape as
 //! the `.phos` session format.
 
@@ -20,7 +29,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::session::instrument_key;
+use crate::session::{instrument_key, SessionSelector};
 use crate::state::InstrumentType;
 
 // ── Limits ──
@@ -37,7 +46,24 @@ pub const MAX_PRESETS: usize = 128;
 pub const MAX_NAME_LEN: usize = 32;
 
 /// Current preset file format version.
-pub const FORMAT_VERSION: u32 = 1;
+///
+/// * **1** — every control stored as the normalised `f32` the panel holds,
+///   selectors included.
+/// * **2** — selectors additionally stored by the position they pick, in
+///   [`Preset::discrete`]. A fraction only names a patch as long as the bank
+///   is the size it was when the fraction was written, and two banks have
+///   since changed size. Version 1 presets still load — the fraction is the
+///   only evidence of what the player chose, and it is right whenever the bank
+///   has not moved — but they load with [`LoadedPreset::legacy_selectors`] set
+///   so the player is told to check the patch.
+pub const FORMAT_VERSION: u32 = 2;
+
+/// What a preset without a `version` field was written by.
+const LEGACY_VERSION: u32 = 1;
+
+const fn legacy_version() -> u32 {
+    LEGACY_VERSION
+}
 
 // ── Errors ──
 
@@ -80,10 +106,11 @@ pub struct PresetFile {
 
 /// A single stored preset.
 ///
-/// `instrument`, `param_count` and `layout` are all redundant with the file
-/// they sit in — deliberately. A preset that gets hand-copied between files,
-/// or survives a parameter layout change, still carries enough to be refused
-/// rather than loaded into the wrong panel.
+/// `instrument`, `param_count`, `layout` and `version` are all redundant with
+/// the file they sit in — deliberately. A preset that gets hand-copied between
+/// files, or survives a parameter layout change, still carries enough to be
+/// refused rather than loaded into the wrong panel, and enough to say which
+/// format wrote it rather than inheriting the claim of the file it landed in.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Preset {
     pub name: String,
@@ -92,6 +119,36 @@ pub struct Preset {
     pub layout: String,
     pub param_count: usize,
     pub params: Vec<f32>,
+    /// Where every selector on this panel was pointing, by position rather
+    /// than by knob fraction. Empty in version 1 presets.
+    ///
+    /// The same shape the session format stores, and the same type: one
+    /// spelling of "this control was on position 3" for both files, so a
+    /// change to how positions are counted cannot move one and leave the
+    /// other behind.
+    #[serde(default)]
+    pub discrete: Vec<SessionSelector>,
+    /// The format version that wrote this preset. Absent in version 1 files.
+    #[serde(default = "legacy_version")]
+    pub version: u32,
+}
+
+/// A preset that passed [`Preset::check`], with its selectors put back.
+///
+/// Not a bare `Vec<f32>`, because two things about the load are worth saying
+/// out loud in the bottom bar and neither is an error: a bank that has shrunk
+/// since the preset was written no longer holds the entry it names, and a
+/// version 1 preset has no positions at all and is only right if nothing has
+/// been added to the bank since.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadedPreset {
+    /// The panel to apply, selectors already resolved.
+    pub params: Vec<f32>,
+    /// Selectors that could not be restored exactly, as
+    /// `(parameter, wanted, given)`.
+    pub clamped: Vec<(usize, usize, usize)>,
+    /// Whether this preset predates positional selectors.
+    pub legacy_selectors: bool,
 }
 
 /// What `store` did with a name that may or may not have been in the bank.
@@ -259,12 +316,17 @@ impl PresetFile {
             layout: layout_fingerprint(instrument),
             param_count: params.len(),
             params: params.to_vec(),
+            // Which controls these are comes from the instrument's own
+            // `is_discrete` rather than a list here, so a panel that gains a
+            // switch starts storing it without this file being edited.
+            discrete: crate::session::selectors_of(instrument, params),
+            version: FORMAT_VERSION,
         };
 
-        match self.find(name) {
+        let outcome = match self.find(name) {
             Some(idx) => {
                 self.presets[idx] = preset;
-                Ok(StoreOutcome::Replaced)
+                StoreOutcome::Replaced
             }
             None => {
                 // Only a new slot can overflow the bank; overwriting a name
@@ -274,9 +336,15 @@ impl PresetFile {
                     return Err(PresetError::BankFull { max: MAX_PRESETS });
                 }
                 self.presets.push(preset);
-                Ok(StoreOutcome::Added)
+                StoreOutcome::Added
             }
-        }
+        };
+
+        // The file now holds an entry this build wrote, so its version is this
+        // build's. Presets already in it keep their own — the entry knows what
+        // wrote it, and that is what a load reads.
+        self.version = FORMAT_VERSION;
+        Ok(outcome)
     }
 
     /// Remove the preset at `index`, returning it.
@@ -286,14 +354,19 @@ impl PresetFile {
 
     /// The parameter block at `index`, if it is safe to load into this
     /// instrument's current panel.
+    ///
+    /// Owned rather than borrowed because the block that comes back is not the
+    /// block on disk: every selector is repointed at the position the preset
+    /// named, which for a bank that has changed size is a different fraction
+    /// from the one that was stored.
     pub fn params_at(
         &self,
         index: usize,
         instrument: InstrumentType,
         want_count: usize,
-    ) -> Option<Result<&[f32], PresetError>> {
+    ) -> Option<Result<LoadedPreset, PresetError>> {
         let preset = self.presets.get(index)?;
-        Some(preset.check(instrument, want_count).map(|()| preset.params.as_slice()))
+        Some(preset.check(instrument, want_count).map(|()| preset.resolve(instrument)))
     }
 }
 
@@ -332,6 +405,24 @@ impl Preset {
         }
         Ok(())
     }
+
+    /// The panel to apply, with every selector put back where it was pointing.
+    ///
+    /// The stored fractions go in first and the positions are written over
+    /// them, so a control the preset has no position for — anything a version 1
+    /// preset holds, or a switch added since — keeps its fraction rather than
+    /// being reset to a default. Call [`check`](Self::check) first: this
+    /// assumes the block belongs to `instrument`.
+    #[must_use]
+    pub fn resolve(&self, instrument: InstrumentType) -> LoadedPreset {
+        let mut params = self.params.clone();
+        let clamped = crate::session::apply_selectors(instrument, &mut params, &self.discrete);
+        LoadedPreset {
+            params,
+            clamped,
+            legacy_selectors: self.version < FORMAT_VERSION,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -360,7 +451,11 @@ mod tests {
         let mut panel = juno_panel();
         panel[phosphor_dsp::juno::P_CUTOFF] = 0.317_25;
         panel[phosphor_dsp::juno::P_RESO] = 0.812_5;
-        panel[phosphor_dsp::juno::P_PATCH] = 0.437_1;
+        // A selector is set to a position rather than to an arbitrary fraction,
+        // because a load puts selectors back by position — see
+        // `a_selector_comes_back_as_the_entry_it_named`. Everything else here
+        // is a level, and a level has to survive JSON exactly.
+        panel[phosphor_dsp::juno::P_PATCH] = phosphor_dsp::juno::patch_knob(24);
 
         let mut bank = PresetFile::new(InstrumentType::Juno60);
         assert_eq!(
@@ -375,9 +470,220 @@ mod tests {
             .params_at(0, InstrumentType::Juno60, panel.len())
             .unwrap()
             .expect("its own panel should load");
-        assert_eq!(loaded, panel.as_slice(), "the panel came back changed");
+        // Every level comes back bit-identical. The selectors come back on the
+        // exact centre of the position they named, which is not always the
+        // fraction that was stored: the Juno's PWM MODE default is the rounded
+        // literal 0.16667 and the centre of that position is 0.166_666_67.
+        // Same switch position either way — this is a load putting a selector
+        // where it belongs rather than where a hand-written constant left it.
+        for (index, (before, after)) in panel.iter().zip(loaded.params.iter()).enumerate() {
+            if crate::discrete::is_discrete(InstrumentType::Juno60, index) {
+                assert_eq!(
+                    crate::discrete::index_of(InstrumentType::Juno60, index, *after),
+                    crate::discrete::index_of(InstrumentType::Juno60, index, *before),
+                    "control {index} came back on a different position"
+                );
+            } else {
+                assert_eq!(before, after, "control {index} came back changed");
+            }
+        }
+        assert!(loaded.clamped.is_empty());
+        assert!(!loaded.legacy_selectors, "a preset written now is not an old one");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The defect this format's version 2 exists for, played out on the
+    /// control it happened to.
+    ///
+    /// The rack went from ten kits to fifteen. A preset written against ten
+    /// stored the 909 as the fraction 0.15, and 0.15 of fifteen kits is the
+    /// 707 — a different drum machine, arriving without a word said, because
+    /// the layout fingerprint is derived from parameter *names* and a name does
+    /// not move when a bank grows. The position does not have that problem.
+    #[test]
+    fn a_selector_survives_the_bank_growing() {
+        use phosphor_dsp::drum_rack;
+
+        let dir = scratch("bank-grew");
+        let mut panel = drum_rack::PARAM_DEFAULTS.to_vec();
+        panel[drum_rack::P_KIT] = drum_rack::kit_knob(1);
+        assert_eq!(
+            drum_rack::discrete_label(drum_rack::P_KIT, panel[drum_rack::P_KIT]),
+            Some("909"),
+            "this test is pinned to the 909 being position 1"
+        );
+
+        let mut bank = PresetFile::new(InstrumentType::DrumRack);
+        bank.store("my kit", InstrumentType::DrumRack, &panel).unwrap();
+        assert_eq!(
+            bank.presets[0].discrete.iter().find(|s| s.param == drum_rack::P_KIT),
+            Some(&SessionSelector { param: drum_rack::P_KIT, index: 1 }),
+            "the kit was not stored by position"
+        );
+
+        // Now rewrite the stored *fraction* as a ten-kit build would have
+        // written it, leaving the position alone. This is the file the player
+        // has on disk.
+        bank.presets[0].params[drum_rack::P_KIT] = 1.5 / 10.0;
+        save_bank(&dir, InstrumentType::DrumRack, &bank).unwrap();
+
+        // Read against fifteen kits, the fraction alone is the 707...
+        let reopened = load_bank(&dir, InstrumentType::DrumRack).unwrap();
+        assert_eq!(
+            drum_rack::discrete_label(drum_rack::P_KIT, reopened.presets[0].params[drum_rack::P_KIT]),
+            Some("707"),
+            "the fraction no longer names the 707, so this test proves nothing"
+        );
+        // ...and the loaded preset is still the 909.
+        let loaded = reopened
+            .params_at(0, InstrumentType::DrumRack, panel.len())
+            .unwrap()
+            .expect("its own panel should load");
+        assert_eq!(
+            drum_rack::discrete_label(drum_rack::P_KIT, loaded.params[drum_rack::P_KIT]),
+            Some("909"),
+            "the preset opened on a different drum machine"
+        );
+        assert!(loaded.clamped.is_empty());
+        assert!(!loaded.legacy_selectors);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The DX7 picks a voice with two selectors — a cartridge and a voice
+    /// button — so "index 0 is the patch" would restore half of it. Both are
+    /// stored, and both come back across a bank that has grown.
+    #[test]
+    fn both_dx7_selectors_survive_a_round_trip() {
+        use phosphor_dsp::dx7;
+
+        let mut panel = dx7::PARAM_DEFAULTS.to_vec();
+        let (bank_knob, patch_knob) = dx7::voice_knobs(147);
+        panel[dx7::P_BANK] = bank_knob;
+        panel[dx7::P_PATCH] = patch_knob;
+
+        let mut bank = PresetFile::new(InstrumentType::DX7);
+        bank.store("timpani", InstrumentType::DX7, &panel).unwrap();
+
+        let stored: Vec<usize> = bank.presets[0].discrete.iter().map(|s| s.param).collect();
+        assert!(stored.contains(&dx7::P_BANK), "the cartridge was not stored");
+        assert!(stored.contains(&dx7::P_PATCH), "the voice was not stored");
+
+        // Both fractions scrambled to what a smaller bank would have written,
+        // the positions left alone.
+        bank.presets[0].params[dx7::P_BANK] = 0.0;
+        bank.presets[0].params[dx7::P_PATCH] = 0.0;
+
+        let loaded = bank
+            .params_at(0, InstrumentType::DX7, panel.len())
+            .unwrap()
+            .expect("its own panel should load");
+        assert_eq!(loaded.params[dx7::P_BANK], bank_knob, "the cartridge did not come back");
+        assert_eq!(loaded.params[dx7::P_PATCH], patch_knob, "the voice did not come back");
+    }
+
+    /// A bank that has *shrunk* has nothing at the far end of it any more. The
+    /// nearest thing to what the player chose is its last entry, and the load
+    /// says which entries it had to move rather than moving them quietly.
+    #[test]
+    fn a_selector_past_the_end_of_the_bank_is_clamped_and_reported() {
+        use phosphor_dsp::drum_rack;
+
+        let panel = drum_rack::PARAM_DEFAULTS.to_vec();
+        let mut bank = PresetFile::new(InstrumentType::DrumRack);
+        bank.store("from the future", InstrumentType::DrumRack, &panel).unwrap();
+        let selector = bank.presets[0]
+            .discrete
+            .iter_mut()
+            .find(|s| s.param == drum_rack::P_KIT)
+            .expect("the kit is a selector");
+        selector.index = 900;
+
+        let loaded = bank
+            .params_at(0, InstrumentType::DrumRack, panel.len())
+            .unwrap()
+            .expect("its own panel should load");
+        assert_eq!(
+            loaded.clamped,
+            vec![(drum_rack::P_KIT, 900, drum_rack::KIT_COUNT - 1)],
+            "a position the rack no longer has was not reported"
+        );
+        assert_eq!(
+            loaded.params[drum_rack::P_KIT],
+            drum_rack::kit_knob(drum_rack::KIT_COUNT - 1),
+            "the kit did not land on the last one the rack has"
+        );
+    }
+
+    /// A version 1 preset — written before positions were stored — still
+    /// loads, because the fraction is the only evidence of what the player
+    /// chose and it is right whenever the bank has not moved. What it does not
+    /// do is load quietly: `legacy_selectors` is what the bottom bar turns
+    /// into "check the patch".
+    #[test]
+    fn a_version_1_preset_loads_from_its_fractions_and_says_so() {
+        use phosphor_dsp::drum_rack;
+
+        let dir = scratch("version-1");
+        // A version 1 file, written out as that format really was: no
+        // `discrete` array and no per-preset `version`.
+        let params: Vec<String> = drum_rack::PARAM_DEFAULTS
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                if i == drum_rack::P_KIT { (1.5f32 / 10.0).to_string() } else { v.to_string() }
+            })
+            .collect();
+        let json = format!(
+            r#"{{"version":1,"instrument":"drums","presets":[{{"name":"old",
+               "instrument":"drums","layout":"{}","param_count":{},"params":[{}]}}]}}"#,
+            layout_fingerprint(InstrumentType::DrumRack),
+            drum_rack::PARAM_COUNT,
+            params.join(",")
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(bank_path(&dir, InstrumentType::DrumRack), json).unwrap();
+
+        let bank = load_bank(&dir, InstrumentType::DrumRack).unwrap();
+        assert_eq!(bank.version, 1);
+        assert_eq!(bank.presets[0].version, LEGACY_VERSION, "a missing version is version 1");
+        assert!(bank.presets[0].discrete.is_empty());
+
+        let loaded = bank
+            .params_at(0, InstrumentType::DrumRack, drum_rack::PARAM_COUNT)
+            .unwrap()
+            .expect("an old preset still loads");
+        assert!(loaded.legacy_selectors, "an old preset loaded without a word said");
+        // The fraction is all it has, so it reads as the 707 — which is the
+        // defect, and the reason the bottom bar is told to say so.
+        assert_eq!(
+            drum_rack::discrete_label(drum_rack::P_KIT, loaded.params[drum_rack::P_KIT]),
+            Some("707")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every instrument's selectors get stored, not just the ones this file
+    /// happens to name. A panel that gains a switch has to start carrying it
+    /// without this module being edited.
+    #[test]
+    fn every_selector_on_every_instrument_is_stored() {
+        for instrument in InstrumentType::ALL {
+            let count = param_count(*instrument);
+            let panel = vec![0.5f32; count];
+            let mut bank = PresetFile::new(*instrument);
+            bank.store("all", *instrument, &panel).unwrap();
+
+            let stored: Vec<usize> =
+                bank.presets[0].discrete.iter().map(|s| s.param).collect();
+            let wanted: Vec<usize> = (0..count)
+                .filter(|&p| crate::discrete::is_discrete(*instrument, p))
+                .collect();
+            assert_eq!(stored, wanted, "{instrument:?} did not store all of its selectors");
+            assert!(!wanted.is_empty(), "{instrument:?} has no selectors at all");
+        }
     }
 
     /// A bank that has never been written is empty rather than an error —
@@ -426,6 +732,8 @@ mod tests {
             layout: layout_fingerprint(InstrumentType::Juno60),
             param_count: panel.len(),
             params: panel,
+            discrete: Vec::new(),
+            version: FORMAT_VERSION,
         };
         assert_eq!(preset.check(InstrumentType::Juno60, 25), Ok(()));
 
@@ -578,6 +886,8 @@ mod tests {
             layout: layout_fingerprint(InstrumentType::Juno60),
             param_count: 99,
             params: panel.clone(),
+            discrete: Vec::new(),
+            version: FORMAT_VERSION,
         };
         assert_eq!(
             preset.check(InstrumentType::Juno60, panel.len()),

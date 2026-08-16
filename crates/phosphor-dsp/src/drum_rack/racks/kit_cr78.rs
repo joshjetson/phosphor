@@ -237,7 +237,7 @@ impl DrumVoice {
         // from: there is no bright edge on this drum at all.
         let out = self.lp1.tick_lp(osc_sine(self.phase1) * env + pulse, 420.0, sr) * 1.15;
 
-        if c.drive > 0.01 { soft_clip(out, c.drive * 2.0) } else { out }
+        if c.drive > 0.01 { drive_stage(out, c.drive * 2.0) } else { out }
     }
 
     /// CR-78 Snare: white noise, and only white noise.

@@ -157,6 +157,18 @@ impl App {
         // so zeroing this ensures late old-session snapshots are ignored.
         self.nav.recording_grace = 0;
 
+        // Version 1 stored every selector — the kit, the patch, the cartridge
+        // — as the fraction of the knob's travel it sat at, and a fraction
+        // only names a patch while the bank is the size it was when the
+        // fraction was written. Two banks have changed size since, so a
+        // version 1 session can open on the wrong instrument and look
+        // perfectly reasonable doing it. It is still loaded, because the
+        // fraction is the only evidence of what the player chose and it is
+        // right whenever the bank has not moved — but it is not loaded
+        // quietly. See `crate::session::FORMAT_VERSION`.
+        let legacy_selectors = session.version < crate::session::FORMAT_VERSION;
+        let mut clamped_selectors = 0usize;
+
         // Recreate tracks from session
         for st in &session.tracks {
             let instrument = match crate::session::parse_instrument_type(&st.instrument_type) {
@@ -184,6 +196,21 @@ impl App {
                 // control. A mismatch keeps the instrument's defaults instead.
                 if st.synth_params.len() == track.synth_params.len() {
                     track.synth_params.copy_from_slice(&st.synth_params);
+
+                    // ...then put the selectors where the session said, rather
+                    // than where their fractions land against today's bank.
+                    for (param, wanted, given) in crate::session::apply_selectors(
+                        instrument,
+                        &mut track.synth_params,
+                        &st.discrete,
+                    ) {
+                        clamped_selectors += 1;
+                        tracing::warn!(
+                            "track '{}': control {param} was at position {wanted}, \
+                             which this build no longer has — loading {given}",
+                            st.name
+                        );
+                    }
                 } else {
                     tracing::warn!(
                         "track '{}': saved {} parameters, instrument has {} — \
@@ -245,8 +272,21 @@ impl App {
         self.sync_dedup_to_audio();
 
         self.session_path = Some(path.clone());
+        // Both notes are about the same thing — a patch that may not be the
+        // one the session named — and the bottom bar is the only place the
+        // player would ever find that out.
+        let note = if legacy_selectors {
+            " (older format: check each track's patch)"
+        } else if clamped_selectors > 0 {
+            " (a patch it names is no longer in the bank)"
+        } else {
+            ""
+        };
+        if !note.is_empty() {
+            dbg::system(&format!("session load:{note}"));
+        }
         self.status_message = Some((
-            format!("opened: {}", path.display()),
+            format!("opened: {}{note}", path.display()),
             std::time::Instant::now(),
         ));
     }

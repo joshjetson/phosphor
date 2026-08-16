@@ -188,8 +188,8 @@ impl App {
         };
 
         let Some(result) = bank.params_at(index, instrument, want_count) else { return };
-        let params = match result {
-            Ok(p) => p.to_vec(),
+        let loaded = match result {
+            Ok(p) => p,
             Err(e) => {
                 // Same shape as a session whose parameter block does not fit
                 // the instrument: say so and change nothing. Loading a block
@@ -217,13 +217,35 @@ impl App {
 
         let name = bank.presets[index].name.clone();
         if let Some(track) = self.nav.tracks.get_mut(track_idx) {
-            track.synth_params.copy_from_slice(&params);
+            track.synth_params.copy_from_slice(&loaded.params);
         }
         self.push_params_to_audio(track_idx);
 
-        dbg::system(&format!("preset loaded: '{name}' ({} controls)", params.len()));
+        // Both notes are about the same thing — a patch that may not be the one
+        // the preset named — and the bottom bar is the only place the player
+        // would ever find that out. Same wording as a session load, because it
+        // is the same defect: a selector stored as a fraction of a bank that
+        // has since changed size.
+        for (param, wanted, given) in &loaded.clamped {
+            tracing::warn!(
+                "preset '{name}': control {param} was at position {wanted}, which this \
+                 build no longer has — loading {given}"
+            );
+        }
+        let note = if loaded.legacy_selectors {
+            " (older format: check the patch)"
+        } else if !loaded.clamped.is_empty() {
+            " (a patch it names is no longer in the bank)"
+        } else {
+            ""
+        };
+
+        dbg::system(&format!(
+            "preset loaded: '{name}' ({} controls){note}",
+            loaded.params.len()
+        ));
         self.status_message =
-            Some((format!("preset loaded: {name}"), std::time::Instant::now()));
+            Some((format!("preset loaded: {name}{note}"), std::time::Instant::now()));
     }
 
     /// `d` on a preset row: confirm, then delete.

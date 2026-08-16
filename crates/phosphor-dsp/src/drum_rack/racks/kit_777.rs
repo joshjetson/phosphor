@@ -36,10 +36,9 @@ impl DrumVoice {
                 self.phase1 += f / sr;
                 if self.phase1 > 1.0 { self.phase1 -= 1.0; }
                 let sine = (self.phase1 * std::f64::consts::TAU).sin();
-                // 909-style distortion
-                let gain = 1.0 + (0.35 + drive_amt) * 8.0;
-                let driven = sine * gain;
-                let body = driven / (1.0 + driven.abs()).sqrt();
+                // 909-style distortion, always present, with the panel's DRIVE
+                // on top of it — the same two stages as the 909's own kick.
+                let body = drive_stage_at(soft_clip(sine, 0.35), drive_amt, KICK_DRIVE_REFERENCE);
                 // Noise click
                 let noise = self.noise();
                 let click_env = (-self.time * 200.0).exp();

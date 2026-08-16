@@ -20,7 +20,16 @@ const MAX_VOICES: usize = 16;
 /// at velocity 127, which used to leave the buffer — this synth had no
 /// output bound of any kind, so it handed values above 1.0 straight to the
 /// mixer. At this trim that worst case is well under the saturator knee.
-const OUTPUT_TRIM: f32 = 0.2481;
+///
+/// The second factor is the GAIN knob's old default. Everything above was
+/// measured with that knob at 0.75, so the quarter of its travel above 0.75
+/// was a boost into headroom nothing had measured — an eight-note chord with
+/// DRIVE at the top reached 0.9379 with GAIN at the top, past the master
+/// limiter's ceiling. Folding it in here leaves the default render identical
+/// sample for sample and makes GAIN a control that can only cut, which is the
+/// same reasoning the drum rack's GAIN was pinned at the top of its travel
+/// for.
+const OUTPUT_TRIM: f32 = 0.2481 * 0.75;
 
 // ── Parameter indices ──
 pub const P_WAVEFORM: usize = 0;
@@ -55,7 +64,7 @@ pub const PARAM_DEFAULTS: [f32; PARAM_COUNT] = [
     0.15,  // decay
     0.7,   // sustain
     0.1,   // release: 200ms
-    0.75,  // gain
+    1.0,   // gain: the top of its travel, so the knob can only cut — see OUTPUT_TRIM
 ];
 
 // ── ADSR Envelope ──
@@ -169,14 +178,72 @@ impl NoiseGen {
     }
 }
 
-// ── Soft clipping / drive ──
+// ── Drive ──
 
-fn soft_clip(x: f64, drive: f64) -> f64 {
-    if drive < 0.01 { return x; }
-    let gain = 1.0 + drive * 10.0; // drive 0..1 → gain 1..11
-    let driven = x * gain;
-    // tanh-like saturation
-    driven / (1.0 + driven.abs()).sqrt()
+/// The signal level the DRIVE knob holds still, in the units the filter hands
+/// it: one voice, before the envelope, the velocity and the per-voice trim.
+///
+/// The knob preserves the level of a signal *at* this amplitude exactly, lifts
+/// what is quieter towards it and holds down what is louder — which is what a
+/// compressor does, and what makes a synth sound driven rather than just loud.
+///
+/// Measured against this synth rather than picked. The four waveform settings
+/// put a voice at 1.01 (sine), 1.09 (triangle), 1.17 (saw) and 1.25 (square)
+/// out of the filter, so a voice here *is* about 1 — and the reference sits at
+/// the bottom of that band rather than in the middle of it, because holding one
+/// voice's peak still is not the same as holding a chord still: everything
+/// under that peak comes up towards it, and sixteen voices summed carry the
+/// rise. At 1.17 an eight-note chord's peak rose 1.7 dB across the knob; here
+/// it rises 0.5 dB, from 0.346 to 0.366, while its RMS gains 3.6 dB.
+///
+/// What it costs is at the other end: a patch whose resonance puts it far above
+/// the reference is held down rather than driven. The panel at its extremes —
+/// sub, noise, cutoff and resonance all at the top — leaves the filter at 8.1,
+/// 18 dB above this, and the knob takes 4.6 dB of RMS off it across its travel.
+/// That patch is 0.947 out of the instrument at DRIVE zero, already past the
+/// master limiter's ceiling, so what the knob does to it is the direction that
+/// helps.
+const DRIVE_REFERENCE: f64 = 1.0;
+
+/// How hard the knob drives at the top of its travel.
+///
+/// The curve lifts a signal far below the reference by `1 + DRIVE_DEPTH *
+/// DRIVE_REFERENCE`, which at a reference of 1 is exactly the 11x the
+/// uncompensated knob this replaced applied to everything. Same low-level
+/// gain, so a patch saved with DRIVE up keeps its character; what is gone is
+/// the level that came with it.
+const DRIVE_DEPTH: f64 = 10.0;
+
+/// The DRIVE knob's waveshaper: harmonics without level.
+///
+/// ```text
+/// a = amount * DRIVE_DEPTH
+/// y = x * (1 + a*r) / (1 + a*|x|),   r = DRIVE_REFERENCE
+/// ```
+///
+/// The same curve the drum rack's DRIVE uses, and for the same four reasons:
+///
+/// * **Identity at zero.** `a = 0` gives `y = x` exactly, in f64 and in f32,
+///   so the bottom of the knob is the patch as voiced. The curve this replaced
+///   needed a `drive < 0.01` branch to manage that, and stepped quiet signal by
+///   0.83 dB the moment the knob left it.
+/// * **Level-preserving at the reference.** `|x| = r` gives `|y| = r` for
+///   every `a`. The old curve multiplied by up to 11 before its own
+///   denominator, so the knob was a level control as much as a tone control:
+///   an eight-note chord at velocity 127 went from 0.346 to 0.901 across its
+///   travel, +8.3 dB, and past the master limiter's ceiling with the rest of
+///   the panel untouched.
+/// * **Monotonic and odd.** `dy/dx = (1 + a*r)/(1 + a|x|)^2 > 0`, so the curve
+///   never folds back, and `y(-x) = -y(x)`, so it makes odd harmonics rather
+///   than a DC offset. The old curve was not even monotonic *in the knob*: the
+///   panel at its extremes measured 0.947 at drive 0 and 0.888 at drive 0.1,
+///   because past its own knee it took more level off than the knob put on.
+/// * **Bounded.** `|y| < r + 1/a` for `a > 0`, where the old curve grew
+///   without limit as `sqrt(x)`.
+#[inline]
+fn drive_stage(x: f64, amount: f64) -> f64 {
+    let a = amount * DRIVE_DEPTH;
+    x * (1.0 + a * DRIVE_REFERENCE) / (1.0 + a * x.abs())
 }
 
 // ── Voice ──
@@ -267,7 +334,7 @@ impl Voice {
         let filtered = self.filter.process(raw as f64);
 
         // Drive / saturation
-        let driven = soft_clip(filtered, drive);
+        let driven = drive_stage(filtered, drive);
 
         (driven as f32) * env * self.velocity * 0.25
     }
@@ -566,6 +633,114 @@ mod tests {
         // Driven signal should differ from clean
         let diff: f32 = clean.iter().zip(dirty.iter()).map(|(a, b)| (a - b).abs()).sum();
         assert!(diff > 0.1, "Drive should change the signal, diff={diff}");
+    }
+
+    // ── DRIVE ──
+
+    /// The property that makes the knob safe to leave alone: at the bottom of
+    /// its travel it is not in the signal path at all, bit for bit. The panel
+    /// the instrument loads with has it there, and every render of that panel
+    /// has to stay what it was.
+    #[test]
+    fn the_drive_stage_is_the_identity_at_zero() {
+        assert_eq!(PARAM_DEFAULTS[P_DRIVE], 0.0, "the default panel now drives");
+        let mut x = -8.0f64;
+        while x <= 8.0 {
+            assert_eq!(drive_stage(x, 0.0).to_bits(), x.to_bits(), "drive 0 altered {x}");
+            x += 0.001;
+        }
+        // Including the values a bit pattern comparison is fussy about.
+        for x in [0.0f64, -0.0, f64::MIN_POSITIVE, -f64::MIN_POSITIVE, 1e-300, -1e-300] {
+            assert_eq!(drive_stage(x, 0.0).to_bits(), x.to_bits(), "drive 0 altered {x:e}");
+        }
+        assert_eq!(drive_stage(0.0, 1.0), 0.0);
+    }
+
+    /// The property that makes it a tone control rather than a fader: a signal
+    /// at the reference comes out at the reference, whatever the knob says.
+    /// Before this the curve multiplied by up to 11 first, so the knob added
+    /// 8.3 dB to a chord on its way past the master limiter's ceiling.
+    #[test]
+    fn the_drive_stage_holds_the_reference_level() {
+        for amount in [0.0f64, 0.1, 0.25, 0.5, 0.75, 1.0] {
+            let out = drive_stage(DRIVE_REFERENCE, amount);
+            assert!(
+                (out - DRIVE_REFERENCE).abs() < 1e-12,
+                "amount {amount} moved the reference {DRIVE_REFERENCE} to {out}"
+            );
+            // ...and it is odd, so it makes harmonics rather than a DC offset
+            // the mixer would pass straight through.
+            assert!((drive_stage(-DRIVE_REFERENCE, amount) + DRIVE_REFERENCE).abs() < 1e-12);
+        }
+    }
+
+    /// Monotonic, so the curve never folds back, and bounded, where the curve
+    /// it replaced grew as `sqrt(x)` without limit.
+    #[test]
+    fn the_drive_stage_is_monotonic_and_bounded() {
+        for amount in [0.01f64, 0.1, 0.25, 0.5, 0.75, 1.0] {
+            let bound = DRIVE_REFERENCE + 1.0 / (amount * DRIVE_DEPTH);
+            let mut previous = f64::NEG_INFINITY;
+            let mut x = -16.0f64;
+            while x <= 16.0 {
+                let y = drive_stage(x, amount);
+                assert!(y >= previous, "amount {amount} folded back at {x}: {y} < {previous}");
+                assert!(y.abs() <= bound, "amount {amount} at {x} reached {y}, past {bound}");
+                previous = y;
+                x += 0.001;
+            }
+            // Nothing, however loud, gets past the asymptote.
+            assert!(drive_stage(1e9, amount) <= bound);
+        }
+    }
+
+    /// The knob has to be monotonic *in the knob* as well as in the signal.
+    /// The curve it replaced was not: it multiplied before its own denominator,
+    /// so on a signal past that denominator's knee turning DRIVE up from zero
+    /// made the patch quieter, then louder again.
+    #[test]
+    fn turning_the_drive_knob_up_never_steps_the_level_down() {
+        // A signal well above the reference, which is where the old curve
+        // reversed, and one below it, which is where a drive is supposed to add.
+        for x in [0.25f64, 1.0, 2.0, 8.0] {
+            let mut previous = drive_stage(x, 0.0);
+            let mut amount = 0.0f64;
+            while amount <= 1.0 {
+                amount += 0.005;
+                let y = drive_stage(x, amount);
+                // Above the reference the knob compresses, below it the knob
+                // lifts; either way it moves one way and keeps going.
+                let moving_up = x <= DRIVE_REFERENCE;
+                assert!(
+                    if moving_up { y >= previous } else { y <= previous },
+                    "the knob reversed on {x} at amount {amount}: {y} against {previous}"
+                );
+                previous = y;
+            }
+        }
+    }
+
+    // ── Headroom ──
+
+    /// The GAIN knob's travel above its default was headroom nothing had
+    /// measured, so the default was folded into [`OUTPUT_TRIM`] and the knob
+    /// pinned at the top. What makes that fold free is that the output stage
+    /// multiplies knob by trim, and the two ways of bracketing the same product
+    /// land on the same f32 — so the render at the new default is the old one
+    /// sample for sample rather than merely close to it.
+    #[test]
+    fn folding_the_gain_default_into_the_trim_did_not_move_the_default_render() {
+        /// The trim as it stood when GAIN defaulted to 0.75.
+        const TRIM_BEFORE_THE_FOLD: f32 = 0.2481;
+
+        assert_eq!(PARAM_DEFAULTS[P_GAIN], 1.0, "GAIN has travel above its default again");
+        assert_eq!(
+            (PARAM_DEFAULTS[P_GAIN] * OUTPUT_TRIM).to_bits(),
+            (0.75f32 * TRIM_BEFORE_THE_FOLD).to_bits(),
+            "the fold moved the output stage: {} against {}",
+            PARAM_DEFAULTS[P_GAIN] * OUTPUT_TRIM,
+            0.75f32 * TRIM_BEFORE_THE_FOLD
+        );
     }
 
     #[test]

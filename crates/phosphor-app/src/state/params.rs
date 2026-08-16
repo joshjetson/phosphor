@@ -10,61 +10,21 @@ impl NavState {
         let idx = self.clip_view.synth_param_cursor;
         if let Some(track) = self.tracks.get_mut(self.track_cursor) {
             if idx < track.synth_params.len() {
-                // Index 0 is always a discrete selector — the waveform on the
-                // phosphor synth, the kit on the drum rack, the patch on the
-                // four instruments with factory banks.
-                let is_jupiter = track.instrument_type == Some(InstrumentType::Jupiter8);
-                let is_odyssey = track.instrument_type == Some(InstrumentType::Odyssey);
-                let is_juno = track.instrument_type == Some(InstrumentType::Juno60);
-                let is_dx7 = track.instrument_type == Some(InstrumentType::DX7);
-                let is_drum = track.instrument_type == Some(InstrumentType::DrumRack);
-                let is_discrete = if is_jupiter {
-                    phosphor_dsp::jupiter::is_discrete(idx)
-                } else if is_odyssey {
-                    phosphor_dsp::odyssey::is_discrete(idx)
-                } else if is_juno {
-                    phosphor_dsp::juno::is_discrete(idx)
-                } else if is_dx7 {
-                    // Two selectors, not one: the bank knob is as discrete as
-                    // the patch knob, and stepping it by a continuous delta
-                    // would walk through cartridges a fraction at a time.
-                    phosphor_dsp::dx7::is_discrete(idx)
-                } else if is_drum {
-                    phosphor_dsp::drum_rack::is_discrete(idx)
+                // A selector steps by *index* rather than by adding a fraction
+                // of the knob's travel: 256 voices, or 56 patches and a
+                // three-position range switch, or fifteen kits, are coarse
+                // enough that an accumulated rounding error lands on the wrong
+                // side of a step boundary, which reads as a keypress that did
+                // nothing.
+                //
+                // Which controls those are is the instrument's own answer —
+                // see `crate::discrete`, which is also what the session format
+                // stores them through, so the two cannot drift apart.
+                let instrument = track.instrument_type?;
+                let new_val = if crate::discrete::is_discrete(instrument, idx) {
+                    crate::discrete::step(instrument, idx, track.synth_params[idx], delta > 0.0)
                 } else {
-                    idx == 0
-                };
-                let actual_delta = if is_discrete {
-                    let step = if is_odyssey {
-                        match idx {
-                            0 => 1.0 / (phosphor_dsp::odyssey::PATCH_COUNT as f32 - 0.01),
-                            6 => 0.34, // 3 filter types
-                            _ => 0.5,
-                        }
-                    } else {
-                        0.25
-                    };
-                    if delta > 0.0 { step } else { -step }
-                } else {
-                    delta
-                };
-                // The DX7, the Juno, the Jupiter and the drum rack step their
-                // selectors by index rather than by adding a fraction of the
-                // knob's travel: 256 voices, or 56 patches and a
-                // three-position range switch, or 64 patches and seven
-                // switches, or ten kits, are coarse enough that an accumulated
-                // rounding error lands on the wrong side of a step boundary,
-                // which reads as a keypress that did nothing.
-                let new_val = if is_discrete && is_dx7 {
-                    phosphor_dsp::dx7::step_discrete(idx, track.synth_params[idx], delta > 0.0)
-                } else if is_discrete && is_drum {
-                    phosphor_dsp::drum_rack::step_discrete(idx, track.synth_params[idx], delta > 0.0)
-                } else if is_discrete && is_juno {
-                    phosphor_dsp::juno::step_discrete(idx, track.synth_params[idx], delta > 0.0)
-                } else if is_discrete && is_jupiter {
-                    phosphor_dsp::jupiter::step_discrete(idx, track.synth_params[idx], delta > 0.0)
-                } else {
-                    (track.synth_params[idx] + actual_delta).clamp(0.0, 1.0)
+                    (track.synth_params[idx] + delta).clamp(0.0, 1.0)
                 };
                 track.synth_params[idx] = new_val;
 

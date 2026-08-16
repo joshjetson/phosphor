@@ -83,7 +83,7 @@ cargo run --release -- --no-midi
 | **Phosphor Synth** | Subtractive | 16 | 4 waveforms | Dual oscillators, SVF filter, drive, ADSR |
 | **DX7** | FM | 16 | **256** | All 8 original factory cartridges, decoded from the ROM dumps |
 | **Jupiter-8** | Analog poly | 8 | **64** | All 64 factory patch names, full 32-control panel, two envelopes |
-| **ARP Odyssey** | Duophonic | 2 | 44 | 3 selectable filter types (4023/4035/4075), hard sync, ring mod, S&H |
+| **ARP Odyssey** | Duophonic | 2 | 44 | Complete 59-control front panel, all three filter revisions (4023/4035/4075), ADSR *and* AR envelopes, sample and hold |
 | **Juno-60** | DCO poly | 6 | **56** | All 56 factory patches, read off Roland's patch charts; complete 25-control front panel measured against the hardware |
 
 ### Drum Rack
@@ -159,7 +159,7 @@ Names and spellings are Roland's, Glockenspeil included.
 - **Phosphor Synth**: 16-voice polyphonic subtractive — dual oscillators, SVF filter, drive, ADSR
 - **DX7**: all 256 original factory voices, decoded from the ROM cartridge dumps and played on a 6-operator engine modelled on the YM21280/YM21290 chipset — all 32 algorithms decoded from the hardware table (including the multi-operator feedback loops in algorithms 4 and 6), log-domain envelopes with the hardware rate curve and its distinct attack shape, coarse/fine/detune frequency on the real parameter grid, keyboard level and rate scaling, global LFO with six waveforms and two-stage delay, and a per-voice pitch envelope
 - **Jupiter-8**: the full front panel — dual VCOs with sync and exponential cross-modulation, switchable 12/24 dB IR3109 filter with resonance to self-oscillation, non-resonant HPF, two independent ADSR envelopes, LFO with four waveforms and a two-stage delay, portamento, and 4 voice modes (Solo/Unison/Poly1/Poly2). Envelope times follow Roland's published 1 ms-10 s specification; filter corners, LFO taper and keyboard follow are measured rather than approximated
-- **ARP Odyssey**: Duophonic split, 3 selectable filters (12dB SVF / 24dB Moog ladder / 24dB Norton), XOR ring mod, hard sync, Sample & Hold
+- **ARP Odyssey**: the full front panel — two VCOs with coarse and fine tuning over the panel's 20 Hz-2 kHz range, hard sync, per-oscillator pulse width and PWM, two frequency-mod inputs each, a keyboard switch that drops VCO-1 into the LFO range, the sample-and-hold mixer with its own sources, clock and lag, an XOR ring modulator sharing a fader with white or pink noise, all three filter revisions (12 dB 4023 SVF / 24 dB 4035 ladder / 24 dB 4075 Norton) on one 16 Hz-16 kHz sweep and each resonating to self-oscillation, a non-resonant HPF, three filter modulation slots, VCA gain and drive, and both envelope generators — the ADSR and the AR — with their own sliders and their own LFO-repeat gating. Envelope times follow ARP's published 5 ms-10 s specification and the pitch pads are mapped to pitch bend and the modulation wheel
 - **Juno-60**: the full front panel — LFO rate/delay, DCO with PWM depth and a 3-position PWM mode (LFO/MANUAL/ENV), saw/pulse/sub/noise and a 16'/8'/4' range switch, 4-position HPF, IR3109-style 24 dB/oct resonant VCF with env polarity, LFO and keyboard follow, ENV/GATE VCA, shared ADSR, and BBD stereo chorus (I / II / I+II). Envelope taper, LFO rate taper, filter corner frequencies and chorus rates are calibrated against measurements of the hardware rather than approximated. All 56 factory patches are the instrument's own, transcribed from Roland's published patch charts
 - **Drum Rack**: 15 kits including circuit-accurate 808/909/707/606, creative 777, warm tape-saturated tsty series, and resonator-based physical modeling
 
@@ -167,6 +167,10 @@ Names and spellings are Roland's, Glockenspeil included.
 - Save/load projects as `.phos` files (human-readable JSON)
 - `Ctrl+S` quick save, `Space+S` save as, `Space+O` open
 - Saves all tracks, instruments, synth parameters, clips, MIDI notes, transport settings
+- A kit, a patch or a cartridge is stored by **which one it is**, not by where its
+  knob sat: a knob position only names a patch while the bank is the size it was
+  when the session was written, and reopening on a different instrument is the
+  kind of wrong that looks perfectly reasonable
 - Atomic writes prevent file corruption
 - Default save directory: `sessions/`
 
@@ -180,6 +184,9 @@ Names and spellings are Roland's, Glockenspeil included.
   cannot move a patch index stored in a saved session
 - A preset saved against a different panel — wrong instrument, wrong number of
   controls, or an older layout — is refused rather than loaded into the wrong holes
+- A kit, a patch or a cartridge is stored by **which one it is**, the same as a
+  session stores it, so a preset saved on the 909 opens on the 909 after the rack
+  has grown a kit rather than on whatever now sits at that fraction of the knob
 - 128 presets per instrument, 32 characters per name
 
 **Undo/Redo**
@@ -223,7 +230,7 @@ Names and spellings are Roland's, Glockenspeil included.
 - Shared domain models via atomics (no locks between threads)
 - Command channel pattern for UI-to-audio communication
 - Plugin trait for instruments and effects — same interface for built-in and third-party
-- 496 tests covering DSP, MIDI, engine, mixer, navigation, and persistence
+- 559 tests covering DSP, MIDI, engine, mixer, navigation, and persistence
 
 ---
 
@@ -286,6 +293,14 @@ A preset saved for a different instrument, with a different number of controls, 
 against an older panel layout is **refused** rather than loaded — a block that does
 not fit the panel would produce a plausible sound that is not the one that was saved.
 The reason appears in the status bar.
+
+The kit, the patch and the cartridge are stored by which one they are rather than by
+where the knob sat, for the same reason a session stores them that way: a knob
+position only names a patch while the bank is the size it was when the preset was
+written, and a preset that reopens on a different drum machine is the kind of wrong
+that looks perfectly reasonable. Presets written before this still load — the knob
+position is the only evidence they carry — and the status bar says to check the
+patch when one does.
 
 ### Tracks Pane
 
@@ -512,7 +527,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace  # 496 tests
+cargo test --workspace  # 559 tests
 ```
 
 ---

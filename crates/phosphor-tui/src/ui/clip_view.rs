@@ -167,18 +167,24 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                     let bar: String = "\u{2588}".repeat(filled)
                         + &"\u{2591}".repeat(bar_w.saturating_sub(filled));
 
-                    // Format value nicely. The Juno's, the Jupiter's and the
-                    // drum rack's time controls are not linear in time and do
-                    // not sit at the same indices as the other instruments',
-                    // so each reports its own seconds.
+                    // Format value nicely. The Juno's, the Jupiter's, the
+                    // Odyssey's and the drum rack's time controls are not
+                    // linear in time and do not sit at the same indices as
+                    // the other instruments', so each reports its own
+                    // seconds. The Odyssey used to fall through to the
+                    // fallback below, which reads indices 7, 8 and 10 as
+                    // milliseconds — on its panel those are two frequency-mod
+                    // depths and a source switch.
                     //
                     // The rack goes one further: its decay times are the
                     // selected machine's, not one machine's answer for all
                     // fifteen, so the kit selector has to be read as well as
                     // the knob.
-                    let display_val = if is_juno || is_jupiter || is_drum {
+                    let display_val = if is_juno || is_jupiter || is_odyssey || is_drum {
                         let secs = if is_juno {
                             phosphor_dsp::juno::param_seconds(i, val)
+                        } else if is_odyssey {
+                            phosphor_dsp::odyssey::param_seconds(i, val)
                         } else if is_drum {
                             let kit = phosphor_dsp::drum_rack::DrumKit::from_param(
                                 params.get(phosphor_dsp::drum_rack::P_KIT).copied().unwrap_or(0.0),

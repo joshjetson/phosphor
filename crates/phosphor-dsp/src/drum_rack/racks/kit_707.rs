@@ -203,7 +203,7 @@ impl DrumVoice {
         // DRIVE is the rack's control rather than Roland's, and it goes where
         // it goes on the other kits: across the bass drum.
         if c.drive > 0.01 && matches!(voice, Voice707::Bd1 | Voice707::Bd2) {
-            soft_clip(out, c.drive * 2.0)
+            drive_stage(out, c.drive * 2.0)
         } else {
             out
         }

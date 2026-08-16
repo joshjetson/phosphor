@@ -280,8 +280,14 @@ impl DrumVoice {
 
         let body = Self::rounded_triangle(self.phase1) * env;
         // A 909 kick is always a little overdriven; the DRIVE knob is on top
-        // of that rather than instead of it.
-        soft_clip(body + click, 0.35 + c.drive * 3.0) * BD_OUT
+        // of that rather than instead of it. Two stages rather than one sum,
+        // because the fixed part is a level the kit is voiced around and the
+        // knob is not allowed to be — see `drive_stage`.
+        drive_stage_at(
+            soft_clip(body + click, 0.35),
+            c.drive * 3.0,
+            KICK_DRIVE_REFERENCE,
+        ) * BD_OUT
     }
 
     /// 909 Snare: two rounded triangles with their own envelopes, a brief

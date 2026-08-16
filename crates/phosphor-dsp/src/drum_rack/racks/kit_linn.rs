@@ -244,7 +244,7 @@ impl DrumVoice {
         };
 
         if c.drive > 0.01 && matches!(voice, VoiceLinn::Bass) {
-            soft_clip(out, c.drive * 2.0)
+            drive_stage(out, c.drive * 2.0)
         } else {
             out
         }

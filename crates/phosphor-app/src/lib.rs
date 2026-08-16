@@ -5,6 +5,7 @@
 //! the TUI and GUI frontends. It has no dependency on any rendering framework.
 
 pub mod actions;
+pub mod discrete;
 pub mod preset;
 pub mod session;
 pub mod state;

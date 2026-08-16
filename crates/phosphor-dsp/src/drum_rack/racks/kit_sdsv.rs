@@ -332,6 +332,6 @@ impl DrumVoice {
         let mix = (v.noise_mix + (c.snappy - 0.5) * 0.8).clamp(0.0, 1.0);
         let out = (tone * (1.0 - mix) * 1.20 + noise * mix * 1.10) * v.out;
 
-        if c.drive > 0.01 { soft_clip(out, c.drive * 2.0) } else { out }
+        if c.drive > 0.01 { drive_stage(out, c.drive * 2.0) } else { out }
     }
 }

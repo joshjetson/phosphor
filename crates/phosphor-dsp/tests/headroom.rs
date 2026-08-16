@@ -88,6 +88,9 @@ const VELOCITIES: &[u8] = &[100, 127];
 
 struct Measured {
     peak: f32,
+    /// Left channel only, matching `peak_and_rms` and the `levels` example so
+    /// that the three report the same number for the same input.
+    rms: f32,
     at_full_scale: usize,
     non_finite: usize,
 }
@@ -103,7 +106,8 @@ fn render(plugin: &mut dyn Plugin, notes: &[u8], velocity: u8, blocks: usize) ->
 
     let mut left = vec![0.0f32; BLOCK];
     let mut right = vec![0.0f32; BLOCK];
-    let mut m = Measured { peak: 0.0, at_full_scale: 0, non_finite: 0 };
+    let mut m = Measured { peak: 0.0, rms: 0.0, at_full_scale: 0, non_finite: 0 };
+    let mut square_sum = 0.0f64;
 
     for block in 0..blocks {
         left.fill(0.0);
@@ -113,6 +117,11 @@ fn render(plugin: &mut dyn Plugin, notes: &[u8], velocity: u8, blocks: usize) ->
             plugin.process(&[], &mut outs, &events);
         } else {
             plugin.process(&[], &mut outs, &[]);
+        }
+        for sample in left.iter().copied() {
+            if sample.is_finite() {
+                square_sum += f64::from(sample) * f64::from(sample);
+            }
         }
         for sample in left.iter().chain(right.iter()).copied() {
             if !sample.is_finite() {
@@ -128,18 +137,8 @@ fn render(plugin: &mut dyn Plugin, notes: &[u8], velocity: u8, blocks: usize) ->
             }
         }
     }
+    m.rms = (square_sum / (blocks * BLOCK) as f64).sqrt() as f32;
     m
-}
-
-/// The knob position that selects patch `index` of `count`.
-///
-/// The midpoint of the step, not `index / (count - 0.01)`: the quotient form
-/// can land a hair below its own step and select the patch before it, which
-/// silently measures the wrong preset. It did that for seven of the Jupiter's
-/// indices when that bank held 42, so six of its patches were never rendered
-/// by this sweep at all while six others were rendered twice.
-fn patch_value(index: usize, count: usize) -> f32 {
-    (index as f32 + 0.5) / count as f32
 }
 
 /// Point a DX7 at one of the 256 factory voices by number. The instrument has
@@ -180,7 +179,7 @@ fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
     let mut jupiter_organ = jupiter::Jupiter8Synth::new();
     jupiter_organ.set_parameter(jupiter::P_PATCH, jupiter::patch_knob(28));
     let mut odyssey_funk = odyssey::OdysseySynth::new();
-    odyssey_funk.set_parameter(odyssey::P_PATCH, patch_value(1, odyssey::PATCH_COUNT));
+    odyssey_funk.set_parameter(odyssey::P_PATCH, odyssey::patch_knob(1));
     let mut juno_tuba = juno::Juno60Synth::new();
     juno_tuba.set_parameter(juno::P_PATCH, juno::patch_knob(27));
 
@@ -301,7 +300,7 @@ fn no_patch_in_any_bank_exceeds_the_target() {
         // chord, so it gets checked on both.
         for notes in [SINGLE, TWO_HAND_EIGHT] {
             let mut s = odyssey::OdysseySynth::new();
-            s.set_parameter(odyssey::P_PATCH, patch_value(index, odyssey::PATCH_COUNT));
+            s.set_parameter(odyssey::P_PATCH, odyssey::patch_knob(index));
             let m = render(&mut s, notes, 127, SWEEP_BLOCKS);
             check_patch(&m, "odyssey", odyssey::PATCH_NAMES[index], &mut worst);
         }
@@ -429,71 +428,74 @@ fn check_patch(m: &Measured, synth: &str, patch: &str, worst: &mut (f32, String)
 /// its worst case, and it has to clear the same target as the keyboards.
 #[test]
 fn no_drum_kit_exceeds_the_target() {
-    // Kick, snare, two toms, closed and open hat, crash, ride — a full kit
-    // hit on the same sample, which is what a quantised fill lands as.
-    const FULL_KIT: &[u8] = &[36, 38, 41, 42, 45, 46, 49, 51];
     let mut worst = (0.0f32, String::new());
     for kit in 0..drum_rack::KIT_COUNT {
         for notes in [&[36u8][..], FULL_KIT] {
-            let mut rack = drum_rack::DrumRack::new();
-            rack.set_parameter(drum_rack::P_KIT, drum_rack::kit_knob(kit));
-            let m = render(&mut rack, notes, 127, BLOCKS);
+            let m = render(&mut rack_at(kit, None), notes, 127, BLOCKS);
             check_patch(&m, "drum rack", &format!("kit {kit}"), &mut worst);
         }
     }
     assert!(worst.0 > 0.5, "no kit reaches half of full scale: {worst:?}");
 }
 
+/// Kick, snare, two toms, closed and open hat, crash, ride — a full kit hit on
+/// the same sample, which is what a quantised fill lands as, and the drum
+/// rack's worst case.
+const FULL_KIT: &[u8] = &[36, 38, 41, 42, 45, 46, 49, 51];
+
+/// Every drum-rack knob that shapes a voice, which is the panel minus the kit
+/// selector, the twelve level knobs and the two rack controls.
+///
+/// The level knobs are left out because they sit at the top of their travel by
+/// default and only cut, so the defaults already are their loudest setting.
+/// DRIVE and GAIN are left out because they get their own sweep — see
+/// `no_drive_setting_exceeds_the_target` and `the_gain_knob_can_only_cut`.
+fn shaping_controls() -> Vec<usize> {
+    const LEVELS: [usize; 12] = [
+        drum_rack::P_BD_LEVEL,
+        drum_rack::P_SD_LEVEL,
+        drum_rack::P_LT_LEVEL,
+        drum_rack::P_MT_LEVEL,
+        drum_rack::P_HT_LEVEL,
+        drum_rack::P_RS_LEVEL,
+        drum_rack::P_CP_LEVEL,
+        drum_rack::P_CB_LEVEL,
+        drum_rack::P_CY_LEVEL,
+        drum_rack::P_RD_LEVEL,
+        drum_rack::P_OH_LEVEL,
+        drum_rack::P_CH_LEVEL,
+    ];
+    (0..drum_rack::PARAM_COUNT)
+        .filter(|i| {
+            !LEVELS.contains(i)
+                && *i != drum_rack::P_KIT
+                && *i != drum_rack::P_DRIVE
+                && *i != drum_rack::P_GAIN
+        })
+        .collect()
+}
+
+/// A rack on `kit`, with every shaping control at `setting` when one is given.
+fn rack_at(kit: usize, setting: Option<f32>) -> drum_rack::DrumRack {
+    let mut rack = drum_rack::DrumRack::new();
+    rack.set_parameter(drum_rack::P_KIT, drum_rack::kit_knob(kit));
+    if let Some(value) = setting {
+        for i in shaping_controls() {
+            rack.set_parameter(i, value);
+        }
+    }
+    rack
+}
+
 /// The drum rack's panel is per-instrument, which is thirty-three new ways to
 /// change the level of a hit. This drives all of them to both ends.
-///
-/// The level knobs are not swept: they sit at the top of their travel by
-/// default and only cut, so the defaults already are their loudest setting.
-/// What is swept is everything that shapes a voice — tunings, tone, snappy,
-/// attack, every decay, and the accent bus — since a longer or brighter drum
-/// is a louder one.
 #[test]
 fn no_drum_panel_setting_exceeds_the_target() {
-    const FULL_KIT: &[u8] = &[36, 38, 41, 42, 45, 46, 49, 51];
-
-    /// Every knob that shapes a voice, which is the panel minus the kit
-    /// selector, the twelve level knobs and the two rack controls.
-    fn shaping() -> Vec<usize> {
-        const LEVELS: [usize; 12] = [
-            drum_rack::P_BD_LEVEL,
-            drum_rack::P_SD_LEVEL,
-            drum_rack::P_LT_LEVEL,
-            drum_rack::P_MT_LEVEL,
-            drum_rack::P_HT_LEVEL,
-            drum_rack::P_RS_LEVEL,
-            drum_rack::P_CP_LEVEL,
-            drum_rack::P_CB_LEVEL,
-            drum_rack::P_CY_LEVEL,
-            drum_rack::P_RD_LEVEL,
-            drum_rack::P_OH_LEVEL,
-            drum_rack::P_CH_LEVEL,
-        ];
-        (0..drum_rack::PARAM_COUNT)
-            .filter(|i| {
-                !LEVELS.contains(i)
-                    && *i != drum_rack::P_KIT
-                    && *i != drum_rack::P_DRIVE
-                    && *i != drum_rack::P_GAIN
-            })
-            .collect()
-    }
-
-    let shaping = shaping();
     let mut worst = (0.0f32, String::new());
     for kit in 0..drum_rack::KIT_COUNT {
         for (setting, value) in [("min", 0.0f32), ("max", 1.0)] {
             for notes in [&[36u8][..], FULL_KIT] {
-                let mut rack = drum_rack::DrumRack::new();
-                rack.set_parameter(drum_rack::P_KIT, drum_rack::kit_knob(kit));
-                for &i in &shaping {
-                    rack.set_parameter(i, value);
-                }
-                let m = render(&mut rack, notes, 127, BLOCKS);
+                let m = render(&mut rack_at(kit, Some(value)), notes, 127, BLOCKS);
                 check_patch(&m, "drum panel", &format!("kit {kit} {setting}"), &mut worst);
             }
         }
@@ -502,6 +504,335 @@ fn no_drum_panel_setting_exceeds_the_target() {
     // a control that only ever takes level away is one that has been trimmed
     // into safety rather than voiced.
     assert!(worst.0 > 0.5, "no panel setting reaches half of full scale: {worst:?}");
+}
+
+/// The two rack controls the panel sweep leaves out, and the reason this test
+/// exists: neither was ever swept, and both could put a kit past the ceiling
+/// on their own.
+///
+/// DRIVE was the worse of the two. It multiplied by up to 17 before its own
+/// denominator, so the knob was a level control as much as a tone control: a
+/// solo 808 kick went from 0.16 to 0.66 across its travel, +12 dB, and a full
+/// kit from 0.64 to 0.89. Nine of the fifteen kits ended up over the master
+/// limiter's ceiling at the top of the knob and the SDS-V was 0.9 dB over at a
+/// quarter turn. It is now gain-compensated — see `drive_stage` in the rack —
+/// and what is asserted is both halves of that: the ceiling holds at every
+/// setting, and the peak stays near where the knob at zero left it.
+///
+/// The two bounds are on different measurements, and deliberately:
+///
+/// * **Peak may not rise** by more than 3 dB. Peak is what the ceiling is
+///   about, and a rising peak is the defect. The measured worst is the SDS-V's
+///   2.5 dB on a full kit — that machine's voices are filtered noise that sits
+///   close to its peak for the whole hit, so lifting their bodies lifts the
+///   sum with them. Everything else moves under 0.3 dB.
+/// * **RMS may not fall.** RMS is what the ear tracks, and a compressor takes
+///   peaks down while bringing loudness up: a solo 909 kick loses 4 dB of peak
+///   across the knob and gains 4.5 dB of RMS. Asserting a band on peak in both
+///   directions would be asserting that the knob does not compress, which is
+///   the one thing it is for.
+#[test]
+fn no_drive_setting_exceeds_the_target() {
+    const DRIVE_SETTINGS: [f32; 5] = [0.0, 0.25, 0.5, 0.75, 1.0];
+    /// How much level the knob is allowed to add to a peak, in dB.
+    const PEAK_RISE_DB: f32 = 3.0;
+    /// How much loudness it is allowed to take away, in dB. Not zero: the
+    /// 777's kit is 0.4 dB down at the top of the knob.
+    const RMS_DROP_DB: f32 = 1.0;
+
+    let mut worst = (0.0f32, String::new());
+    for kit in 0..drum_rack::KIT_COUNT {
+        // Both at the panel's defaults and with everything that shapes a voice
+        // at the top, which is where the kits sit closest to the ceiling.
+        for shaping in [None, Some(1.0f32)] {
+            for notes in [&[36u8][..], FULL_KIT] {
+                let mut undriven = None;
+                for drive in DRIVE_SETTINGS {
+                    let mut rack = rack_at(kit, shaping);
+                    rack.set_parameter(drum_rack::P_DRIVE, drive);
+                    let m = render(&mut rack, notes, 127, BLOCKS);
+                    let name = format!(
+                        "kit {kit} drive {drive}{}",
+                        if shaping.is_some() { " panel max" } else { "" }
+                    );
+                    check_patch(&m, "drum drive", &name, &mut worst);
+
+                    let Some((peak, rms)) = undriven else {
+                        undriven = Some((m.peak, m.rms));
+                        continue;
+                    };
+                    let peak_moved = 20.0 * (m.peak / peak).log10();
+                    assert!(
+                        peak_moved <= PEAK_RISE_DB,
+                        "drum drive {name}: the knob added {peak_moved:+.1} dB of peak \
+                         ({peak:.4} -> {:.4}); it is a tone control, not a fader",
+                        m.peak
+                    );
+                    let rms_moved = 20.0 * (m.rms / rms).log10();
+                    assert!(
+                        rms_moved >= -RMS_DROP_DB,
+                        "drum drive {name}: the knob took {rms_moved:.1} dB of loudness \
+                         away ({rms:.5} -> {:.5} RMS); driving a kit should not make it \
+                         quieter",
+                        m.rms
+                    );
+                }
+            }
+        }
+    }
+    assert!(worst.0 > 0.5, "no drive setting reaches half of full scale: {worst:?}");
+}
+
+/// GAIN is the rack's output trim, and it sits at the top of its travel by
+/// default so that it can only cut — the same reasoning as the twelve level
+/// knobs, and for the same reason: the headroom trim was measured at one knob
+/// position, so any travel above that position is headroom nothing measured.
+/// It used to have a quarter of a turn up there, which put a full 777 kit at
+/// 0.928, past the ceiling.
+#[test]
+fn the_gain_knob_can_only_cut() {
+    assert_eq!(
+        drum_rack::PARAM_DEFAULTS[drum_rack::P_GAIN], 1.0,
+        "GAIN has travel above its default again"
+    );
+
+    let mut worst = (0.0f32, String::new());
+    for kit in 0..drum_rack::KIT_COUNT {
+        let mut louder_setting = 0.0f32;
+        for gain in [1.0f32, 0.75, 0.5, 0.0] {
+            let mut rack = rack_at(kit, Some(1.0));
+            rack.set_parameter(drum_rack::P_GAIN, gain);
+            let m = render(&mut rack, FULL_KIT, 127, BLOCKS);
+            check_patch(&m, "drum gain", &format!("kit {kit} gain {gain}"), &mut worst);
+            if gain < 1.0 {
+                assert!(
+                    m.peak < louder_setting,
+                    "drum gain kit {kit}: the knob at {gain} is not quieter than the \
+                     one above it ({:.4} against {louder_setting:.4})",
+                    m.peak
+                );
+            }
+            louder_setting = m.peak;
+        }
+    }
+    assert!(worst.0 > 0.5, "no gain setting reaches half of full scale: {worst:?}");
+}
+
+/// One instrument pointed at the loudest thing in its bank, with the knob its
+/// headroom trim was measured at one position of.
+///
+/// The DX7 and the phosphor synth call theirs GAIN and the other three call
+/// theirs LEVEL; all five are the same stage — a multiplier on the voice sum,
+/// applied just before the headroom trim and the bounding saturator.
+struct KnobCase {
+    name: &'static str,
+    /// Index of the output knob on that instrument's panel.
+    param: usize,
+    notes: &'static [u8],
+    /// How long this patch takes to reach its peak.
+    blocks: usize,
+    plugin: Box<dyn Plugin>,
+}
+
+fn output_knob_cases() -> Vec<KnobCase> {
+    let mut jupiter_organ = jupiter::Jupiter8Synth::new();
+    jupiter_organ.set_parameter(jupiter::P_PATCH, jupiter::patch_knob(28));
+    let mut juno_tuba = juno::Juno60Synth::new();
+    juno_tuba.set_parameter(juno::P_PATCH, juno::patch_knob(27));
+    let mut odyssey_funk = odyssey::OdysseySynth::new();
+    odyssey_funk.set_parameter(odyssey::P_PATCH, odyssey::patch_knob(1));
+
+    let case = |name, param, notes, plugin| KnobCase { name, param, notes, blocks: BLOCKS, plugin };
+    vec![
+        case("dx7 default", dx7::P_GAIN, TWO_HAND_EIGHT, Box::new(dx7::Dx7Synth::new())),
+        case("dx7 147 TIMPANI", dx7::P_GAIN, TWO_HAND_EIGHT, Box::new(dx7_voice(147))),
+        case("dx7 60 HARP 1", dx7::P_GAIN, TWO_HAND_EIGHT, Box::new(dx7_voice(60))),
+        case("dx7 195 CLARINET", dx7::P_GAIN, TWO_HAND_EIGHT, Box::new(dx7_voice(195))),
+        case("phosphor", synth::P_GAIN, TWO_HAND_EIGHT, Box::new(synth::PhosphorSynth::new())),
+        case("jupiter 45 PIPE ORGN", jupiter::P_LEVEL, TWO_HAND_EIGHT, Box::new(jupiter_organ)),
+        case("juno 44 TUBA", juno::P_LEVEL, TWO_HAND_EIGHT, Box::new(juno_tuba)),
+        // Duophonic: a single note is the Odyssey's worst case, not a chord.
+        case("odyssey 1 Funk", odyssey::P_LEVEL, SINGLE, Box::new(odyssey_funk)),
+    ]
+}
+
+/// The two patches in the project whose peak arrives after the render window
+/// the sweeps use, at the top of their instrument's output knob.
+///
+/// They are checked at the top of the travel and nowhere else, and that is
+/// enough: the knob is a plain multiplier applied before the bounding stage,
+/// so peak is monotonic in it and the top is the only setting that can be the
+/// worst one. `no_output_knob_setting_exceeds_the_target` is what holds that
+/// monotonicity, on renders short enough to sweep.
+fn late_peaking_at_the_top_of_the_knob() -> Vec<KnobCase> {
+    let mut jupiter_startup = jupiter::Jupiter8Synth::new();
+    jupiter_startup.set_parameter(jupiter::P_PATCH, jupiter::patch_knob(40));
+    jupiter_startup.set_parameter(jupiter::P_LEVEL, 1.0);
+    let mut juno_surf = juno::Juno60Synth::new();
+    juno_surf.set_parameter(juno::P_PATCH, juno::patch_knob(54));
+    juno_surf.set_parameter(juno::P_LEVEL, 1.0);
+
+    vec![
+        KnobCase {
+            name: "jupiter 61 START UP",
+            param: jupiter::P_LEVEL,
+            notes: TWO_HAND_EIGHT,
+            // 9.3 s, which reaches past the 9.05 s peak of that patch.
+            blocks: 1600,
+            plugin: Box::new(jupiter_startup),
+        },
+        KnobCase {
+            name: "juno 77 SURF",
+            param: juno::P_LEVEL,
+            notes: TWO_HAND_EIGHT,
+            // 11.6 s, three cycles of the slowest LFO in that bank.
+            blocks: 2000,
+            plugin: Box::new(juno_surf),
+        },
+    ]
+}
+
+/// The defect the drum rack's GAIN had, on the other five instruments: a
+/// headroom trim measured at one knob position leaves everything above that
+/// position unmeasured, and nothing swept these knobs at all.
+///
+/// Two of them were over the master limiter's ceiling at the top of their
+/// travel. The DX7's GAIN defaulted to 0.75, so ROM3A's TIMPANI reached 0.9298
+/// with the knob up and ROM1B's HARP 1 0.9282; the phosphor synth's reached
+/// 0.9379 with DRIVE up as well. Both defaults are now folded into the
+/// instrument's `OUTPUT_TRIM` — see `the_folded_gain_knobs_can_only_cut`. The
+/// Jupiter, the Juno and the Odyssey were never over it; they are here so that
+/// they cannot become so quietly.
+#[test]
+fn no_output_knob_setting_exceeds_the_target() {
+    const SETTINGS: [f32; 5] = [0.0, 0.25, 0.5, 0.75, 1.0];
+
+    let mut worst = (0.0f32, String::new());
+    for mut case in output_knob_cases() {
+        let mut louder = f32::INFINITY;
+        for setting in SETTINGS.iter().rev().copied() {
+            case.plugin.set_parameter(case.param, setting);
+            let m = render(case.plugin.as_mut(), case.notes, 127, case.blocks);
+            let name = case.name;
+            check_patch(&m, "output knob", &format!("{name} at {setting}"), &mut worst);
+            // A multiplier before the bounding stage, so the knob can only
+            // take peak off as it comes down. Anything else means it is not
+            // the stage this test thinks it is.
+            assert!(
+                m.peak < louder,
+                "{name}: the knob at {setting} is not quieter than the setting above it \
+                 ({:.4} against {louder:.4})",
+                m.peak
+            );
+            louder = m.peak;
+        }
+    }
+
+    for mut case in late_peaking_at_the_top_of_the_knob() {
+        assert_eq!(
+            case.plugin.get_parameter(case.param),
+            1.0,
+            "{}: the knob is not at the top",
+            case.name
+        );
+        let m = render(case.plugin.as_mut(), case.notes, 127, case.blocks);
+        check_patch(&m, "output knob held", case.name, &mut worst);
+    }
+
+    assert!(worst.0 > 0.5, "no output knob setting reaches half of full scale: {worst:?}");
+}
+
+/// The three instruments whose trim was measured at a GAIN of 0.75 had that
+/// 0.75 folded into the trim, which leaves the knob at the top of its travel
+/// and able only to cut. The fold is exact — `1.0 * (t * 0.75)` and `0.75 * t`
+/// are the same f32 — so every render at the default is what it was, sample
+/// for sample; each instrument holds that itself, with the old constant pinned
+/// beside the new one.
+#[test]
+fn the_folded_gain_knobs_can_only_cut() {
+    assert_eq!(
+        dx7::PARAM_DEFAULTS[dx7::P_GAIN], 1.0,
+        "the DX7's GAIN has travel above its default again"
+    );
+    assert_eq!(
+        synth::PARAM_DEFAULTS[synth::P_GAIN], 1.0,
+        "the phosphor synth's GAIN has travel above its default again"
+    );
+    assert_eq!(
+        drum_rack::PARAM_DEFAULTS[drum_rack::P_GAIN], 1.0,
+        "the drum rack's GAIN has travel above its default again"
+    );
+}
+
+/// DRIVE is the other knob nothing swept, and on the phosphor synth it had the
+/// same defect the drum rack's did: the knob multiplied by up to 11 before its
+/// own denominator, so it was a level control as much as a tone control. An
+/// eight-note chord went from 0.346 to 0.901 across its travel, +8.3 dB and
+/// past the master limiter's ceiling, and the curve was not even monotonic in
+/// the knob — the panel at its extremes measured 0.947 at drive 0 and 0.888 at
+/// drive 0.1. It is now gain-compensated, the same curve the rack uses; see
+/// `drive_stage` in synth.rs.
+///
+/// The Odyssey's DRIVE is here because it is the only other one, and it is
+/// unchanged: nothing in its bank reaches 0.29 at any setting of it.
+///
+/// The two bounds are on different measurements, and deliberately — the same
+/// reasoning as `no_drive_setting_exceeds_the_target` for the rack. Peak may
+/// not rise, because peak is what the ceiling is about; RMS may not fall,
+/// because a compressor takes peaks down while bringing loudness up, and
+/// asserting a band on peak in both directions would assert that the knob does
+/// not compress, which is the one thing it is for.
+#[test]
+fn no_keyboard_drive_setting_exceeds_the_target() {
+    const DRIVE_SETTINGS: [f32; 6] = [0.0, 0.1, 0.25, 0.5, 0.75, 1.0];
+    /// How much level the knob is allowed to add to a peak, in dB. The
+    /// measured worst is the phosphor synth's +0.5 dB on an eight-note chord.
+    const PEAK_RISE_DB: f32 = 3.0;
+
+    let mut worst = (0.0f32, String::new());
+    for notes in [SINGLE, TWO_HAND_EIGHT] {
+        let mut undriven = None;
+        for drive in DRIVE_SETTINGS {
+            let mut s = synth::PhosphorSynth::new();
+            s.set_parameter(synth::P_DRIVE, drive);
+            let m = render(&mut s, notes, 127, BLOCKS);
+            let name = format!("phosphor drive {drive}");
+            check_patch(&m, "keyboard drive", &name, &mut worst);
+
+            let Some((peak, rms)) = undriven else {
+                undriven = Some((m.peak, m.rms));
+                continue;
+            };
+            let peak_moved = 20.0 * (m.peak / peak).log10();
+            assert!(
+                peak_moved <= PEAK_RISE_DB,
+                "{name}: the knob added {peak_moved:+.1} dB of peak ({peak:.4} -> {:.4}); \
+                 it is a tone control, not a fader",
+                m.peak
+            );
+            assert!(
+                m.rms >= rms,
+                "{name}: the knob took loudness away ({rms:.5} -> {:.5} RMS); driving a \
+                 patch should not make it quieter",
+                m.rms
+            );
+        }
+    }
+
+    for index in 0..odyssey::PATCH_COUNT {
+        for drive in DRIVE_SETTINGS {
+            let mut s = odyssey::OdysseySynth::new();
+            s.set_parameter(odyssey::P_PATCH, odyssey::patch_knob(index));
+            s.set_parameter(odyssey::P_DRIVE, drive);
+            s.set_parameter(odyssey::P_LEVEL, 1.0);
+            // A single note is this instrument's worst case; it is duophonic.
+            let m = render(&mut s, SINGLE, 127, 64);
+            let name = format!("odyssey {} drive {drive}", odyssey::PATCH_NAMES[index]);
+            check_patch(&m, "keyboard drive", &name, &mut worst);
+        }
+    }
+
+    assert!(worst.0 > 0.2, "no drive setting reaches a fifth of full scale: {worst:?}");
 }
 
 /// The other half of the guarantee, and the one that was missing.
@@ -661,7 +992,7 @@ fn instruments_are_level_matched() {
     let mut jupiter_mid = jupiter::Jupiter8Synth::new();
     jupiter_mid.set_parameter(jupiter::P_PATCH, jupiter::patch_knob(1));
     let mut odyssey_mid = odyssey::OdysseySynth::new();
-    odyssey_mid.set_parameter(odyssey::P_PATCH, patch_value(4, odyssey::PATCH_COUNT));
+    odyssey_mid.set_parameter(odyssey::P_PATCH, odyssey::patch_knob(0));
     let mut juno_mid = juno::Juno60Synth::new();
     juno_mid.set_parameter(juno::P_PATCH, juno::patch_knob(3));
 

@@ -112,6 +112,38 @@ mod tests {
         samples.iter().fold(0.0f32, |m, s| m.max(s.abs()))
     }
 
+    /// Assert two panels are the same panel: every level bit-identical, every
+    /// selector on the same position.
+    ///
+    /// Not plain equality, because a preset stores its selectors by position
+    /// and a load puts them back at the exact centre of the step they name,
+    /// which is not always the fraction that was dialled in. The Juno's patch
+    /// knob loads at 0.0 and position 0's centre is 0.0089; the drum rack's
+    /// kit knob loads at 0.0 and its centre is 0.0333. Same patch, same kit —
+    /// and the render comparison beside every use of this is what proves it.
+    fn assert_same_panel(
+        instrument: InstrumentType,
+        got: &[f32],
+        want: &[f32],
+        what: &str,
+    ) {
+        use phosphor_app::discrete;
+
+        assert_eq!(got.len(), want.len(), "{what}: {} controls against {}", got.len(), want.len());
+        for (index, (a, b)) in got.iter().zip(want.iter()).enumerate() {
+            if discrete::is_discrete(instrument, index) {
+                assert_eq!(
+                    discrete::index_of(instrument, index, *a),
+                    discrete::index_of(instrument, index, *b),
+                    "{what}: selector {index} came back on a different position \
+                     ({a} against {b})"
+                );
+            } else {
+                assert_eq!(a, b, "{what}: control {index} came back changed");
+            }
+        }
+    }
+
     // ── Opening ──
 
     /// Space+W on an instrument track opens its bank, empty the first time.
@@ -208,7 +240,12 @@ mod tests {
         let mixer_id = app.nav.tracks[app.nav.track_cursor].mixer_id.unwrap();
         let _ = app.drain_mixer_commands();
         press(&mut app, KeyCode::Enter);
-        assert_eq!(params(&app), dialled, "the panel did not come back");
+        assert_same_panel(
+            InstrumentType::Juno60,
+            &params(&app),
+            &dialled,
+            "the panel did not come back",
+        );
 
         let restored = render(InstrumentType::Juno60, &params(&app));
         assert_eq!(
@@ -232,8 +269,13 @@ mod tests {
                 _ => None,
             })
             .collect();
+        // Against the panel that was loaded rather than the one that was
+        // dialled in: those are the same panel, and `assert_same_panel` above
+        // is what says so. What is being claimed here is narrower and is about
+        // the command channel — every control reached the audio thread, in
+        // order, with the value the UI is showing.
         let expected: Vec<(usize, f32)> =
-            dialled.iter().copied().enumerate().collect();
+            params(&app).iter().copied().enumerate().collect();
         assert_eq!(
             sent, expected,
             "the restored panel did not reach the audio thread control for control"
@@ -277,7 +319,12 @@ mod tests {
         assert_ne!(params(&app), dialled);
         press(&mut app, KeyCode::Enter);
 
-        assert_eq!(params(&app), dialled, "35 controls did not all come back");
+        assert_same_panel(
+            InstrumentType::DrumRack,
+            &params(&app),
+            &dialled,
+            "35 controls did not all come back",
+        );
         assert_eq!(
             render(InstrumentType::DrumRack, &params(&app)),
             sound,
@@ -285,6 +332,97 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(app.preset_dir.as_ref().unwrap());
+    }
+
+    // ── Selectors ──
+
+    /// The defect the preset format's version 2 exists for: a kit chosen when
+    /// the rack had ten of them opened on a different drum machine once it had
+    /// fifteen, because a selector was stored as a fraction of the bank's size.
+    /// The preset now carries the position as well, and the position wins.
+    #[test]
+    fn a_kit_survives_the_rack_growing() {
+        use phosphor_dsp::drum_rack;
+
+        let mut app = app("kit-grew");
+        add_track(&mut app, InstrumentType::DrumRack);
+        app.nav.focus_pane(Pane::Tracks);
+
+        // Put the rack on the 909 and save it.
+        if let Some(track) = app.nav.tracks.get_mut(app.nav.track_cursor) {
+            track.synth_params[drum_rack::P_KIT] = drum_rack::kit_knob(1);
+        }
+        assert_eq!(
+            drum_rack::discrete_label(drum_rack::P_KIT, params(&app)[drum_rack::P_KIT]),
+            Some("909")
+        );
+        open_browser(&mut app);
+        press(&mut app, KeyCode::Enter);
+        type_name(&mut app, "my 909");
+        press(&mut app, KeyCode::Enter);
+
+        // Rewrite the stored fraction as a ten-kit build would have written
+        // it, leaving the stored position alone: this is the file on disk.
+        let dir = app.preset_dir.clone().unwrap();
+        let mut bank = preset::load_bank(&dir, InstrumentType::DrumRack).unwrap();
+        bank.presets[0].params[drum_rack::P_KIT] = 1.5 / 10.0;
+        preset::save_bank(&dir, InstrumentType::DrumRack, &bank).unwrap();
+
+        // Walk the rack somewhere else, then load the preset back.
+        if let Some(track) = app.nav.tracks.get_mut(app.nav.track_cursor) {
+            track.synth_params[drum_rack::P_KIT] = drum_rack::kit_knob(6);
+        }
+        press(&mut app, KeyCode::Esc);
+        open_browser(&mut app);
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(
+            drum_rack::discrete_label(drum_rack::P_KIT, params(&app)[drum_rack::P_KIT]),
+            Some("909"),
+            "the preset opened on a different drum machine"
+        );
+        let msg = &app.status_message.as_ref().unwrap().0;
+        assert!(msg.contains("preset loaded"), "the load did not report success: {msg}");
+        assert!(!msg.contains("older format"), "a current preset was called an old one: {msg}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A version 1 preset still loads — the fraction is the only evidence of
+    /// what the player chose, and it is right whenever the bank has not moved
+    /// — but the bottom bar says to check the patch, the same as a version 1
+    /// session does.
+    #[test]
+    fn an_older_preset_loads_and_the_bottom_bar_says_so() {
+        use phosphor_dsp::drum_rack;
+
+        let mut app = app("old-format");
+        add_track(&mut app, InstrumentType::DrumRack);
+        app.nav.focus_pane(Pane::Tracks);
+
+        let dir = app.preset_dir.clone().unwrap();
+        let mut bank = preset::PresetFile::new(InstrumentType::DrumRack);
+        bank.store("old", InstrumentType::DrumRack, &params(&app)).unwrap();
+        // As version 1 wrote it: no positions, and the version that says so.
+        bank.version = 1;
+        bank.presets[0].version = 1;
+        bank.presets[0].discrete.clear();
+        bank.presets[0].params[drum_rack::P_KIT] = 1.5 / 10.0;
+        preset::save_bank(&dir, InstrumentType::DrumRack, &bank).unwrap();
+
+        open_browser(&mut app);
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Enter);
+
+        // It loaded, from the only evidence it has...
+        assert_eq!(params(&app)[drum_rack::P_KIT], 1.5 / 10.0);
+        // ...and it said so.
+        let msg = &app.status_message.as_ref().unwrap().0;
+        assert!(msg.contains("preset loaded"), "the preset did not load: {msg}");
+        assert!(msg.contains("older format"), "an old preset loaded quietly: {msg}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── Refusals ──

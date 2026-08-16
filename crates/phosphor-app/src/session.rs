@@ -12,6 +12,18 @@ use phosphor_core::transport::Transport;
 
 // ── Session file format ──
 
+/// Current `.phos` format version.
+///
+/// * **1** — every synth parameter stored as the normalised `f32` the panel
+///   holds, selectors included.
+/// * **2** — selectors additionally stored by the position they pick, in
+///   [`SessionTrack::discrete`]. A fraction only names a patch as long as the
+///   bank is the size it was when the fraction was written, and two banks have
+///   since changed size; see [`crate::discrete`]. Version 1 files still load —
+///   see `do_load` — but their selectors are only right if nothing has been
+///   added to the bank since.
+pub const FORMAT_VERSION: u32 = 2;
+
 #[derive(Serialize, Deserialize)]
 pub struct SessionFile {
     pub version: u32,
@@ -33,12 +45,29 @@ pub struct SessionTrack {
     pub name: String,
     pub instrument_type: String,
     pub synth_params: Vec<f32>,
+    /// Where every selector on this panel was pointing, by position rather
+    /// than by knob fraction. Absent in version 1 files.
+    #[serde(default)]
+    pub discrete: Vec<SessionSelector>,
     pub muted: bool,
     pub soloed: bool,
     pub armed: bool,
     pub volume: f32,
     pub color_index: usize,
     pub clips: Vec<SessionClip>,
+}
+
+/// One discrete control, stored by what it selects.
+///
+/// The knob fraction is still in `synth_params` — this is the authority when
+/// both are present, and the fraction is what a version 1 file has to fall
+/// back on.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionSelector {
+    /// Index into `synth_params`.
+    pub param: usize,
+    /// Which position of that control, counting from zero.
+    pub index: usize,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -142,6 +171,9 @@ fn extract_session(nav: &NavState, transport: &Transport) -> SessionFile {
                 .map(instrument_type_to_string)
                 .unwrap_or_default(),
             synth_params: track.synth_params.clone(),
+            discrete: track.instrument_type
+                .map(|i| selectors_of(i, &track.synth_params))
+                .unwrap_or_default(),
             muted: track.muted,
             soloed: track.soloed,
             armed: track.armed,
@@ -152,7 +184,7 @@ fn extract_session(nav: &NavState, transport: &Transport) -> SessionFile {
     }
 
     SessionFile {
-        version: 1,
+        version: FORMAT_VERSION,
         transport: SessionTransport {
             tempo_bpm: transport.tempo_bpm(),
             loop_enabled: nav.loop_editor.enabled,
@@ -179,6 +211,55 @@ pub fn parse_instrument_type(s: &str) -> Option<InstrumentType> {
     string_to_instrument_type(s)
 }
 
+// ── Selectors ──
+
+/// Every selector on `params`, as the position it is pointing at.
+///
+/// Which controls those are comes from the instrument's own `is_discrete`
+/// rather than from a list here: a panel that gains a switch has to start
+/// storing it without this file being edited, because the failure this guards
+/// against is silent.
+#[must_use]
+pub fn selectors_of(instrument: InstrumentType, params: &[f32]) -> Vec<SessionSelector> {
+    (0..params.len())
+        .filter(|&param| crate::discrete::is_discrete(instrument, param))
+        .filter_map(|param| {
+            crate::discrete::index_of(instrument, param, params[param])
+                .map(|index| SessionSelector { param, index })
+        })
+        .collect()
+}
+
+/// Point the selectors in `params` at the positions the session stored.
+///
+/// Returns the entries that could not be restored exactly, as
+/// `(parameter, wanted, given)` — a bank that has *shrunk* since the session
+/// was written has nothing at the far end of it any more, and the nearest
+/// thing to what the player chose is its last entry. Anything the instrument
+/// does not call a selector is ignored rather than written blind.
+pub fn apply_selectors(
+    instrument: InstrumentType,
+    params: &mut [f32],
+    stored: &[SessionSelector],
+) -> Vec<(usize, usize, usize)> {
+    let mut clamped = Vec::new();
+    for selector in stored {
+        if selector.param >= params.len() {
+            continue;
+        }
+        let Some(positions) = crate::discrete::positions(instrument, selector.param) else {
+            continue;
+        };
+        let index = selector.index.min(positions.len().saturating_sub(1));
+        let Some(&knob) = positions.get(index) else { continue };
+        if index != selector.index {
+            clamped.push((selector.param, selector.index, index));
+        }
+        params[selector.param] = knob;
+    }
+    clamped
+}
+
 /// Get the notes for a clip as NoteSnapshots.
 pub fn session_notes_to_snapshots(notes: &[SessionNote]) -> Vec<phosphor_core::clip::NoteSnapshot> {
     notes.iter().map(|n| phosphor_core::clip::NoteSnapshot {
@@ -196,7 +277,7 @@ mod tests {
     #[test]
     fn round_trip_serialize() {
         let session = SessionFile {
-            version: 1,
+            version: FORMAT_VERSION,
             transport: SessionTransport {
                 tempo_bpm: 120.0,
                 loop_enabled: true,
@@ -209,6 +290,7 @@ mod tests {
                     name: "synth".into(),
                     instrument_type: "dx7".into(),
                     synth_params: vec![0.0, 0.5, 0.7],
+                    discrete: vec![SessionSelector { param: 0, index: 3 }],
                     muted: false,
                     soloed: false,
                     armed: true,
@@ -231,13 +313,17 @@ mod tests {
         let json = serde_json::to_string_pretty(&session).unwrap();
         let loaded: SessionFile = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(loaded.version, 1);
+        assert_eq!(loaded.version, FORMAT_VERSION);
         assert_eq!(loaded.transport.tempo_bpm, 120.0);
-        assert_eq!(loaded.transport.loop_enabled, true);
+        assert!(loaded.transport.loop_enabled);
         assert_eq!(loaded.tracks.len(), 1);
         assert_eq!(loaded.tracks[0].name, "synth");
         assert_eq!(loaded.tracks[0].instrument_type, "dx7");
         assert_eq!(loaded.tracks[0].synth_params, vec![0.0, 0.5, 0.7]);
+        assert_eq!(
+            loaded.tracks[0].discrete,
+            vec![SessionSelector { param: 0, index: 3 }]
+        );
         assert_eq!(loaded.tracks[0].clips.len(), 1);
         assert_eq!(loaded.tracks[0].clips[0].notes.len(), 2);
         assert_eq!(loaded.tracks[0].clips[0].notes[0].note, 60);

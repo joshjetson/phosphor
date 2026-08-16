@@ -46,7 +46,16 @@ const TWO_PI: f64 = std::f64::consts::TAU;
 ///
 /// It is a constant on purpose: dividing by the number of sounding voices
 /// would pump as notes are released.
-const OUTPUT_TRIM: f32 = 0.1100;
+///
+/// The second factor is the GAIN knob's old default. Everything above was
+/// measured with that knob at 0.75, so the quarter of its travel above 0.75
+/// was a boost into headroom nothing had measured — ROM3A's TIMPANI reached
+/// 0.9298 with the knob at the top, past the master limiter's ceiling, and
+/// ROM1B's HARP 1 0.9282. Folding it in here leaves the default render
+/// identical sample for sample and makes GAIN a control that can only cut,
+/// which is the same reasoning the drum rack's GAIN was pinned at the top of
+/// its travel for.
+const OUTPUT_TRIM: f32 = 0.1100 * 0.75;
 
 // ── Parameter indices ──
 /// Which of the 32 voices of the selected cartridge is playing.
@@ -87,7 +96,7 @@ pub const PARAM_DEFAULTS: [f32; PARAM_COUNT] = [
     0.5,   // decay time scale
     0.7,   // sustain level scale
     0.3,   // release time scale
-    0.75,  // gain
+    1.0,   // gain: the top of its travel, so the knob can only cut — see OUTPUT_TRIM
     0.0,   // bank: ROM1A
 ];
 
@@ -4259,6 +4268,27 @@ mod tests {
     }
 
     // ── Headroom ──
+
+    /// The GAIN knob's travel above its default was headroom nothing had
+    /// measured, so the default was folded into [`OUTPUT_TRIM`] and the knob
+    /// pinned at the top. What makes that fold free is that the output stage
+    /// multiplies knob by trim, and the two ways of bracketing the same product
+    /// land on the same f32 — so the render at the new default is the old one
+    /// sample for sample rather than merely close to it.
+    #[test]
+    fn folding_the_gain_default_into_the_trim_did_not_move_the_default_render() {
+        /// The trim as it stood when GAIN defaulted to 0.75.
+        const TRIM_BEFORE_THE_FOLD: f32 = 0.1100;
+
+        assert_eq!(PARAM_DEFAULTS[P_GAIN], 1.0, "GAIN has travel above its default again");
+        assert_eq!(
+            (PARAM_DEFAULTS[P_GAIN] * OUTPUT_TRIM).to_bits(),
+            (0.75f32 * TRIM_BEFORE_THE_FOLD).to_bits(),
+            "the fold moved the output stage: {} against {}",
+            PARAM_DEFAULTS[P_GAIN] * OUTPUT_TRIM,
+            0.75f32 * TRIM_BEFORE_THE_FOLD
+        );
+    }
 
     /// Peak of one note, at the voice's own level: one voice at the default
     /// knob settings, times the default gain, but *not* times the headroom trim

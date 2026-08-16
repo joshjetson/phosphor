@@ -108,8 +108,7 @@ const LOUDEST: [(&str, usize); 5] = [
     ("phosphor", 0),
 ];
 
-fn build(name: &str, patch: usize, count: usize) -> Box<dyn Plugin> {
-    let value = if count > 1 { patch as f32 / (count as f32 - 0.01) } else { 0.0 };
+fn build(name: &str, patch: usize) -> Box<dyn Plugin> {
     match name {
         "dx7" => {
             let mut s = dx7::Dx7Synth::new();
@@ -130,7 +129,9 @@ fn build(name: &str, patch: usize, count: usize) -> Box<dyn Plugin> {
         }
         "odyssey" => {
             let mut s = odyssey::OdysseySynth::new();
-            s.set_parameter(odyssey::P_PATCH, value);
+            // 44 patches: the knob has to land on the midpoint of a step
+            // rather than on its edge, or the sweep measures the patch before.
+            s.set_parameter(odyssey::P_PATCH, odyssey::patch_knob(patch));
             Box::new(s)
         }
         "juno" => {
@@ -157,11 +158,11 @@ fn patch_name(name: &str, index: usize) -> &'static str {
 fn table(title: &str, pick: impl Fn(&str) -> usize) {
     println!("\n== {title} ==");
     println!("{:<9} {:<4} {:<8} {:<5} {:>8} {:>8}", "synth", "pidx", "voicing", "vel", "peak", "%clamp");
-    for (name, count) in INSTRUMENTS {
+    for (name, _) in INSTRUMENTS {
         let index = pick(name);
         for (voicing, notes) in VOICINGS {
             for velocity in [100u8, 127] {
-                let mut plugin = build(name, index, count);
+                let mut plugin = build(name, index);
                 let m = render(plugin.as_mut(), notes, velocity);
                 println!(
                     "{name:<9} {index:<4} {voicing:<8} {velocity:<5} {:>8.4} {:>8.2}",
@@ -185,7 +186,7 @@ fn scan() {
     for (name, count) in INSTRUMENTS {
         let mut ranked: Vec<(usize, f32, f32)> = (0..count)
             .map(|index| {
-                let mut plugin = build(name, index, count);
+                let mut plugin = build(name, index);
                 let m = render_for(plugin.as_mut(), chord, 127, HELD_BLOCKS);
                 (index, m.peak, m.rms)
             })
@@ -216,16 +217,18 @@ const ORDINARY: &[u8] = &[60, 64, 67];
 /// `tests/headroom.rs` uses to check the instruments are level-matched, so
 /// the RMS column here and that assertion move together.
 const MEDIAN: [(&str, usize); 5] =
-    [("dx7", 8), ("jupiter", 1), ("odyssey", 4), ("juno", 3), ("phosphor", 0)];
+    [("dx7", 8), ("jupiter", 1), ("odyssey", 0), ("juno", 3), ("phosphor", 0)];
 
 /// The worst case each bank can be driven to. Voicing included, because the
-/// duophonic Odyssey peaks on a single note rather than on a chord.
+/// duophonic Odyssey does not stack the way the polys do and its worst case
+/// is not reliably a chord — most of its bank peaks louder on a single note,
+/// and `tests/headroom.rs` sweeps it on both.
 const WORST: [(&str, usize, &str, &[u8]); 5] = [
     ("dx7", 147, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
     // 61 STARTING UP. Its peak lands 5.5 s into a held chord, so it is the
     // one entry here that `BLOCKS` has to be long enough to see.
     ("jupiter", 40, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
-    ("odyssey", 1, "single", &[60]),
+    ("odyssey", 1, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
     ("juno", 27, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
     ("phosphor", 0, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
 ];
@@ -258,9 +261,9 @@ fn drum_rack(kit: usize) -> drum_rack::DrumRack {
 fn stage() {
     println!("\n== ordinary playing: default preset, triad @100 ==");
     println!("{:<10} {:>9} {:>8} {:>9} {:>8}", "instrument", "peak", "dBFS", "rms", "dBFS");
-    for (name, count) in INSTRUMENTS {
+    for (name, _) in INSTRUMENTS {
         let index = if name == "dx7" { 10 } else { 0 }; // the DX7 loads E.PIANO 1
-        let mut plugin = build(name, index, count);
+        let mut plugin = build(name, index);
         let m = render(plugin.as_mut(), ORDINARY, 100);
         println!(
             "{name:<10} {:>9.4} {:>8.1} {:>9.5} {:>8.1}",
@@ -282,8 +285,7 @@ fn stage() {
     );
     let mut rms_values = Vec::new();
     for (name, index) in MEDIAN {
-        let count = INSTRUMENTS.iter().find(|(n, _)| *n == name).map_or(1, |(_, c)| *c);
-        let mut plugin = build(name, index, count);
+        let mut plugin = build(name, index);
         let m = render(plugin.as_mut(), ORDINARY, 100);
         rms_values.push(m.rms);
         println!(
@@ -313,8 +315,7 @@ fn stage() {
         "instrument", "pidx", "voicing", "peak", "dBFS", "pre-sat", "sat"
     );
     for (name, index, voicing, notes) in WORST {
-        let count = INSTRUMENTS.iter().find(|(n, _)| *n == name).map_or(1, |(_, c)| *c);
-        let mut plugin = build(name, index, count);
+        let mut plugin = build(name, index);
         let m = render_for(plugin.as_mut(), notes, 127, HELD_BLOCKS);
         let raw = saturation_input(m.peak);
         println!(

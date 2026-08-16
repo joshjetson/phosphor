@@ -288,7 +288,7 @@ impl DrumVoice {
         let knock = self.svf1.bandpass(first, BD_KNOCK_HZ, BD_KNOCK_Q, sr);
         let out = (first * (1.0 - BD_KNOCK_MIX) + knock * BD_KNOCK_MIX) * BD_OUT;
 
-        if c.drive > 0.01 { soft_clip(out, c.drive * 2.0) } else { out }
+        if c.drive > 0.01 { drive_stage(out, c.drive * 2.0) } else { out }
     }
 
     /// 606 Snare: one 358 Hz resonator, a click into it, and noise above

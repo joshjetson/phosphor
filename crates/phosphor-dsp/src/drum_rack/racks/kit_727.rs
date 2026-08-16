@@ -211,7 +211,7 @@ impl DrumVoice {
         // DRIVE is the rack's control rather than Roland's. On a machine with
         // no bass drum it goes across the deepest voice there is.
         if c.drive > 0.01 && matches!(voice, Voice727::LowConga) {
-            soft_clip(out, c.drive * 2.0)
+            drive_stage(out, c.drive * 2.0)
         } else {
             out
         }

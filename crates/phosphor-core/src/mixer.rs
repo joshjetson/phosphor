@@ -61,6 +61,83 @@ pub enum MixerCommand {
     },
 }
 
+// ── Command budget ──
+//
+// The audio callback has a hard deadline — 1.45 ms at the default 64 frames,
+// 0.73 ms if the device asks for 32 — and applying commands is the one thing
+// in it whose size the audio thread does not control. Loading a preset queues
+// one command per control, 59 of them on the Odyssey; opening a session
+// queues an AddTrack, a SetInstrument and a full parameter block per track,
+// plus two commands per clip. Draining all of that in one callback is an
+// unbounded amount of work behind a fixed deadline, which is a dropout.
+//
+// So each callback spends a fixed budget and stops. Nothing is dropped and
+// nothing is reordered: what is left stays queued, in order, and the next
+// callback continues from there. A burst that does not fit is spread over
+// consecutive callbacks — for a session load that is a few milliseconds with
+// the transport stopped, and for a preset it is at worst one buffer rendered
+// with part of the old panel, which is 1.45 ms.
+
+/// The cost of a command that goes to the allocator. See [`command_cost`].
+const HEAVY_COMMAND: u32 = 16;
+
+/// What one command costs, in the units [`COMMAND_BUDGET`] is denominated in.
+///
+/// Two tiers, and the line between them is the allocator:
+///
+/// * **1** — writes into memory that already exists. Setting a parameter is a
+///   clamp and a store; moving a clip writes two integers.
+/// * **[`HEAVY_COMMAND`]** — allocates, frees, or both. `SetInstrument` calls
+///   `Plugin::init`, which builds a voice array and, on the Juno, a chorus
+///   delay line; `AddTrack` allocates two audio buffers; `RemoveTrack` and
+///   `UpdateClip` free what they replace.
+///
+/// Measured in release on a 64-frame callback: four instrument loads take
+/// 30 µs against 1.4 µs for four `AddTrack` and 6.8 µs for sixty-four
+/// parameter changes, and the callback's own rendering with one instrument on
+/// it is 15 µs. So a flat count would be wrong in both directions: sixty-four
+/// parameter changes belong in one callback, and sixty-four instrument loads
+/// would be half a millisecond of it.
+fn command_cost(cmd: &MixerCommand) -> u32 {
+    match cmd {
+        MixerCommand::SetParameter { .. } | MixerCommand::UpdateClipPosition { .. } => 1,
+        MixerCommand::AddTrack { .. }
+        | MixerCommand::SetInstrument { .. }
+        | MixerCommand::RemoveTrack { .. }
+        | MixerCommand::CreateClip { .. }
+        | MixerCommand::UpdateClip { .. }
+        | MixerCommand::RemoveClip { .. } => HEAVY_COMMAND,
+    }
+}
+
+/// How much command work one callback will do.
+///
+/// 64 units: a whole parameter block in one callback — the widest panel in the
+/// project is the Odyssey's 59 controls — or four allocating commands.
+///
+/// A panel wider than this is not a fault, only a preset load spread over two
+/// callbacks, which shows up as one buffer rendered with part of the old panel
+/// and is 1.45 ms long.
+///
+/// Sized against the shortest callback the application can be given, 32 frames
+/// at 44.1 kHz, which is 726 µs: a full budget of the expensive kind measures
+/// 30 µs, or four percent of that deadline, and the cheap kind 7 µs.
+///
+/// The bound this buys is `COMMAND_BUDGET - 1 + HEAVY_COMMAND` units of work
+/// per callback, not `COMMAND_BUDGET`: the budget is checked before a command
+/// is taken and its cost is known only after. Tightening that would need a
+/// `peek` the channel does not offer, and the overshoot is one command.
+const COMMAND_BUDGET: u32 = 64;
+
+/// How many tracks a mixer has room for before its track list has to grow.
+///
+/// Growing it is a reallocation on the audio thread, so the list is built with
+/// room for more tracks than a session is going to hold. It is not a limit:
+/// `AddTrack` past this still works, at the cost of one reallocation, and the
+/// next 64 are free again. 64 `AudioTrack` headers are a few kilobytes, which
+/// is nothing next to the two audio buffers each one already owns.
+const TRACK_CAPACITY: usize = 64;
+
 // ── Master limiter ──
 
 /// Peak ceiling the limiter holds the master bus to, −1 dBFS.
@@ -242,7 +319,7 @@ impl Mixer {
         max_buffer_size: usize,
     ) -> Self {
         Self {
-            tracks: Vec::new(),
+            tracks: Vec::with_capacity(TRACK_CAPACITY),
             master_vu,
             command_rx,
             clip_tx,
@@ -258,7 +335,9 @@ impl Mixer {
 
     /// Process one buffer cycle.
     pub fn process(&mut self, output: &mut [f32], midi_messages: &[MidiMessage], transport: &Transport) {
-        self.drain_commands();
+        // Bounded: whatever does not fit in this callback's budget is applied
+        // by the next one, in order. See `drain_commands`.
+        let _ = self.drain_commands();
 
         let num_frames = output.len() / 2;
         let playing = transport.is_playing();
@@ -489,55 +568,73 @@ impl Mixer {
         self.limiter.reset();
     }
 
-    fn drain_commands(&mut self) {
-        while let Ok(cmd) = self.command_rx.try_recv() {
-            match cmd {
-                MixerCommand::AddTrack { kind: _, handle } => {
-                    let track = AudioTrack::new(handle, self.max_buffer_size);
-                    self.tracks.push(track);
+    /// Apply queued commands until the callback's budget is spent.
+    ///
+    /// Returns the units spent, which is what the tests assert the bound on.
+    ///
+    /// Anything left in the channel stays there, in the order it was sent, and
+    /// the next callback continues from it. That is the whole of the ordering
+    /// guarantee: commands are taken one at a time from a FIFO and applied
+    /// immediately, so `AddTrack` before `SetInstrument` for the same track
+    /// cannot be seen the other way round even when the two land in different
+    /// callbacks.
+    fn drain_commands(&mut self) -> u32 {
+        let mut spent = 0;
+        while spent < COMMAND_BUDGET {
+            let Ok(cmd) = self.command_rx.try_recv() else { break };
+            spent += command_cost(&cmd);
+            self.apply_command(cmd);
+        }
+        spent
+    }
+
+    fn apply_command(&mut self, cmd: MixerCommand) {
+        match cmd {
+            MixerCommand::AddTrack { kind: _, handle } => {
+                let track = AudioTrack::new(handle, self.max_buffer_size);
+                self.tracks.push(track);
+            }
+            MixerCommand::SetInstrument { track_id, mut instrument } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    instrument.init(self.sample_rate as f64, self.max_buffer_size);
+                    track.instrument = Some(instrument);
                 }
-                MixerCommand::SetInstrument { track_id, mut instrument } => {
-                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
-                        instrument.init(self.sample_rate as f64, self.max_buffer_size);
-                        track.instrument = Some(instrument);
+            }
+            MixerCommand::RemoveTrack { track_id } => {
+                self.tracks.retain(|t| t.id != track_id);
+            }
+            MixerCommand::SetParameter { track_id, param_index, value } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    if let Some(ref mut inst) = track.instrument {
+                        inst.set_parameter(param_index, value);
                     }
                 }
-                MixerCommand::RemoveTrack { track_id } => {
-                    self.tracks.retain(|t| t.id != track_id);
+            }
+            MixerCommand::CreateClip { track_id, start_tick, length_ticks } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    track.clips.push(MidiClip::new(start_tick, length_ticks, Vec::new()));
                 }
-                MixerCommand::SetParameter { track_id, param_index, value } => {
-                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
-                        if let Some(ref mut inst) = track.instrument {
-                            inst.set_parameter(param_index, value);
-                        }
+            }
+            MixerCommand::UpdateClip { track_id, clip_index, events } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    if let Some(clip) = track.clips.get_mut(clip_index) {
+                        clip.events = events;
+                        clip.events.sort_by_key(|e| e.tick);
                     }
                 }
-                MixerCommand::CreateClip { track_id, start_tick, length_ticks } => {
-                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
-                        track.clips.push(MidiClip::new(start_tick, length_ticks, Vec::new()));
+            }
+            MixerCommand::UpdateClipPosition { track_id, clip_index, start_tick, length_ticks } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    if let Some(clip) = track.clips.get_mut(clip_index) {
+                        clip.start_tick = start_tick;
+                        clip.length_ticks = length_ticks;
                     }
                 }
-                MixerCommand::UpdateClip { track_id, clip_index, events } => {
-                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
-                        if let Some(clip) = track.clips.get_mut(clip_index) {
-                            clip.events = events;
-                            clip.events.sort_by_key(|e| e.tick);
-                        }
-                    }
-                }
-                MixerCommand::UpdateClipPosition { track_id, clip_index, start_tick, length_ticks } => {
-                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
-                        if let Some(clip) = track.clips.get_mut(clip_index) {
-                            clip.start_tick = start_tick;
-                            clip.length_ticks = length_ticks;
-                        }
-                    }
-                }
-                MixerCommand::RemoveClip { track_id, clip_index } => {
-                    if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
-                        if clip_index < track.clips.len() {
-                            track.clips.remove(clip_index);
-                        }
+            }
+            MixerCommand::RemoveClip { track_id, clip_index } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    if clip_index < track.clips.len() {
+                        track.clips.remove(clip_index);
                     }
                 }
             }
@@ -924,6 +1021,218 @@ mod tests {
         mixer.process(&mut output, &[], &transport);
         let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         assert!(peak > 0.001, "Should hear playback, peak={peak}");
+    }
+
+    // ── Command budget ──
+
+    /// The most work one callback can do, in the units [`command_cost`]
+    /// returns: the budget is tested before a command is taken and charged
+    /// after, so the last one can overshoot by its own cost.
+    const WORST_CALLBACK: u32 = COMMAND_BUDGET - 1 + HEAVY_COMMAND;
+
+    /// A plugin that remembers every parameter it was given, in order, so a
+    /// test can see exactly what reached the audio thread and when.
+    ///
+    /// The lock is not something an instrument would do — nothing may block in
+    /// `process` — but `set_parameter` is called from the command drain and
+    /// this one never renders.
+    #[derive(Clone)]
+    struct ParamLog(Arc<std::sync::Mutex<Vec<(usize, f32)>>>);
+
+    impl ParamLog {
+        fn new() -> Self {
+            Self(Arc::new(std::sync::Mutex::new(Vec::new())))
+        }
+        fn seen(&self) -> Vec<(usize, f32)> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl Plugin for ParamLog {
+        fn info(&self) -> phosphor_plugin::PluginInfo {
+            phosphor_plugin::PluginInfo {
+                name: "ParamLog".into(),
+                version: "0".into(),
+                author: "test".into(),
+                category: phosphor_plugin::PluginCategory::Instrument,
+            }
+        }
+        fn init(&mut self, _sample_rate: f64, _max_buffer_size: usize) {}
+        fn process(&mut self, _inputs: &[&[f32]], _outputs: &mut [&mut [f32]], _midi: &[MidiEvent]) {}
+        fn parameter_count(&self) -> usize { 8 }
+        fn parameter_info(&self, _index: usize) -> Option<phosphor_plugin::ParameterInfo> { None }
+        fn get_parameter(&self, _index: usize) -> f32 { 0.0 }
+        fn set_parameter(&mut self, index: usize, value: f32) {
+            self.0.lock().unwrap().push((index, value));
+        }
+        fn reset(&mut self) {}
+    }
+
+    /// Add a track carrying a [`ParamLog`], applying the commands immediately.
+    fn add_logging_track(mixer: &mut Mixer, tx: &Sender<MixerCommand>, id: usize) -> ParamLog {
+        let log = ParamLog::new();
+        let handle = Arc::new(TrackHandle::new(id, TrackKind::Instrument));
+        tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle }).unwrap();
+        tx.send(MixerCommand::SetInstrument {
+            track_id: id,
+            instrument: Box::new(log.clone()),
+        }).unwrap();
+        mixer.drain_commands();
+        log
+    }
+
+    /// The defect: the drain used to be `while let Ok(cmd) = try_recv()`, so
+    /// the callback did as much work as the UI had queued. Opening a session
+    /// queues hundreds of commands and the callback has a hard deadline.
+    #[test]
+    fn one_callback_applies_a_bounded_amount_of_work() {
+        let (mut mixer, tx, _clip_rx, _transport) = setup_mixer();
+        let log = add_logging_track(&mut mixer, &tx, 0);
+
+        for i in 0..500 {
+            tx.send(MixerCommand::SetParameter {
+                track_id: 0,
+                param_index: i % 8,
+                value: i as f32,
+            }).unwrap();
+        }
+
+        let spent = mixer.drain_commands();
+        assert!(
+            spent <= WORST_CALLBACK,
+            "one callback spent {spent} units, over the {WORST_CALLBACK} bound"
+        );
+        assert_eq!(
+            log.seen().len(),
+            COMMAND_BUDGET as usize,
+            "a parameter costs one unit, so a full budget is exactly that many"
+        );
+        assert!(!mixer.command_rx.is_empty(), "the rest has to still be queued");
+    }
+
+    /// Bounded is only half of it: everything queued still has to arrive, once
+    /// each, in the order it was sent.
+    #[test]
+    fn nothing_is_lost_or_reordered_across_callbacks() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let log = add_logging_track(&mut mixer, &tx, 0);
+
+        let sent: Vec<(usize, f32)> = (0..500).map(|i| (i % 8, i as f32)).collect();
+        for &(param_index, value) in &sent {
+            tx.send(MixerCommand::SetParameter { track_id: 0, param_index, value }).unwrap();
+        }
+
+        // Run callbacks until the queue is empty, counting them: 500 commands
+        // at one unit each cannot fit in fewer than eight budgets, which is
+        // what makes this a test of the bound and not just of the FIFO.
+        let mut output = vec![0.0f32; 128];
+        let mut callbacks = 0;
+        while !mixer.command_rx.is_empty() {
+            mixer.process(&mut output, &[], &transport);
+            callbacks += 1;
+            assert!(callbacks < 100, "the drain is not making progress");
+        }
+        assert!(
+            callbacks >= 500 / COMMAND_BUDGET as usize,
+            "500 commands went through in {callbacks} callbacks, so the budget did not hold"
+        );
+        assert_eq!(log.seen(), sent, "the audio thread saw a different sequence");
+    }
+
+    /// The ordering guarantee, at the one place it matters: a track has to
+    /// exist before its instrument is attached. Splitting the queue between
+    /// the two would drop the instrument on the floor — `SetInstrument` for a
+    /// track that is not there yet is silently discarded — and the track would
+    /// play nothing for the rest of the session.
+    #[test]
+    fn a_track_and_its_instrument_survive_a_budget_boundary() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let log = ParamLog::new();
+
+        // Fill this callback's budget with cheap commands first, so that the
+        // pair below is guaranteed to land in a later one.
+        for _ in 0..COMMAND_BUDGET {
+            tx.send(MixerCommand::SetParameter { track_id: 99, param_index: 0, value: 0.0 })
+                .unwrap();
+        }
+        let handle = Arc::new(TrackHandle::new(7, TrackKind::Instrument));
+        tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle }).unwrap();
+        tx.send(MixerCommand::SetInstrument {
+            track_id: 7,
+            instrument: Box::new(log.clone()),
+        }).unwrap();
+        tx.send(MixerCommand::SetParameter { track_id: 7, param_index: 3, value: 0.5 }).unwrap();
+
+        let mut output = vec![0.0f32; 128];
+        mixer.process(&mut output, &[], &transport);
+        assert!(mixer.tracks.is_empty(), "the budget did not stop at the parameters");
+
+        while !mixer.command_rx.is_empty() {
+            mixer.process(&mut output, &[], &transport);
+        }
+        assert_eq!(mixer.tracks.len(), 1);
+        assert!(mixer.tracks[0].instrument.is_some(), "the instrument never arrived");
+        assert_eq!(
+            log.seen(),
+            vec![(3, 0.5)],
+            "the parameter that follows the instrument did not reach it"
+        );
+    }
+
+    /// An instrument load is not a parameter change: it calls `Plugin::init`,
+    /// which allocates a voice array and, on some instruments, a delay line.
+    /// A flat count of commands per callback would let sixteen of those
+    /// through where it lets sixteen stores through.
+    #[test]
+    fn an_instrument_load_costs_more_than_a_parameter() {
+        let param = MixerCommand::SetParameter { track_id: 0, param_index: 0, value: 0.0 };
+        let load = MixerCommand::SetInstrument {
+            track_id: 0,
+            instrument: Box::new(FixedOutput(0.0)),
+        };
+        assert!(command_cost(&load) > command_cost(&param));
+
+        // Four loads per callback, not sixty-four.
+        let (mut mixer, tx, _clip_rx, _transport) = setup_mixer();
+        for id in 0..8 {
+            let handle = Arc::new(TrackHandle::new(id, TrackKind::Instrument));
+            tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle }).unwrap();
+        }
+        while !mixer.command_rx.is_empty() {
+            mixer.drain_commands();
+        }
+        for id in 0..8 {
+            tx.send(MixerCommand::SetInstrument {
+                track_id: id,
+                instrument: Box::new(FixedOutput(0.25)),
+            }).unwrap();
+        }
+        mixer.drain_commands();
+        let loaded = mixer.tracks.iter().filter(|t| t.instrument.is_some()).count();
+        assert_eq!(loaded, (COMMAND_BUDGET / HEAVY_COMMAND) as usize);
+    }
+
+    /// `AddTrack` pushes onto the track list, and a push that grows the list
+    /// reallocates — on the audio thread. The list is built with room for more
+    /// tracks than a session will hold so that it does not.
+    #[test]
+    fn adding_tracks_does_not_grow_the_track_list() {
+        let (mut mixer, tx, _clip_rx, _transport) = setup_mixer();
+        let capacity = mixer.tracks.capacity();
+        assert!(capacity >= TRACK_CAPACITY);
+
+        for id in 0..TRACK_CAPACITY {
+            let handle = Arc::new(TrackHandle::new(id, TrackKind::Instrument));
+            tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle }).unwrap();
+        }
+        while !mixer.command_rx.is_empty() {
+            mixer.drain_commands();
+        }
+        assert_eq!(mixer.tracks.len(), TRACK_CAPACITY);
+        assert_eq!(
+            mixer.tracks.capacity(), capacity,
+            "the track list reallocated on the audio thread"
+        );
     }
 
     // ── Master limiter ──

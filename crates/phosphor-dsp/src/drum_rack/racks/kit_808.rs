@@ -179,7 +179,7 @@ impl DrumVoice {
         let cut = BD_TONE_HZ[0] + c.tone * c.tone * (BD_TONE_HZ[1] - BD_TONE_HZ[0]);
         let out = self.lp1.tick_lp(body * env + pulse, cut, sr);
 
-        if c.drive > 0.01 { soft_clip(out, c.drive * 2.0) } else { out }
+        if c.drive > 0.01 { drive_stage(out, c.drive * 2.0) } else { out }
     }
 
     /// 808 Snare: two bridged-T oscillators an octave apart at 238 Hz and

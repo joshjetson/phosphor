@@ -14,6 +14,8 @@ mod test_clips;
 mod test_fader;
 #[cfg(test)]
 mod test_presets;
+#[cfg(test)]
+mod test_session;
 mod theme;
 mod ui;
 
