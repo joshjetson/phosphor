@@ -12,6 +12,8 @@ mod test_harness;
 mod test_clips;
 #[cfg(test)]
 mod test_fader;
+#[cfg(test)]
+mod test_presets;
 mod theme;
 mod ui;
 

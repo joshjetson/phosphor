@@ -27,6 +27,7 @@ mod delete;
 mod edit_mode;
 mod keys;
 mod piano_roll;
+mod presets;
 mod session_io;
 mod clips;
 mod tracks;
@@ -66,12 +67,26 @@ pub struct App {
     clip_rx: crossbeam_channel::Receiver<ClipSnapshot>,
     /// Last saved/loaded file path for Ctrl+S quick save.
     session_path: Option<std::path::PathBuf>,
+    /// Where user preset banks are kept — `~/.phosphor/presets`, or `None`
+    /// when HOME is unset. A field rather than a call so the tests can point
+    /// it at a scratch directory instead of the player's own presets.
+    pub(crate) preset_dir: Option<std::path::PathBuf>,
     /// Status message shown briefly at bottom of screen.
     pub(crate) status_message: Option<(String, std::time::Instant)>,
     /// Yanked (copied) clip for cross-track paste.
     pub(crate) yanked_clip: Option<crate::state::Clip>,
     /// Timeline position of the yanked clip (for cross-track paste at same position).
     pub(crate) yanked_clip_start: i64,
+    /// The receiving end of the mixer command channel, kept alive only when
+    /// there is no mixer to own it — which is only ever in tests, since a
+    /// headless app has no audio thread.
+    ///
+    /// Without it, a headless send goes to a disconnected channel and a test
+    /// cannot tell "the UI told the audio thread" from "the UI updated its
+    /// own copy and nothing else". That distinction is the difference between
+    /// a control that works and one that only looks like it does.
+    #[cfg(test)]
+    pub(crate) mixer_rx: Option<crossbeam_channel::Receiver<MixerCommand>>,
 }
 
 impl App {
@@ -101,6 +116,12 @@ impl App {
     pub fn new(config: EngineConfig, enable_audio: bool, enable_midi: bool) -> Self {
         let (mixer_tx, mixer_rx) = mixer_command_channel();
         let (clip_tx, clip_rx) = clip_snapshot_channel();
+
+        // With audio running the mixer is the only receiver and this stays
+        // `None`: a second receiver on the same channel would take commands
+        // the mixer needs, since each message goes to exactly one of them.
+        #[cfg(test)]
+        let mixer_rx_test = (!enable_audio).then(|| mixer_rx.clone());
 
         let engine = Arc::new(Engine::with_command_tx(config, mixer_tx.clone()));
         let transport = engine.transport.clone();
@@ -161,9 +182,12 @@ impl App {
                         next_track_id: 0,
                         clip_rx,
                         session_path: None,
+                        preset_dir: phosphor_app::preset::default_dir(),
                         status_message: None,
                         yanked_clip: None,
                         yanked_clip_start: 0,
+                        #[cfg(test)]
+                        mixer_rx: mixer_rx_test,
                     };
                 }
             };
@@ -189,10 +213,38 @@ impl App {
             next_track_id: 0,
             clip_rx,
             session_path: None,
+            preset_dir: phosphor_app::preset::default_dir(),
             status_message: None,
             yanked_clip: None,
             yanked_clip_start: 0,
+            #[cfg(test)]
+            mixer_rx: mixer_rx_test,
         }
+    }
+
+    /// How long a status message stays on the bottom bar.
+    ///
+    /// Long enough to read a file path, short enough that the key hints it
+    /// covers come back before they are missed.
+    const STATUS_TIMEOUT: Duration = Duration::from_secs(4);
+
+    /// The status message if it is still current, `None` once it has expired.
+    pub(crate) fn live_status(&self) -> Option<&str> {
+        self.status_message
+            .as_ref()
+            .filter(|(_, at)| at.elapsed() < Self::STATUS_TIMEOUT)
+            .map(|(msg, _)| msg.as_str())
+    }
+
+    /// Everything the UI has sent to the audio thread since the last drain.
+    #[cfg(test)]
+    pub(crate) fn drain_mixer_commands(&self) -> Vec<MixerCommand> {
+        let Some(rx) = self.mixer_rx.as_ref() else { return Vec::new() };
+        let mut out = Vec::new();
+        while let Ok(cmd) = rx.try_recv() {
+            out.push(cmd);
+        }
+        out
     }
 
     /// Execute a single action. Used by the test harness.
@@ -456,8 +508,9 @@ impl App {
                 ));
             }
 
+            let status = self.live_status();
             terminal.draw(|frame| {
-                ui::render(frame, &snapshot, &self.nav);
+                ui::render(frame, &snapshot, &self.nav, status);
             })?;
 
             frame_count += 1;

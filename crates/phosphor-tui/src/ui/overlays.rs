@@ -167,6 +167,7 @@ pub(super) fn render_input_modal(frame: &mut Frame, nav: &NavState) {
     let title = match nav.input_modal.kind {
         InputModalKind::SaveAs => " save project ",
         InputModalKind::Open => " open project ",
+        InputModalKind::PresetName => " name preset ",
     };
     let block = Block::default()
         .style(Style::default().bg(theme::overlay_bg()))
@@ -180,6 +181,7 @@ pub(super) fn render_input_modal(frame: &mut Frame, nav: &NavState) {
     let prompt = match nav.input_modal.kind {
         InputModalKind::SaveAs => "filename: ",
         InputModalKind::Open => "path: ",
+        InputModalKind::PresetName => "name: ",
     };
 
     let buf = nav.input_modal.value();
@@ -203,6 +205,95 @@ pub(super) fn render_input_modal(frame: &mut Frame, nav: &NavState) {
             Span::styled(" cancel", theme::muted()),
         ]),
     ];
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+pub(super) fn render_preset_modal(frame: &mut Frame, nav: &NavState) {
+    let pm = &nav.preset_modal;
+    let area = frame.area();
+    let mw = 46u16.min(area.width.saturating_sub(4));
+
+    // The save row plus one line per preset, then the hint line if there is
+    // one, a blank, and the footer. Capped to the terminal, so a full bank
+    // scrolls inside the modal rather than drawing off the bottom.
+    let hint = pm.error.is_some() || pm.entries.is_empty();
+    let content = pm.item_count() + usize::from(hint) + 2;
+    // Never larger than the terminal: a modal taller than the buffer it is
+    // drawn into is an index past the end of the buffer.
+    let mh = (content.min(u16::MAX as usize) as u16 + 2).min(area.height.saturating_sub(2));
+    let mx = (area.width.saturating_sub(mw)) / 2;
+    let my = (area.height.saturating_sub(mh)) / 2;
+    let menu_area = Rect::new(mx, my, mw, mh);
+
+    frame.render_widget(Clear, menu_area);
+    let title = match pm.instrument {
+        Some(inst) => format!(" presets \u{2014} {} ", inst.label()),
+        None => " presets ".to_string(),
+    };
+    let block = Block::default()
+        .style(Style::default().bg(theme::overlay_bg()))
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(theme::border_style())
+        .title(Span::styled(title, theme::amber_bright().add_modifier(Modifier::BOLD)));
+    frame.render_widget(block, menu_area);
+
+    let inner = Rect::new(mx + 2, my + 1, mw.saturating_sub(4), mh.saturating_sub(2));
+    // Reserve the blank line, the footer, and the hint line if it is showing.
+    let reserved = 2 + u16::from(hint);
+    let list_rows = inner.height.saturating_sub(reserved).max(1) as usize;
+
+    // Scroll the list so the cursor stays on screen in a long bank.
+    let first = pm.cursor.saturating_sub(list_rows.saturating_sub(1));
+
+    let row_style = |selected: bool| -> (Style, &'static str) {
+        if selected {
+            (theme::amber_bright().add_modifier(Modifier::BOLD), "\u{25B6} ")
+        } else {
+            (theme::normal(), "  ")
+        }
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    for row in first..pm.item_count() {
+        if lines.len() >= list_rows { break; }
+        let (style, indicator) = row_style(pm.cursor == row);
+        if row == PresetModal::SAVE_ROW {
+            lines.push(Line::from(vec![
+                Span::styled(indicator, style),
+                Span::styled("[ save current panel ]", style),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled(indicator, style),
+                Span::styled(pm.entries[row - 1].as_str(), style),
+            ]));
+        }
+    }
+
+    if let Some(err) = &pm.error {
+        lines.push(Line::from(Span::styled(
+            err.as_str(),
+            Style::default().fg(theme::rec_active_val()),
+        )));
+    } else if pm.entries.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  no saved presets yet",
+            theme::dim(),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  j/k", theme::dim()),
+        Span::styled(" nav  ", theme::muted()),
+        Span::styled("enter", theme::dim()),
+        Span::styled(" save/load  ", theme::muted()),
+        Span::styled("d", theme::dim()),
+        Span::styled(" delete  ", theme::muted()),
+        Span::styled("esc", theme::dim()),
+        Span::styled(" close", theme::muted()),
+    ]));
 
     frame.render_widget(Paragraph::new(lines), inner);
 }

@@ -25,8 +25,20 @@
     "d": "delete selected track/clip",
     "e": "enter edit mode (piano roll)",
     "q": "quantize notes to grid",
+    "w": "write/recall instrument presets",
     "v": "cycle color theme",
     "h": "help topics"
+  },
+  "preset_browser": {
+    "description": "Space+W on an instrument track. Lists that instrument's saved presets, with a row at the top to save the current panel. Banks live in ~/.phosphor/presets/<instrument>.json, one file per instrument.",
+    "j/k": "navigate rows",
+    "Enter_on_save_row": "name and save the current panel",
+    "Enter_on_preset": "load the preset into the track",
+    "d": "delete the selected preset (y/n confirmation)",
+    "Esc": "close the browser",
+    "overwrite": "saving under a name the bank already holds rewrites that slot, after a y/n confirmation — names are slots, so no two presets can share one",
+    "limits": "128 presets per instrument, 32 characters per name",
+    "refusals": "a preset is refused rather than loaded when it was saved for a different instrument, with a different number of controls, or against an older panel layout"
   },
   "tracks_pane": {
     "not_selected": {

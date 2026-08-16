@@ -2,7 +2,12 @@
 
 use super::*;
 
-pub(super) fn render_bottom_bar(frame: &mut Frame, area: Rect, nav: &NavState) {
+pub(super) fn render_bottom_bar(
+    frame: &mut Frame,
+    area: Rect,
+    nav: &NavState,
+    status: Option<&str>,
+) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(16), Constraint::Min(20), Constraint::Length(42)])
@@ -20,6 +25,29 @@ pub(super) fn render_bottom_bar(frame: &mut Frame, area: Rect, nav: &NavState) {
         ("-- NORMAL --", theme::normal())
     };
     frame.render_widget(Paragraph::new(Span::styled(format!(" {mt} "), ms)), cols[0]);
+
+    // A status message takes the rest of the bar for as long as it lives —
+    // the hints and the pane list, both of which are always the same for a
+    // given mode and can be read again a moment later. A message saying a
+    // preset was refused, or which file a session saved to, is only worth
+    // anything at the moment it happens, and the hint column alone is 22
+    // characters on an 80-wide terminal: not enough to say why.
+    //
+    // Except while a clip number is being typed: those digits are live input
+    // feedback and the message is at most a few seconds old.
+    if let Some(msg) = status.filter(|_| nav.number_buf.display().is_empty()) {
+        let rest = Rect::new(
+            cols[1].x,
+            area.y,
+            area.right().saturating_sub(cols[1].x),
+            area.height,
+        );
+        frame.render_widget(
+            Paragraph::new(Span::styled(msg.to_string(), theme::amber_bright())),
+            rest,
+        );
+        return;
+    }
 
     let d = "\u{00B7}";
     let keys: Vec<(&str, &str)> = if nav.loop_editor.active {

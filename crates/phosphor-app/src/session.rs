@@ -58,16 +58,25 @@ pub struct SessionNote {
 
 // ── InstrumentType <-> String conversion ──
 
-fn instrument_type_to_string(t: InstrumentType) -> String {
+/// The stable on-disk spelling of an instrument type.
+///
+/// One source of truth: sessions store it per track, and the preset banks are
+/// named after it, so a rename here has to move both together rather than
+/// leaving one format reading files the other cannot write.
+pub fn instrument_key(t: InstrumentType) -> &'static str {
     match t {
-        InstrumentType::Synth => "synth".into(),
-        InstrumentType::DrumRack => "drums".into(),
-        InstrumentType::DX7 => "dx7".into(),
-        InstrumentType::Jupiter8 => "jupiter8".into(),
-        InstrumentType::Odyssey => "odyssey".into(),
-        InstrumentType::Juno60 => "juno60".into(),
-        InstrumentType::Sampler => "sampler".into(),
+        InstrumentType::Synth => "synth",
+        InstrumentType::DrumRack => "drums",
+        InstrumentType::DX7 => "dx7",
+        InstrumentType::Jupiter8 => "jupiter8",
+        InstrumentType::Odyssey => "odyssey",
+        InstrumentType::Juno60 => "juno60",
+        InstrumentType::Sampler => "sampler",
     }
+}
+
+fn instrument_type_to_string(t: InstrumentType) -> String {
+    instrument_key(t).to_string()
 }
 
 fn string_to_instrument_type(s: &str) -> Option<InstrumentType> {

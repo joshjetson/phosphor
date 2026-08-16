@@ -40,10 +40,17 @@ struct TrackCtx<'a> {
     nav: &'a NavState,
 }
 
+/// Draw a frame.
+///
+/// `status` is the transient message for the bottom bar — a save path, a
+/// deletion, a refusal — or `None` when the last one has expired. It is
+/// passed in rather than read off `NavState` because it belongs to the app,
+/// not to the navigation state.
 pub fn render(
     frame: &mut Frame,
     transport: &TransportSnapshot,
     nav: &NavState,
+    status: Option<&str>,
 ) {
     let area = frame.area();
     crate::debug_log::log("RENDER", &format!(
@@ -87,7 +94,7 @@ pub fn render(
     } else {
         ci += 1;
     }
-    render_bottom_bar(frame, chunks[ci], nav);
+    render_bottom_bar(frame, chunks[ci], nav, status);
 
     // Overlays
     if nav.confirm_modal.open {
@@ -98,6 +105,8 @@ pub fn render(
         render_input_modal(frame, nav);
     } else if nav.instrument_modal.open {
         render_instrument_modal(frame, nav);
+    } else if nav.preset_modal.open {
+        render_preset_modal(frame, nav);
     } else if nav.space_menu.open {
         render_space_menu(frame, nav);
     } else if nav.fx_menu.open {

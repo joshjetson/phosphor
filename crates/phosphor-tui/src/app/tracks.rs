@@ -73,6 +73,9 @@ impl App {
             SpaceAction::EditMode => {
                 self.enter_edit_mode();
             }
+            SpaceAction::Presets => {
+                self.open_preset_browser();
+            }
             SpaceAction::Quantize => {
                 if self.nav.clip_view_target.is_some() {
                     let grid = self.nav.clip_view.piano_roll.grid;

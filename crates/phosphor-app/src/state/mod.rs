@@ -114,6 +114,8 @@ pub struct NavState {
     pub undo_stack: undo::UndoStack,
     /// Quantize modal state.
     pub quantize_modal: QuantizeModal,
+    /// User preset browser for the track under the cursor.
+    pub preset_modal: PresetModal,
     /// Whether the selected track element is "locked" for editing — Enter
     /// locks, Esc releases. While locked, h/l edits that element instead of
     /// navigating between elements, which is the same shape as the
@@ -151,6 +153,7 @@ impl NavState {
             confirm_modal: ConfirmModal::new(),
             undo_stack: undo::UndoStack::new(),
             quantize_modal: QuantizeModal::new(),
+            preset_modal: PresetModal::new(),
             element_locked: false,
             recording_grace: 0,
         }

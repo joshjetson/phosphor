@@ -163,6 +163,99 @@ impl InstrumentModal {
     }
 }
 
+// ── Preset Browser Modal ──
+
+/// The user-preset browser for the track under the cursor.
+///
+/// A modal rather than extra entries on the patch knob: the patch selector
+/// stores a normalised fraction, so lengthening the bank it indexes would
+/// remap every value already saved in a session. Browsing presets in their own
+/// list moves nothing.
+#[derive(Debug)]
+pub struct PresetModal {
+    pub open: bool,
+    /// Whose bank this is. `None` until the modal is opened on a track.
+    pub instrument: Option<InstrumentType>,
+    /// The track the bank was opened for. Held so a load lands on that track
+    /// even if something moved the cursor while the modal was up.
+    pub track_idx: usize,
+    pub cursor: usize,
+    /// Preset names in bank order, read when the modal opened.
+    pub entries: Vec<String>,
+    /// Why the bank could not be read, when it could not.
+    pub error: Option<String>,
+    /// Name waiting on an overwrite confirmation.
+    pub pending_name: String,
+}
+
+impl Default for PresetModal {
+    fn default() -> Self { Self::new() }
+}
+
+impl PresetModal {
+    /// Row 0 is always "save the current panel"; the presets follow it.
+    pub const SAVE_ROW: usize = 0;
+
+    pub fn new() -> Self {
+        Self {
+            open: false,
+            instrument: None,
+            track_idx: 0,
+            cursor: 0,
+            entries: Vec::new(),
+            error: None,
+            pending_name: String::new(),
+        }
+    }
+
+    pub fn show(&mut self, instrument: InstrumentType, track_idx: usize, entries: Vec<String>) {
+        self.open = true;
+        self.instrument = Some(instrument);
+        self.track_idx = track_idx;
+        self.cursor = 0;
+        self.entries = entries;
+        self.error = None;
+        self.pending_name.clear();
+    }
+
+    pub fn close(&mut self) {
+        self.open = false;
+        self.entries.clear();
+        self.error = None;
+        self.pending_name.clear();
+        self.cursor = 0;
+    }
+
+    /// Rows in the list: the save row plus one per preset.
+    pub fn item_count(&self) -> usize { self.entries.len() + 1 }
+
+    pub fn move_up(&mut self) {
+        if self.cursor > 0 { self.cursor -= 1; }
+    }
+
+    pub fn move_down(&mut self) {
+        if self.cursor + 1 < self.item_count() { self.cursor += 1; }
+    }
+
+    /// Index into the bank for the selected row, or `None` on the save row.
+    pub fn selected_preset(&self) -> Option<usize> {
+        self.cursor.checked_sub(1).filter(|i| *i < self.entries.len())
+    }
+
+    /// Name of the selected preset, or `None` on the save row.
+    pub fn selected_name(&self) -> Option<&str> {
+        self.selected_preset().map(|i| self.entries[i].as_str())
+    }
+
+    /// Replace the list after a save or delete, keeping the cursor on
+    /// something that exists.
+    pub fn set_entries(&mut self, entries: Vec<String>) {
+        self.entries = entries;
+        let max = self.item_count() - 1;
+        if self.cursor > max { self.cursor = max; }
+    }
+}
+
 // ── Space Menu ──
 
 /// Actions that can be triggered from the space menu.
@@ -181,6 +274,7 @@ pub enum SpaceAction {
     NewTrack,
     EditMode,
     Quantize,
+    Presets,
 }
 
 // ── Confirmation Modal ──
@@ -189,6 +283,9 @@ pub enum SpaceAction {
 pub enum ConfirmKind {
     DeleteTrack,
     DeleteClip,
+    DeletePreset,
+    /// Saving over a preset name the bank already holds.
+    OverwritePreset,
 }
 
 #[derive(Debug)]
@@ -225,6 +322,8 @@ impl ConfirmModal {
 pub enum InputModalKind {
     SaveAs,
     Open,
+    /// Naming a user preset from the preset browser.
+    PresetName,
 }
 
 #[derive(Debug)]
@@ -256,6 +355,16 @@ impl InputModal {
         self.kind = InputModalKind::Open;
         self.buffer = "sessions/".to_string();
         self.cursor = self.buffer.len();
+    }
+
+    /// Name a user preset. Starts empty rather than on a suggestion, because
+    /// a suggestion the player accepts by reflex is how a bank fills up with
+    /// eight sounds called "juno".
+    pub fn open_preset_name(&mut self) {
+        self.open = true;
+        self.kind = InputModalKind::PresetName;
+        self.buffer.clear();
+        self.cursor = 0;
     }
 
     pub fn type_char(&mut self, ch: char) {
@@ -376,6 +485,7 @@ pub const SPACE_ACTIONS: &[(&str, &str, &str)] = &[
     ("spc+d", "delete",    "delete selected track/clip"),
     ("spc+e", "edit mode", "note-level piano roll editing"),
     ("spc+q", "quantize",  "snap notes to grid"),
+    ("spc+w", "presets",   "save / load instrument presets"),
     ("spc+v", "vibe",      "cycle color theme"),
     ("spc+h", "help",      "open help topics"),
 ];

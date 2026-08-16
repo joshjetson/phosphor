@@ -30,6 +30,7 @@ impl App {
         }
         if !self.nav.space_menu.open && !self.nav.input_modal.open && !self.nav.confirm_modal.open
             && !self.nav.instrument_modal.open && !self.nav.fx_menu.open
+            && !self.nav.preset_modal.open
             && !self.nav.element_locked && !self.nav.clip_view.piano_roll.edit_mode
         {
             if key.code == KeyCode::Char('u') && !key.modifiers.contains(KeyModifiers::SHIFT) {
@@ -49,10 +50,12 @@ impl App {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     let kind = self.nav.confirm_modal.kind;
                     self.nav.confirm_modal.close();
-                    self.execute_delete(kind);
+                    self.execute_confirm(kind);
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                     self.nav.confirm_modal.close();
+                    // Whatever the answer was about is no longer pending.
+                    self.nav.preset_modal.pending_name.clear();
                 }
                 _ => {}
             }
@@ -94,6 +97,7 @@ impl App {
                         match kind {
                             InputModalKind::SaveAs => self.do_save(&path),
                             InputModalKind::Open => self.do_load(&path),
+                            InputModalKind::PresetName => self.request_preset_save(&path),
                         }
                     }
                 }
@@ -104,6 +108,29 @@ impl App {
                 KeyCode::Home => { self.nav.input_modal.move_home(); }
                 KeyCode::End => { self.nav.input_modal.move_end(); }
                 KeyCode::Char(ch) => { self.nav.input_modal.type_char(ch); }
+                _ => {}
+            }
+            return;
+        }
+
+        // Preset browser — j/k navigate, Enter saves or loads, d deletes.
+        // Checked after the confirm and input modals, because both of those
+        // are raised *from* here: the name prompt and the overwrite/delete
+        // questions take the keys while they are up, and the browser is still
+        // underneath when they close.
+        if self.nav.preset_modal.open {
+            match key.code {
+                KeyCode::Esc => {
+                    dbg::user("preset browser: close");
+                    self.nav.preset_modal.close();
+                }
+                KeyCode::Char('j') | KeyCode::Down => self.nav.preset_modal.move_down(),
+                KeyCode::Char('k') | KeyCode::Up => self.nav.preset_modal.move_up(),
+                KeyCode::Enter => match self.nav.preset_modal.selected_preset() {
+                    Some(index) => self.do_load_preset(index),
+                    None => self.request_preset_name(),
+                },
+                KeyCode::Char('d') => self.request_preset_delete(),
                 _ => {}
             }
             return;

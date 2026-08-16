@@ -170,6 +170,18 @@ Names and spellings are Roland's, Glockenspeil included.
 - Atomic writes prevent file corruption
 - Default save directory: `sessions/`
 
+**User Presets**
+- `Space+W` opens a preset browser for the selected instrument
+- Every instrument has its own bank, the drum rack included — the whole parameter
+  block, including the factory patch it was dialled in from
+- One human-readable file per instrument (`~/.phosphor/presets/<instrument>.json`),
+  atomic writes, so a DX7 preset can never be offered to a Juno
+- Presets sit beside the factory tables rather than extending them, so adding one
+  cannot move a patch index stored in a saved session
+- A preset saved against a different panel — wrong instrument, wrong number of
+  controls, or an older layout — is refused rather than loaded into the wrong holes
+- 128 presets per instrument, 32 characters per name
+
 **Undo/Redo**
 - `u` undoes the last action, `Ctrl+R` redoes
 - Works for: note draw/remove, highlight delete, paste, clip delete, track delete
@@ -211,7 +223,7 @@ Names and spellings are Roland's, Glockenspeil included.
 - Shared domain models via atomics (no locks between threads)
 - Command channel pattern for UI-to-audio communication
 - Plugin trait for instruments and effects — same interface for built-in and third-party
-- 473 tests covering DSP, MIDI, engine, mixer, and navigation
+- 496 tests covering DSP, MIDI, engine, mixer, navigation, and persistence
 
 ---
 
@@ -247,8 +259,33 @@ Names and spellings are Roland's, Glockenspeil included.
 | `Space` `d` | Delete selected track/clip (with confirmation) |
 | `Space` `e` | Enter edit mode (note-level piano roll editing) |
 | `Space` `q` | Quantize notes to grid |
+| `Space` `w` | Instrument presets — save / load / delete |
 | `Space` `v` | Cycle color theme |
 | `Space` `h` | Open help topics |
+
+### Preset Browser (Space+W, on an instrument track)
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Navigate rows |
+| `Enter` on the top row | Name and save the current panel |
+| `Enter` on a preset | Load it into the track |
+| `d` | Delete the selected preset (`y`/`n`) |
+| `Esc` | Close the browser |
+
+Every instrument has its own bank, including the drum rack — the 35 controls behind
+a kit are exactly what a factory table cannot hold. A preset is the whole parameter
+block as it stands, including the factory patch it was dialled in from, so loading
+one puts the panel back exactly where it was.
+
+Names are slots: saving under a name the bank already holds rewrites that preset,
+after a confirmation, rather than adding a second row you cannot tell from the first.
+128 presets per instrument, 32 characters per name.
+
+A preset saved for a different instrument, with a different number of controls, or
+against an older panel layout is **refused** rather than loaded — a block that does
+not fit the panel would produce a plausible sound that is not the one that was saved.
+The reason appears in the status bar.
 
 ### Tracks Pane
 
@@ -475,7 +512,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace  # 473 tests
+cargo test --workspace  # 496 tests
 ```
 
 ---

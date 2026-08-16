@@ -43,6 +43,22 @@ impl App {
     }
 
 
+    /// Carry out whatever the confirmation modal was asking about.
+    ///
+    /// One dispatcher rather than a `y` handler that knows every kind: the
+    /// modal is shared, and the key routing should not grow a branch each
+    /// time something else needs a yes.
+    pub(crate) fn execute_confirm(&mut self, kind: ConfirmKind) {
+        match kind {
+            ConfirmKind::DeleteTrack | ConfirmKind::DeleteClip => self.execute_delete(kind),
+            ConfirmKind::DeletePreset => self.do_delete_preset(),
+            ConfirmKind::OverwritePreset => {
+                let name = std::mem::take(&mut self.nav.preset_modal.pending_name);
+                self.do_save_preset(&name);
+            }
+        }
+    }
+
     pub(crate) fn execute_delete(&mut self, kind: ConfirmKind) {
         use crate::debug_log as dbg;
         match kind {
@@ -140,6 +156,11 @@ impl App {
                     }
                 }
             }
+            // Presets are not part of the project, so they are not deleted
+            // here — `execute_confirm` routes them. Named rather than
+            // wildcarded so a new confirmation kind has to be placed on
+            // purpose instead of quietly doing nothing.
+            ConfirmKind::DeletePreset | ConfirmKind::OverwritePreset => {}
         }
     }
 
