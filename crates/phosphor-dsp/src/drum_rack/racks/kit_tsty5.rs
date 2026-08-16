@@ -34,7 +34,8 @@ impl DrumVoice {
     // P1-P12: unique percussion
     // ══════════════════════════════════════════════════════════════════════════
 
-    pub(crate) fn synth_tsty5(&mut self, sr: f64, dm: f64, _tm: f64, _nm: f64, _dr: f64) -> f64 {
+    pub(crate) fn synth_tsty5(&mut self, sr: f64, c: &Controls) -> f64 {
+        let (dm, _tm, _nm, _dr) = c.legacy();
         // RESONATOR-BASED SYNTHESIS: exciter → resonant filters → tape saturation
         // The tone comes from FILTERS, not oscillators. Like a real drum.
         let t = self.time;

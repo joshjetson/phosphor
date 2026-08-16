@@ -9,7 +9,8 @@ impl DrumVoice {
     // Layout: 8 kicks, 16 snares, 8 claps, 20 hats, 8 toms, 8 cymbals, 20 perc
     // ══════════════════════════════════════════════════════════════════════════
 
-    pub(crate) fn synth_tsty4(&mut self, sr: f64, dm: f64, tm: f64, nm: f64, _dr: f64) -> f64 {
+    pub(crate) fn synth_tsty4(&mut self, sr: f64, c: &Controls) -> f64 {
+        let (dm, tm, nm, _dr) = c.legacy();
         let raw = self.t4v2(sr, dm, tm, nm);
         // Tape: asymmetric saturation + warm rolloff at 9.5kHz
         let sat = (raw * 1.6).tanh() + 0.035 * raw * (-(raw * 0.5).abs()).exp();

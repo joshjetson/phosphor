@@ -6,7 +6,8 @@ impl DrumVoice {
     // 707 synthesis — halfway between 808 and 909 character
     // ══════════════════════════════════════════════════════════════════════
 
-    pub(crate) fn synth_707(&mut self, sr: f64, decay_mod: f64, tone_mod: f64, noise_mod: f64, drive_amt: f64) -> f64 {
+    pub(crate) fn synth_707(&mut self, sr: f64, c: &Controls) -> f64 {
+        let (decay_mod, tone_mod, noise_mod, drive_amt) = c.legacy();
         match self.sound {
             DrumSound::Kick | DrumSound::SubKick(_) => self.synth_707_kick(sr, decay_mod, tone_mod, drive_amt),
             DrumSound::Snare => self.synth_707_snare(sr, decay_mod, tone_mod, noise_mod),

@@ -6,7 +6,8 @@ impl DrumVoice {
     // 606 synthesis — thinner, clickier, higher
     // ══════════════════════════════════════════════════════════════════════
 
-    pub(crate) fn synth_606(&mut self, sr: f64, decay_mod: f64, tone_mod: f64, noise_mod: f64, drive_amt: f64) -> f64 {
+    pub(crate) fn synth_606(&mut self, sr: f64, c: &Controls) -> f64 {
+        let (decay_mod, tone_mod, noise_mod, drive_amt) = c.legacy();
         match self.sound {
             DrumSound::Kick | DrumSound::SubKick(_) => self.synth_606_kick(sr, decay_mod, tone_mod, drive_amt),
             DrumSound::Snare => self.synth_606_snare(sr, decay_mod, tone_mod, noise_mod),

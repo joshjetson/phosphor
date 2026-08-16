@@ -10,12 +10,14 @@ impl NavState {
         let idx = self.clip_view.synth_param_cursor;
         if let Some(track) = self.tracks.get_mut(self.track_cursor) {
             if idx < track.synth_params.len() {
-                // Index 0 is always a discrete selector (waveform for synth, kit for drums)
-                // Synth: 4 options → step 0.25. Drums: 5 kits → step 0.20
+                // Index 0 is always a discrete selector — the waveform on the
+                // phosphor synth, the kit on the drum rack, the patch on the
+                // four instruments with factory banks.
                 let is_jupiter = track.instrument_type == Some(InstrumentType::Jupiter8);
                 let is_odyssey = track.instrument_type == Some(InstrumentType::Odyssey);
                 let is_juno = track.instrument_type == Some(InstrumentType::Juno60);
                 let is_dx7 = track.instrument_type == Some(InstrumentType::DX7);
+                let is_drum = track.instrument_type == Some(InstrumentType::DrumRack);
                 let is_discrete = if is_jupiter {
                     phosphor_dsp::jupiter::is_discrete(idx)
                 } else if is_odyssey {
@@ -27,6 +29,8 @@ impl NavState {
                     // the patch knob, and stepping it by a continuous delta
                     // would walk through cartridges a fraction at a time.
                     phosphor_dsp::dx7::is_discrete(idx)
+                } else if is_drum {
+                    phosphor_dsp::drum_rack::is_discrete(idx)
                 } else {
                     idx == 0
                 };
@@ -38,23 +42,23 @@ impl NavState {
                             _ => 0.5,
                         }
                     } else {
-                        match track.instrument_type {
-                            Some(InstrumentType::DrumRack) => 0.1, // 10 kits
-                            _ => 0.25,
-                        }
+                        0.25
                     };
                     if delta > 0.0 { step } else { -step }
                 } else {
                     delta
                 };
-                // The DX7, the Juno and the Jupiter step their selectors by
-                // index rather than by adding a fraction of the knob's travel:
-                // 256 voices, or 56 patches and a three-position range switch,
-                // or 64 patches and seven switches, are coarse enough that an
-                // accumulated rounding error lands on the wrong side of a step
-                // boundary, which reads as a keypress that did nothing.
+                // The DX7, the Juno, the Jupiter and the drum rack step their
+                // selectors by index rather than by adding a fraction of the
+                // knob's travel: 256 voices, or 56 patches and a
+                // three-position range switch, or 64 patches and seven
+                // switches, or ten kits, are coarse enough that an accumulated
+                // rounding error lands on the wrong side of a step boundary,
+                // which reads as a keypress that did nothing.
                 let new_val = if is_discrete && is_dx7 {
                     phosphor_dsp::dx7::step_discrete(idx, track.synth_params[idx], delta > 0.0)
+                } else if is_discrete && is_drum {
+                    phosphor_dsp::drum_rack::step_discrete(idx, track.synth_params[idx], delta > 0.0)
                 } else if is_discrete && is_juno {
                     phosphor_dsp::juno::step_discrete(idx, track.synth_params[idx], delta > 0.0)
                 } else if is_discrete && is_jupiter {
@@ -148,7 +152,7 @@ impl NavState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phosphor_dsp::{dx7, juno, jupiter};
+    use phosphor_dsp::{drum_rack, dx7, juno, jupiter};
 
     /// A nav state whose selected track is a DX7 at its default parameters.
     fn dx7_track() -> NavState {
@@ -305,6 +309,54 @@ mod tests {
             seen.push(label(&nav));
         }
         assert_eq!(seen, [Some("PLS"), Some("NOISE"), Some("NOISE")]);
+    }
+
+    /// A nav state whose selected track is a drum rack at its default panel.
+    fn drum_track() -> NavState {
+        let mut nav = NavState::new(super::super::initial_tracks());
+        let mut track = TrackState::new("drums", 0, true, TrackKind::Instrument, vec![]);
+        track.instrument_type = Some(InstrumentType::DrumRack);
+        track.synth_params = drum_rack::PARAM_DEFAULTS.to_vec();
+        nav.tracks.insert(0, track);
+        nav.track_cursor = 0;
+        nav
+    }
+
+    #[test]
+    fn the_drum_kit_selector_moves_one_kit_per_keypress() {
+        // Ten kits, stepped by index. This used to add a tenth of the knob's
+        // travel per press, which does not divide the selector evenly: the
+        // accumulated error lands on the wrong side of a boundary and the
+        // keypress reads as having done nothing.
+        let mut nav = drum_track();
+        nav.clip_view.synth_param_cursor = drum_rack::P_KIT;
+        let kit = |nav: &NavState| {
+            drum_rack::discrete_label(drum_rack::P_KIT, nav.tracks[0].synth_params[drum_rack::P_KIT])
+        };
+        assert_eq!(kit(&nav), Some("808"));
+        for label in drum_rack::KIT_LABELS.iter().skip(1) {
+            nav.adjust_synth_param(0.05);
+            assert_eq!(kit(&nav), Some(*label));
+        }
+        nav.adjust_synth_param(0.05);
+        assert_eq!(kit(&nav), Some("tsty-5"), "the kit knob ran off the top");
+        for label in drum_rack::KIT_LABELS.iter().rev().skip(1) {
+            nav.adjust_synth_param(-0.05);
+            assert_eq!(kit(&nav), Some(*label));
+        }
+
+        // The rest of the panel is continuous, and moving one control moves
+        // only that control.
+        nav.clip_view.synth_param_cursor = drum_rack::P_BD_DECAY;
+        let before = nav.tracks[0].synth_params.clone();
+        nav.adjust_synth_param(-0.05);
+        let after = &nav.tracks[0].synth_params;
+        assert!((after[drum_rack::P_BD_DECAY] - 0.45).abs() < 1e-6);
+        for i in 0..after.len() {
+            if i != drum_rack::P_BD_DECAY {
+                assert_eq!(before[i], after[i], "{} moved with the kick's decay", drum_rack::PARAM_NAMES[i]);
+            }
+        }
     }
 
     #[test]

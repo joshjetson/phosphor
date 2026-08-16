@@ -9,7 +9,8 @@ impl DrumVoice {
     // Modeled after close-mic'd drums through Studer A800 reel-to-reel.
     // ══════════════════════════════════════════════════════════════════════════
 
-    pub(crate) fn synth_tsty3(&mut self, sr: f64, dm: f64, tm: f64, nm: f64, _dr: f64) -> f64 {
+    pub(crate) fn synth_tsty3(&mut self, sr: f64, c: &Controls) -> f64 {
+        let (dm, tm, nm, _dr) = c.legacy();
         let raw = self.t3_dispatch(sr, dm, tm, nm);
         // Every tsty-3 sound goes through tape processing
         Self::tape_process(raw, self.time, sr, &mut self.lp1_state)

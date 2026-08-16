@@ -432,18 +432,76 @@ fn no_drum_kit_exceeds_the_target() {
     // Kick, snare, two toms, closed and open hat, crash, ride — a full kit
     // hit on the same sample, which is what a quantised fill lands as.
     const FULL_KIT: &[u8] = &[36, 38, 41, 42, 45, 46, 49, 51];
-    const KIT_COUNT: usize = 10;
-
     let mut worst = (0.0f32, String::new());
-    for kit in 0..KIT_COUNT {
+    for kit in 0..drum_rack::KIT_COUNT {
         for notes in [&[36u8][..], FULL_KIT] {
             let mut rack = drum_rack::DrumRack::new();
-            rack.set_parameter(drum_rack::P_KIT, kit as f32 / (KIT_COUNT as f32 - 0.01));
+            rack.set_parameter(drum_rack::P_KIT, drum_rack::kit_knob(kit));
             let m = render(&mut rack, notes, 127, BLOCKS);
             check_patch(&m, "drum rack", &format!("kit {kit}"), &mut worst);
         }
     }
     assert!(worst.0 > 0.5, "no kit reaches half of full scale: {worst:?}");
+}
+
+/// The drum rack's panel is per-instrument, which is thirty-three new ways to
+/// change the level of a hit. This drives all of them to both ends.
+///
+/// The level knobs are not swept: they sit at the top of their travel by
+/// default and only cut, so the defaults already are their loudest setting.
+/// What is swept is everything that shapes a voice — tunings, tone, snappy,
+/// attack, every decay, and the accent bus — since a longer or brighter drum
+/// is a louder one.
+#[test]
+fn no_drum_panel_setting_exceeds_the_target() {
+    const FULL_KIT: &[u8] = &[36, 38, 41, 42, 45, 46, 49, 51];
+
+    /// Every knob that shapes a voice, which is the panel minus the kit
+    /// selector, the twelve level knobs and the two rack controls.
+    fn shaping() -> Vec<usize> {
+        const LEVELS: [usize; 12] = [
+            drum_rack::P_BD_LEVEL,
+            drum_rack::P_SD_LEVEL,
+            drum_rack::P_LT_LEVEL,
+            drum_rack::P_MT_LEVEL,
+            drum_rack::P_HT_LEVEL,
+            drum_rack::P_RS_LEVEL,
+            drum_rack::P_CP_LEVEL,
+            drum_rack::P_CB_LEVEL,
+            drum_rack::P_CY_LEVEL,
+            drum_rack::P_RD_LEVEL,
+            drum_rack::P_OH_LEVEL,
+            drum_rack::P_CH_LEVEL,
+        ];
+        (0..drum_rack::PARAM_COUNT)
+            .filter(|i| {
+                !LEVELS.contains(i)
+                    && *i != drum_rack::P_KIT
+                    && *i != drum_rack::P_DRIVE
+                    && *i != drum_rack::P_GAIN
+            })
+            .collect()
+    }
+
+    let shaping = shaping();
+    let mut worst = (0.0f32, String::new());
+    for kit in 0..drum_rack::KIT_COUNT {
+        for (setting, value) in [("min", 0.0f32), ("max", 1.0)] {
+            for notes in [&[36u8][..], FULL_KIT] {
+                let mut rack = drum_rack::DrumRack::new();
+                rack.set_parameter(drum_rack::P_KIT, drum_rack::kit_knob(kit));
+                for &i in &shaping {
+                    rack.set_parameter(i, value);
+                }
+                let m = render(&mut rack, notes, 127, BLOCKS);
+                check_patch(&m, "drum panel", &format!("kit {kit} {setting}"), &mut worst);
+            }
+        }
+    }
+    // The panel's extremes should not be *quieter* than its defaults either:
+    // a control that only ever takes level away is one that has been trimmed
+    // into safety rather than voiced.
+    assert!(worst.0 > 0.5, "no panel setting reaches half of full scale: {worst:?}");
 }
 
 /// The other half of the guarantee, and the one that was missing.

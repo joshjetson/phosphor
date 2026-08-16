@@ -6,9 +6,12 @@ impl DrumVoice {
     // 909 synthesis
     // ══════════════════════════════════════════════════════════════════════
 
-    pub(crate) fn synth_909(&mut self, sr: f64, decay_mod: f64, tone_mod: f64, noise_mod: f64, drive_amt: f64) -> f64 {
+    pub(crate) fn synth_909(&mut self, sr: f64, c: &Controls) -> f64 {
+        let (decay_mod, tone_mod, noise_mod, drive_amt) = c.legacy();
         match self.sound {
-            DrumSound::Kick | DrumSound::SubKick(_) => self.synth_909_kick(sr, decay_mod, tone_mod, drive_amt),
+            DrumSound::Kick | DrumSound::SubKick(_) => {
+                self.synth_909_kick(sr, decay_mod, tone_mod, drive_amt, c.attack)
+            }
             DrumSound::Snare => self.synth_909_snare(sr, decay_mod, tone_mod, noise_mod),
             DrumSound::SnareAlt => self.synth_909_snare_alt(sr, decay_mod, tone_mod, noise_mod),
             DrumSound::Clap => self.synth_909_clap(sr, decay_mod, noise_mod),
@@ -37,7 +40,18 @@ impl DrumVoice {
     }
 
     /// 909 Kick: 55Hz sine, longer pitch sweep (80-200ms from 150Hz), noise click.
-    pub(crate) fn synth_909_kick(&mut self, sr: f64, decay_mod: f64, tone_mod: f64, drive_amt: f64) -> f64 {
+    ///
+    /// `attack` is the knob the 909 has and the 808 does not: it sets how much
+    /// of the noise click reaches the output, which is the difference between
+    /// this machine's kick and a bare sine.
+    pub(crate) fn synth_909_kick(
+        &mut self,
+        sr: f64,
+        decay_mod: f64,
+        tone_mod: f64,
+        drive_amt: f64,
+        attack: f64,
+    ) -> f64 {
         let base_freq = match self.sound {
             DrumSound::SubKick(mult) => 55.0 * mult,
             _ => 55.0,
@@ -61,7 +75,7 @@ impl DrumVoice {
         let noise_click_env = (-self.time / 0.007).exp();
         let raw_noise = self.noise();
         let filtered_noise = self.lp1.tick_lp(raw_noise, 5000.0, sr);
-        let click = filtered_noise * noise_click_env * 0.25;
+        let click = filtered_noise * noise_click_env * 0.5 * attack;
 
         let out = (body * 0.75 + click) * env;
         if drive_amt > 0.01 {

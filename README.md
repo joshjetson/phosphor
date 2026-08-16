@@ -90,7 +90,7 @@ cargo run --release -- --no-midi
 
 | Kit | Character |
 |-----|-----------|
-| **808** | Circuit-accurate analog — sine kicks, 6-osc metallic hats |
+| **808** | Rebuilt on the service-notes circuit values — 49.4 Hz bridged-T kick, 238/476 Hz snare, one shared free-running six-oscillator metal bank |
 | **909** | Triangle snares, bit-crushed hats, longer pitch sweeps |
 | **707** | Hybrid 808/909 character |
 | **606** | Thinner, clickier, higher frequencies |
@@ -206,7 +206,7 @@ Names and spellings are Roland's, Glockenspeil included.
 - Shared domain models via atomics (no locks between threads)
 - Command channel pattern for UI-to-audio communication
 - Plugin trait for instruments and effects — same interface for built-in and third-party
-- 424 tests covering DSP, MIDI, engine, mixer, and navigation
+- 444 tests covering DSP, MIDI, engine, mixer, and navigation
 
 ---
 
@@ -470,7 +470,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace  # 424 tests
+cargo test --workspace  # 444 tests
 ```
 
 ---

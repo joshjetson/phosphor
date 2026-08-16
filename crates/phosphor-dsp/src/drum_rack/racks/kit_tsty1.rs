@@ -26,7 +26,8 @@ impl DrumVoice {
         self.lp1_state
     }
 
-    pub(crate) fn synth_tsty1(&mut self, sr: f64, decay_mod: f64, tone_mod: f64, noise_mod: f64, _drive_amt: f64) -> f64 {
+    pub(crate) fn synth_tsty1(&mut self, sr: f64, c: &Controls) -> f64 {
+        let (decay_mod, tone_mod, noise_mod, _drive_amt) = c.legacy();
         // All tsty-1 sounds go through tape saturation + warm LP
         let raw = self.synth_tsty1_raw(sr, decay_mod, tone_mod, noise_mod);
         let saturated = Self::tape_sat(raw, 0.4);

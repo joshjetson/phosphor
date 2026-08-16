@@ -5,7 +5,8 @@ use super::super::*;
 impl DrumVoice {
     // ── Kit 777: 808/909 bass + original creative sounds ──
 
-    pub(crate) fn synth_777(&mut self, sr: f64, decay_mod: f64, tone_mod: f64, noise_mod: f64, drive_amt: f64) -> f64 {
+    pub(crate) fn synth_777(&mut self, sr: f64, c: &Controls) -> f64 {
+        let (decay_mod, tone_mod, noise_mod, drive_amt) = c.legacy();
         match self.sound {
             // Notes 24-35 mapped to SubKick: 808-style bass (deep sine, heavy sweep, long decay)
             DrumSound::SubKick(_) | DrumSound::Kick if self.note < 36 => {

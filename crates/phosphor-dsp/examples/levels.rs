@@ -235,11 +235,10 @@ const WORST: [(&str, usize, &str, &[u8]); 5] = [
 const DRUM_ORDINARY: &[u8] = &[36, 38, 42];
 /// A full kit struck together, which is what a quantised fill lands as.
 const DRUM_WORST: &[u8] = &[36, 38, 41, 42, 45, 46, 49, 51];
-const DRUM_KIT_COUNT: usize = 10;
 
 fn drum_rack(kit: usize) -> drum_rack::DrumRack {
     let mut rack = drum_rack::DrumRack::new();
-    rack.set_parameter(drum_rack::P_KIT, kit as f32 / (DRUM_KIT_COUNT as f32 - 0.01));
+    rack.set_parameter(drum_rack::P_KIT, drum_rack::kit_knob(kit));
     rack
 }
 
@@ -326,7 +325,7 @@ fn stage() {
     {
         // The loudest kit is found by measurement, not by memory.
         let mut worst = (0usize, 0.0f32);
-        for kit in 0..DRUM_KIT_COUNT {
+        for kit in 0..drum_rack::KIT_COUNT {
             let m = render(&mut drum_rack(kit), DRUM_WORST, 127);
             if m.peak > worst.1 {
                 worst = (kit, m.peak);

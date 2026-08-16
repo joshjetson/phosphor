@@ -144,17 +144,12 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                     // Both selectors, and the voice name needs the bank as well
                     // as the patch knob, so this one reads the whole block.
                     phosphor_dsp::dx7::discrete_label(&params, i)
+                } else if is_drum {
+                    phosphor_dsp::drum_rack::discrete_label(i, val)
                 } else if i == 0 {
                     // Index 0 is always a discrete selector for non-Jupiter instruments
-                    Some(if is_drum {
-                        match (val * 10.0) as u8 {
-                            0 => "808", 1 => "909", 2 => "707", 3 => "606", 4 => "777",
-                            5 => "tsty-1", 6 => "tsty-2", 7 => "tsty-3", 8 => "tsty-4", _ => "tsty-5",
-                        }
-                    } else {
-                        match (val * 4.0) as u8 {
-                            0 => "sine", 1 => "saw", 2 => "square", _ => "tri",
-                        }
+                    Some(match (val * 4.0) as u8 {
+                        0 => "sine", 1 => "saw", 2 => "square", _ => "tri",
                     })
                 } else {
                     None
@@ -172,13 +167,15 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                     let bar: String = "\u{2588}".repeat(filled)
                         + &"\u{2591}".repeat(bar_w.saturating_sub(filled));
 
-                    // Format value nicely. The Juno's and the Jupiter's time
-                    // sliders are not linear in time and do not sit at the
-                    // same indices as the other instruments', so each reports
-                    // its own seconds.
-                    let display_val = if is_juno || is_jupiter {
+                    // Format value nicely. The Juno's, the Jupiter's and the
+                    // drum rack's time controls are not linear in time and do
+                    // not sit at the same indices as the other instruments',
+                    // so each reports its own seconds.
+                    let display_val = if is_juno || is_jupiter || is_drum {
                         let secs = if is_juno {
                             phosphor_dsp::juno::param_seconds(i, val)
+                        } else if is_drum {
+                            phosphor_dsp::drum_rack::param_seconds(i, val)
                         } else {
                             phosphor_dsp::jupiter::param_seconds(i, val)
                         };

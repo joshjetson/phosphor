@@ -34,7 +34,8 @@ impl DrumVoice {
         *lp_state
     }
 
-    pub(crate) fn synth_tsty2(&mut self, sr: f64, decay_mod: f64, tone_mod: f64, noise_mod: f64, _drive: f64) -> f64 {
+    pub(crate) fn synth_tsty2(&mut self, sr: f64, c: &Controls) -> f64 {
+        let (decay_mod, tone_mod, noise_mod, _drive) = c.legacy();
         let raw = self.synth_tsty2_raw(sr, decay_mod, tone_mod, noise_mod);
         Self::tape_process(raw, self.time, sr, &mut self.lp1_state)
     }
