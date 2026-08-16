@@ -12,3 +12,8 @@ pub mod kit_tsty2;
 pub mod kit_tsty3;
 pub mod kit_tsty4;
 pub mod kit_tsty5;
+pub mod kit_linn;
+pub mod kit_dmx;
+pub mod kit_sdsv;
+pub mod kit_727;
+pub mod kit_cr78;

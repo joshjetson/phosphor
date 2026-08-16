@@ -132,6 +132,34 @@ const RIDE_SECONDS: f64 = 1.100;
 const CH_SECONDS: f64 = 0.045;
 const OH_SECONDS: f64 = 0.380;
 
+/// How much longer the drum is heard for than its envelope generator runs.
+///
+/// The bass drum is soft-clipped across the whole voice, so the front of the
+/// note is held up against the knee and the tail comes out of it later than
+/// the exponential alone would put it. Measured against the rendered −20 dB
+/// time at both ends of the knob; the panel prints what the machine does, not
+/// what the capacitor does.
+const BD_DECAY_STRETCH: f64 = 1.25;
+
+/// What this machine's decay knobs render, in seconds to −20 dB. See
+/// [`param_seconds`].
+pub(crate) fn decay_seconds(index: usize, knob: f64) -> Option<f64> {
+    Some(match index {
+        P_BD_DECAY => {
+            geometric(BD_DECAY_SECONDS[0], BD_DECAY_SECONDS[1], knob) * BD_DECAY_STRETCH
+        }
+        P_LT_DECAY => TOM_SECONDS[0] * decay_scale(knob),
+        P_MT_DECAY => TOM_SECONDS[1] * decay_scale(knob),
+        P_HT_DECAY => TOM_SECONDS[2] * decay_scale(knob),
+        // No cymbal decay control on this machine — the crash is a sample and
+        // its envelope generator is fixed — so this is that fixed time.
+        P_CY_DECAY => CRASH_SECONDS,
+        P_OH_DECAY => OH_SECONDS * decay_scale(knob),
+        P_CH_DECAY => CH_SECONDS * decay_scale(knob),
+        _ => return None,
+    })
+}
+
 /// Which sampled voice a note reads, and how it is tuned.
 ///
 /// The two hats read the *same* ROM — one recording, two envelope generators

@@ -324,22 +324,24 @@ mod tests {
 
     #[test]
     fn the_drum_kit_selector_moves_one_kit_per_keypress() {
-        // Ten kits, stepped by index. This used to add a tenth of the knob's
-        // travel per press, which does not divide the selector evenly: the
-        // accumulated error lands on the wrong side of a boundary and the
-        // keypress reads as having done nothing.
+        // Fifteen kits, stepped by index. This used to add a fraction of the
+        // knob's travel per press, which does not divide the selector evenly:
+        // the accumulated error lands on the wrong side of a boundary and the
+        // keypress reads as having done nothing. The list is driven off
+        // `KIT_LABELS` so that adding a kit does not need this test edited.
         let mut nav = drum_track();
         nav.clip_view.synth_param_cursor = drum_rack::P_KIT;
         let kit = |nav: &NavState| {
             drum_rack::discrete_label(drum_rack::P_KIT, nav.tracks[0].synth_params[drum_rack::P_KIT])
         };
+        let last = *drum_rack::KIT_LABELS.last().unwrap();
         assert_eq!(kit(&nav), Some("808"));
         for label in drum_rack::KIT_LABELS.iter().skip(1) {
             nav.adjust_synth_param(0.05);
             assert_eq!(kit(&nav), Some(*label));
         }
         nav.adjust_synth_param(0.05);
-        assert_eq!(kit(&nav), Some("tsty-5"), "the kit knob ran off the top");
+        assert_eq!(kit(&nav), Some(last), "the kit knob ran off the top");
         for label in drum_rack::KIT_LABELS.iter().rev().skip(1) {
             nav.adjust_synth_param(-0.05);
             assert_eq!(kit(&nav), Some(*label));

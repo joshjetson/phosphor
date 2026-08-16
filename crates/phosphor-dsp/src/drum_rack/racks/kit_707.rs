@@ -102,6 +102,26 @@ impl Voice707 {
     }
 }
 
+/// What this machine's voices ring for, in seconds to −20 dB.
+///
+/// A TR-707 has no decay control anywhere on it, so none of these move: they
+/// are the analog envelope generators after the converter for the four sounds
+/// that have one, and the decay written into the data for the rest. Printing
+/// them turns the panel into the machine's own spec sheet, which is more use
+/// than a percentage on a knob that does nothing.
+pub(crate) fn decay_seconds(index: usize) -> Option<f64> {
+    Some(match index {
+        P_BD_DECAY => 0.230,
+        P_LT_DECAY => 0.300,
+        P_MT_DECAY => 0.260,
+        P_HT_DECAY => 0.220,
+        P_CY_DECAY => 1.300,
+        P_OH_DECAY => 0.420,
+        P_CH_DECAY => 0.055,
+        _ => return None,
+    })
+}
+
 /// Which of the fifteen a note plays.
 ///
 /// The folds are onto the nearest sound in the same ROM — congas and bongos

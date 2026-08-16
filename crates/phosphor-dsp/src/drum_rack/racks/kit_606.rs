@@ -141,6 +141,31 @@ const CY_STRIKE_TAU: f64 = 0.250 / DECAY_REFERENCE;
 const OH_TAU: f64 = 0.300 / DECAY_REFERENCE;
 const CH_TAU: f64 = 0.060 / DECAY_REFERENCE;
 
+/// What this machine's voices ring for, in seconds to −20 dB.
+///
+/// Fixed, because a TR-606 has no decay control on any voice. The mid tom
+/// reports nothing at all: there is no third tom board in the machine and
+/// those notes are played on the low tom, so there is no time to print.
+///
+/// These are the *rendered* times, which are what
+/// `the_606_voices_ring_for_the_times_this_file_gives_them` measures, not the
+/// envelope constants above them — the 405 Hz low-pass across both toms and
+/// the two-stage cymbal each move the number by a sixth. A panel that printed
+/// the capacitor rather than the drum would be printing the wrong thing.
+pub(crate) fn decay_seconds(index: usize) -> Option<f64> {
+    Some(match index {
+        // The one exception: measured on the body from 15 ms in, past a strike
+        // that is louder than the drum it sets ringing.
+        P_BD_DECAY => 0.235,
+        P_LT_DECAY => 0.218,
+        P_HT_DECAY => 0.155,
+        P_CY_DECAY => 0.743,
+        P_OH_DECAY => 0.332,
+        P_CH_DECAY => 0.067,
+        _ => return None,
+    })
+}
+
 /// The seven voices a TR-606 has.
 ///
 /// One table, two readers: [`voice_606`] answers both "what does this note

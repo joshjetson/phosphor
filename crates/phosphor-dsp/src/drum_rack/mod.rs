@@ -1,8 +1,8 @@
-//! Drum rack — synthesized drum machines (808, 909, 707, 606).
+//! Drum rack — synthesized drum machines.
 //!
-//! The four Roland machines are not four voicings of one synthesizer; they do
-//! not even generate sound the same way as each other, and each one here is
-//! built as the machine it is:
+//! The nine machines modelled here are not nine voicings of one synthesizer;
+//! most of them do not even generate sound the same way as each other, and
+//! each one is built as the machine it is:
 //!
 //! * **808** — fully analog. Bridged-T resonators for the drums, one bank of
 //!   six free-running square oscillators for everything metal, a noise source
@@ -18,10 +18,25 @@
 //! * **606** — fully analog and deliberately small: seven voices, no clap, no
 //!   congas, no cowbell, no rimshot, and a panel with nothing on it but
 //!   levels and accent.
+//! * **LinnDrum** — PCM again, but through a *companded* converter: 8-bit
+//!   µ-255 words into an AM6070, which is a different kind of grain from the
+//!   707's linear eight bits. Tuning is a change of read clock, so pitch and
+//!   length move together.
+//! * **DMX** — the same companded family, voiced harder and drier, and the
+//!   machine that gets twenty-four sounds out of eleven recordings by
+//!   clocking them at different rates.
+//! * **SDS-V** — the only true synthesizer in the rack. A triangle VCO and a
+//!   noise source through a four-pole SSM2044 into an OTA VCA, with a linear
+//!   ramp for an envelope and a pitch bend that is the sound of the decade.
+//! * **727** — the 707's converter with a Latin sound set on it, and no bass
+//!   drum, snare, hi-hat or cymbal anywhere in the machine.
+//! * **CR-78** — pre-808 Roland analog: a snare made of nothing but filtered
+//!   noise, one LC band-pass for all of the metal, and three square waves for
+//!   the metallic beat.
 //!
 //! # The panel
 //!
-//! One strip per instrument, in front-panel order, shared by all four machines
+//! One strip per instrument, in front-panel order, shared by every machine
 //! because `PARAM_COUNT` is fixed and their instrument sets overlap almost
 //! entirely. A note reaches its strip through [`instrument_of`], which is the
 //! join between the General MIDI note map and the front panel: instruments
@@ -42,16 +57,29 @@
 //! | OH      | level, decay         | level, decay                 | level | level |
 //! | CH      | level                | level, decay                 | level | level |
 //!
+//! | strip   | LinnDrum        | DMX          | SDS-V                     | 727 | CR-78 |
+//! |---------|-----------------|--------------|---------------------------|-----|-------|
+//! | BD      | level           | level, tune  | level, tune, tone, attack, decay | — | level |
+//! | SD      | level, tune     | level, tune  | level, tune, tone, snappy | — | level |
+//! | LT/MT/HT| level, tune     | level, tune  | level, tune, decay        | level | level |
+//! | RS, CP  | level           | level        | — (folded onto the snare) | CP only | level |
+//! | CB      | level           | — (no bell)  | —                         | level | level |
+//! | CY, RD  | level           | level        | —                         | CY only | CY only |
+//! | OH      | level           | level        | —                         | — | — |
+//! | CH      | level, decay    | level        | —                         | — | level |
+//!
 //! A knob a machine does not have reads as centred on that machine — see
-//! [`DrumKit::is_live`] — rather than being invented for it. The 707 and the
-//! 606 have no shaping controls at all on the instrument: a level fader per
-//! voice and the accent bus, and that is the whole panel.
+//! [`DrumKit::is_live`] — rather than being invented for it. The 707, the 606,
+//! the 727 and the CR-78 have no shaping controls at all on the instrument: a
+//! level fader per voice and the accent bus, and that is the whole panel.
 //!
 //! A *voice* a machine does not have is folded onto the nearest one it does
 //! have, at the strip that voice is played from — see [`instrument_of`]. That
 //! is why the 606's cowbell notes answer to its high tom's level and the
 //! 909's to its rimshot's: those machines have no cowbell, and playing the
-//! part on the nearest voice is what the hardware leaves you.
+//! part on the nearest voice is what the hardware leaves you. The 727 is the
+//! extreme case — it has no bass drum at all, so a kick is played on its low
+//! conga and answers that fader.
 
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
@@ -278,45 +306,61 @@ pub fn discrete_label(index: usize, value: f32) -> Option<&'static str> {
     })
 }
 
-/// A decay knob's setting in seconds, or `None` for the knobs that read as a
-/// percentage.
+/// A decay knob's setting in seconds *on this machine*, or `None` when that
+/// machine has no time to report there.
 ///
-/// Calibrated on the 808, whose decay times are the ones the circuit analyses
-/// give; the other nine kits scale their own envelopes by the same knob, so
-/// this is the 808's number rather than a promise about all ten. Reported as
-/// the −20 dB time, which is how the published figures for that machine are
-/// quoted — see [`DECAY_REFERENCE`].
+/// Every figure is the −20 dB time, which is how the published decay numbers
+/// for these instruments are quoted — see [`DECAY_REFERENCE`] — so the same
+/// reading means the same thing on every kit.
 ///
-/// The tom and closed-hat knobs are not on the 808's panel at all, so what
-/// they report is that machine's fixed ring time scaled by a knob only the
-/// other kits answer to.
+/// This used to be calibrated on the 808 alone and handed the 808's answer to
+/// all ten kits, which put "800 ms" at the top of a 909 bass-drum decay knob
+/// that reaches a second and a half. Each machine now answers for itself:
 ///
-/// The 909 now has tapers of its own — its bass drum reaches a second and a
-/// half where the 808's stops at 800 ms — so on that kit these numbers are
-/// the wrong machine's. Correcting them means giving this function the kit,
-/// which is a change to the editor that reads it rather than to the rack.
+/// * a knob a machine does not have is read at its centre detent, which is
+///   where [`Panel`] puts it, so the readout is the time the machine actually
+///   renders and does not move as the knob is turned. That is how a 707 can
+///   report 55 ms of closed hat and 1.3 s of crash from a panel with no decay
+///   controls on it at all;
+/// * a strip a machine has no voice behind reports `None` and reads as a
+///   percentage — the 606 has no mid tom, the 727 no bass drum;
+/// * the 777 and the five tsty kits report `None` throughout. Their decay
+///   knobs are plain multipliers over a per-note recipe table rather than one
+///   circuit's ring time, so there is no single number to print.
 #[must_use]
-pub fn param_seconds(index: usize, value: f32) -> Option<f64> {
-    let v = f64::from(value);
+pub fn param_seconds(kit: DrumKit, index: usize, value: f32) -> Option<f64> {
+    let knob = f64::from(if kit.is_live(index) { value } else { 0.5 }).clamp(0.0, 1.0);
+    kit.decay_seconds(index, knob)
+}
+
+/// The 808's own decay tapers, read back as times.
+fn decay_seconds_808(index: usize, knob: f64) -> Option<f64> {
     Some(match index {
-        P_BD_DECAY => bd_decay_tau(v) * DECAY_REFERENCE,
-        P_LT_DECAY => TOM_TAU[0] * decay_scale(v) * DECAY_REFERENCE,
-        P_MT_DECAY => TOM_TAU[1] * decay_scale(v) * DECAY_REFERENCE,
-        P_HT_DECAY => TOM_TAU[2] * decay_scale(v) * DECAY_REFERENCE,
-        P_CY_DECAY => cy_decay_tau(v) * DECAY_REFERENCE,
-        P_OH_DECAY => oh_decay_tau(v) * DECAY_REFERENCE,
-        P_CH_DECAY => CH_TAU * decay_scale(v) * DECAY_REFERENCE,
+        P_BD_DECAY => bd_decay_tau(knob) * DECAY_REFERENCE,
+        // No tom or closed-hat decay control on this machine, so these are its
+        // fixed ring times; the knob is centred before it gets here.
+        P_LT_DECAY => TOM_TAU[0] * decay_scale(knob) * DECAY_REFERENCE,
+        P_MT_DECAY => TOM_TAU[1] * decay_scale(knob) * DECAY_REFERENCE,
+        P_HT_DECAY => TOM_TAU[2] * decay_scale(knob) * DECAY_REFERENCE,
+        P_CY_DECAY => cy_decay_tau(knob) * DECAY_REFERENCE,
+        P_OH_DECAY => oh_decay_tau(knob) * DECAY_REFERENCE,
+        P_CH_DECAY => CH_TAU * decay_scale(knob) * DECAY_REFERENCE,
         _ => return None,
     })
 }
 
 // ── Kit definitions ──
 
-pub const KIT_COUNT: usize = 10;
+pub const KIT_COUNT: usize = 15;
 
 /// Kit names, in selector order.
+///
+/// The five machines added after the first ten are appended rather than sorted
+/// in beside the Rolands, so that [`DrumKit::from_index`] keeps the numbering
+/// every test and every export already uses.
 pub const KIT_LABELS: [&str; KIT_COUNT] = [
     "808", "909", "707", "606", "777", "tsty-1", "tsty-2", "tsty-3", "tsty-4", "tsty-5",
+    "linn", "dmx", "sds-v", "727", "cr-78",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -331,6 +375,11 @@ pub enum DrumKit {
     KitTsty3,
     KitTsty4,
     KitTsty5,
+    KitLinn,
+    KitDmx,
+    KitSdsV,
+    Kit727,
+    KitCr78,
 }
 
 impl DrumKit {
@@ -351,7 +400,12 @@ impl DrumKit {
             6 => Self::KitTsty2,
             7 => Self::KitTsty3,
             8 => Self::KitTsty4,
-            _ => Self::KitTsty5,
+            9 => Self::KitTsty5,
+            10 => Self::KitLinn,
+            11 => Self::KitDmx,
+            12 => Self::KitSdsV,
+            13 => Self::Kit727,
+            _ => Self::KitCr78,
         }
     }
 
@@ -368,6 +422,34 @@ impl DrumKit {
             Self::KitTsty3 => 7,
             Self::KitTsty4 => 8,
             Self::KitTsty5 => 9,
+            Self::KitLinn => 10,
+            Self::KitDmx => 11,
+            Self::KitSdsV => 12,
+            Self::Kit727 => 13,
+            Self::KitCr78 => 14,
+        }
+    }
+
+    /// What this machine's decay knob at `knob` renders, in seconds to −20 dB.
+    /// See [`param_seconds`], which is the public face of this.
+    pub(crate) fn decay_seconds(self, index: usize, knob: f64) -> Option<f64> {
+        match self {
+            Self::Kit808 => decay_seconds_808(index, knob),
+            Self::Kit909 => racks::kit_909::decay_seconds(index, knob),
+            Self::Kit707 => racks::kit_707::decay_seconds(index),
+            Self::Kit606 => racks::kit_606::decay_seconds(index),
+            Self::KitLinn => racks::kit_linn::decay_seconds(index, knob),
+            Self::KitDmx => racks::kit_dmx::decay_seconds(index),
+            Self::KitSdsV => racks::kit_sdsv::decay_seconds(index, knob),
+            Self::Kit727 => racks::kit_727::decay_seconds(index),
+            Self::KitCr78 => racks::kit_cr78::decay_seconds(index),
+            // A multiplier over a per-note recipe table is not a time.
+            Self::Kit777
+            | Self::KitTsty1
+            | Self::KitTsty2
+            | Self::KitTsty3
+            | Self::KitTsty4
+            | Self::KitTsty5 => None,
         }
     }
 
@@ -447,6 +529,151 @@ impl DrumKit {
                     | P_HT_LEVEL
                     | P_CY_LEVEL
                     | P_OH_LEVEL
+                    | P_CH_LEVEL
+                    | P_DRIVE
+                    | P_GAIN
+            ),
+            // A LinnDrum's panel is a fader and a pan slider per sound, a
+            // TUNING section covering the snare, the sidestick, the three toms
+            // and the two congas, and one knob for the closed hi-hat's decay.
+            // No bass-drum tuning, no tone, no snappy, no attack, nothing on
+            // the cymbals. TUNE is the read clock, not an oscillator.
+            //
+            // The sidestick has a tuning knob on the instrument and no TUNE on
+            // the strip it is played from here, so that one control is lost:
+            // the rimshot strip is a fader and nothing else on this panel.
+            Self::KitLinn => matches!(
+                index,
+                P_KIT
+                    | P_ACCENT
+                    | P_BD_LEVEL
+                    | P_SD_LEVEL
+                    | P_SD_TUNE
+                    | P_LT_LEVEL
+                    | P_LT_TUNE
+                    | P_MT_LEVEL
+                    | P_MT_TUNE
+                    | P_HT_LEVEL
+                    | P_HT_TUNE
+                    | P_RS_LEVEL
+                    | P_CP_LEVEL
+                    | P_CB_LEVEL
+                    | P_CY_LEVEL
+                    | P_RD_LEVEL
+                    | P_OH_LEVEL
+                    | P_CH_LEVEL
+                    | P_CH_DECAY
+                    | P_DRIVE
+                    | P_GAIN
+            ),
+            // The DMX's front panel is faders only; its tuning is a trimpot on
+            // the top rear of each voice card, half an octave either way, and
+            // a CV input wired in parallel with it. A control behind the lid
+            // is still a control of the machine, so the TUNE knobs are live —
+            // on the five cards that have a pitch worth moving. There is no
+            // cowbell card, so that strip is dead and those parts are played
+            // on the rimshot as they are on a 909.
+            Self::KitDmx => matches!(
+                index,
+                P_KIT
+                    | P_ACCENT
+                    | P_BD_LEVEL
+                    | P_BD_TUNE
+                    | P_SD_LEVEL
+                    | P_SD_TUNE
+                    | P_LT_LEVEL
+                    | P_LT_TUNE
+                    | P_MT_LEVEL
+                    | P_MT_TUNE
+                    | P_HT_LEVEL
+                    | P_HT_TUNE
+                    | P_RS_LEVEL
+                    | P_CP_LEVEL
+                    | P_CY_LEVEL
+                    | P_RD_LEVEL
+                    | P_OH_LEVEL
+                    | P_CH_LEVEL
+                    | P_DRIVE
+                    | P_GAIN
+            ),
+            // The SDS-V is the one machine here with more controls than the
+            // panel has room for. Each of its five modules carries six knobs —
+            // TONE PITCH, NOISE PITCH, BEND, DECAY, NOISE-TONE and CLICK-DRUM
+            // — and the mapping onto this panel is stated in kit_sdsv.rs. What
+            // is live: TUNE is TONE PITCH everywhere, TONE is NOISE PITCH,
+            // DECAY is DECAY, the bass drum's ATTACK is CLICK-DRUM and the
+            // snare's SNAPPY is NOISE-TONE. BEND has no strip; so does the
+            // snare's DECAY, because this panel's snare has no decay knob.
+            //
+            // Five modules, so everything metal, shaken or clapped is played
+            // on the snare — the machine's only noise voice — and those faders
+            // are dead. The optional hi-hat and cymbal modules existed, but
+            // they were 8-bit EPROM playback rather than a sixth of this
+            // circuit, so inventing an analog one here would be inventing a
+            // machine Simmons did not sell.
+            Self::KitSdsV => matches!(
+                index,
+                P_KIT
+                    | P_ACCENT
+                    | P_BD_LEVEL
+                    | P_BD_TUNE
+                    | P_BD_TONE
+                    | P_BD_ATTACK
+                    | P_BD_DECAY
+                    | P_SD_LEVEL
+                    | P_SD_TUNE
+                    | P_SD_TONE
+                    | P_SD_SNAPPY
+                    | P_LT_LEVEL
+                    | P_LT_TUNE
+                    | P_LT_DECAY
+                    | P_MT_LEVEL
+                    | P_MT_TUNE
+                    | P_MT_DECAY
+                    | P_HT_LEVEL
+                    | P_HT_TUNE
+                    | P_HT_DECAY
+                    | P_DRIVE
+                    | P_GAIN
+            ),
+            // Fifteen recordings and a fader each, like the 707 it shares a
+            // converter with — and no bass drum, snare, hi-hat or cymbal
+            // anywhere in the machine, so those four faders are dead and the
+            // parts are played on the nearest Latin voice.
+            Self::Kit727 => matches!(
+                index,
+                P_KIT
+                    | P_ACCENT
+                    | P_LT_LEVEL
+                    | P_MT_LEVEL
+                    | P_HT_LEVEL
+                    | P_CP_LEVEL
+                    | P_CB_LEVEL
+                    | P_CY_LEVEL
+                    | P_DRIVE
+                    | P_GAIN
+            ),
+            // The CR-78's own per-instrument control is a CANCEL VOICE button
+            // rather than a fader, plus one balance slider tilting the whole
+            // machine between the bass drum and the metal. A fader is the
+            // finer-grained version of the button and it is what this panel
+            // has; the balance slider is global and has no strip.
+            //
+            // One hi-hat and one cymbal, no ride and no open hat: those two
+            // faders are dead and the parts are played on the cymbal.
+            Self::KitCr78 => matches!(
+                index,
+                P_KIT
+                    | P_ACCENT
+                    | P_BD_LEVEL
+                    | P_SD_LEVEL
+                    | P_LT_LEVEL
+                    | P_MT_LEVEL
+                    | P_HT_LEVEL
+                    | P_RS_LEVEL
+                    | P_CP_LEVEL
+                    | P_CB_LEVEL
+                    | P_CY_LEVEL
                     | P_CH_LEVEL
                     | P_DRIVE
                     | P_GAIN
@@ -622,6 +849,11 @@ impl Instrument {
 pub(crate) fn instrument_of(sound: DrumSound, kit: DrumKit) -> Instrument {
     match kit {
         DrumKit::Kit606 => return racks::kit_606::voice_606(sound).strip(),
+        DrumKit::KitSdsV => return racks::kit_sdsv::module_sdsv(sound).strip(),
+        DrumKit::Kit727 => return racks::kit_727::voice_727(sound).strip(),
+        DrumKit::KitCr78 => return racks::kit_cr78::voice_cr78(sound).strip(),
+        DrumKit::KitLinn => return racks::kit_linn::voice_linn(sound).strip(),
+        DrumKit::KitDmx => return racks::kit_dmx::voice_dmx(sound).strip(),
         DrumKit::Kit909 => {
             // The 909 has no cowbell circuit. Its rimshot is the only pitched
             // click on the machine, so that is where a cowbell part goes.
@@ -1147,6 +1379,12 @@ impl MetalBank {
     pub(crate) fn cowbell(&self) -> f64 {
         (self.squares[4] + self.squares[5]) * 0.5
     }
+
+    /// Three of the six, which is what the CR-78's METALLIC BEAT is: three
+    /// square waves through a filter, on their own button.
+    pub(crate) fn chime(&self) -> f64 {
+        (self.squares[1] + self.squares[3] + self.squares[5]) / 3.0
+    }
 }
 
 /// The 808's six oscillator frequencies, from the analysis of its cymbal
@@ -1198,6 +1436,57 @@ pub(crate) const PCM_909_RATE: f64 = 18_000.0;
 pub(crate) const PCM_707_BITS: u32 = 8;
 pub(crate) const PCM_707_CYMBAL_BITS: u32 = 6;
 pub(crate) const PCM_707_RATE: f64 = 25_000.0;
+
+/// The 727's, which is the same converter board with a different mask in it.
+pub(crate) const PCM_727_RATE: f64 = PCM_707_RATE;
+
+/// The LinnDrum's two clocks. Its published figure is a range, 28 kHz to
+/// 35 kHz, because the machine carries the LM-1's sounds at the older clock
+/// beside new ones cut at the faster one. Which sound sits at which rate is
+/// not published; the split taken here is drums at 35 kHz and everything
+/// metal or shaken at 28 kHz, on the grounds that the long sounds are the ones
+/// that had to fit in the ROM.
+pub(crate) const PCM_LINN_DRUM_RATE: f64 = 35_000.0;
+pub(crate) const PCM_LINN_METAL_RATE: f64 = 28_000.0;
+
+/// The DMX's, quoted at 28 kHz or below.
+pub(crate) const PCM_DMX_RATE: f64 = 28_000.0;
+
+/// One 8-bit word through a companding converter, µ-255 law.
+///
+/// This is the other half of what separates the Linn and Oberheim machines
+/// from the 707. Both store eight bits; the 707 stores them linearly and the
+/// AM6070 in the Linn and the DMX stores them as a sign, a three-bit chord and
+/// a four-bit step — eight segments of sixteen steps, each segment twice the
+/// size of the one below it.
+///
+/// The consequence is the whole point. A linear converter's step size is
+/// fixed, so its quantisation noise sits at one level whatever the signal is
+/// doing and is at its most audible under a fading tail. A companded
+/// converter's step size follows the signal, so the noise fades with the note
+/// and the *ratio* between them stays roughly constant — about 40 dB across
+/// the whole range, against a linear eight bits' 53 dB at full scale falling
+/// to nothing at the bottom. A LinnDrum tail is smooth for the same reason its
+/// loudest samples are very slightly grittier than a 707's.
+///
+/// The arithmetic below is the standard segmented µ-255 encode and decode, the
+/// one the converter's own data format is: a 33-count bias, the chord taken
+/// from the position of the highest set bit, and 8031 for full scale.
+pub(crate) fn compand(x: f64) -> f64 {
+    const FULL: f64 = 8031.0;
+    const BIAS: u32 = 33;
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    // `as u32` saturates at both ends and turns NaN into zero, so no input can
+    // walk off either end of the table.
+    let magnitude = (x.abs() * FULL) as u32;
+    let biased = (magnitude + BIAS).min(8191);
+    // The chord: how many times the biased magnitude has doubled past the
+    // bottom segment, which is bit 5.
+    let chord = (31 - biased.leading_zeros()).saturating_sub(5).min(7);
+    let step = (biased >> (chord + 1)) & 0x0F;
+    let decoded = ((step * 2 + BIAS) << chord) - BIAS;
+    sign * f64::from(decoded) / FULL
+}
 
 #[derive(Debug)]
 pub(crate) struct DrumVoice {
@@ -1748,6 +2037,13 @@ impl DrumVoice {
             DrumKit::KitTsty3 => self.synth_tsty3(sr, &c),
             DrumKit::KitTsty4 => self.synth_tsty4(sr, &c),
             DrumKit::KitTsty5 => self.synth_tsty5(sr, &c),
+            DrumKit::KitLinn => self.synth_linn(sr, &c),
+            DrumKit::KitDmx => self.synth_dmx(sr, &c),
+            DrumKit::KitSdsV => self.synth_sdsv(sr, &c),
+            DrumKit::Kit727 => self.synth_727(sr, &c),
+            // The CR-78's metal is an oscillator bank as the 808's is, at its
+            // own frequencies.
+            DrumKit::KitCr78 => self.synth_cr78(sr, &c, metal),
         };
 
         // A closed hat cuts an open hat off on the instrument — one VCA, and
@@ -1856,6 +2152,39 @@ impl DrumVoice {
         }
     }
 
+    /// How many words a sample-playback clock at `rate` converts on this
+    /// sample, advancing its phase but *not* its address — the caller advances
+    /// that one word at a time, because it has to generate each of them.
+    ///
+    /// [`DrumVoice::convert`] is the same clock for a machine whose read rate
+    /// is fixed and safely below the host's: it skips the address forward and
+    /// generates one word, which is right while at most one word is ever due.
+    /// A machine that tunes by changing its read clock breaks that. The
+    /// LinnDrum's drums are cut at 35 kHz and its TUNING knob reaches half an
+    /// octave above that, which is 49.5 kHz — past a 44.1 kHz host — and under
+    /// the old clock the extra words were skipped rather than played, so the
+    /// top two and a half semitones of the knob did nothing but the length.
+    /// The tuning range silently depended on the host's sample rate.
+    ///
+    /// Returning the count lets the caller play every word and average the
+    /// ones that land inside a single output sample, which is what the analog
+    /// filter after the converter does to steps shorter than it can follow.
+    ///
+    /// Bounded, as everything in the audio path must be: the cap is eight,
+    /// which is a read clock eight times the host's and cannot be reached from
+    /// any panel position in this rack.
+    fn convert_words(&mut self, sr: f64, rate: f64) -> u32 {
+        self.dac_phase += rate / sr;
+        if self.dac_phase < 1.0 {
+            return 0;
+        }
+        let whole = self.dac_phase.floor();
+        self.dac_phase -= whole;
+        // The cast saturates and turns NaN into zero, so no rate can ask for a
+        // negative or unbounded number of words.
+        (whole as u32).min(8)
+    }
+
     /// One word of ROM: `x` rounded to `bits`, two's complement.
     ///
     /// Quantising here rather than after the envelope is the whole point. On
@@ -1916,6 +2245,7 @@ impl DrumRack {
     fn metal_freqs(&self) -> &'static [f64; 6] {
         match self.kit {
             DrumKit::Kit606 => &HAT_FREQS_606,
+            DrumKit::KitCr78 => &racks::kit_cr78::HAT_FREQS_CR78,
             _ => &HAT_FREQS_808,
         }
     }
@@ -2276,16 +2606,18 @@ mod tests {
 
     #[test]
     fn the_kit_selector_steps_one_kit_per_press() {
-        // Ten kits stepped by index. Adding a tenth of the travel ten times
-        // does not arrive at 1.0, and a step boundary missed by an ulp is a
-        // keypress that visibly does nothing.
+        // Fifteen kits stepped by index. Adding a fifteenth of the travel
+        // fifteen times does not arrive at 1.0, and a step boundary missed by
+        // an ulp is a keypress that visibly does nothing.
+        assert_eq!(KIT_LABELS.len(), KIT_COUNT);
+        let last = *KIT_LABELS.last().unwrap();
         let mut knob = PARAM_DEFAULTS[P_KIT];
         for label in KIT_LABELS.iter().skip(1) {
             knob = step_discrete(P_KIT, knob, true);
             assert_eq!(discrete_label(P_KIT, knob), Some(*label));
         }
         knob = step_discrete(P_KIT, knob, true);
-        assert_eq!(discrete_label(P_KIT, knob), Some("tsty-5"), "ran off the top");
+        assert_eq!(discrete_label(P_KIT, knob), Some(last), "ran off the top");
         for kit in (0..KIT_COUNT - 1).rev() {
             knob = step_discrete(P_KIT, knob, false);
             assert_eq!(discrete_label(P_KIT, knob), Some(KIT_LABELS[kit]));
@@ -2295,10 +2627,11 @@ mod tests {
 
         // Total: every float lands on a kit, because `params` is public.
         assert_eq!(DrumKit::from_param(-1.0), DrumKit::Kit808);
-        assert_eq!(DrumKit::from_param(9.0), DrumKit::KitTsty5);
+        assert_eq!(DrumKit::from_param(9.0), DrumKit::KitCr78);
         assert_eq!(DrumKit::from_param(f32::NAN), DrumKit::Kit808);
-        for kit in 0..KIT_COUNT {
+        for (kit, label) in KIT_LABELS.iter().enumerate() {
             assert_eq!(DrumKit::from_param(kit_knob(kit)).index(), kit);
+            assert_eq!(DrumKit::from_index(kit).label(), *label);
         }
     }
 
@@ -2414,19 +2747,44 @@ mod tests {
         }
     }
 
+    /// The level fader of one strip, which is what a note folded onto that
+    /// strip has to answer.
+    fn level_param(which: Instrument) -> usize {
+        match which {
+            Instrument::Bd => P_BD_LEVEL,
+            Instrument::Sd => P_SD_LEVEL,
+            Instrument::LowTom => P_LT_LEVEL,
+            Instrument::MidTom => P_MT_LEVEL,
+            Instrument::HighTom => P_HT_LEVEL,
+            Instrument::Rim => P_RS_LEVEL,
+            Instrument::Clap => P_CP_LEVEL,
+            Instrument::Cowbell => P_CB_LEVEL,
+            Instrument::Cymbal => P_CY_LEVEL,
+            Instrument::Ride => P_RD_LEVEL,
+            Instrument::OpenHat => P_OH_LEVEL,
+            Instrument::ClosedHat => P_CH_LEVEL,
+        }
+    }
+
     /// Every kit routes its notes to the strips the panel says, and answers
     /// the shaping knobs its machine has.
+    ///
+    /// The strip a note lands on is asked for rather than assumed, because it
+    /// is not the same on every machine: a 727 has no bass drum, so a kick is
+    /// played on its low conga and answers *that* fader. What is asserted is
+    /// that the fader in front of the player is the one that moves the sound
+    /// they hear, whichever fader that turns out to be.
     #[test]
     fn every_kit_answers_the_panel() {
         for (kit, name) in KIT_LABELS.iter().enumerate() {
             let machine = DrumKit::from_index(kit);
-            for (note, own, other) in [
-                (36u8, P_BD_LEVEL, P_CY_LEVEL),
-                (38, P_SD_LEVEL, P_BD_LEVEL),
-                (42, P_CH_LEVEL, P_OH_LEVEL),
-                (46, P_OH_LEVEL, P_CH_LEVEL),
-                (49, P_CY_LEVEL, P_BD_LEVEL),
-            ] {
+            for note in [36u8, 38, 42, 46, 49] {
+                let own = level_param(instrument_of(note_to_sound(note), machine));
+                // A fader that is not this note's, whatever this note's is.
+                let other = [P_BD_LEVEL, P_CY_LEVEL, P_RS_LEVEL]
+                    .into_iter()
+                    .find(|&f| f != own)
+                    .unwrap();
                 let loud = peak(&strike(kit, note, 127, 0.5, &[]));
                 assert!(loud > 0.001, "{name} note {note} is silent");
                 assert_eq!(peak(&strike(kit, note, 127, 0.5, &[(own, 0.0)])), 0.0, "{name} {note}");
@@ -2501,7 +2859,7 @@ mod tests {
                 "decay knob {knob}: −20 dB at {got:.3} s, published {want:.3} s"
             );
             assert!(
-                (param_seconds(P_BD_DECAY, knob).unwrap() - want).abs() < 0.001,
+                (param_seconds(DrumKit::Kit808, P_BD_DECAY, knob).unwrap() - want).abs() < 0.001,
                 "the panel reads back a different time than it renders"
             );
         }
@@ -3213,6 +3571,154 @@ mod tests {
         }
     }
 
+    // ── The panel's readouts ──
+
+    /// Every machine's decay knobs read back what that machine renders.
+    ///
+    /// This is the whole of what `param_seconds` is for, and it used to be
+    /// wrong on nine kits out of ten: it was calibrated on the 808 and handed
+    /// the 808's answer to all of them, so a 909 bass drum that reaches a
+    /// second and a half was labelled 800 ms.
+    #[test]
+    fn the_panel_reads_back_what_each_machine_renders() {
+        // The two readings that are deliberately not the −20 dB time of the
+        // whole hit, with the reason each is measuring something else.
+        const EXCEPTIONS: &[(usize, usize, &str)] = &[
+            (0, P_CY_DECAY, "the 808's cymbal knob is calibrated to Roland's published \
+                350 ms-1.2 s, which is the body path; the fixed 250 ms strike path over \
+                it is the loudest part of the hit, so the -20 dB point of the whole \
+                cymbal arrives sooner than the knob says"),
+            (3, P_BD_DECAY, "the 606's kick is measured on the body from 15 ms in, past \
+                a strike that is louder than the drum it sets ringing"),
+        ];
+
+        for (kit, name) in KIT_LABELS.iter().enumerate() {
+            let machine = DrumKit::from_index(kit);
+            for (index, note) in [
+                (P_BD_DECAY, 36u8),
+                (P_LT_DECAY, 41),
+                (P_MT_DECAY, 45),
+                (P_HT_DECAY, 48),
+                (P_CY_DECAY, 49),
+                (P_OH_DECAY, 46),
+                (P_CH_DECAY, 42),
+            ] {
+                if EXCEPTIONS.iter().any(|&(k, i, _)| k == kit && i == index) {
+                    continue;
+                }
+                for knob in [0.0f32, 0.5, 1.0] {
+                    let Some(says) = param_seconds(machine, index, knob) else { continue };
+                    let renders = decay_time(&strike(kit, note, 127, 6.0, &[(index, knob)]), -20.0);
+                    let ratio = renders / says;
+                    assert!(
+                        (0.80..1.25).contains(&ratio),
+                        "{name}: {} at {knob} says {says:.3} s and renders {renders:.3} s",
+                        PARAM_NAMES[index],
+                    );
+                }
+                // A knob the machine does not have reads the same wherever it
+                // is put, because that is what "inert" means.
+                if !machine.is_live(index) {
+                    assert_eq!(
+                        param_seconds(machine, index, 0.0),
+                        param_seconds(machine, index, 1.0),
+                        "{name}: {} moved a readout on a machine that has no such knob",
+                        PARAM_NAMES[index],
+                    );
+                }
+            }
+        }
+
+        // The 777 and the five tsty kits have no one time to report: their
+        // decay knobs are multipliers over a per-note recipe table.
+        for kit in [4usize, 5, 6, 7, 8, 9] {
+            for index in [P_BD_DECAY, P_LT_DECAY, P_CY_DECAY, P_OH_DECAY, P_CH_DECAY] {
+                assert_eq!(param_seconds(DrumKit::from_index(kit), index, 0.5), None);
+            }
+        }
+        // ...and nothing that is not a decay knob reports a time on any kit.
+        for kit in 0..KIT_COUNT {
+            for index in [P_KIT, P_ACCENT, P_BD_LEVEL, P_BD_TUNE, P_SD_TONE, P_DRIVE, P_GAIN] {
+                assert_eq!(param_seconds(DrumKit::from_index(kit), index, 0.7), None);
+            }
+        }
+    }
+
+    /// A fader is dead on a machine exactly when nothing is played from it.
+    ///
+    /// The panel is the union of nine front panels, so most machines have
+    /// strips with no voice behind them — and a strip that is dead in
+    /// `is_live` but still has notes routed to it would be a fader the player
+    /// cannot pull down, which is worse than one that does nothing.
+    #[test]
+    fn a_dead_fader_is_one_with_nothing_behind_it() {
+        for (kit, name) in KIT_LABELS.iter().enumerate() {
+            let machine = DrumKit::from_index(kit);
+            let mut used = [false; INSTRUMENT_COUNT];
+            for note in 0u8..128 {
+                used[instrument_of(note_to_sound(note), machine).index()] = true;
+            }
+            for which in [
+                Instrument::Bd,
+                Instrument::Sd,
+                Instrument::LowTom,
+                Instrument::MidTom,
+                Instrument::HighTom,
+                Instrument::Rim,
+                Instrument::Clap,
+                Instrument::Cowbell,
+                Instrument::Cymbal,
+                Instrument::Ride,
+                Instrument::OpenHat,
+                Instrument::ClosedHat,
+            ] {
+                let fader = level_param(which);
+                assert_eq!(
+                    machine.is_live(fader),
+                    used[which.index()],
+                    "{name}: {} is {} but {:?} {} played from",
+                    PARAM_NAMES[fader],
+                    if machine.is_live(fader) { "live" } else { "dead" },
+                    which,
+                    if used[which.index()] { "is" } else { "is not" },
+                );
+            }
+        }
+    }
+
+    /// Every knob every machine does not have is inert on it, checked by
+    /// rendering rather than by reading the table that declares it.
+    ///
+    /// A dead fader is driven to the bottom of its travel, where it would
+    /// silence a strip if anything were routed to it; every other dead knob to
+    /// the top of its.
+    #[test]
+    fn no_machine_answers_a_knob_it_does_not_have() {
+        const PROBE: &[u8] = &[36, 37, 38, 39, 41, 42, 45, 46, 48, 49, 51, 56, 64, 70, 75];
+        for (kit, machine_name) in KIT_LABELS.iter().enumerate() {
+            let machine = DrumKit::from_index(kit);
+            for (index, name) in PARAM_NAMES.iter().enumerate() {
+                if machine.is_live(index) {
+                    continue;
+                }
+                const FADERS: [usize; INSTRUMENT_COUNT] = [
+                    P_BD_LEVEL, P_SD_LEVEL, P_LT_LEVEL, P_MT_LEVEL, P_HT_LEVEL, P_RS_LEVEL,
+                    P_CP_LEVEL, P_CB_LEVEL, P_CY_LEVEL, P_RD_LEVEL, P_OH_LEVEL, P_CH_LEVEL,
+                ];
+                let value = if FADERS.contains(&index) { 0.0 } else { 1.0 };
+                for &note in PROBE {
+                    let plain = strike(kit, note, 127, 0.3, &[]);
+                    let moved = strike(kit, note, 127, 0.3, &[(index, value)]);
+                    assert_eq!(
+                        plain, moved,
+                        "{machine_name}: {name} moved note {note} on a machine that has no \
+                         such control",
+                    );
+                }
+            }
+        }
+    }
+
     /// Every 606 voice rings for the time this file says it does. The machine
     /// has no decay control, so these are fixed and there is nothing else to
     /// check them against.
@@ -3236,5 +3742,402 @@ mod tests {
         let kick = strike(3, 36, 127, 3.0, &[]);
         let body = decay_time(&kick[(0.015 * SR) as usize..], -20.0);
         assert!((body - 0.235).abs() < 0.05, "kick body {body:.3} s, want 0.235");
+    }
+
+    // ── The companding converter ──
+
+    /// The property the LinnDrum and the DMX are built on, measured against
+    /// the linear eight bits the 707 has.
+    ///
+    /// µ-255 spaces its steps logarithmically, so its quantisation noise
+    /// follows the signal instead of sitting at one level. The consequence is
+    /// a trade, and both halves of it are asserted here: much cleaner at low
+    /// level, where a fading tail lives, and slightly *worse* at full scale.
+    /// A file that claimed only the first half would be describing a free
+    /// lunch that does not exist.
+    #[test]
+    fn companding_follows_the_signal_where_linear_eight_bits_do_not() {
+        /// RMS of the error a converter makes on a sine of this amplitude.
+        fn error(amplitude: f64, through: impl Fn(f64) -> f64) -> f64 {
+            let mut sum = 0.0;
+            const N: usize = 4096;
+            for n in 0..N {
+                let x = amplitude * (TAU * 7.0 * n as f64 / N as f64).sin();
+                let e = through(x) - x;
+                sum += e * e;
+            }
+            (sum / N as f64).sqrt()
+        }
+        let linear = |x: f64| DrumVoice::quantize(x, PCM_707_BITS);
+
+        // A tail, 34 dB down. The companded converter is an order of
+        // magnitude closer to the signal here, which is what keeps a LinnDrum
+        // decay smooth where a 707's grows hash under it.
+        let quiet = (error(0.02, compand), error(0.02, linear));
+        assert!(
+            quiet.1 > quiet.0 * 6.0,
+            "at −34 dBFS: companded error {:.6}, linear {:.6}",
+            quiet.0,
+            quiet.1
+        );
+        // Full scale, where the same trade runs the other way: eight companded
+        // bits spend their range on the quiet end and have fewer left up here.
+        let loud = (error(1.0, compand), error(1.0, linear));
+        assert!(
+            loud.0 > loud.1 * 2.0,
+            "at full scale: companded error {:.6}, linear {:.6}",
+            loud.0,
+            loud.1
+        );
+        // Total: it is a converter, so it is bounded and monotonic.
+        assert_eq!(compand(0.0), 0.0);
+        assert!(compand(2.0).abs() <= 1.0 && compand(-2.0).abs() <= 1.0);
+        assert!(compand(f64::NAN).is_finite());
+        let mut last = -1.1;
+        for i in 0..=200 {
+            let y = compand(f64::from(i - 100) / 100.0);
+            assert!(y >= last - 1e-12, "not monotonic at {i}");
+            last = y;
+        }
+    }
+
+    // ── The LinnDrum ──
+
+    /// Tuning a sampled machine is a change of read clock, so the sound gets
+    /// shorter as it gets higher. No analog tuning knob anywhere else in this
+    /// rack does that, and it is the plainest audible difference between the
+    /// two companded machines and the 808 beside them.
+    #[test]
+    fn tuning_a_linn_or_a_dmx_moves_the_pitch_and_the_length_together() {
+        for (kit, name) in [(10usize, "linn"), (11, "dmx")] {
+            let at = |knob: f32| {
+                let x = strike(kit, 41, 127, 3.0, &[(P_LT_TUNE, knob)]);
+                let from = (0.020 * SR) as usize;
+                (
+                    strongest(&x[from..from + 8192], 40.0, 600.0, 0.25),
+                    decay_time(&x, -20.0),
+                )
+            };
+            let (down_hz, down_s) = at(0.0);
+            let (mid_hz, mid_s) = at(0.5);
+            let (up_hz, up_s) = at(1.0);
+
+            // An octave of travel, which is what both machines' tuning gives.
+            let span = up_hz / down_hz;
+            assert!(
+                (1.9..2.1).contains(&span),
+                "{name}: the tuning knob moved the low tom by {span:.2}x, want an octave \
+                 ({down_hz:.0} to {up_hz:.0} Hz)"
+            );
+            // ...and the length moved the other way by the same ratio, which
+            // is what makes it a clock and not an oscillator.
+            let length = down_s / up_s;
+            assert!(
+                (span / length - 1.0).abs() < 0.15,
+                "{name}: pitch moved {span:.2}x and length {length:.2}x; on a rate change \
+                 they are the same number"
+            );
+            assert!(mid_hz > down_hz && mid_hz < up_hz);
+            assert!(mid_s < down_s && mid_s > up_s);
+        }
+        // The 808's tuning knob is an oscillator, so its low tom keeps its
+        // ring time whatever it is tuned to.
+        let short = decay_time(&strike(0, 41, 127, 2.0, &[(P_LT_TUNE, 0.0)]), -20.0);
+        let long = decay_time(&strike(0, 41, 127, 2.0, &[(P_LT_TUNE, 1.0)]), -20.0);
+        assert!(
+            (short / long - 1.0).abs() < 0.1,
+            "the 808's tuning knob changed its tom's length: {short:.3} s to {long:.3} s"
+        );
+    }
+
+    /// The one contour on a LinnDrum that is not in the data: the closed
+    /// hi-hat's decay knob, which the manual describes as simulating different
+    /// pressures on the pedal.
+    #[test]
+    fn the_linndrum_has_a_closed_hat_decay_knob_and_nothing_else() {
+        assert!(DrumKit::KitLinn.is_live(P_CH_DECAY));
+        let short = decay_time(&strike(10, 42, 127, 1.0, &[(P_CH_DECAY, 0.0)]), -20.0);
+        let long = decay_time(&strike(10, 42, 127, 1.0, &[(P_CH_DECAY, 1.0)]), -20.0);
+        assert!(
+            long > short * 5.0,
+            "the hi-hat decay knob moved {short:.3} s to {long:.3} s"
+        );
+        // Its open hat has no knob — that one is fixed on the instrument.
+        assert!(!DrumKit::KitLinn.is_live(P_OH_DECAY));
+        // Nor does anything on the bass drum: no tuning, no tone, no decay.
+        for index in [P_BD_TUNE, P_BD_TONE, P_BD_ATTACK, P_BD_DECAY] {
+            assert!(!DrumKit::KitLinn.is_live(index), "{}", PARAM_NAMES[index]);
+        }
+        // The TUNING section is the snare, the sidestick, the toms and the
+        // congas, and that is all of it.
+        for index in [P_SD_TUNE, P_LT_TUNE, P_MT_TUNE, P_HT_TUNE] {
+            assert!(DrumKit::KitLinn.is_live(index), "{}", PARAM_NAMES[index]);
+        }
+    }
+
+    // ── The DMX ──
+
+    /// Twenty-four sounds out of eleven recordings, which is the machine's
+    /// defining trick — and it is a change of clock, not a second recording.
+    #[test]
+    fn the_dmx_gets_five_drum_pitches_out_of_two_tom_recordings() {
+        use racks::kit_dmx::{voice_dmx, SampleDmx, VoiceDmx};
+        // The eleven, and no twelfth.
+        let mut seen: Vec<SampleDmx> = Vec::new();
+        for note in 0u8..128 {
+            let s = voice_dmx(note_to_sound(note)).sample();
+            if !seen.contains(&s) {
+                seen.push(s);
+            }
+        }
+        assert_eq!(seen.len(), 11, "the DMX has eleven recordings in it: {seen:?}");
+
+        // Five drum pitches, two recordings, five different clocks.
+        let pitched = [
+            VoiceDmx::HiConga,
+            VoiceDmx::HighTom,
+            VoiceDmx::MidTom,
+            VoiceDmx::LowTom,
+            VoiceDmx::LowConga,
+        ];
+        for v in pitched {
+            assert!(matches!(v.sample(), SampleDmx::Tom1 | SampleDmx::Tom2));
+        }
+        assert_eq!(VoiceDmx::HighTom.sample(), VoiceDmx::MidTom.sample());
+        assert_eq!(VoiceDmx::LowTom.sample(), VoiceDmx::LowConga.sample());
+        assert!(VoiceDmx::HighTom.rate() > VoiceDmx::MidTom.rate());
+
+        // And the two hats are one recording with two envelope generators, so
+        // they start identically and part company afterwards.
+        assert_eq!(VoiceDmx::ClosedHat.sample(), VoiceDmx::OpenHat.sample());
+        let closed = strike(11, 42, 127, 0.5, &[]);
+        let open = strike(11, 46, 127, 0.5, &[]);
+        let n = (0.003 * SR) as usize;
+        assert!(
+            correlation(&closed[..n], &open[..n]) > 0.99,
+            "the DMX's two hats do not read the same words"
+        );
+        assert!(decay_time(&open, -20.0) > decay_time(&closed, -20.0) * 4.0);
+
+        // No cowbell card, so those parts go on the rimshot and answer its
+        // fader — as they do on a 909, and for the same reason.
+        assert!(!DrumKit::KitDmx.is_live(P_CB_LEVEL));
+        assert_eq!(peak(&strike(11, 56, 127, 0.5, &[(P_RS_LEVEL, 0.0)])), 0.0);
+    }
+
+    // ── The Simmons SDS-V ──
+
+    /// Five modules and no more, with the fold stated where it can be checked.
+    #[test]
+    fn the_simmons_has_five_modules_and_folds_everything_else_onto_them() {
+        use racks::kit_sdsv::{module_sdsv, ModuleSdsV};
+        // note, the module it lands on, the fader that silences it
+        const FOLDS: &[(u8, ModuleSdsV, usize)] = &[
+            (36, ModuleSdsV::Bass, P_BD_LEVEL),
+            (38, ModuleSdsV::Snare, P_SD_LEVEL),
+            (41, ModuleSdsV::LowTom, P_LT_LEVEL),
+            (45, ModuleSdsV::MidTom, P_MT_LEVEL),
+            (48, ModuleSdsV::HighTom, P_HT_LEVEL),
+            (64, ModuleSdsV::LowTom, P_LT_LEVEL),    // low conga
+            (56, ModuleSdsV::HighTom, P_HT_LEVEL),   // cowbell: no bell module
+            (37, ModuleSdsV::Snare, P_SD_LEVEL),     // rimshot
+            (39, ModuleSdsV::Snare, P_SD_LEVEL),     // clap: no clap module
+            (42, ModuleSdsV::Snare, P_SD_LEVEL),     // closed hat: no hat module
+            (46, ModuleSdsV::Snare, P_SD_LEVEL),     // open hat
+            (49, ModuleSdsV::Snare, P_SD_LEVEL),     // crash: no cymbal module
+            (51, ModuleSdsV::Snare, P_SD_LEVEL),     // ride
+            (70, ModuleSdsV::Snare, P_SD_LEVEL),     // maracas
+        ];
+        for &(note, module, fader) in FOLDS {
+            assert_eq!(module_sdsv(note_to_sound(note)), module, "note {note}");
+            assert!(peak(&strike(12, note, 127, 0.8, &[])) > 0.001, "note {note} is silent");
+            assert_eq!(
+                peak(&strike(12, note, 127, 0.8, &[(fader, 0.0)])),
+                0.0,
+                "note {note} did not answer {}",
+                PARAM_NAMES[fader]
+            );
+        }
+    }
+
+    /// The two things that make an SDS-V an SDS-V: the envelope is a straight
+    /// line, and the toms bend down more than an octave.
+    #[test]
+    fn the_simmons_ends_on_a_ramp_and_bends_its_toms_an_octave_down() {
+        // A ramp reaches a tenth of its height nine tenths of the way along
+        // and a hundredth at ninety-nine hundredths, so −40 dB arrives barely
+        // after −20 dB. An exponential takes twice as long to go twice as far.
+        let tom = strike(12, 41, 127, 3.0, &[]);
+        let ramp = decay_time(&tom, -40.0) / decay_time(&tom, -20.0);
+        assert!(ramp < 1.30, "the SDS-V tom decayed like an exponential: {ramp:.2}");
+        let eight = strike(0, 41, 127, 3.0, &[]);
+        let exponential = decay_time(&eight, -40.0) / decay_time(&eight, -20.0);
+        assert!(
+            exponential > 1.7,
+            "the 808's tom is an exponential and should measure about 2: {exponential:.2}"
+        );
+
+        // BEND: the note opens more than an octave above where it settles.
+        let settled = {
+            let from = (0.25 * SR) as usize;
+            strongest(&tom[from..from + 8192], 20.0, 600.0, 0.25)
+        };
+        let opening = strongest(&tom[..2048], 40.0, 900.0, 1.0);
+        assert!(
+            opening > settled * 1.8,
+            "the tom opened at {opening:.0} Hz and settles at {settled:.0} Hz; the bend \
+             on this machine is more than an octave"
+        );
+
+        // TONE PITCH covers the range the manual gives it, an 8" tom to a
+        // large timpani — about two octaves and a third.
+        let pitch = |knob: f32| {
+            let x = strike(12, 41, 127, 3.0, &[(P_LT_TUNE, knob)]);
+            let from = (0.25 * SR) as usize;
+            strongest(&x[from..from + 8192], 20.0, 700.0, 0.25)
+        };
+        let span = pitch(1.0) / pitch(0.0);
+        assert!(
+            (4.0..5.5).contains(&span),
+            "TONE PITCH moved the low tom by {span:.2}x, want about 4.8"
+        );
+    }
+
+    // ── The 727 ──
+
+    /// A TR-727 has no bass drum, no snare, no hi-hat and no cymbal. Those
+    /// parts are played on the nearest Latin voice rather than borrowed from
+    /// the 707 next to it in this rack.
+    #[test]
+    fn the_727_has_no_bass_drum_snare_hi_hat_or_cymbal() {
+        use racks::kit_727::{voice_727, Voice727};
+        for index in [P_BD_LEVEL, P_SD_LEVEL, P_RS_LEVEL, P_RD_LEVEL, P_OH_LEVEL, P_CH_LEVEL] {
+            assert!(!DrumKit::Kit727.is_live(index), "{}", PARAM_NAMES[index]);
+        }
+        // note, the voice it lands on, the fader that silences it
+        const FOLDS: &[(u8, Voice727, usize)] = &[
+            (36, Voice727::LowConga, P_LT_LEVEL),   // kick: no bass drum
+            (38, Voice727::LowTimbale, P_MT_LEVEL), // snare: no snare
+            (37, Voice727::HiTimbale, P_HT_LEVEL),  // rimshot
+            (42, Voice727::Maracas, P_CP_LEVEL),    // closed hat: no hi-hat
+            (46, Voice727::Cabasa, P_CP_LEVEL),     // open hat
+            (49, Voice727::StarChime, P_CY_LEVEL),  // crash: no cymbal
+            (51, Voice727::StarChime, P_CY_LEVEL),  // ride
+            (56, Voice727::HiAgogo, P_CB_LEVEL),    // cowbell: the agogô is its bell
+            (60, Voice727::HiBongo, P_HT_LEVEL),
+            (62, Voice727::MuteHiConga, P_MT_LEVEL),
+            (64, Voice727::LowConga, P_LT_LEVEL),
+            (69, Voice727::Cabasa, P_CP_LEVEL),
+            (71, Voice727::ShortWhistle, P_CP_LEVEL),
+            (74, Voice727::Quijada, P_CP_LEVEL),    // long guiro
+        ];
+        for &(note, voice, fader) in FOLDS {
+            assert_eq!(voice_727(note_to_sound(note)), voice, "note {note}");
+            assert!(peak(&strike(13, note, 127, 1.0, &[])) > 0.001, "note {note} is silent");
+            assert_eq!(
+                peak(&strike(13, note, 127, 1.0, &[(fader, 0.0)])),
+                0.0,
+                "note {note} did not answer {}",
+                PARAM_NAMES[fader]
+            );
+        }
+        // It is the 707's converter, so it has the 707's ceiling: nothing in
+        // this machine can be above 12.5 kHz.
+        for note in [60u8, 65, 69, 75] {
+            let x = strike(13, note, 127, 1.0, &[]);
+            let over = energy_above(&x[..16384], 12_500.0);
+            assert!(over < 0.03, "note {note} has {over:.4} of its energy above 12.5 kHz");
+        }
+        // ...and it plays the same waveform every time it is struck, because
+        // it is a recording.
+        let (a, b) = two_hits(13, 69, 3);
+        let diff: f32 = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).sum();
+        assert!(diff < 1e-6, "two 727 cabasas at different times differed by {diff}");
+    }
+
+    // ── The CR-78 ──
+
+    /// The two things that separate a CR-78 from the 808 four years after it:
+    /// its snare has no oscillator in it, and its metal is much darker.
+    #[test]
+    fn the_cr78_snare_is_noise_and_its_metal_is_darker_than_the_808s() {
+        /// How much the strongest line in a band stands above the average of
+        /// the band. A rung resonator is a spike; filtered noise is not.
+        fn tonality(x: &[f32], lo: f64, hi: f64, step: f64) -> f64 {
+            let (mut best, mut sum, mut n) = (0.0f64, 0.0, 0.0);
+            let mut f = lo;
+            while f <= hi {
+                let m = magnitude(x, f);
+                best = best.max(m);
+                sum += m;
+                n += 1.0;
+                f += step;
+            }
+            best / (sum / n)
+        }
+        let cr78 = strike(14, 38, 127, 1.0, &[]);
+        let eight = strike(0, 38, 127, 1.0, &[]);
+        let (a, b) = (tonality(&cr78[..8192], 150.0, 700.0, 2.0), tonality(&eight[..8192], 150.0, 700.0, 2.0));
+        assert!(
+            b > a * 2.0,
+            "the 808's snare is two bridged-T oscillators and reads {b:.1} against the \
+             flat noise band the CR-78's is at {a:.1}"
+        );
+
+        // The metal, where the claim to check is that this machine's is
+        // "markedly less bright" than the 808's. Measured, that holds for the
+        // hi-hat and not for the cymbal: one narrow LC band with a gentle
+        // high-pass after it puts a third of the energy above 8 kHz that the
+        // 808's two bands high-passed together at 6 kHz do, but the two
+        // machines' *cymbals* land within a few percent of each other on
+        // spectral centroid — an 808 cymbal is already a dark sound, because
+        // its long envelope is on its 3.4 kHz band. So the assertion here is
+        // the hi-hat's, which is where the difference actually is.
+        let old_hat = strike(14, 42, 127, 2.0, &[]);
+        let new_hat = strike(0, 42, 127, 2.0, &[]);
+        assert!(
+            energy_above(&new_hat[..16384], 8000.0) > energy_above(&old_hat[..16384], 8000.0) * 2.0,
+            "the 808's hi-hat has {:.3} of its energy above 8 kHz and the CR-78's {:.3}; \
+             this machine's is the softer of the two",
+            energy_above(&new_hat[..16384], 8000.0),
+            energy_above(&old_hat[..16384], 8000.0),
+        );
+        // And an open-hat part, which on a machine with one hi-hat is played
+        // on the cymbal, is darker still than the 808's open hat.
+        let open = strike(14, 46, 127, 2.0, &[]);
+        let eight_open = strike(0, 46, 127, 2.0, &[]);
+        assert!(
+            energy_above(&eight_open[..16384], 8000.0)
+                > energy_above(&open[..16384], 8000.0) * 2.0
+        );
+        // ...but it is still a hi-hat: the oscillators' own fundamentals stay
+        // out of it, as they do on both later machines.
+        let hat = strike(14, 42, 127, 1.0, &[]);
+        let low = 1.0 - energy_above(&hat[..16384], 1000.0);
+        assert!(low < 0.10, "{low:.3} of the CR-78's hi-hat is below 1 kHz");
+        // Its six oscillators run below its band-pass, as the 606's do.
+        for f in racks::kit_cr78::HAT_FREQS_CR78 {
+            assert!(f < 700.0, "{f} Hz is not an oscillator on this board");
+        }
+    }
+
+    /// The CR-78's METALLIC BEAT: three of the six oscillators through a
+    /// narrow filter, on its own button. Nothing else in the rack has one.
+    #[test]
+    fn the_cr78_has_a_metallic_beat() {
+        use racks::kit_cr78::{voice_cr78, VoiceCr78};
+        assert_eq!(voice_cr78(note_to_sound(90)), VoiceCr78::Metallic);
+        let x = strike(14, 90, 127, 0.5, &[]);
+        assert!(peak(&x) > 0.001, "the metallic beat is silent");
+        // Short and narrow: a chime tick rather than a cymbal.
+        let ring = decay_time(&x, -20.0);
+        assert!((0.04..0.12).contains(&ring), "the metallic beat rings for {ring:.3} s");
+        // It answers the cowbell fader, which is the strip a pitched metal
+        // sound is played from on this panel.
+        assert_eq!(peak(&strike(14, 90, 127, 0.5, &[(P_CB_LEVEL, 0.0)])), 0.0);
+        // ...and the machine has no ride or open hat to put it on instead.
+        for index in [P_RD_LEVEL, P_OH_LEVEL] {
+            assert!(!DrumKit::KitCr78.is_live(index), "{}", PARAM_NAMES[index]);
+        }
     }
 }

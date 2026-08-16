@@ -171,11 +171,19 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                     // drum rack's time controls are not linear in time and do
                     // not sit at the same indices as the other instruments',
                     // so each reports its own seconds.
+                    //
+                    // The rack goes one further: its decay times are the
+                    // selected machine's, not one machine's answer for all
+                    // fifteen, so the kit selector has to be read as well as
+                    // the knob.
                     let display_val = if is_juno || is_jupiter || is_drum {
                         let secs = if is_juno {
                             phosphor_dsp::juno::param_seconds(i, val)
                         } else if is_drum {
-                            phosphor_dsp::drum_rack::param_seconds(i, val)
+                            let kit = phosphor_dsp::drum_rack::DrumKit::from_param(
+                                params.get(phosphor_dsp::drum_rack::P_KIT).copied().unwrap_or(0.0),
+                            );
+                            phosphor_dsp::drum_rack::param_seconds(kit, i, val)
                         } else {
                             phosphor_dsp::jupiter::param_seconds(i, val)
                         };
