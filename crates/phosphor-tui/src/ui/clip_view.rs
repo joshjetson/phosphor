@@ -709,15 +709,36 @@ mod tests {
     /// The Jupiter's panel grew from sixteen controls to thirty-two, seven of
     /// them switches that print a word rather than a bar. Every one of those
     /// words, and every parameter name, has to fit the column it is given.
+    ///
+    /// Its factory names run to twenty characters — MUSIC OF THE SPHERES —
+    /// and a player refers to a patch by its number, so the panel label is the
+    /// number and as much of the name as fits, exactly as on the Juno. This is
+    /// what keeps the abbreviating honest: every label carries its number,
+    /// none of them runs off the end, and the full name survives in
+    /// `PATCH_NAMES` for anything with room to print it.
     #[test]
     fn every_jupiter_panel_label_fits_the_fx_panel() {
         const LABEL_COLUMN: usize = 12;
         let room = FX_PANEL_W as usize - LABEL_COLUMN;
 
-        for name in phosphor_dsp::jupiter::PATCH_NAMES {
-            assert!(name.chars().count() <= room,
-                "patch {name:?} needs {} of the {room} columns the panel leaves",
-                name.chars().count());
+        for index in 0..phosphor_dsp::jupiter::PATCH_COUNT {
+            let label = phosphor_dsp::jupiter::PATCH_LABELS[index];
+            assert!(label.chars().count() <= room,
+                "patch {index} {label:?} needs {} of the {room} columns the panel leaves",
+                label.chars().count());
+            let number = phosphor_dsp::jupiter::PATCH_NUMBERS[index];
+            assert!(label.starts_with(number),
+                "patch {index} {label:?} does not lead with its number {number:?}");
+            // A label that is only its number would fit and say nothing, and
+            // the full name has to survive somewhere for a caller with room
+            // to print it. Twenty characters is the longest Roland gave any
+            // of them: MUSIC OF THE SPHERES, which the label shortens to
+            // SPHERES rather than to a run of initials.
+            assert!(label.len() > number.len() + 1,
+                "patch {index} {label:?} is a number with no name after it");
+            let name = phosphor_dsp::jupiter::PATCH_NAMES[index];
+            assert!(!name.is_empty() && name.chars().count() <= 20,
+                "patch {index} name {name:?} is not a factory name");
         }
         for index in 0..phosphor_dsp::jupiter::PARAM_COUNT {
             for position in [0.0, 0.3, 0.6, 1.0] {

@@ -82,7 +82,7 @@ cargo run --release -- --no-midi
 |-----------|------|--------|---------|-------------|
 | **Phosphor Synth** | Subtractive | 16 | 4 waveforms | Dual oscillators, SVF filter, drive, ADSR |
 | **DX7** | FM | 16 | **256** | All 8 original factory cartridges, decoded from the ROM dumps |
-| **Jupiter-8** | Analog poly | 8 | 42 | Full 32-control panel, two envelopes, sync and cross-mod |
+| **Jupiter-8** | Analog poly | 8 | **64** | All 64 factory patch names, full 32-control panel, two envelopes |
 | **ARP Odyssey** | Duophonic | 2 | 44 | 3 selectable filter types (4023/4035/4075), hard sync, ring mod, S&H |
 | **Juno-60** | DCO poly | 6 | **56** | All 56 factory patches, read off Roland's patch charts; complete 25-control front panel measured against the hardware |
 
@@ -111,7 +111,13 @@ voices Yamaha shipped alongside them (`TAKE OFF`, `WASP STING`, `..GOTCHA..`).
 Pick a cartridge with the `bank` parameter, then a voice with `patch`.
 
 
-**Jupiter-8** (42 patches): Pad, Brass, Bass, Sync Lead, Strings, Electric Piano, Pluck, Bell, Organ, PWM Pad, Unison Lead, Key Bass, Ambient, Sweep, Stab, Harp, Sync Bass, Sub Bass, Acid, Choir, Vox, Whistle, PWM Lead, XM Bell, Sequence, Resonant, Detune, Clav, Hollow Pad, Power Pluck, Lo Strings, Flute, Tuba, Saw Pad, Clarinet, Cello, Xylo, Funk Bass, Warm Lead, Noise, Cars Sync, and more
+**Jupiter-8** (64 patches): the factory bank in Roland's own 8x8 numbering — `11 NEG SYNC`,
+`13 JUICY FUNK`, `15 CARS SYNC`, `17 HAMMER LEAD`, `24 MELLOW RHODES`, `31 LO STRINGS`,
+`45 PIPE ORGAN`, `51 TRAIN CHUG`, `57 TOMITA CHIME`, `63 KLINGONS`, `64 MUSIC OF THE SPHERES`,
+`66 SOLAR WINDS`, `71 FAT FIFTHS`, `87 UPRIGHT BASS` and the rest. Names, numbers, voice modes
+and character follow the original factory patch sheets; the parameter values are voiced to match
+Roland's published description of each patch.
+
 
 **Odyssey** (44 patches): Bass, Funk, Sync Lead, Bells, Pad, S&H, Zap, Hawkshaw Funk, Bennett Atmos, Numan Cars, Sci-Fi Wobble, Percussive Pluck, Thick Lead, Filter Sweep, Noise Hit, Duo Split, Snare Drum, Kick, Resonance, Squelch, Growl, Wind, Wah Bass, Stab, Buzz, Flute, Tremolo, Siren, Brass, Organ, Conga, Tom, Clap, PWM Bass, Violin, Oboe, Choir, Trombone, Marimba, Alarm, Robot, Whistler, Sitar, Theremin
 
@@ -200,7 +206,7 @@ Names and spellings are Roland's, Glockenspeil included.
 - Shared domain models via atomics (no locks between threads)
 - Command channel pattern for UI-to-audio communication
 - Plugin trait for instruments and effects — same interface for built-in and third-party
-- 419 tests covering DSP, MIDI, engine, mixer, and navigation
+- 424 tests covering DSP, MIDI, engine, mixer, and navigation
 
 ---
 
@@ -464,7 +470,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace  # 419 tests
+cargo test --workspace  # 424 tests
 ```
 
 ---

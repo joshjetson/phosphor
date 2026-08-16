@@ -50,7 +50,7 @@ impl NavState {
                 // The DX7, the Juno and the Jupiter step their selectors by
                 // index rather than by adding a fraction of the knob's travel:
                 // 256 voices, or 56 patches and a three-position range switch,
-                // or 42 patches and seven switches, are coarse enough that an
+                // or 64 patches and seven switches, are coarse enough that an
                 // accumulated rounding error lands on the wrong side of a step
                 // boundary, which reads as a keypress that did nothing.
                 let new_val = if is_discrete && is_dx7 {
@@ -268,8 +268,8 @@ mod tests {
 
     #[test]
     fn jupiter_selectors_move_one_step_per_keypress() {
-        // 42 patches and seven switches. The patch knob used to step by
-        // 1/(42 - 0.01) of the travel, which is a fraction that does not
+        // 64 patches and seven switches. The patch knob used to step by
+        // 1/(n - 0.01) of the travel, which is a fraction that does not
         // divide the bank: the accumulated error lands on the wrong side of a
         // boundary and the keypress reads as having done nothing.
         let mut nav = jupiter_track();

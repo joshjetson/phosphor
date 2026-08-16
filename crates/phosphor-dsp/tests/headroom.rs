@@ -135,10 +135,9 @@ fn render(plugin: &mut dyn Plugin, notes: &[u8], velocity: u8, blocks: usize) ->
 ///
 /// The midpoint of the step, not `index / (count - 0.01)`: the quotient form
 /// can land a hair below its own step and select the patch before it, which
-/// silently measures the wrong preset. It does that for seven of the
-/// Jupiter's 42 indices, so six of that bank's patches — 2, 4, 8, 16, 21 and
-/// 32 — were never rendered by this sweep at all, while six others were
-/// rendered twice.
+/// silently measures the wrong preset. It did that for seven of the Jupiter's
+/// indices when that bank held 42, so six of its patches were never rendered
+/// by this sweep at all while six others were rendered twice.
 fn patch_value(index: usize, count: usize) -> f32 {
     (index as f32 + 0.5) / count as f32
 }
@@ -164,12 +163,22 @@ fn dx7_voice(index: usize) -> dx7::Dx7Synth {
 /// The Juno's is 44 TUBA, the loudest of its 56 factory patches: 16' saw with
 /// the filter wide open, which is as much of the DCO as that panel can put
 /// through at once.
+///
+/// The Jupiter's is 61 STARTING UP, the loudest of its 64 factory patches: a
+/// square LFO chopping a resonant filter over a sawtooth and noise together.
+/// It is a sound effect, and it is the one patch in that bank whose peak
+/// arrives after the render window the per-voicing tests use — see
+/// `the_jupiters_effects_peak_after_the_other_banks_have_finished`, which is
+/// where its real number is. 45 PIPE ORGAN is here too, because it is the
+/// loudest thing in the bank that a player would hold a chord on.
 fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
     let dx7_timpani = dx7_voice(147);
     let dx7_harp = dx7_voice(60);
     let dx7_clarinet = dx7_voice(195);
+    let mut jupiter_startup = jupiter::Jupiter8Synth::new();
+    jupiter_startup.set_parameter(jupiter::P_PATCH, jupiter::patch_knob(40));
     let mut jupiter_organ = jupiter::Jupiter8Synth::new();
-    jupiter_organ.set_parameter(jupiter::P_PATCH, patch_value(9, jupiter::PATCH_COUNT));
+    jupiter_organ.set_parameter(jupiter::P_PATCH, jupiter::patch_knob(28));
     let mut odyssey_funk = odyssey::OdysseySynth::new();
     odyssey_funk.set_parameter(odyssey::P_PATCH, patch_value(1, odyssey::PATCH_COUNT));
     let mut juno_tuba = juno::Juno60Synth::new();
@@ -179,7 +188,8 @@ fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
         ("dx7 147 TIMPANI", Box::new(dx7_timpani)),
         ("dx7 60 HARP 1", Box::new(dx7_harp)),
         ("dx7 195 CLARINET", Box::new(dx7_clarinet)),
-        ("jupiter 9 Organ", Box::new(jupiter_organ)),
+        ("jupiter 61 START UP", Box::new(jupiter_startup)),
+        ("jupiter 45 PIPE ORGN", Box::new(jupiter_organ)),
         ("odyssey 1 Funk", Box::new(odyssey_funk)),
         ("juno 44 TUBA", Box::new(juno_tuba)),
         ("phosphor", Box::new(synth::PhosphorSynth::new())),
@@ -282,9 +292,9 @@ fn no_patch_in_any_bank_exceeds_the_target() {
     }
     for index in 0..jupiter::PATCH_COUNT {
         let mut s = jupiter::Jupiter8Synth::new();
-        s.set_parameter(jupiter::P_PATCH, patch_value(index, jupiter::PATCH_COUNT));
+        s.set_parameter(jupiter::P_PATCH, jupiter::patch_knob(index));
         let m = render(&mut s, TWO_HAND_EIGHT, 127, SWEEP_BLOCKS);
-        check_patch(&m, "jupiter", jupiter::PATCH_NAMES[index], &mut worst);
+        check_patch(&m, "jupiter", jupiter::PATCH_LABELS[index], &mut worst);
     }
     for index in 0..odyssey::PATCH_COUNT {
         // Duophonic: a single note is this instrument's worst case, not a
@@ -347,6 +357,46 @@ fn the_junos_slow_sweeps_peak_after_the_other_banks_have_finished() {
         check_patch(&m, "juno held", name, &mut worst);
     }
     assert!(worst.0 > 0.5, "the slow sweeps no longer reach the level they were pinned at");
+}
+
+/// The same defect on the Jupiter, and worse: its factory bank ends in two
+/// banks of Roland's own sound effects, and an effect is by definition
+/// something that takes its time.
+///
+/// 61 STARTING UP is the loudest patch in that bank and the clearest case —
+/// 2.5 s of filter attack behind 1.6 s of LFO delay, so its peak arrives 5.5 s
+/// into a held chord and measures 33 times what the 0.37 s sweep sees. Four
+/// others peak past the window: 66 SOLAR WINDS is a quarter-hertz LFO on
+/// noise, 51 TRAIN CHUG holds its effect off for over three seconds by
+/// design, and 54 BIRDS and 64 MUSIC OF THE SPHERES wander under cross
+/// modulation.
+#[test]
+fn the_jupiters_effects_peak_after_the_other_banks_have_finished() {
+    /// 9.3 s, which reaches past the 9.05 s peak of the slowest of the five.
+    const HOLD: usize = 1600;
+    const LATE: [(usize, &str); 5] = [
+        (40, "61 START UP"),
+        (45, "66 SOLAR WND"),
+        (32, "51 TRAIN CHG"),
+        (35, "54 BIRDS"),
+        (43, "64 SPHERES"),
+    ];
+
+    let mut worst = (0.0f32, String::new());
+    for (index, name) in LATE {
+        let mut s = jupiter::Jupiter8Synth::new();
+        s.set_parameter(jupiter::P_PATCH, jupiter::patch_knob(index));
+        assert_eq!(jupiter::PATCH_LABELS[index], name, "the bank moved under this test");
+        let m = render(&mut s, TWO_HAND_EIGHT, 127, HOLD);
+        check_patch(&m, "jupiter held", name, &mut worst);
+    }
+    // Measured: 61 STARTING UP at 0.552, which is 2.7 dB under the saturator
+    // knee and 4.2 dB under the ceiling. The floor is here so that a patch
+    // quietened into safety fails rather than passes.
+    assert!(
+        worst.0 > 0.4,
+        "the Jupiter's effects no longer reach the level they were voiced at: {worst:?}"
+    );
 }
 
 fn check_patch(m: &Measured, synth: &str, patch: &str, worst: &mut (f32, String)) {
@@ -548,9 +598,10 @@ fn instruments_are_level_matched() {
 
     // The median preset of each bank, so one unusual patch cannot skew the
     // comparison. Indices picked by measuring the triad RMS of every preset.
+    // The Jupiter's is 12 NEG PLUCK, the median of its 64 factory patches.
     let mut dx7_mid = dx7_voice(DX7_MEDIAN_VOICE);
     let mut jupiter_mid = jupiter::Jupiter8Synth::new();
-    jupiter_mid.set_parameter(jupiter::P_PATCH, patch_value(1, jupiter::PATCH_COUNT));
+    jupiter_mid.set_parameter(jupiter::P_PATCH, jupiter::patch_knob(1));
     let mut odyssey_mid = odyssey::OdysseySynth::new();
     odyssey_mid.set_parameter(odyssey::P_PATCH, patch_value(4, odyssey::PATCH_COUNT));
     let mut juno_mid = juno::Juno60Synth::new();

@@ -22,6 +22,11 @@ const SAMPLE_RATE: f64 = 44_100.0;
 const BLOCK: usize = 256;
 /// 2.3 s — long enough for the slowest pad attack in the four banks.
 const BLOCKS: usize = 400;
+/// 9.3 s, for the tables that have to see a sound effect's peak. The Juno's
+/// 77 SURF reaches its loudest 4.7 s into a held chord and the Jupiter's 61
+/// STARTING UP at 5.5 s, both by design — a slow LFO and a long delay are
+/// what those patches are.
+const HELD_BLOCKS: usize = 1600;
 
 struct Measured {
     peak: f32,
@@ -30,6 +35,10 @@ struct Measured {
 }
 
 fn render(plugin: &mut dyn Plugin, notes: &[u8], velocity: u8) -> Measured {
+    render_for(plugin, notes, velocity, BLOCKS)
+}
+
+fn render_for(plugin: &mut dyn Plugin, notes: &[u8], velocity: u8, blocks: usize) -> Measured {
     plugin.init(SAMPLE_RATE, BLOCK);
     plugin.reset();
     let events: Vec<MidiEvent> = notes
@@ -44,7 +53,7 @@ fn render(plugin: &mut dyn Plugin, notes: &[u8], velocity: u8) -> Measured {
     let mut total = 0u64;
     let mut energy = 0.0f64;
 
-    for block in 0..BLOCKS {
+    for block in 0..blocks {
         left.fill(0.0);
         right.fill(0.0);
         let mut outs: [&mut [f32]; 2] = [&mut left, &mut right];
@@ -69,7 +78,7 @@ fn render(plugin: &mut dyn Plugin, notes: &[u8], velocity: u8) -> Measured {
     Measured {
         peak,
         percent_at_full_scale: 100.0 * pinned as f64 / total as f64,
-        rms: (energy / (BLOCKS * BLOCK) as f64).sqrt() as f32,
+        rms: (energy / (blocks * BLOCK) as f64).sqrt() as f32,
     }
 }
 
@@ -93,7 +102,7 @@ const INSTRUMENTS: [(&str, usize); 5] = [
 /// velocity 127. Re-derive with the `scan` mode after editing a bank.
 const LOUDEST: [(&str, usize); 5] = [
     ("dx7", 147),
-    ("jupiter", 9),
+    ("jupiter", 40), // 61 STARTING UP, whose peak needs `BLOCKS` past 5.5 s
     ("odyssey", 1),
     ("juno", 27), // 44 TUBA
     ("phosphor", 0),
@@ -112,9 +121,10 @@ fn build(name: &str, patch: usize, count: usize) -> Box<dyn Plugin> {
         }
         "jupiter" => {
             let mut s = jupiter::Jupiter8Synth::new();
-            // 42 patches: the knob has to land on the midpoint of a step
+            // 64 patches: the knob has to land on the midpoint of a step
             // rather than on its edge, or the sweep measures the patch
-            // before — it does that for seven of this bank's indices.
+            // before — it did that for seven of this bank's indices when it
+            // held 42.
             s.set_parameter(jupiter::P_PATCH, jupiter::patch_knob(patch));
             Box::new(s)
         }
@@ -137,7 +147,7 @@ fn build(name: &str, patch: usize, count: usize) -> Box<dyn Plugin> {
 fn patch_name(name: &str, index: usize) -> &'static str {
     match name {
         "dx7" => dx7::voice_name(index),
-        "jupiter" => jupiter::PATCH_NAMES[index],
+        "jupiter" => jupiter::PATCH_LABELS[index],
         "odyssey" => odyssey::PATCH_NAMES[index],
         "juno" => juno::PATCH_LABELS[index],
         _ => "-",
@@ -164,14 +174,19 @@ fn table(title: &str, pick: impl Fn(&str) -> usize) {
 
 /// Rank every preset of every bank on the worst voicing, so the loudest is
 /// found by measurement rather than by memory.
+///
+/// Held for 9.3 s rather than 2.3, because the two banks that carry sound
+/// effects hide their loudest patch behind a slow envelope: the Jupiter's 61
+/// STARTING UP measures 33 times more over the long window than the short
+/// one, and a ranking that cannot see it would name the wrong patch.
 fn scan() {
-    println!("== preset ranking (8-note chord @127) ==");
+    println!("== preset ranking (8-note chord @127, 9.3 s hold) ==");
     let chord: &[u8] = &[36, 43, 48, 55, 60, 64, 67, 72];
     for (name, count) in INSTRUMENTS {
         let mut ranked: Vec<(usize, f32, f32)> = (0..count)
             .map(|index| {
                 let mut plugin = build(name, index, count);
-                let m = render(plugin.as_mut(), chord, 127);
+                let m = render_for(plugin.as_mut(), chord, 127, HELD_BLOCKS);
                 (index, m.peak, m.rms)
             })
             .collect();
@@ -207,7 +222,9 @@ const MEDIAN: [(&str, usize); 5] =
 /// duophonic Odyssey peaks on a single note rather than on a chord.
 const WORST: [(&str, usize, &str, &[u8]); 5] = [
     ("dx7", 147, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
-    ("jupiter", 9, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
+    // 61 STARTING UP. Its peak lands 5.5 s into a held chord, so it is the
+    // one entry here that `BLOCKS` has to be long enough to see.
+    ("jupiter", 40, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
     ("odyssey", 1, "single", &[60]),
     ("juno", 27, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
     ("phosphor", 0, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
@@ -233,8 +250,10 @@ fn drum_rack(kit: usize) -> drum_rack::DrumRack {
 ///   volume control, quiet enough that several tracks still sum cleanly.
 /// * **Median RMS** — what the ear tracks, and what keeps the instruments
 ///   from stepping in level as you switch between them.
-/// * **Worst** — the loudest thing the bank can produce. `pre-sat` is the
-///   trimmed voice sum before the bounding stage; `sat` is how much the
+/// * **Worst** — the loudest thing the bank can produce, over a 9.3 s hold
+///   rather than the 2.3 s the other tables use, because two of the entries
+///   are sound effects whose peak arrives after five seconds. `pre-sat` is
+///   the trimmed voice sum before the bounding stage; `sat` is how much the
 ///   saturator took off it. Anything but 0.00 there means the bounding stage
 ///   is working, which is what it is for.
 fn stage() {
@@ -297,7 +316,7 @@ fn stage() {
     for (name, index, voicing, notes) in WORST {
         let count = INSTRUMENTS.iter().find(|(n, _)| *n == name).map_or(1, |(_, c)| *c);
         let mut plugin = build(name, index, count);
-        let m = render(plugin.as_mut(), notes, 127);
+        let m = render_for(plugin.as_mut(), notes, 127, HELD_BLOCKS);
         let raw = saturation_input(m.peak);
         println!(
             "{name:<10} {index:>4} {voicing:<8} {:>9.4} {:>8.1} {:>9.4} {:>7.2}",
