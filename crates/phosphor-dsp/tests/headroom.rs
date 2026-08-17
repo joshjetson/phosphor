@@ -276,10 +276,18 @@ fn default_patches_have_headroom_on_every_voicing() {
 /// revoiced above the target is caught here rather than in a speaker.
 #[test]
 fn no_patch_in_any_bank_exceeds_the_target() {
-    // Shorter render than the per-voicing tests: this is a sweep over 408
-    // presets, 256 of them the DX7's factory voices and 56 the Juno's, and the
-    // latest peak measured anywhere in the banks arrives at 192 ms, so 370 ms
-    // leaves the attack and decay well covered.
+    // Shorter render than the per-voicing tests: this is a sweep over 626
+    // presets — 256 of them the DX7's factory voices, 229 the phosphor
+    // synth's four sets and 56 the Juno's — and the latest peak measured
+    // anywhere in the banks arrives at 192 ms, so 370 ms leaves the attack
+    // and decay well covered.
+    //
+    // The phosphor synth's own sweep, in `synth.rs`, is the one that covers
+    // the slow half of its bank properly: it derives a render length per
+    // patch from that patch's attack, and adds a case with every clock in the
+    // patch sped up so that an LFO or a sequence slower than the render
+    // cannot hide a peak. This one is the project-wide check that no bank has
+    // drifted above the target, at one length for all six instruments.
     const SWEEP_BLOCKS: usize = 64;
 
     let mut worst = (0.0f32, String::new());

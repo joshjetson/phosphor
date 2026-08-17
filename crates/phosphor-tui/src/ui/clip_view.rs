@@ -715,6 +715,49 @@ mod tests {
         }
     }
 
+    /// The phosphor synth carries 229 patches across four sets, which is more
+    /// than any other instrument here and the reason its labels lead with a
+    /// slot code: at that size a name on its own does not tell a player where
+    /// in the bank they are standing. The microKORG set's names are Korg's
+    /// own and run to eighteen characters — Techstep Ring Bass — so the label
+    /// is `A42 TechRing` and the full name survives in `PATCH_NAMES`.
+    ///
+    /// Its panel is also the widest in the project: 67 controls, 25 of them
+    /// selectors, and every one of those prints a word in the same column.
+    #[test]
+    fn every_phosphor_panel_label_fits_the_fx_panel() {
+        const LABEL_COLUMN: usize = 12;
+        let room = FX_PANEL_W as usize - LABEL_COLUMN;
+
+        for index in 0..phosphor_dsp::synth::PATCH_COUNT {
+            let label = phosphor_dsp::synth::PATCH_LABELS[index];
+            assert!(label.chars().count() <= room,
+                "patch {index} {label:?} needs {} of the {room} columns the panel leaves",
+                label.chars().count());
+            let slot = phosphor_dsp::synth::PATCH_SLOTS[index];
+            let short: String = slot.chars().filter(|c| *c != '.').collect();
+            assert!(label.starts_with(&short),
+                "patch {index} {label:?} does not lead with its slot {slot:?}");
+            assert!(label.chars().count() > short.chars().count() + 1,
+                "patch {index} {label:?} is a slot with no name after it");
+            assert!(!phosphor_dsp::synth::PATCH_NAMES[index].is_empty(),
+                "patch {index} has no full name");
+        }
+        for name in phosphor_dsp::synth::BANK_NAMES {
+            assert!(name.chars().count() <= room, "set name {name:?} does not fit");
+        }
+        for index in 0..phosphor_dsp::synth::PARAM_COUNT {
+            for position in [0.0, 0.3, 0.6, 1.0] {
+                if let Some(label) = phosphor_dsp::synth::discrete_label(index, position) {
+                    assert!(label.chars().count() <= room,
+                        "switch label {label:?} does not fit");
+                }
+            }
+            let name = phosphor_dsp::synth::PARAM_NAMES[index];
+            assert!(name.chars().count() <= 8, "parameter name {name:?} overflows its column");
+        }
+    }
+
     /// The Jupiter's panel grew from sixteen controls to thirty-two, seven of
     /// them switches that print a word rather than a bar. Every one of those
     /// words, and every parameter name, has to fit the column it is given.

@@ -1,0 +1,1282 @@
+[
+ {
+  "slot": "A.11",
+  "midi": 0,
+  "row": "TRANCE",
+  "name": "Trancey Arpeg.",
+  "category": "Arpeggio",
+  "voice": "Layer",
+  "tempo": 138,
+  "arp": true
+ },
+ {
+  "slot": "A.12",
+  "midi": 1,
+  "row": "TRANCE",
+  "name": "Acid Saw Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 138,
+  "arp": true
+ },
+ {
+  "slot": "A.13",
+  "midi": 2,
+  "row": "TRANCE",
+  "name": "Unison Saw Lead",
+  "category": "Synth Lead",
+  "voice": "Single",
+  "tempo": 138,
+  "arp": false
+ },
+ {
+  "slot": "A.14",
+  "midi": 3,
+  "row": "TRANCE",
+  "name": "Unison HPF+LPF",
+  "category": "Synth Lead",
+  "voice": "Layer",
+  "tempo": 138,
+  "arp": true
+ },
+ {
+  "slot": "A.15",
+  "midi": 4,
+  "row": "TRANCE",
+  "name": "Weepy Lead",
+  "category": "Synth Lead",
+  "voice": "Single",
+  "tempo": 138,
+  "arp": false
+ },
+ {
+  "slot": "A.16",
+  "midi": 5,
+  "row": "TRANCE",
+  "name": "Slippy Pad",
+  "category": "Synth",
+  "voice": "Single",
+  "tempo": 138,
+  "arp": false
+ },
+ {
+  "slot": "A.17",
+  "midi": 6,
+  "row": "TRANCE",
+  "name": "Sweep Poly Pad",
+  "category": "Synth",
+  "voice": "Single",
+  "tempo": 138,
+  "arp": false
+ },
+ {
+  "slot": "A.18",
+  "midi": 7,
+  "row": "TRANCE",
+  "name": "Filter Strings",
+  "category": "Strings/ Pad",
+  "voice": "Single",
+  "tempo": 138,
+  "arp": false
+ },
+ {
+  "slot": "A.21",
+  "midi": 8,
+  "row": "TECHNO/HOUSE",
+  "name": "Auto House",
+  "category": "Arpeggio",
+  "voice": "Layer",
+  "tempo": 140,
+  "arp": true
+ },
+ {
+  "slot": "A.22",
+  "midi": 9,
+  "row": "TECHNO/HOUSE",
+  "name": "Burnin' Rave",
+  "category": "Arpeggio",
+  "voice": "Layer",
+  "tempo": 143,
+  "arp": true
+ },
+ {
+  "slot": "A.23",
+  "midi": 10,
+  "row": "TECHNO/HOUSE",
+  "name": "X-Mod Perc.",
+  "category": "Arpeggio",
+  "voice": "Single",
+  "tempo": 124,
+  "arp": true
+ },
+ {
+  "slot": "A.24",
+  "midi": 11,
+  "row": "TECHNO/HOUSE",
+  "name": "House Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 128,
+  "arp": false
+ },
+ {
+  "slot": "A.25",
+  "midi": 12,
+  "row": "TECHNO/HOUSE",
+  "name": "Distorted Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 130,
+  "arp": false
+ },
+ {
+  "slot": "A.26",
+  "midi": 13,
+  "row": "TECHNO/HOUSE",
+  "name": "Acid Square Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 130,
+  "arp": false
+ },
+ {
+  "slot": "A.27",
+  "midi": 14,
+  "row": "TECHNO/HOUSE",
+  "name": "Sync Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 130,
+  "arp": false
+ },
+ {
+  "slot": "A.28",
+  "midi": 15,
+  "row": "TECHNO/HOUSE",
+  "name": "Hard House Lead",
+  "category": "Synth Lead",
+  "voice": "Single",
+  "tempo": 145,
+  "arp": false
+ },
+ {
+  "slot": "A.31",
+  "midi": 16,
+  "row": "ELECTRONICA",
+  "name": "Sequence Pad",
+  "category": "Arpeggio",
+  "voice": "Layer",
+  "tempo": 130,
+  "arp": true
+ },
+ {
+  "slot": "A.32",
+  "midi": 17,
+  "row": "ELECTRONICA",
+  "name": "Bleeps Perc.",
+  "category": "Arpeggio",
+  "voice": "Single",
+  "tempo": 94,
+  "arp": true
+ },
+ {
+  "slot": "A.33",
+  "midi": 18,
+  "row": "ELECTRONICA",
+  "name": "Gated Sync Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 102,
+  "arp": false
+ },
+ {
+  "slot": "A.34",
+  "midi": 19,
+  "row": "ELECTRONICA",
+  "name": "Flap & Sweep",
+  "category": "Arpeggio",
+  "voice": "Single",
+  "tempo": 135,
+  "arp": true
+ },
+ {
+  "slot": "A.35",
+  "midi": 20,
+  "row": "ELECTRONICA",
+  "name": "Reverse Lead",
+  "category": "Synth Lead",
+  "voice": "Single",
+  "tempo": 130,
+  "arp": false
+ },
+ {
+  "slot": "A.36",
+  "midi": 21,
+  "row": "ELECTRONICA",
+  "name": "IDM Pad",
+  "category": "Strings/ Pad",
+  "voice": "Single",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "A.37",
+  "midi": 22,
+  "row": "ELECTRONICA",
+  "name": "Flanger 5th Pad",
+  "category": "Strings/ Pad",
+  "voice": "Single",
+  "tempo": 160,
+  "arp": false
+ },
+ {
+  "slot": "A.38",
+  "midi": 23,
+  "row": "ELECTRONICA",
+  "name": "Voice / A/",
+  "category": "Strings/ Pad",
+  "voice": "Single",
+  "tempo": 100,
+  "arp": false
+ },
+ {
+  "slot": "A.41",
+  "midi": 24,
+  "row": "D'n'B/BREAKS",
+  "name": "2 Step Bass",
+  "category": "Bass",
+  "voice": "Layer",
+  "tempo": 136,
+  "arp": false
+ },
+ {
+  "slot": "A.42",
+  "midi": 25,
+  "row": "D'n'B/BREAKS",
+  "name": "Techstep Ring Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 170,
+  "arp": false
+ },
+ {
+  "slot": "A.43",
+  "midi": 26,
+  "row": "D'n'B/BREAKS",
+  "name": "Valve Kick Bass",
+  "category": "Bass",
+  "voice": "Layer",
+  "tempo": 170,
+  "arp": false
+ },
+ {
+  "slot": "A.44",
+  "midi": 27,
+  "row": "D'n'B/BREAKS",
+  "name": "Drive Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 170,
+  "arp": false
+ },
+ {
+  "slot": "A.45",
+  "midi": 28,
+  "row": "D'n'B/BREAKS",
+  "name": "Blade Bass",
+  "category": "Bass",
+  "voice": "Layer",
+  "tempo": 140,
+  "arp": false
+ },
+ {
+  "slot": "A.46",
+  "midi": 29,
+  "row": "D'n'B/BREAKS",
+  "name": "Sweep Sync Lead",
+  "category": "Synth Lead",
+  "voice": "Single",
+  "tempo": 170,
+  "arp": false
+ },
+ {
+  "slot": "A.47",
+  "midi": 30,
+  "row": "D'n'B/BREAKS",
+  "name": "Science Lead",
+  "category": "Synth Lead",
+  "voice": "Single",
+  "tempo": 130,
+  "arp": false
+ },
+ {
+  "slot": "A.48",
+  "midi": 31,
+  "row": "D'n'B/BREAKS",
+  "name": "Gated Chord",
+  "category": "Synth",
+  "voice": "Single",
+  "tempo": 130,
+  "arp": false
+ },
+ {
+  "slot": "A.51",
+  "midi": 32,
+  "row": "HIPHOP/VINTAGE",
+  "name": "Dirty Bass",
+  "category": "Bass",
+  "voice": "Layer",
+  "tempo": 90,
+  "arp": false
+ },
+ {
+  "slot": "A.52",
+  "midi": 33,
+  "row": "HIPHOP/VINTAGE",
+  "name": "MG Bass 1",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 90,
+  "arp": false
+ },
+ {
+  "slot": "A.53",
+  "midi": 34,
+  "row": "HIPHOP/VINTAGE",
+  "name": "R&B Lead",
+  "category": "Synth Lead",
+  "voice": "Single",
+  "tempo": 90,
+  "arp": false
+ },
+ {
+  "slot": "A.54",
+  "midi": 35,
+  "row": "HIPHOP/VINTAGE",
+  "name": "PWM Strings",
+  "category": "Strings/ Pad",
+  "voice": "Single",
+  "tempo": 90,
+  "arp": false
+ },
+ {
+  "slot": "A.55",
+  "midi": 36,
+  "row": "HIPHOP/VINTAGE",
+  "name": "Reed Piano",
+  "category": "KBD",
+  "voice": "Single",
+  "tempo": 114,
+  "arp": false
+ },
+ {
+  "slot": "A.56",
+  "midi": 37,
+  "row": "HIPHOP/VINTAGE",
+  "name": "British Organ",
+  "category": "KBD",
+  "voice": "Single",
+  "tempo": 184,
+  "arp": false
+ },
+ {
+  "slot": "A.57",
+  "midi": 38,
+  "row": "HIPHOP/VINTAGE",
+  "name": "Synth Clav",
+  "category": "KBD",
+  "voice": "Single",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "A.58",
+  "midi": 39,
+  "row": "HIPHOP/VINTAGE",
+  "name": "Tape Choir",
+  "category": "Strings/ Pad",
+  "voice": "Single",
+  "tempo": 90,
+  "arp": false
+ },
+ {
+  "slot": "A.61",
+  "midi": 40,
+  "row": "RETRO",
+  "name": "Elektric Arpeg.",
+  "category": "Arpeggio",
+  "voice": "Single",
+  "tempo": 118,
+  "arp": true
+ },
+ {
+  "slot": "A.62",
+  "midi": 41,
+  "row": "RETRO",
+  "name": "Water Edge",
+  "category": "Arpeggio",
+  "voice": "Layer",
+  "tempo": 140,
+  "arp": true
+ },
+ {
+  "slot": "A.63",
+  "midi": 42,
+  "row": "RETRO",
+  "name": "80's Synth Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 103,
+  "arp": true
+ },
+ {
+  "slot": "A.64",
+  "midi": 43,
+  "row": "RETRO",
+  "name": "Reverse Sync Lead",
+  "category": "Synth Lead",
+  "voice": "Single",
+  "tempo": 140,
+  "arp": false
+ },
+ {
+  "slot": "A.65",
+  "midi": 44,
+  "row": "RETRO",
+  "name": "Bright Poly Synth",
+  "category": "Synth",
+  "voice": "Single",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "A.66",
+  "midi": 45,
+  "row": "RETRO",
+  "name": "Poly Synth",
+  "category": "Synth",
+  "voice": "Single",
+  "tempo": 134,
+  "arp": false
+ },
+ {
+  "slot": "A.67",
+  "midi": 46,
+  "row": "RETRO",
+  "name": "Warm 4th Pad",
+  "category": "Strings/ Pad",
+  "voice": "Single",
+  "tempo": 100,
+  "arp": false
+ },
+ {
+  "slot": "A.68",
+  "midi": 47,
+  "row": "RETRO",
+  "name": "Octave Strings",
+  "category": "Strings/ Pad",
+  "voice": "Single",
+  "tempo": 90,
+  "arp": false
+ },
+ {
+  "slot": "A.71",
+  "midi": 48,
+  "row": "S.E./HIT",
+  "name": "Killa Beez",
+  "category": "S.E.",
+  "voice": "Single",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "A.72",
+  "midi": 49,
+  "row": "S.E./HIT",
+  "name": "Diginator",
+  "category": "S.E.",
+  "voice": "Layer",
+  "tempo": 240,
+  "arp": true
+ },
+ {
+  "slot": "A.73",
+  "midi": 50,
+  "row": "S.E./HIT",
+  "name": "Stutter",
+  "category": "S.E.",
+  "voice": "Single",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "A.74",
+  "midi": 51,
+  "row": "S.E./HIT",
+  "name": "Invaders",
+  "category": "S.E.",
+  "voice": "Single",
+  "tempo": 80,
+  "arp": false
+ },
+ {
+  "slot": "A.75",
+  "midi": 52,
+  "row": "S.E./HIT",
+  "name": "Ring Chord",
+  "category": "Hit",
+  "voice": "Single",
+  "tempo": 135,
+  "arp": false
+ },
+ {
+  "slot": "A.76",
+  "midi": 53,
+  "row": "S.E./HIT",
+  "name": "Sweep min Chord",
+  "category": "Hit",
+  "voice": "Single",
+  "tempo": 135,
+  "arp": false
+ },
+ {
+  "slot": "A.77",
+  "midi": 54,
+  "row": "S.E./HIT",
+  "name": "Noisy Hit",
+  "category": "Hit",
+  "voice": "Layer",
+  "tempo": 142,
+  "arp": false
+ },
+ {
+  "slot": "A.78",
+  "midi": 55,
+  "row": "S.E./HIT",
+  "name": "4 OSC m7 Chord",
+  "category": "Hit",
+  "voice": "Layer",
+  "tempo": 148,
+  "arp": false
+ },
+ {
+  "slot": "A.81",
+  "midi": 56,
+  "row": "VOCODER",
+  "name": "Male-Ahhh",
+  "category": "Vocoder",
+  "voice": "Vocoder",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "A.82",
+  "midi": 57,
+  "row": "VOCODER",
+  "name": "Male-Eeee",
+  "category": "Vocoder",
+  "voice": "Vocoder",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "A.83",
+  "midi": 58,
+  "row": "VOCODER",
+  "name": "Male-Ahhh 5th",
+  "category": "Vocoder",
+  "voice": "Vocoder",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "A.84",
+  "midi": 59,
+  "row": "VOCODER",
+  "name": "Vocoder Ensemble",
+  "category": "Vocoder",
+  "voice": "Vocoder",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "A.85",
+  "midi": 60,
+  "row": "VOCODER",
+  "name": "Vocoder Chorus",
+  "category": "Vocoder",
+  "voice": "Vocoder",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "A.86",
+  "midi": 61,
+  "row": "VOCODER",
+  "name": "Vocoder 5th",
+  "category": "Vocoder",
+  "voice": "Vocoder",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "A.87",
+  "midi": 62,
+  "row": "VOCODER",
+  "name": "Bass Vocoder",
+  "category": "Vocoder",
+  "voice": "Vocoder",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "A.88",
+  "midi": 63,
+  "row": "VOCODER",
+  "name": "Voice Changer",
+  "category": "Vocoder",
+  "voice": "Vocoder",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "B.11",
+  "midi": 64,
+  "row": "TRANCE",
+  "name": "Synth Harp",
+  "category": "Arpeggio",
+  "voice": "Single",
+  "tempo": 138,
+  "arp": true
+ },
+ {
+  "slot": "B.12",
+  "midi": 65,
+  "row": "TRANCE",
+  "name": "Acid Ring Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 138,
+  "arp": false
+ },
+ {
+  "slot": "B.13",
+  "midi": 66,
+  "row": "TRANCE",
+  "name": "Unison Ring Lead",
+  "category": "Synth Lead",
+  "voice": "Single",
+  "tempo": 138,
+  "arp": true
+ },
+ {
+  "slot": "B.14",
+  "midi": 67,
+  "row": "TRANCE",
+  "name": "Phaser Lead",
+  "category": "Synth Lead",
+  "voice": "Single",
+  "tempo": 138,
+  "arp": false
+ },
+ {
+  "slot": "B.15",
+  "midi": 68,
+  "row": "TRANCE",
+  "name": "Synth Pizz",
+  "category": "Synth",
+  "voice": "Layer",
+  "tempo": 138,
+  "arp": false
+ },
+ {
+  "slot": "B.16",
+  "midi": 69,
+  "row": "TRANCE",
+  "name": "Euphoric Synth",
+  "category": "Synth",
+  "voice": "Single",
+  "tempo": 138,
+  "arp": false
+ },
+ {
+  "slot": "B.17",
+  "midi": 70,
+  "row": "TRANCE",
+  "name": "Flashin' Pad",
+  "category": "Strings/ Pad",
+  "voice": "Single",
+  "tempo": 138,
+  "arp": false
+ },
+ {
+  "slot": "B.18",
+  "midi": 71,
+  "row": "TRANCE",
+  "name": "Stream Pad",
+  "category": "Strings/ Pad",
+  "voice": "Single",
+  "tempo": 138,
+  "arp": false
+ },
+ {
+  "slot": "B.21",
+  "midi": 72,
+  "row": "TECHNO/HOUSE",
+  "name": "S&H Signal",
+  "category": "Arpeggio",
+  "voice": "Single",
+  "tempo": 138,
+  "arp": true
+ },
+ {
+  "slot": "B.22",
+  "midi": 73,
+  "row": "TECHNO/HOUSE",
+  "name": "Dirty Motion",
+  "category": "Arpeggio",
+  "voice": "Layer",
+  "tempo": 124,
+  "arp": true
+ },
+ {
+  "slot": "B.23",
+  "midi": 74,
+  "row": "TECHNO/HOUSE",
+  "name": "Short Ring Perc.",
+  "category": "Arpeggio",
+  "voice": "Layer",
+  "tempo": 140,
+  "arp": true
+ },
+ {
+  "slot": "B.24",
+  "midi": 75,
+  "row": "TECHNO/HOUSE",
+  "name": "Organ Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 132,
+  "arp": false
+ },
+ {
+  "slot": "B.25",
+  "midi": 76,
+  "row": "TECHNO/HOUSE",
+  "name": "Unison SQU Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 145,
+  "arp": false
+ },
+ {
+  "slot": "B.26",
+  "midi": 77,
+  "row": "TECHNO/HOUSE",
+  "name": "Detune Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 130,
+  "arp": false
+ },
+ {
+  "slot": "B.27",
+  "midi": 78,
+  "row": "TECHNO/HOUSE",
+  "name": "Short Synth Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 134,
+  "arp": false
+ },
+ {
+  "slot": "B.28",
+  "midi": 79,
+  "row": "TECHNO/HOUSE",
+  "name": "NRG Stab",
+  "category": "Synth Lead",
+  "voice": "Layer",
+  "tempo": 130,
+  "arp": false
+ },
+ {
+  "slot": "B.31",
+  "midi": 80,
+  "row": "ELECTRONICA",
+  "name": "Noize Blasts",
+  "category": "Arpeggio",
+  "voice": "Layer",
+  "tempo": 140,
+  "arp": true
+ },
+ {
+  "slot": "B.32",
+  "midi": 81,
+  "row": "ELECTRONICA",
+  "name": "Future Perc.",
+  "category": "Arpeggio",
+  "voice": "Single",
+  "tempo": 97,
+  "arp": true
+ },
+ {
+  "slot": "B.33",
+  "midi": 82,
+  "row": "ELECTRONICA",
+  "name": "Rhythmic Pad",
+  "category": "Synth",
+  "voice": "Single",
+  "tempo": 130,
+  "arp": false
+ },
+ {
+  "slot": "B.34",
+  "midi": 83,
+  "row": "ELECTRONICA",
+  "name": "Pump Organ",
+  "category": "Synth",
+  "voice": "Single",
+  "tempo": 82,
+  "arp": false
+ },
+ {
+  "slot": "B.35",
+  "midi": 84,
+  "row": "ELECTRONICA",
+  "name": "Lazy Pitch",
+  "category": "Synth",
+  "voice": "Single",
+  "tempo": 128,
+  "arp": false
+ },
+ {
+  "slot": "B.36",
+  "midi": 85,
+  "row": "ELECTRONICA",
+  "name": "BPF 4th Pad",
+  "category": "Strings/ Pad",
+  "voice": "Single",
+  "tempo": 148,
+  "arp": false
+ },
+ {
+  "slot": "B.37",
+  "midi": 86,
+  "row": "ELECTRONICA",
+  "name": "Future Pad",
+  "category": "Strings/ Pad",
+  "voice": "Single",
+  "tempo": 110,
+  "arp": false
+ },
+ {
+  "slot": "B.38",
+  "midi": 87,
+  "row": "ELECTRONICA",
+  "name": "Shadow Pad",
+  "category": "Strings/ Pad",
+  "voice": "Single",
+  "tempo": 122,
+  "arp": false
+ },
+ {
+  "slot": "B.41",
+  "midi": 88,
+  "row": "D'n'B/BREAKS",
+  "name": "X-Mod Bass",
+  "category": "Bass",
+  "voice": "Layer",
+  "tempo": 136,
+  "arp": false
+ },
+ {
+  "slot": "B.42",
+  "midi": 89,
+  "row": "D'n'B/BREAKS",
+  "name": "Pipe Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 85,
+  "arp": false
+ },
+ {
+  "slot": "B.43",
+  "midi": 90,
+  "row": "D'n'B/BREAKS",
+  "name": "Reverse Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 136,
+  "arp": false
+ },
+ {
+  "slot": "B.44",
+  "midi": 91,
+  "row": "D'n'B/BREAKS",
+  "name": "RingSync Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 134,
+  "arp": false
+ },
+ {
+  "slot": "B.45",
+  "midi": 92,
+  "row": "D'n'B/BREAKS",
+  "name": "HPF Sweep Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 133,
+  "arp": false
+ },
+ {
+  "slot": "B.46",
+  "midi": 93,
+  "row": "D'n'B/BREAKS",
+  "name": "Nu Skool Drop",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 125,
+  "arp": false
+ },
+ {
+  "slot": "B.47",
+  "midi": 94,
+  "row": "D'n'B/BREAKS",
+  "name": "Modulation Lead",
+  "category": "Synth Lead",
+  "voice": "Single",
+  "tempo": 130,
+  "arp": false
+ },
+ {
+  "slot": "B.48",
+  "midi": 95,
+  "row": "D'n'B/BREAKS",
+  "name": "Grimey Storm",
+  "category": "Arpeggio",
+  "voice": "Single",
+  "tempo": 136,
+  "arp": true
+ },
+ {
+  "slot": "B.51",
+  "midi": 96,
+  "row": "HIPHOP/VINTAGE",
+  "name": "Dark Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 90,
+  "arp": false
+ },
+ {
+  "slot": "B.52",
+  "midi": 97,
+  "row": "HIPHOP/VINTAGE",
+  "name": "MG Bass 2",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 90,
+  "arp": false
+ },
+ {
+  "slot": "B.53",
+  "midi": 98,
+  "row": "HIPHOP/VINTAGE",
+  "name": "Sub Bass",
+  "category": "Bass",
+  "voice": "Single",
+  "tempo": 90,
+  "arp": false
+ },
+ {
+  "slot": "B.54",
+  "midi": 99,
+  "row": "HIPHOP/VINTAGE",
+  "name": "70's Funk Lead",
+  "category": "Synth Lead",
+  "voice": "Single",
+  "tempo": 87,
+  "arp": false
+ },
+ {
+  "slot": "B.55",
+  "midi": 100,
+  "row": "HIPHOP/VINTAGE",
+  "name": "Rock Organ",
+  "category": "KBD",
+  "voice": "Single",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "B.56",
+  "midi": 101,
+  "row": "HIPHOP/VINTAGE",
+  "name": "Perc. Organ",
+  "category": "KBD",
+  "voice": "Single",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "B.57",
+  "midi": 102,
+  "row": "HIPHOP/VINTAGE",
+  "name": "Phaser Clav",
+  "category": "KBD",
+  "voice": "Single",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "B.58",
+  "midi": 103,
+  "row": "HIPHOP/VINTAGE",
+  "name": "String Machine",
+  "category": "Strings/ Pad",
+  "voice": "Single",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "B.61",
+  "midi": 104,
+  "row": "RETRO",
+  "name": "Analog Bell",
+  "category": "Arpeggio",
+  "voice": "Single",
+  "tempo": 139,
+  "arp": true
+ },
+ {
+  "slot": "B.62",
+  "midi": 105,
+  "row": "RETRO",
+  "name": "Stairs Pad",
+  "category": "Arpeggio",
+  "voice": "Layer",
+  "tempo": 140,
+  "arp": true
+ },
+ {
+  "slot": "B.63",
+  "midi": 106,
+  "row": "RETRO",
+  "name": "Triangle Lead",
+  "category": "Synth Lead",
+  "voice": "Single",
+  "tempo": 135,
+  "arp": false
+ },
+ {
+  "slot": "B.64",
+  "midi": 107,
+  "row": "RETRO",
+  "name": "Random Comp",
+  "category": "Synth",
+  "voice": "Single",
+  "tempo": 144,
+  "arp": false
+ },
+ {
+  "slot": "B.65",
+  "midi": 108,
+  "row": "RETRO",
+  "name": "Stab Saw",
+  "category": "Synth",
+  "voice": "Single",
+  "tempo": 140,
+  "arp": false
+ },
+ {
+  "slot": "B.66",
+  "midi": 109,
+  "row": "RETRO",
+  "name": "Square Comp",
+  "category": "Synth",
+  "voice": "Single",
+  "tempo": 144,
+  "arp": false
+ },
+ {
+  "slot": "B.67",
+  "midi": 110,
+  "row": "RETRO",
+  "name": "Detuned Comp",
+  "category": "Synth",
+  "voice": "Single",
+  "tempo": 178,
+  "arp": false
+ },
+ {
+  "slot": "B.68",
+  "midi": 111,
+  "row": "RETRO",
+  "name": "Old Strings",
+  "category": "Strings/ Pad",
+  "voice": "Single",
+  "tempo": 127,
+  "arp": false
+ },
+ {
+  "slot": "B.71",
+  "midi": 112,
+  "row": "S.E./HIT",
+  "name": "Time Zone SFX",
+  "category": "S.E.",
+  "voice": "Single",
+  "tempo": 134,
+  "arp": false
+ },
+ {
+  "slot": "B.72",
+  "midi": 113,
+  "row": "S.E./HIT",
+  "name": "Domin8or",
+  "category": "S.E.",
+  "voice": "Single",
+  "tempo": 125,
+  "arp": false
+ },
+ {
+  "slot": "B.73",
+  "midi": 114,
+  "row": "S.E./HIT",
+  "name": "Thunder",
+  "category": "S.E.",
+  "voice": "Layer",
+  "tempo": 34,
+  "arp": false
+ },
+ {
+  "slot": "B.74",
+  "midi": 115,
+  "row": "S.E./HIT",
+  "name": "Cry",
+  "category": "S.E.",
+  "voice": "Single",
+  "tempo": 137,
+  "arp": false
+ },
+ {
+  "slot": "B.75",
+  "midi": 116,
+  "row": "S.E./HIT",
+  "name": "HPF m7 Chord",
+  "category": "Hit",
+  "voice": "Layer",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "B.76",
+  "midi": 117,
+  "row": "S.E./HIT",
+  "name": "M3rd Chord",
+  "category": "Hit",
+  "voice": "Layer",
+  "tempo": 130,
+  "arp": false
+ },
+ {
+  "slot": "B.77",
+  "midi": 118,
+  "row": "S.E./HIT",
+  "name": "Hardcore Hit",
+  "category": "Hit",
+  "voice": "Layer",
+  "tempo": 139,
+  "arp": false
+ },
+ {
+  "slot": "B.78",
+  "midi": 119,
+  "row": "S.E./HIT",
+  "name": "Artcore M7 Chord",
+  "category": "Hit",
+  "voice": "Layer",
+  "tempo": 176,
+  "arp": false
+ },
+ {
+  "slot": "B.81",
+  "midi": 120,
+  "row": "VOCODER",
+  "name": "Female-Ahhh",
+  "category": "Vocoder",
+  "voice": "Vocoder",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "B.82",
+  "midi": 121,
+  "row": "VOCODER",
+  "name": "Kid-Eeey",
+  "category": "Vocoder",
+  "voice": "Vocoder",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "B.83",
+  "midi": 122,
+  "row": "VOCODER",
+  "name": "Kid-Ahhh (Wow)",
+  "category": "Vocoder",
+  "voice": "Vocoder",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "B.84",
+  "midi": 123,
+  "row": "VOCODER",
+  "name": "Vocoder Pulse",
+  "category": "Vocoder",
+  "voice": "Vocoder",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "B.85",
+  "midi": 124,
+  "row": "VOCODER",
+  "name": "Vocoder SQU",
+  "category": "Vocoder",
+  "voice": "Vocoder",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "B.86",
+  "midi": 125,
+  "row": "VOCODER",
+  "name": "Vocoder Wah",
+  "category": "Vocoder",
+  "voice": "Vocoder",
+  "tempo": 200,
+  "arp": false
+ },
+ {
+  "slot": "B.87",
+  "midi": 126,
+  "row": "VOCODER",
+  "name": "Vocoder Vox Wave",
+  "category": "Vocoder",
+  "voice": "Vocoder",
+  "tempo": 120,
+  "arp": false
+ },
+ {
+  "slot": "B.88",
+  "midi": 127,
+  "row": "VOCODER",
+  "name": "Vocoder DWGS",
+  "category": "Vocoder",
+  "voice": "Vocoder",
+  "tempo": 120,
+  "arp": false
+ }
+]

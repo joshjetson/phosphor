@@ -230,7 +230,7 @@ Names and spellings are Roland's, Glockenspeil included.
 - Shared domain models via atomics (no locks between threads)
 - Command channel pattern for UI-to-audio communication
 - Plugin trait for instruments and effects — same interface for built-in and third-party
-- 608 tests covering DSP, MIDI, engine, mixer, navigation, and persistence
+- 621 tests covering DSP, MIDI, engine, mixer, navigation, and persistence
 
 ---
 
@@ -527,7 +527,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace  # 608 tests
+cargo test --workspace  # 621 tests
 ```
 
 ---

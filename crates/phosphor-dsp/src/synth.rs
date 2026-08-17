@@ -80,6 +80,22 @@
 //! same four oscillators, the same ladder and the same envelopes as the pads,
 //! so they sit in the same sonic world.
 //!
+//! ## The bank
+//!
+//! 229 patches, in `bank.rs` beside this file, and they are four sets in three
+//! different situations: the eleven this instrument shipped with, the
+//! microKORG's 128 factory programs under their **real names, slots,
+//! categories and tempi with authored parameter values**, forty Minimoog
+//! patches which are **authored outright because that instrument never had a
+//! factory bank to transcribe**, and fifty Wavestation-idiom patches — wave
+//! sequencing, vector movement and three drum kits — which are authored too.
+//! That module's documentation is where the distinction is spelled out,
+//! including what the sixteen vocoder programs and the eighteen arpeggio
+//! programs are on an instrument with neither a vocoder nor an arpeggiator.
+//!
+//! One selector, not two: see the note above [`patch_bank`] for why this
+//! instrument answers the "bank knob" question the opposite way to the DX7.
+//!
 //! ## The wavetables
 //!
 //! The sixteen digital waveforms in [`WAVE_NAMES`] are **generated here**, from
@@ -2382,13 +2398,21 @@ fn note_to_freq(note: u8) -> f64 {
 
 // ── Patches ──
 //
-// The scaffolding is the point of this bank rather than its size: the large
-// set is a separate piece of work, and what has to exist first is the
-// mechanism — a chart row per patch, a selector that steps by index, and one
-// conversion from chart to panel that the default parameter block is also
-// derived from. Adding a patch after this is a row of data.
+// The mechanism is here and the data is in `bank`: a chart row per patch, a
+// selector that steps by index, and one conversion from chart to panel that
+// the default parameter block is derived from. Adding a patch is a row of
+// data in the other file.
+//
+// The bank is a module of its own because it is 229 rows long and this file
+// is the engine. Nothing about it is public except the counts and the names —
+// `BANK` itself stays inside the instrument, because a patch is a set of knob
+// positions and [`PhosphorSynth::params_for_patch`] is how a caller gets one.
 
-pub const PATCH_COUNT: usize = 11;
+pub use bank::{BANK_COUNT, BANK_NAMES, PATCH_COUNT};
+
+use bank::{BANK, BANK_FIRST};
+
+mod bank;
 
 /// One row of the bank: where every control sits on that patch.
 #[derive(Debug, Clone, Copy)]
@@ -2396,6 +2420,10 @@ struct Chart {
     name: &'static str,
     /// Cut to the twelve columns the editor's selector row leaves for a label.
     label: &'static str,
+    /// Where the patch lives, in the addressing of whichever instrument it
+    /// came from: `A.11` to `B.88` on the microKORG, `M.01` and `W.01` on the
+    /// two authored sets, `P.01` on the instrument's own.
+    slot: &'static str,
     /// What the keyboard does on this patch.
     keys: KeyMap,
     osc: [OscChart; 4],
@@ -2588,420 +2616,23 @@ fn env_times(chart: [f32; 4]) -> EnvTimes {
     }
 }
 
-const BANK: [Chart; PATCH_COUNT] = [
-    // Four sawtooths, one an octave down, spread a few cents apart. The panel
-    // the instrument loads with, and the one every headroom figure quoted at
-    // OUTPUT_TRIM is measured against.
-    Chart {
-        name: "INIT SAW", label: "INIT SAW",
-        keys: KeyMap::Melodic,
-        osc: [
-            OscChart { shape: 0, table: 0.0, semitones: 0, cents: 0.0, level: 0.85 },
-            OscChart { shape: 0, table: 0.0, semitones: 0, cents: 7.0, level: 0.85 },
-            OscChart { shape: 0, table: 0.0, semitones: 0, cents: -7.0, level: 0.85 },
-            OscChart { shape: 0, table: 0.0, semitones: -12, cents: 0.0, level: 0.85 },
-        ],
-        seq: [None; 4], seq_rate: seq_rate_at(4.0),
-        d_mode: 0, vector: [0.5, 0.5], pulse_width: 0.0, drive: 0.0,
-        filter: [0.66, 0.12, 0.58, 0.35], velocity: 0.6, gain: 1.0,
-        lfo: [(0, 0.35), (0, 0.15)],
-        env: [[0.02, 0.35, 0.75, 0.22], [0.0, 0.40, 0.30, 0.30]],
-        matrix: [NO_ROUTE; MOD_SLOTS],
-    },
-    // The Minimoog end of the instrument: everything low, the drive well up,
-    // the ladder resonant and swept by envelope 2, and velocity opening it
-    // further through the matrix.
-    Chart {
-        name: "LADDER BASS", label: "LADDER BASS",
-        keys: KeyMap::Melodic,
-        osc: [
-            OscChart { shape: 0, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 1, table: 0.0, semitones: 0, cents: 4.0, level: 0.9 },
-            OscChart { shape: 0, table: 0.0, semitones: -12, cents: 0.0, level: 1.0 },
-            OscChart { shape: 3, table: 0.0, semitones: -24, cents: 0.0, level: 0.8 },
-        ],
-        seq: [None; 4], seq_rate: seq_rate_at(4.0),
-        d_mode: 0, vector: [0.45, 0.40], pulse_width: 0.35, drive: 0.55,
-        filter: [0.28, 0.55, 0.72, 0.30], velocity: 0.75, gain: 1.0,
-        lfo: [(0, 0.30), (4, 0.55)],
-        env: [[0.004, 0.30, 0.35, 0.12], [0.0, 0.22, 0.0, 0.15]],
-        matrix: [
-            (5, 4, 0.30),   // velocity → cutoff
-            NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE,
-        ],
-    },
-    // The other Minimoog trade: oscillator D is out of the mixer and running
-    // at 5 Hz as a vibrato source, with the wheel opening the filter.
-    Chart {
-        name: "FAT LEAD", label: "FAT LEAD",
-        keys: KeyMap::Melodic,
-        osc: [
-            OscChart { shape: 0, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 0, table: 0.0, semitones: 0, cents: 12.0, level: 1.0 },
-            OscChart { shape: 1, table: 0.0, semitones: 0, cents: -12.0, level: 0.95 },
-            OscChart { shape: 3, table: 0.0, semitones: 10, cents: 0.0, level: 1.0 },
-        ],
-        seq: [None; 4], seq_rate: seq_rate_at(4.0),
-        d_mode: 2, vector: [0.5, 0.35], pulse_width: 0.25, drive: 0.40,
-        filter: [0.55, 0.35, 0.60, 0.40], velocity: 0.5, gain: 1.0,
-        lfo: [(0, 0.45), (1, 0.20)],
-        env: [[0.01, 0.45, 0.70, 0.20], [0.02, 0.35, 0.25, 0.25]],
-        matrix: [
-            (10, 1, 0.03),  // oscillator D → pitch: a light vibrato
-            (7, 4, 0.25),   // wheel → cutoff
-            NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE,
-        ],
-    },
-    // The Wavestation end: four wavetable positions with the vector walked
-    // round them by two slow LFOs at different rates, so the mix never repeats
-    // on any period a listener can count.
-    Chart {
-        name: "WAVE PAD", label: "WAVE PAD",
-        keys: KeyMap::Melodic,
-        osc: [
-            OscChart { shape: 4, table: 0.30, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 4, table: 0.55, semitones: 0, cents: 5.0, level: 1.0 },
-            OscChart { shape: 4, table: 0.72, semitones: 0, cents: -5.0, level: 1.0 },
-            OscChart { shape: 4, table: 0.90, semitones: -12, cents: 0.0, level: 0.9 },
-        ],
-        seq: [None; 4], seq_rate: seq_rate_at(4.0),
-        d_mode: 0, vector: [0.5, 0.5], pulse_width: 0.0, drive: 0.15,
-        filter: [0.62, 0.20, 0.55, 0.30], velocity: 0.4, gain: 1.0,
-        lfo: [(1, 0.16), (1, 0.10)],
-        env: [[0.45, 0.50, 0.85, 0.60], [0.30, 0.60, 0.50, 0.55]],
-        matrix: [
-            (1, 7, 0.45),   // LFO 1 → vector x
-            (2, 8, 0.45),   // LFO 2 → vector y
-            (4, 3, 0.12),   // envelope 2 → wavetable position
-            NO_ROUTE, NO_ROUTE, NO_ROUTE,
-        ],
-    },
-    // The sparse-partial end of the bank, struck rather than blown: bell and
-    // electric piano tables an octave and a twelfth apart, no sustain.
-    Chart {
-        name: "GLASS BELL", label: "GLASS BELL",
-        keys: KeyMap::Melodic,
-        osc: [
-            OscChart { shape: 4, table: 0.80, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 4, table: 0.867, semitones: 12, cents: 2.0, level: 0.7 },
-            OscChart { shape: 3, table: 0.0, semitones: 19, cents: 0.0, level: 0.5 },
-            OscChart { shape: 4, table: 1.0, semitones: 24, cents: 0.0, level: 0.35 },
-        ],
-        seq: [None; 4], seq_rate: seq_rate_at(4.0),
-        d_mode: 0, vector: [0.4, 0.4], pulse_width: 0.0, drive: 0.0,
-        filter: [0.80, 0.10, 0.58, 0.50], velocity: 0.85, gain: 1.0,
-        lfo: [(1, 0.55), (4, 0.65)],
-        env: [[0.0, 0.55, 0.0, 0.50], [0.0, 0.30, 0.0, 0.28]],
-        matrix: [
-            (4, 3, 0.10),   // envelope 2 → wavetable position
-            NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE,
-        ],
-    },
-    // The vector as the whole point: four unrelated tables, a square LFO
-    // stepping x and a triangle sweeping y, so the timbre moves rhythmically
-    // without an envelope doing it.
-    Chart {
-        name: "VECTOR SWEEP", label: "VECTORSWEEP",
-        keys: KeyMap::Melodic,
-        osc: [
-            OscChart { shape: 4, table: 0.07, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 4, table: 0.40, semitones: 0, cents: 6.0, level: 1.0 },
-            OscChart { shape: 4, table: 0.60, semitones: 7, cents: 0.0, level: 0.9 },
-            OscChart { shape: 4, table: 1.0, semitones: 0, cents: -6.0, level: 0.9 },
-        ],
-        seq: [None; 4], seq_rate: seq_rate_at(4.0),
-        d_mode: 0, vector: [0.5, 0.5], pulse_width: 0.0, drive: 0.25,
-        filter: [0.66, 0.30, 0.55, 0.30], velocity: 0.5, gain: 1.0,
-        lfo: [(3, 0.55), (0, 0.38)],
-        env: [[0.06, 0.50, 0.80, 0.35], [0.10, 0.45, 0.60, 0.35]],
-        matrix: [
-            (1, 7, 0.50),   // LFO 1 → vector x
-            (2, 8, 0.50),   // LFO 2 → vector y
-            (6, 4, 0.15),   // keyboard → cutoff
-            NO_ROUTE, NO_ROUTE, NO_ROUTE,
-        ],
-    },
-    // The filter as the sound source, which is what the top of the resonance
-    // travel is for: a whisper of noise into a ladder that is already
-    // oscillating, swept by envelope 2 and by an LFO.
-    Chart {
-        name: "RESO DRONE", label: "RESO DRONE",
-        keys: KeyMap::Melodic,
-        osc: [
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 0.35 },
-            OscChart { shape: 3, table: 0.0, semitones: 0, cents: 0.0, level: 0.30 },
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 0.35 },
-            OscChart { shape: 3, table: 0.0, semitones: -12, cents: 0.0, level: 0.30 },
-        ],
-        seq: [None; 4], seq_rate: seq_rate_at(4.0),
-        d_mode: 0, vector: [0.5, 0.5], pulse_width: 0.0, drive: 0.0,
-        filter: [0.30, 0.98, 0.66, 0.60], velocity: 0.4, gain: 1.0,
-        lfo: [(0, 0.22), (1, 0.12)],
-        env: [[0.25, 0.70, 0.65, 0.55], [0.35, 0.70, 0.35, 0.50]],
-        matrix: [
-            (1, 4, 0.18),   // LFO 1 → cutoff
-            NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE,
-        ],
-    },
-    // Short, bright and digital: the pseudo-random table at the top of the
-    // bank, a clavinet under it, the drive up and nothing sustaining.
-    Chart {
-        name: "DIGI PLUCK", label: "DIGI PLUCK",
-        keys: KeyMap::Melodic,
-        osc: [
-            OscChart { shape: 4, table: 1.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 4, table: 0.933, semitones: 0, cents: 8.0, level: 0.9 },
-            OscChart { shape: 0, table: 0.0, semitones: -12, cents: 0.0, level: 0.8 },
-            OscChart { shape: 4, table: 0.60, semitones: 12, cents: 0.0, level: 0.6 },
-        ],
-        seq: [None; 4], seq_rate: seq_rate_at(4.0),
-        d_mode: 0, vector: [0.45, 0.45], pulse_width: 0.0, drive: 0.45,
-        filter: [0.62, 0.35, 0.70, 0.45], velocity: 0.8, gain: 1.0,
-        lfo: [(2, 0.60), (4, 0.70)],
-        env: [[0.0, 0.28, 0.10, 0.18], [0.0, 0.18, 0.0, 0.15]],
-        matrix: [
-            (5, 3, 0.15),   // velocity → wavetable position
-            NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE,
-        ],
-    },
-    // The wave sequencer as a pad: three of the four oscillators walking step
-    // lists of 8, 10 and 6 ticks, which do not come back into step for 120 of
-    // them — two minutes at this clock — while the fourth holds a steady bed
-    // underneath so the patch has something that does not move. The vector
-    // walks between them under two slow LFOs, so which sequence is loudest is
-    // itself changing. Nothing about this sound repeats on a period a listener
-    // can count, and no envelope in the instrument could produce any of it.
-    Chart {
-        name: "SEQ PAD", label: "SEQ PAD",
-        osc: [
-            // The three sequenced oscillators sit at TABLE 0.5. Any value
-            // would play the sequence as written — the knob is an offset from
-            // whatever the patch left it at — and the middle is chosen so that
-            // a player has travel in both directions.
-            OscChart { shape: 4, table: 0.5, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 4, table: 0.5, semitones: 0, cents: 6.0, level: 1.0 },
-            OscChart { shape: 4, table: 0.35, semitones: -12, cents: 0.0, level: 0.9 },
-            OscChart { shape: 4, table: 0.5, semitones: 0, cents: -6.0, level: 0.9 },
-        ],
-        keys: KeyMap::Melodic,
-        // morph 8, vox 4, — and organ 3: 8, 10 and 6 ticks.
-        seq: [Some(1), Some(2), None, Some(6)],
-        seq_rate: seq_rate_at(3.0),      // 2 Hz, a step every half second
-        // The vector rests towards the A corner rather than in the middle, so
-        // that one sequence is in front and the other two are behind it. Dead
-        // centre is four things at a quarter each, and four timbres all moving
-        // at once average out into one that does not.
-        d_mode: 0, vector: [0.35, 0.35], pulse_width: 0.0, drive: 0.15,
-        // The cutoff is well up, and it has to be: what a wave sequence
-        // changes is the harmonics above the fourth, and a corner down where a
-        // pad's usually sits takes the sequence off with them.
-        filter: [0.75, 0.15, 0.50, 0.30], velocity: 0.4, gain: 1.0,
-        lfo: [(1, 0.14), (1, 0.09)],
-        env: [[0.35, 0.55, 0.85, 0.60], [0.20, 0.60, 0.40, 0.50]],
-        matrix: [
-            (1, 7, 0.20),   // LFO 1 → vector x
-            (2, 8, 0.20),   // LFO 2 → vector y: a slow drift behind the
-                            // sequences rather than over the top of them
-            (4, 9, 0.20),   // envelope 2 → sequence clock: the pattern comes
-                            // in fast and settles as the note does
-            NO_ROUTE, NO_ROUTE, NO_ROUTE,
-        ],
-    },
-    // The other thing a step list is for: a part rather than a texture. The
-    // clavinet riff on A is four steps of pitch, the pulse under it on B is
-    // four steps of *rhythm* — the same sequencer with the waveform column
-    // doing nothing, because a pulse oscillator has no table to read — and C
-    // plays its bell-and-clav attack once and holds, so the note has a strike
-    // on it that no envelope shape could give. D is the bass and is not
-    // sequenced at all.
-    Chart {
-        name: "SEQ RIFF", label: "SEQ RIFF",
-        osc: [
-            OscChart { shape: 4, table: 0.5, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 1, table: 0.0, semitones: -12, cents: 4.0, level: 0.9 },
-            OscChart { shape: 4, table: 0.5, semitones: 0, cents: -4.0, level: 0.85 },
-            OscChart { shape: 0, table: 0.0, semitones: -24, cents: 0.0, level: 0.7 },
-        ],
-        keys: KeyMap::Melodic,
-        // riff 5th, gate 4, attack (played once), —
-        seq: [Some(3), Some(0), Some(4), None],
-        seq_rate: seq_rate_at(5.0),      // 8 Hz, a sixteenth at 120
-        d_mode: 0, vector: [0.40, 0.40], pulse_width: 0.30, drive: 0.35,
-        filter: [0.68, 0.35, 0.55, 0.30], velocity: 0.7, gain: 1.0,
-        lfo: [(3, 0.42), (0, 0.20)],
-        env: [[0.004, 0.45, 0.70, 0.18], [0.0, 0.30, 0.20, 0.20]],
-        matrix: [
-            // Nothing here is pointed at the vector, which is unusual for this
-            // instrument and is the point: on this patch the thing that moves
-            // is the step list, and an LFO stepping the mix underneath it
-            // would only be a second answer to the same question.
-            (5, 4, 0.25),   // velocity → cutoff
-            NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE,
-        ],
-    },
-    // The keymapped end: one patch where every note is a different sound,
-    // built out of the same four oscillators, ladder and envelopes as the
-    // pads. The panel row below is what stays live on a kit — the drive, the
-    // velocity depth, the LFOs and the matrix — plus the CUTOFF value the
-    // knob's offset is measured from. Its oscillator and envelope columns are
-    // the kick's, so that a player who opens the panel sees something
-    // plausible rather than whatever the last patch left.
-    Chart {
-        name: "SYNTH KIT", label: "SYNTH KIT",
-        keys: KeyMap::Keymapped(&SYNTH_KIT),
-        osc: [
-            OscChart { shape: 3, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 3, table: 0.0, semitones: -12, cents: 0.0, level: 0.7 },
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 0.9 },
-            OscChart { shape: 3, table: 0.0, semitones: 19, cents: 0.0, level: 0.6 },
-        ],
-        seq: [None; 4], seq_rate: seq_rate_at(4.0),
-        d_mode: 0, vector: [0.15, 0.15], pulse_width: 0.0, drive: 0.30,
-        filter: [0.60, 0.30, 0.50, 0.0], velocity: 0.8, gain: 1.0,
-        lfo: [(0, 0.35), (0, 0.20)],
-        env: [[0.0, 0.30, 0.0, 0.10], [0.0, 0.05, 0.0, 0.05]],
-        matrix: [
-            // The three routings that turn four oscillators into percussion,
-            // and every one of them lands differently on each note because
-            // every note brings its own envelope 2 and its own vector.
-            (4, 1, 0.35),   // envelope 2 → pitch: the drop a struck drum has
-            (4, 7, 0.60),   // envelope 2 → vector x
-            (4, 8, 0.60),   // envelope 2 → vector y: together, the noise
-                            // transient, which decays into the body
-            (5, 4, 0.20),   // velocity → cutoff
-            NO_ROUTE, NO_ROUTE,
-        ],
-    },
-];
-
-/// The starter kit.
-///
-/// Eight recipes on the General MIDI notes they belong on. Not a full kit —
-/// that is bank data and belongs with the rest of the large bank — but enough
-/// of one to prove the mechanism: a kick, a snare, two toms, two hi-hats, a
-/// clap and a crash, each a different arrangement of the same four
-/// oscillators.
-///
-/// The convention every recipe follows, because the matrix is shared across
-/// the kit and has to mean the same thing on each of them: **oscillator A is
-/// the body, B the second pitched element, C and D the noise**, with the
-/// vector resting near the A corner. Envelope 2 pushes the vector towards C at
-/// the strike and lets it fall back, so each recipe's own envelope 2 decay is
-/// how long its noise transient lasts — 25 ms on the kick, 285 ms on the
-/// snare.
-///
-/// The hi-hats are worth a note. There is no high-pass filter on this
-/// instrument, and a hi-hat made of noise through a low-pass would be a hiss
-/// with all its bottom end still attached. What makes them work is the
-/// ladder's bass loss at resonance — the thing the design brief was firm about
-/// not compensating away: at 0.72 of the resonance travel the filter is better
-/// than 12 dB down at the bottom, so noise through it comes out as a bright
-/// band. The characteristic that makes the filter sound right is also the one
-/// that makes a cymbal possible.
-const SYNTH_KIT: [KeyChart; 8] = [
-    KeyChart {
-        note: 36, name: "kick", hz: 55.0,
-        osc: [
-            OscChart { shape: 3, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 3, table: 0.0, semitones: -12, cents: 0.0, level: 0.7 },
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 0.9 },
-            OscChart { shape: 3, table: 0.0, semitones: 19, cents: 0.0, level: 0.6 },
-        ],
-        vector: [0.10, 0.10], filter: [0.45, 0.05, 0.60],
-        env: [[0.0, 0.30, 0.0, 0.10], [0.0, 0.05, 0.0, 0.05]],
-        level: 1.6,
-    },
-    KeyChart {
-        note: 38, name: "snare", hz: 190.0,
-        osc: [
-            OscChart { shape: 3, table: 0.0, semitones: 0, cents: 0.0, level: 0.8 },
-            OscChart { shape: 2, table: 0.0, semitones: 7, cents: 0.0, level: 0.6 },
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-        ],
-        vector: [0.50, 0.55], filter: [0.72, 0.30, 0.60],
-        env: [[0.0, 0.22, 0.0, 0.08], [0.0, 0.12, 0.0, 0.05]],
-        level: 1.8,
-    },
-    KeyChart {
-        note: 39, name: "clap", hz: 400.0,
-        osc: [
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-        ],
-        vector: [0.5, 0.5], filter: [0.70, 0.62, 0.55],
-        env: [[0.0, 0.20, 0.0, 0.08], [0.0, 0.06, 0.0, 0.05]],
-        level: 1.7,
-    },
-    KeyChart {
-        note: 41, name: "low tom", hz: 100.0,
-        osc: [
-            OscChart { shape: 3, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 2, table: 0.0, semitones: 0, cents: 0.0, level: 0.4 },
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 0.5 },
-            OscChart { shape: 3, table: 0.0, semitones: 12, cents: 0.0, level: 0.3 },
-        ],
-        vector: [0.20, 0.20], filter: [0.50, 0.05, 0.58],
-        env: [[0.0, 0.38, 0.0, 0.12], [0.0, 0.10, 0.0, 0.05]],
-        level: 1.6,
-    },
-    KeyChart {
-        note: 42, name: "closed hat", hz: 800.0,
-        osc: [
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 4, table: 1.0, semitones: 24, cents: 0.0, level: 0.5 },
-        ],
-        vector: [0.5, 0.5], filter: [0.92, 0.72, 0.52],
-        env: [[0.0, 0.07, 0.0, 0.04], [0.0, 0.03, 0.0, 0.03]],
-        level: 1.7,
-    },
-    KeyChart {
-        note: 45, name: "mid tom", hz: 150.0,
-        osc: [
-            OscChart { shape: 3, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 2, table: 0.0, semitones: 0, cents: 0.0, level: 0.4 },
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 0.5 },
-            OscChart { shape: 3, table: 0.0, semitones: 12, cents: 0.0, level: 0.3 },
-        ],
-        vector: [0.20, 0.20], filter: [0.54, 0.05, 0.58],
-        env: [[0.0, 0.34, 0.0, 0.12], [0.0, 0.09, 0.0, 0.05]],
-        level: 1.6,
-    },
-    KeyChart {
-        note: 46, name: "open hat", hz: 800.0,
-        osc: [
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 4, table: 1.0, semitones: 24, cents: 0.0, level: 0.5 },
-        ],
-        vector: [0.5, 0.5], filter: [0.90, 0.70, 0.52],
-        env: [[0.0, 0.28, 0.0, 0.10], [0.0, 0.05, 0.0, 0.04]],
-        level: 1.6,
-    },
-    KeyChart {
-        note: 49, name: "crash", hz: 1200.0,
-        osc: [
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 1.0 },
-            OscChart { shape: 4, table: 1.0, semitones: 12, cents: 0.0, level: 0.6 },
-        ],
-        vector: [0.5, 0.5], filter: [0.95, 0.60, 0.52],
-        env: [[0.0, 0.50, 0.0, 0.30], [0.0, 0.20, 0.0, 0.10]],
-        level: 1.3,
-    },
-];
-
-/// The patch names in full.
+/// The patch names in full: the factory names on the microKORG set, and the
+/// authored ones on the other three.
 pub const PATCH_NAMES: [&str; PATCH_COUNT] = derive_names();
 
 /// The names cut to the twelve columns the editor's selector row leaves.
+///
+/// Slot code, a space, and as much of the name as fits — the same shape the
+/// Juno's and the Jupiter's labels take, and for the same reason: at 229
+/// patches a name on its own does not say where in the bank you are.
 pub const PATCH_LABELS: [&str; PATCH_COUNT] = derive_labels();
+
+/// Where each patch sits, in the addressing of the instrument it came from.
+///
+/// `A.11` to `B.88` are the microKORG's own slots, read off the factory list.
+/// `P.01`, `M.01` and `W.01` number the three sets that have no hardware
+/// addressing to borrow.
+pub const PATCH_SLOTS: [&str; PATCH_COUNT] = derive_slots();
 
 const fn derive_names() -> [&'static str; PATCH_COUNT] {
     let mut out = [""; PATCH_COUNT];
@@ -3021,6 +2652,90 @@ const fn derive_labels() -> [&'static str; PATCH_COUNT] {
         i += 1;
     }
     out
+}
+
+const fn derive_slots() -> [&'static str; PATCH_COUNT] {
+    let mut out = [""; PATCH_COUNT];
+    let mut i = 0;
+    while i < PATCH_COUNT {
+        out[i] = BANK[i].slot;
+        i += 1;
+    }
+    out
+}
+
+// ── Moving around a bank of 229 ──
+//
+// **The decision this is:** one selector, not two.
+//
+// The DX7 in this project has a bank knob beside its voice knob, and 229
+// patches on one control is the same problem its 256 had — so the question
+// was asked again here and answered the other way, because the two
+// instruments differ in the thing that matters. A DX7 voice is 145 numbers in
+// ROM that the panel never shows; its two selectors between them *name* a
+// voice and change nothing else. This instrument's patch selector **is** the
+// panel: choosing a patch overwrites the other 66 parameters. A second
+// selector that also overwrote them would mean two controls owning one piece
+// of state, and every consumer — the session's selector table, a preset load,
+// the editor's "the patch changed, resend everything" path — would have to
+// agree about which of them won. That is exactly the kind of
+// silent-and-plausible failure the session format's position table exists to
+// prevent.
+//
+// The sets are also not the same size — 11, 128, 40 and 50 — so the DX7's
+// rectangular `bank * 32 + voice` arithmetic does not apply. It would need a
+// patch selector whose *number of positions* depended on another knob, which
+// `discrete_steps` cannot express: it takes an index, not the block. That is
+// why the DX7 needs its own `discrete_label(&params, index)` signature and
+// why the editor special-cases it.
+//
+// So the patch knob keeps one position per patch, `step_discrete` keeps
+// moving one patch per keypress as it is required to, and what a player needs
+// instead of a second knob is published here as data: which set a patch is
+// in, where each set begins, and one function that jumps between them. An
+// editor can bind that to a key without a parameter existing for it.
+
+/// Which set patch `index` belongs to — a position in [`BANK_NAMES`].
+///
+/// Total: an index past the end reads as the last set, because callers get
+/// their index from a knob and a knob can arrive as anything.
+#[must_use]
+pub fn patch_bank(index: usize) -> usize {
+    let mut set = 0;
+    while set + 1 < BANK_COUNT && index >= BANK_FIRST[set + 1] {
+        set += 1;
+    }
+    set
+}
+
+/// The half-open range of patches in set `bank`. An out-of-range set reads as
+/// the last one.
+#[must_use]
+pub fn bank_bounds(bank: usize) -> (usize, usize) {
+    let bank = bank.min(BANK_COUNT - 1);
+    (BANK_FIRST[bank], BANK_FIRST[bank + 1])
+}
+
+/// The knob position a coarse move lands on, for an editor that wants one
+/// beside the patch knob's fine one.
+///
+/// Up is the first patch of the next set. Down is the first patch of *this*
+/// set, and only then the first of the set before it — so from the middle of
+/// the microKORG's 128 the first press takes you to A.11 rather than past it
+/// into the eleven, which is what a player reaching for a coarse control
+/// means by it. At either end the move stops rather than wrapping.
+#[must_use]
+pub fn bank_step(value: f32, up: bool) -> f32 {
+    let index = patch_index(value);
+    let set = patch_bank(index);
+    let target = if up {
+        if set + 1 < BANK_COUNT { BANK_FIRST[set + 1] } else { PATCH_COUNT - 1 }
+    } else if index > BANK_FIRST[set] {
+        BANK_FIRST[set]
+    } else {
+        BANK_FIRST[set.saturating_sub(1)]
+    };
+    patch_knob(target)
 }
 
 /// The knob position that selects patch `index`, for a caller sweeping the
@@ -3773,7 +3488,7 @@ mod tests {
 
     #[test]
     fn discrete_labels_read_as_the_panel_does() {
-        assert_eq!(discrete_label(P_PATCH, 0.0), Some("INIT SAW"));
+        assert_eq!(discrete_label(P_PATCH, 0.0), Some("P01 INIT SAW"));
         assert_eq!(discrete_label(P_A_WAVE, knob_for(0, SHAPE_COUNT)), Some("saw"));
         assert_eq!(discrete_label(P_A_WAVE, knob_for(4, SHAPE_COUNT)), Some("table"));
         assert_eq!(discrete_label(P_D_MODE, knob_for(2, 3)), Some("mod lo"));
@@ -3859,18 +3574,340 @@ mod tests {
         });
     }
 
+    // ── The bank sweep ──
+    //
+    // Two guarantees over all 229 patches, measured rather than argued:
+    // **every patch speaks**, and **no patch reaches full scale**. They are
+    // one loop because they are the same renders.
+    //
+    // The first exists because two Juno patches once rendered exact silence —
+    // their sound source was the filter self-oscillating and nothing seeded
+    // it — and a silent patch in a bank this size is a thing nobody finds by
+    // playing. Four patches here are that same shape (`RESO DRONE`, `SINE
+    // DRONE`, `FILTER SINE`, and `WIND` at the top of its resonance) so the
+    // floor is not hypothetical.
+    //
+    // The second is the same statement `the_panel_at_its_extremes_stays_under
+    // _the_ceiling` makes about the panel, made about the bank: single note
+    // and eight-note chord, velocities 100 and 127.
+    //
+    // Split into one test per set so that they run in parallel — the sweep is
+    // most of this file's wall time, and cargo gives a test a thread rather
+    // than a loop iteration.
+
+    /// The master limiter's ceiling, -1 dBFS. The same value as
+    /// `LIMITER_CEILING` in the mixer; repeated because this file cannot
+    /// reach it.
+    const CEILING: f32 = 0.891;
+
+    /// The two voicings the guarantee is stated over: one note, and the
+    /// eight-note chord the panel sweep found its worst case on.
+    const BANK_VOICINGS: [&[u8]; 2] = [&[60], &[36, 43, 48, 55, 60, 64, 67, 72]];
+
+    /// How long patch `index` needs to reach its loudest, in buffers.
+    ///
+    /// Derived from the patch rather than fixed. An attack-decay-sustain
+    /// envelope is at its loudest at the *end of its attack*, so what has to
+    /// be covered is the slower of the two attacks — the amplifier's and the
+    /// filter's — and not the decay after it. The bank holds both a
+    /// one-millisecond pluck and a pad that takes two and a half seconds to
+    /// arrive, and one length for both is either wrong about the pad or six
+    /// times too long for everything else.
+    ///
+    /// The floor is 0.37 s, which is the length the whole project's headroom
+    /// sweep in `tests/headroom.rs` uses and is well past every attack
+    /// transient in the instrument.
+    fn buffers_for(index: usize) -> usize {
+        let p = PhosphorSynth::params_for_patch(patch_knob(index));
+        let attack = attack_seconds(f64::from(p[P_ATTACK1]))
+            .max(attack_seconds(f64::from(p[P_ATTACK2])));
+        // 4 s is a bound on the work rather than a claim; nothing in the bank
+        // asks for more than three.
+        let buffers = ((attack + 0.3).min(4.0) * 44_100.0 / 64.0) as usize;
+        buffers.max(256)
+    }
+
+    /// One patch, one voicing, one velocity. `hurried` speeds every clock the
+    /// patch has — see [`sweep_set`].
+    fn render_patch(
+        index: usize,
+        notes: &[u8],
+        velocity: u8,
+        buffers: usize,
+        hurried: bool,
+    ) -> Vec<f32> {
+        let mut s = PhosphorSynth::new();
+        s.init(44_100.0, 64);
+        s.set_parameter(P_PATCH, patch_knob(index));
+        if hurried {
+            s.set_parameter(P_LFO1_RATE, 0.85);
+            s.set_parameter(P_LFO2_RATE, 0.85);
+            s.set_parameter(P_SEQ_RATE, seq_rate_knob(16.0));
+        }
+        let events: Vec<MidiEvent> = notes.iter().map(|n| note_on(*n, velocity, 0)).collect();
+        process_buffers(&mut s, &events, buffers)
+    }
+
+    /// Every patch of one set: both voicings at both velocities, and a fifth
+    /// render with the clocks sped up. Returns the loudest it found.
+    ///
+    /// **The fifth render is what makes the other four enough.** An LFO at
+    /// 0.05 Hz takes twenty seconds to visit both ends of its travel, and a
+    /// wave sequence at a quarter of a hertz takes half a minute to walk its
+    /// steps — so a patch whose loudest moment is an LFO opening the filter
+    /// or a sequence reaching its loudest step would not be caught by any
+    /// render short enough to run 229 times. Rendering for thirty seconds is
+    /// not the answer; moving the clock is. The rates are parameters, so the
+    /// last case is the patch as voiced with both LFOs at 12 Hz and the
+    /// sequence clock at 16 — every excursion the patch's routings can
+    /// produce, visited several times inside a third of a second.
+    fn sweep_set(set: usize) -> (f32, String) {
+        let (first, end) = bank_bounds(set);
+        let mut worst = (0.0f32, String::new());
+        for index in first..end {
+            let name = PATCH_NAMES[index];
+            let slot = PATCH_SLOTS[index];
+            let buffers = buffers_for(index);
+            let mut cases: Vec<(&[u8], u8, bool)> = Vec::new();
+            for notes in BANK_VOICINGS {
+                for velocity in [100u8, 127] {
+                    cases.push((notes, velocity, false));
+                }
+            }
+            cases.push((BANK_VOICINGS[1], 127, true));
+
+            for (notes, velocity, hurried) in cases {
+                let out = render_patch(index, notes, velocity, buffers, hurried);
+                let measured = peak(&out);
+                let how = if hurried { ", clocks hurried" } else { "" };
+                assert!(
+                    out.iter().all(|v| v.is_finite()),
+                    "{slot} {name} produced a non-finite sample"
+                );
+                assert!(
+                    out.iter().all(|v| v.abs() < 1.0),
+                    "{slot} {name} on {} notes @{velocity}{how} reached full scale",
+                    notes.len()
+                );
+                assert!(
+                    measured <= CEILING,
+                    "{slot} {name} on {} notes @{velocity}{how} peaks at {measured:.4}, \
+                     past the ceiling",
+                    notes.len()
+                );
+                // Audible on the quietest of the renders, which is the one
+                // that would hide a patch that only speaks when it is played
+                // hard or in a chord.
+                if notes.len() == 1 && velocity == 100 {
+                    assert!(
+                        measured > 0.01,
+                        "{slot} {name} is silent: peak {measured:.5} over {:.2} s",
+                        buffers as f64 * 64.0 / 44_100.0
+                    );
+                }
+                if measured > worst.0 {
+                    worst = (measured, format!("{slot} {name} @{velocity}{how}"));
+                }
+            }
+        }
+        worst
+    }
+
+    /// Nothing in a set may be louder than the panel's own worst case, which
+    /// `the_panel_at_its_extremes_stays_under_the_ceiling` measures at 0.6982
+    /// — every level at the top, the filter open and resonant, the drive at
+    /// the top and every matrix slot at full depth. A patch above that would
+    /// mean the bank had found level the panel cannot reach, which cannot
+    /// happen honestly.
+    fn assert_set_is_bounded(set: usize, worst: &(f32, String), measured: f32) {
+        assert!(
+            worst.0 < crate::level::SATURATION_KNEE,
+            "{}: the loudest patch ({}) reaches {:.4}, past the saturator's knee",
+            BANK_NAMES[set],
+            worst.1,
+            worst.0
+        );
+        assert!(
+            worst.0 > 0.15,
+            "{}: nothing in the set reaches 0.15 ({}, {:.4})",
+            BANK_NAMES[set],
+            worst.1,
+            worst.0
+        );
+        // ...and the figure each test's comment quotes, pinned so that the
+        // two cannot drift. Half a decibel either way, which is wider than
+        // any float difference and narrower than a revoicing.
+        assert!(
+            (measured * 0.945..measured * 1.06).contains(&worst.0),
+            "{}: the loudest patch ({}) measures {:.4}, where the comment says {measured:.4}",
+            BANK_NAMES[set],
+            worst.1,
+            worst.0
+        );
+    }
+
+    /// The instrument's own eleven, and the loudest patch in the whole
+    /// instrument with it: `P.11 SYNTH KIT` at 0.5357, which is eight
+    /// *different drums* struck at once at velocity 127 — the one voicing in
+    /// the sweep that a keymapped patch reads differently from a melodic one,
+    /// and the reason it is louder than any chord.
     #[test]
-    fn every_patch_in_the_bank_sounds_and_none_of_them_shouts() {
-        for (index, name) in PATCH_NAMES.iter().enumerate() {
+    fn the_phosphor_set_is_audible_and_has_headroom() {
+        assert_set_is_bounded(0, &sweep_set(0), 0.5357);
+    }
+
+    /// 128 patches, and the loudest of them is `A.77 Noisy Hit` at 0.4705:
+    /// two noise sources and a saw through the drive at 0.6, with a
+    /// three-hundred-millisecond envelope and no sustain at all.
+    #[test]
+    fn the_microkorg_set_is_audible_and_has_headroom() {
+        assert_set_is_bounded(1, &sweep_set(1), 0.4705);
+    }
+
+    /// The loudest of the forty is `M.33 WIND` at 0.5045 — three noise
+    /// sources through a resonant corner, which is the one patch in the set
+    /// with no pitched oscillator to bound it.
+    #[test]
+    fn the_minimoog_set_is_audible_and_has_headroom() {
+        assert_set_is_bounded(2, &sweep_set(2), 0.5045);
+    }
+
+    /// The loudest of the fifty is `W.49 WAVE KIT` at 0.4203, which is again
+    /// a kit struck eight ways at once rather than a chord.
+    #[test]
+    fn the_wavestation_set_is_audible_and_has_headroom() {
+        assert_set_is_bounded(3, &sweep_set(3), 0.4203);
+    }
+
+
+
+    /// The patches that stand in for a ring modulator and a cross modulator
+    /// really are modulated.
+    ///
+    /// This instrument has neither, and what it has instead is oscillator D
+    /// out of the mixer and onto the matrix — pointed at the amplitude it is
+    /// amplitude modulation, which puts sum and difference sidebands either
+    /// side of a carrier that stays in the middle; pointed at pitch and at an
+    /// audio rate it is cross modulation. Both claims are made in the bank's
+    /// comments, and both are cheap to check: render the patch as voiced and
+    /// again with that one matrix amount at zero, and compare the shape of
+    /// the spectrum.
+    ///
+    /// The weakest of the twelve is `Ring Chord` at 0.069, and it is weakest
+    /// for a reason worth knowing: it is a triad, so the modulator lands on
+    /// three carriers at once and each set of sidebands is a third of the
+    /// level of a single note's. The strongest are the two that put D on
+    /// pitch rather than on the amplitude.
+    #[test]
+    fn the_ring_and_cross_modulated_patches_really_are_modulated() {
+        for (name, floor) in [
+            ("Acid Ring Bass", 0.10),
+            ("Techstep Ring Bass", 0.08),
+            ("Unison Ring Lead", 0.20),
+            ("Ring Chord", 0.05),
+            ("Short Ring Perc.", 0.05),
+            ("RingSync Bass", 0.08),
+            ("X-Mod Perc.", 0.15),
+            ("X-Mod Bass", 0.30),
+            ("Domin8or", 0.20),
+            ("OSC3 GROWL", 0.30),
+            ("OSC3 VIBRATO", 0.30),
+            ("Modulation Lead", 0.30),
+        ] {
+            let index = patch_named(name);
+            let voiced = render_patch(index, &[60], 100, 400, false);
+
             let mut s = PhosphorSynth::new();
             s.init(44_100.0, 64);
             s.set_parameter(P_PATCH, patch_knob(index));
-            let out = process_buffers(&mut s, &[note_on(60, 100, 0)], 400);
-            assert!(peak(&out) > 0.01, "{name} is silent: peak {}", peak(&out));
-            assert!(peak(&out) < 0.891, "{name} peaks at {}", peak(&out));
-            assert!(out.iter().all(|v| v.is_finite()), "{name} produced a non-finite sample");
+            let mut found = false;
+            for slot in 0..MOD_SLOTS {
+                let source = Source::from_index(selector(s.params[p_mod_src(slot)], SOURCE_COUNT));
+                if source == Source::OscD {
+                    s.set_parameter(p_mod_amount(slot), bipolar_knob(0.0));
+                    found = true;
+                }
+            }
+            assert!(found, "{name} has no oscillator D routing at all");
+            // ...and D has to be out of the mixer, or it is a fourth
+            // oscillator rather than a modulator.
+            assert_ne!(
+                selector(s.params[P_D_MODE], 3),
+                DMode::Audio as usize,
+                "{name} leaves oscillator D in the mix"
+            );
+
+            let flat = process_buffers(&mut s, &[note_on(60, 100, 0)], 400);
+            let distance: f64 = spectrum_shape(&voiced[2048..6144])
+                .iter()
+                .zip(spectrum_shape(&flat[2048..6144]).iter())
+                .map(|(p, q)| (p - q).abs())
+                .sum();
+            assert!(
+                distance > floor,
+                "{name} sounds the same with its oscillator D routing switched off: \
+                 {distance:.4} apart, where {floor} is the floor"
+            );
         }
     }
+
+
+    /// Every patch that carries a wave sequence is audibly changed by it.
+    ///
+    /// The failure this exists for is real and was found by it: five of the
+    /// percussion programs — `Bleeps Perc.` among them — had a step list and
+    /// an amplitude envelope a tenth of a second long, so the note was over
+    /// before the second step arrived and the sequence did *nothing*. On the
+    /// hardware an arpeggiator retriggers the envelope per step; here the
+    /// step list plays under one held note, so a percussive arpeggio has to
+    /// take its rhythm from the sequence's own rests and let the amplifier
+    /// hold. That is what those patches do now, and this is what would catch
+    /// it if one of them were revoiced back.
+    ///
+    /// Measured as the mean absolute difference between the patch as voiced
+    /// and the same patch with every sequence selector at "off", against the
+    /// patch's own level — so it is blind to how loud the patch is and asks
+    /// only whether the step list is doing anything. The smallest in the bank
+    /// is `W.42 STRING WAVE` at 0.17, where the sequence is deliberately on
+    /// one oscillator of four and the other three are a string section
+    /// holding still.
+    #[test]
+    fn every_sequenced_patch_is_audibly_sequenced() {
+        let mut sequenced = 0;
+        for index in 0..PATCH_COUNT {
+            let p = PhosphorSynth::params_for_patch(patch_knob(index));
+            let carries = (0..4).any(|i| seq_index(p[P_A_SEQ + i * P_OSC_STRIDE]).is_some());
+            if !carries {
+                continue;
+            }
+            sequenced += 1;
+
+            let on = render_patch(index, &[60], 100, 700, false);
+            let mut s = PhosphorSynth::new();
+            s.init(44_100.0, 64);
+            s.set_parameter(P_PATCH, patch_knob(index));
+            for i in 0..4 {
+                s.set_parameter(P_A_SEQ + i * P_OSC_STRIDE, seq_knob(None));
+            }
+            let off = process_buffers(&mut s, &[note_on(60, 100, 0)], 700);
+
+            let difference: f32 =
+                on.iter().zip(off.iter()).map(|(a, b)| (a - b).abs()).sum::<f32>()
+                    / on.len() as f32;
+            let level = rms(&on);
+            assert!(level > 0.001, "{} is too quiet to measure", PATCH_NAMES[index]);
+            assert!(
+                difference / level > 0.10,
+                "{} {} sounds the same with its sequences switched off: {:.3} of its own \
+                 level, so the step list is inaudible",
+                PATCH_SLOTS[index],
+                PATCH_NAMES[index],
+                difference / level
+            );
+        }
+        assert_eq!(sequenced, 54, "the bank should carry 54 sequenced patches");
+    }
+
 
     #[test]
     fn patch_names_fit_the_editors_label_column() {
@@ -3882,18 +3919,338 @@ mod tests {
             );
             assert!(!label.is_empty(), "patch {index} has no label");
             assert!(!PATCH_NAMES[index].is_empty(), "patch {index} has no name");
+            // A label is the slot and then as much of the name as fits, so
+            // that a player stepping through 229 patches can see where in the
+            // bank they are. Both halves have to be there: a label that is
+            // only its slot number would fit and say nothing.
+            let slot = PATCH_SLOTS[index];
+            let short: String = slot.chars().filter(|c| *c != '.').collect();
+            assert!(
+                label.starts_with(&format!("{short} ")),
+                "patch {index} {label:?} does not lead with its slot {slot:?}"
+            );
+            assert!(
+                label.chars().count() > short.chars().count() + 1,
+                "patch {index} {label:?} is a slot with no name after it"
+            );
         }
+        for (index, slot) in PATCH_SLOTS.iter().enumerate() {
+            assert_eq!(slot.chars().count(), 4, "slot {index} {slot:?} is not four columns");
+            assert!(
+                PATCH_SLOTS.iter().filter(|s| *s == slot).count() == 1,
+                "slot {slot:?} is used twice"
+            );
+        }
+    }
+
+    /// Every chart row lands inside the panel's travel.
+    ///
+    /// `chart_params` writes a chart's numbers straight into the parameter
+    /// block, and the block is what the engine reads — so a row that asks for
+    /// a level of 1.4, a tuning of +30 semitones or 60 cents of detune would
+    /// arrive as a knob outside its own range. Some of those clamp harmlessly
+    /// and some do not: the headroom argument for this instrument is that the
+    /// vector mix is bounded by the largest *level knob*, and a level knob
+    /// above one would quietly undo it.
+    ///
+    /// This is also the check that catches the class of mistake a bank this
+    /// size invites, and did: nineteen oscillators across the four sets were
+    /// written with a semitone offset in the wavetable column — `+12` where
+    /// `semi = 12` was meant — which the engine ignored on an analog shape,
+    /// so those oscillators played at the wrong octave and nothing said so.
+    #[test]
+    fn every_chart_row_is_inside_the_panels_travel() {
+        for index in 0..PATCH_COUNT {
+            let params = PhosphorSynth::params_for_patch(patch_knob(index));
+            for (i, value) in params.iter().enumerate() {
+                assert!(
+                    (0.0..=1.0).contains(value),
+                    "{} {}: {} is {value}, outside the knob's travel",
+                    PATCH_SLOTS[index],
+                    PATCH_NAMES[index],
+                    PARAM_NAMES[i]
+                );
+            }
+            // The four oscillator levels are the ones the headroom argument
+            // rests on, so they are named rather than left to the sweep above.
+            for osc in 0..4 {
+                let level = params[P_A_LEVEL + osc * P_OSC_STRIDE];
+                assert!(
+                    level <= 1.0,
+                    "{} oscillator {osc} is at {level}",
+                    PATCH_NAMES[index]
+                );
+            }
+        }
+    }
+
+    /// The four sets, and the coarse move that stands in for a second knob.
+    #[test]
+    fn the_bank_divides_into_the_sets_it_names() {
+        assert_eq!(BANK_NAMES.len(), BANK_COUNT);
+        assert_eq!(BANK_FIRST[0], 0);
+        assert_eq!(BANK_FIRST[BANK_COUNT], PATCH_COUNT);
+        for (set, name) in BANK_NAMES.iter().enumerate() {
+            let (first, end) = bank_bounds(set);
+            assert!(first < end, "{name} is empty");
+            assert!(name.chars().count() <= 12, "set name {name:?} does not fit the panel");
+            for index in first..end {
+                assert_eq!(patch_bank(index), set, "patch {index} is in the wrong set");
+            }
+        }
+        // The slot letter and the set agree, which is the property that makes
+        // a label readable without the set being printed beside it.
+        for (index, slot) in PATCH_SLOTS.iter().enumerate() {
+            let letter = slot.chars().next().unwrap();
+            let want = match letter {
+                'P' => 0,
+                'A' | 'B' => 1,
+                'M' => 2,
+                _ => 3,
+            };
+            assert_eq!(patch_bank(index), want, "{slot} is not in {}", BANK_NAMES[want]);
+        }
+        // Out of range answers rather than panics, in both directions.
+        assert_eq!(patch_bank(PATCH_COUNT + 99), BANK_COUNT - 1);
+        assert_eq!(bank_bounds(BANK_COUNT + 5), bank_bounds(BANK_COUNT - 1));
+
+        // The coarse move: up lands on the first patch of the next set, down
+        // on the first of this one and then on the first of the previous, so
+        // the two are inverses wherever the knob is standing.
+        let mut knob = patch_knob(0);
+        for (set, first) in BANK_FIRST.iter().enumerate().take(BANK_COUNT).skip(1) {
+            knob = bank_step(knob, true);
+            assert_eq!(patch_index(knob), *first, "up did not reach set {set}");
+        }
+        assert_eq!(patch_index(bank_step(knob, true)), PATCH_COUNT - 1, "up ran off the end");
+        for (set, first) in BANK_FIRST.iter().enumerate().take(BANK_COUNT - 1).rev() {
+            knob = bank_step(knob, false);
+            assert_eq!(patch_index(knob), *first, "down did not reach set {set}");
+        }
+        assert_eq!(patch_index(bank_step(knob, false)), 0, "down ran off the start");
+        // From the middle of a set, down goes to the top of that set first.
+        let middle = patch_knob(BANK_FIRST[1] + 40);
+        assert_eq!(patch_index(bank_step(middle, false)), BANK_FIRST[1]);
+        assert_eq!(patch_index(bank_step(middle, true)), BANK_FIRST[2]);
+    }
+
+    /// The microKORG set is the factory list, checked against the factory
+    /// list.
+    ///
+    /// The fixture is Korg's own Voice Name List as data — slot, MIDI number,
+    /// row, name, category, single or layer, tempo and arpeggiator state —
+    /// included verbatim rather than transcribed into Rust, so that a bank
+    /// which agrees with itself cannot pass by agreeing with a typo. The same
+    /// arrangement the DX7's ROM fixture uses, and for the same reason.
+    ///
+    /// What it holds this file to is names, slots and *order*, which is all
+    /// of the microKORG set that is factory data. The parameter values are
+    /// authored and no fixture can check them.
+    #[test]
+    fn the_microkorg_set_is_the_factory_list() {
+        const LIST: &str = include_str!("../tests/data/microkorg_voices.json");
+        let voices: serde_json::Value = serde_json::from_str(LIST).unwrap();
+        let voices = voices.as_array().unwrap();
+        assert_eq!(voices.len(), 128, "the factory list is 128 programs");
+
+        let (first, end) = bank_bounds(1);
+        assert_eq!(end - first, voices.len(), "the set is not the size of the list");
+
+        for (offset, voice) in voices.iter().enumerate() {
+            let index = first + offset;
+            let slot = voice["slot"].as_str().unwrap();
+            let name = voice["name"].as_str().unwrap();
+            assert_eq!(PATCH_SLOTS[index], slot, "patch {index} is in the wrong slot");
+            assert_eq!(PATCH_NAMES[index], name, "{slot} is not the factory name");
+            // The MIDI program number is the position in the set, which is
+            // what makes a program change land on the program it names.
+            assert_eq!(voice["midi"].as_u64().unwrap() as usize, offset);
+        }
+    }
+
+    /// No two patches in the bank are the same sound.
+    ///
+    /// The failure this exists for is the one a bank of 229 invites: a row
+    /// copied to save typing and then not revoiced, which nobody finds by
+    /// playing because nobody plays 229 patches side by side. Measured on the
+    /// *shape* of the spectrum — `spectrum_shape` is normalised, so it is
+    /// blind to level and to pitch — over the tenth of a second after the
+    /// note starts, which is where a patch's identity is and where the short
+    /// ones still have something to measure.
+    ///
+    /// The closest pair in the bank is `A.52 MG Bass 1` and `M.01 FAT BASS`
+    /// at 0.053, and they are supposed to be close: MG is Korg's shorthand
+    /// for Moog and both patches are the same instrument's bass sound, voiced
+    /// from the same three sawtooths. That pair is what sets the threshold —
+    /// everything else is further apart than the two patches that are trying
+    /// to be the same thing.
+    #[test]
+    fn no_two_patches_in_the_bank_are_the_same_sound() {
+        let prints: Vec<[f64; SPECTRUM_BINS]> = (0..PATCH_COUNT)
+            .map(|index| spectrum_shape(&render_patch(index, &[60], 100, 700, false)[512..4608]))
+            .collect();
+        let mut closest = (f64::MAX, 0usize, 0usize);
+        for (i, a) in prints.iter().enumerate() {
+            for (j, b) in prints.iter().enumerate().skip(i + 1) {
+                let distance: f64 = a.iter().zip(b.iter()).map(|(p, q)| (p - q).abs()).sum();
+                if distance < closest.0 {
+                    closest = (distance, i, j);
+                }
+            }
+        }
+        assert!(
+            closest.0 > 0.03,
+            "{} {} and {} {} are the same sound: {:.4} apart",
+            PATCH_SLOTS[closest.1],
+            PATCH_NAMES[closest.1],
+            PATCH_SLOTS[closest.2],
+            PATCH_NAMES[closest.2],
+            closest.0
+        );
+    }
+
+    /// The microKORG set is voiced to its categories, not just to its names.
+    ///
+    /// The factory list puts every program in a category, and a category is a
+    /// claim about the sound: a Bass is dark and an S.E. is not. Measured in
+    /// zero crossings a second, which separates them by an order of
+    /// magnitude, and asserted on medians rather than on any one patch —
+    /// `Sub Bass` and `Killa Beez` are both in this set and no per-patch rule
+    /// covers them both.
+    ///
+    /// The nine medians as they stand: Bass 960, Synth 1352, Vocoder 1374,
+    /// Strings/Pad 1478, Synth Lead 2141, Hit 2464, KBD 2686, Arpeggio 3196,
+    /// S.E. 6135 crossings a second.
+    #[test]
+    fn the_microkorg_set_is_voiced_to_its_categories() {
+        const LIST: &str = include_str!("../tests/data/microkorg_voices.json");
+        let voices: serde_json::Value = serde_json::from_str(LIST).unwrap();
+        let (first, _) = bank_bounds(1);
+
+        let mut by_category: std::collections::BTreeMap<&str, Vec<f64>> =
+            std::collections::BTreeMap::new();
+        for (offset, voice) in voices.as_array().unwrap().iter().enumerate() {
+            let out = render_patch(first + offset, &[60], 100, 700, false);
+            by_category
+                .entry(voice["category"].as_str().unwrap())
+                .or_default()
+                .push(brightness(&out));
+        }
+
+        let median = |category: &str| -> f64 {
+            let mut v = by_category[category].clone();
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v[v.len() / 2]
+        };
+        let bass = median("Bass");
+        let lead = median("Synth Lead");
+        let effect = median("S.E.");
+        assert!(bass < lead, "the basses are not darker than the leads: {bass:.0} vs {lead:.0}");
+        assert!(
+            effect > bass * 3.0,
+            "the effects are not brighter than the basses: {effect:.0} vs {bass:.0}"
+        );
+        for category in by_category.keys() {
+            assert!(
+                bass <= median(category),
+                "{category} is darker than the basses: {:.0} against {bass:.0}",
+                median(category)
+            );
+        }
+    }
+
+    /// The two substitutions the bank makes are structural, so they can be
+    /// asserted rather than only described.
+    ///
+    /// **The vocoder programs** are voiced as the carrier alone, and the
+    /// carrier is the wavetable oscillator — so every one of the sixteen has
+    /// to be reading the wave bank somewhere. **The arpeggio programs** are
+    /// voiced as the sound the arpeggiator would be playing, so each of the
+    /// eighteen has to carry either a wave sequence or a stepped modulation
+    /// at the tempo the factory list gives it. B.21 S&H Signal is the one
+    /// that takes the second route: its part is a sample-and-hold on pitch at
+    /// a sixteenth of 138, which is what that name asks for and what no step
+    /// list in the bank can do.
+    #[test]
+    fn the_vocoder_and_arpeggio_programs_are_voiced_as_they_claim() {
+        const LIST: &str = include_str!("../tests/data/microkorg_voices.json");
+        let voices: serde_json::Value = serde_json::from_str(LIST).unwrap();
+        let (first, _) = bank_bounds(1);
+
+        let mut vocoders = 0;
+        let mut arpeggios = 0;
+        let mut sequenced = 0;
+        for (offset, voice) in voices.as_array().unwrap().iter().enumerate() {
+            let index = first + offset;
+            let slot = PATCH_SLOTS[index];
+            let name = PATCH_NAMES[index];
+            let p = PhosphorSynth::params_for_patch(patch_knob(index));
+            let shapes: Vec<Shape> = (0..4)
+                .map(|i| {
+                    Shape::from_index(selector(p[P_A_WAVE + i * P_OSC_STRIDE], SHAPE_COUNT))
+                })
+                .collect();
+            let sequences: Vec<Option<usize>> =
+                (0..4).map(|i| seq_index(p[P_A_SEQ + i * P_OSC_STRIDE])).collect();
+
+            match voice["category"].as_str().unwrap() {
+                "Vocoder" => {
+                    vocoders += 1;
+                    assert!(
+                        shapes.contains(&Shape::Table),
+                        "{slot} {name} is a vocoder program with no wavetable carrier"
+                    );
+                }
+                "Arpeggio" => {
+                    arpeggios += 1;
+                    let carries = sequences.iter().any(Option::is_some);
+                    if carries {
+                        sequenced += 1;
+                    }
+                    let stepped = (0..MOD_SLOTS).any(|slot| {
+                        let source = Source::from_index(selector(p[p_mod_src(slot)], SOURCE_COUNT));
+                        let dest = Dest::from_index(selector(p[p_mod_dest(slot)], DEST_COUNT));
+                        let amount = bipolar(p[p_mod_amount(slot)]).abs();
+                        matches!(source, Source::Lfo1 | Source::Lfo2)
+                            && dest == Dest::Pitch
+                            && amount > 0.1
+                    });
+                    assert!(
+                        carries || stepped,
+                        "{slot} {name} is an arpeggio program with neither a sequence nor \
+                         a stepped modulation"
+                    );
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(vocoders, 16, "the factory list has sixteen vocoder programs");
+        assert_eq!(arpeggios, 18, "the factory list has eighteen arpeggio programs");
+        assert_eq!(sequenced, 17, "seventeen of the eighteen carry a step list");
     }
 
     // ── Keymapped patches ──
 
-    /// Where SYNTH KIT sits in the bank.
-    const KIT: usize = PATCH_COUNT - 1;
+    /// Which patch a name selects, for the tests that measure a particular
+    /// one. By name rather than by position, because the bank grew around
+    /// them: SYNTH KIT was the last patch when it was the only kit and is now
+    /// the eleventh of 229.
+    fn patch_named(name: &str) -> usize {
+        PATCH_NAMES
+            .iter()
+            .position(|n| *n == name)
+            .unwrap_or_else(|| panic!("no patch called {name}"))
+    }
+
+    /// The starter kit, which most of the keymap tests measure.
+    fn kit_index() -> usize {
+        patch_named("SYNTH KIT")
+    }
 
     fn kit() -> PhosphorSynth {
         let mut s = PhosphorSynth::new();
         s.init(44_100.0, 64);
-        s.set_parameter(P_PATCH, patch_knob(KIT));
+        s.set_parameter(P_PATCH, patch_knob(kit_index()));
         s
     }
 
@@ -3936,9 +4293,9 @@ mod tests {
     /// longer, which no transposition of one recipe can produce.
     #[test]
     fn a_keymapped_patch_plays_a_different_sound_on_every_note() {
-        let kick = strike(KIT, 36, 110);
-        let snare = strike(KIT, 38, 110);
-        let hat = strike(KIT, 42, 110);
+        let kick = strike(kit_index(), 36, 110);
+        let snare = strike(kit_index(), 38, 110);
+        let hat = strike(kit_index(), 42, 110);
 
         for (name, out) in [("kick", &kick), ("snare", &snare), ("hat", &hat)] {
             assert!(peak(out) > 0.01, "the {name} is silent: peak {}", peak(out));
@@ -3990,19 +4347,19 @@ mod tests {
 
     #[test]
     fn every_zone_of_the_kit_sounds_and_they_are_all_different() {
-        assert!(is_keymapped(KIT), "the kit is not keymapped");
+        assert!(is_keymapped(kit_index()), "the kit is not keymapped");
         assert!(!is_keymapped(0), "the default patch is keymapped");
-        assert_eq!(key_zone_count(KIT), 8);
+        assert_eq!(key_zone_count(kit_index()), 8);
         assert_eq!(key_zone_count(0), 0);
-        assert_eq!(key_zone(KIT, 0), Some((36, "kick")));
-        assert_eq!(key_zone(KIT, 8), None);
+        assert_eq!(key_zone(kit_index(), 0), Some((36, "kick")));
+        assert_eq!(key_zone(kit_index(), 8), None);
         // Out of range in either direction still answers rather than panics.
         assert_eq!(key_zone_count(PATCH_COUNT + 5), key_zone_count(PATCH_COUNT - 1));
 
         let mut renders = Vec::new();
-        for zone in 0..key_zone_count(KIT) {
-            let (note, name) = key_zone(KIT, zone).unwrap();
-            let out = strike(KIT, note, 110);
+        for zone in 0..key_zone_count(kit_index()) {
+            let (note, name) = key_zone(kit_index(), zone).unwrap();
+            let out = strike(kit_index(), note, 110);
             assert!(peak(&out) > 0.01, "{name} on note {note} is silent");
             assert!(peak(&out) < 0.891, "{name} peaks at {}", peak(&out));
             renders.push((name, out));
@@ -4017,29 +4374,110 @@ mod tests {
         }
     }
 
+    /// Which patches read the keyboard as a set of sounds.
+    fn kits() -> Vec<usize> {
+        (0..PATCH_COUNT).filter(|i| is_keymapped(*i)).collect()
+    }
+
+    /// Every note of every kit, and the argument for having four of them.
+    ///
+    /// The bank carries the starter kit and three more — analog, wavetable
+    /// and hand percussion — and the claim being made is that they are three
+    /// obviously different sounds out of one engine rather than one kit
+    /// re-tuned three times. So this measures both: within a kit no two notes
+    /// may be the same sample for sample, and across kits the same note has
+    /// to differ in *brightness*, which is the measure a transposition cannot
+    /// move much and a change of waveform moves a lot.
+    #[test]
+    fn every_kit_speaks_on_every_note_and_no_two_kits_are_alike() {
+        let kits = kits();
+        assert_eq!(kits.len(), 4, "the bank should carry four kits");
+        for &kit in &kits {
+            let zones = key_zone_count(kit);
+            assert!(zones >= 8, "{} has only {zones} zones", PATCH_NAMES[kit]);
+            let mut renders = Vec::new();
+            for zone in 0..zones {
+                let (note, name) = key_zone(kit, zone).unwrap();
+                let out = strike(kit, note, 110);
+                let kit_name = PATCH_NAMES[kit];
+                assert!(
+                    peak(&out) > 0.01,
+                    "{kit_name}: {name} on note {note} is silent ({:.5})",
+                    peak(&out)
+                );
+                assert!(peak(&out) <= CEILING, "{kit_name}: {name} peaks at {}", peak(&out));
+                assert!(out.iter().all(|v| v.is_finite()));
+                renders.push((name, out));
+            }
+            for (i, (name_a, a)) in renders.iter().enumerate() {
+                for (name_b, b) in renders.iter().skip(i + 1) {
+                    let difference: f32 =
+                        a.iter().zip(b.iter()).map(|(p, q)| (p - q).abs()).sum::<f32>()
+                            / a.len() as f32;
+                    assert!(
+                        difference > 1e-4,
+                        "{}: {name_a} and {name_b} sound the same",
+                        PATCH_NAMES[kit]
+                    );
+                }
+            }
+        }
+
+        // Across kits, on the notes they share: 36 is a kick on three of them
+        // and folds to the lowest thing the percussion kit has, 38 is a
+        // snare, 42 is a hi-hat.
+        //
+        // Measured by spectrum rather than by zero crossings, and the hi-hats
+        // are why: three different hats made three different ways all cross
+        // zero about 25,000 times a second, because that measure saturates on
+        // anything mostly noise. `spectrum_shape` is normalised, so it is
+        // blind to level and to pitch and sees only the shape — which is the
+        // thing that is supposed to differ.
+        for note in [36u8, 38, 42] {
+            let shapes: Vec<(usize, [f64; SPECTRUM_BINS])> = kits
+                .iter()
+                .map(|&k| (k, spectrum_shape(&strike(k, note, 110)[..4096])))
+                .collect();
+            for (i, (kit_a, a)) in shapes.iter().enumerate() {
+                for (kit_b, b) in shapes.iter().skip(i + 1) {
+                    let distance: f64 =
+                        a.iter().zip(b.iter()).map(|(p, q)| (p - q).abs()).sum();
+                    assert!(
+                        distance > 0.15,
+                        "note {note} has the same spectrum on {} and {}: {distance:.3} apart, \
+                         where two kits should be a quarter or more",
+                        PATCH_NAMES[*kit_a],
+                        PATCH_NAMES[*kit_b]
+                    );
+                }
+            }
+        }
+    }
+
     /// A note the kit does not map plays the nearest one it does — not
     /// silence, and not that note transposed.
     #[test]
     fn an_unmapped_note_folds_onto_the_nearest_zone() {
         // Well above the top of the map, and well below the bottom.
-        assert_eq!(strike(KIT, 100, 110), strike(KIT, 49, 110), "the top did not fold");
-        assert_eq!(strike(KIT, 0, 110), strike(KIT, 36, 110), "the bottom did not fold");
+        let kit = kit_index();
+        assert_eq!(strike(kit, 100, 110), strike(kit, 49, 110), "the top did not fold");
+        assert_eq!(strike(kit, 0, 110), strike(kit, 36, 110), "the bottom did not fold");
         // A tie goes to the lower entry, because the scan runs in note order
         // and only takes a strictly closer one. 37 is one from 36 and one
         // from 38.
-        assert_eq!(strike(KIT, 37, 110), strike(KIT, 36, 110), "a tie went the wrong way");
+        assert_eq!(strike(kit, 37, 110), strike(kit, 36, 110), "a tie went the wrong way");
         // ...and it really is the recipe rather than a transposition of it:
         // the fold sounds identical, where a transposed note would not.
-        assert_ne!(strike(KIT, 100, 110), strike(KIT, 36, 110));
+        assert_ne!(strike(kit, 100, 110), strike(kit, 36, 110));
     }
 
     /// Velocity still works per note on a keymapped patch.
     #[test]
     fn velocity_still_works_on_every_zone() {
-        for zone in 0..key_zone_count(KIT) {
-            let (note, name) = key_zone(KIT, zone).unwrap();
-            let soft = peak(&strike(KIT, note, 40));
-            let hard = peak(&strike(KIT, note, 127));
+        for zone in 0..key_zone_count(kit_index()) {
+            let (note, name) = key_zone(kit_index(), zone).unwrap();
+            let soft = peak(&strike(kit_index(), note, 40));
+            let hard = peak(&strike(kit_index(), note, 127));
             assert!(hard > soft * 1.2, "{name} is not velocity sensitive: {soft} vs {hard}");
         }
     }
@@ -4092,8 +4530,8 @@ mod tests {
     #[test]
     fn the_whole_kit_at_once_has_headroom() {
         let mut s = kit();
-        let events: Vec<MidiEvent> = (0..key_zone_count(KIT))
-            .map(|zone| note_on(key_zone(KIT, zone).unwrap().0, 127, 0))
+        let events: Vec<MidiEvent> = (0..key_zone_count(kit_index()))
+            .map(|zone| note_on(key_zone(kit_index(), zone).unwrap().0, 127, 0))
             .collect();
         let out = process_buffers(&mut s, &events, 400);
         assert!(out.iter().all(|v| v.is_finite()));
