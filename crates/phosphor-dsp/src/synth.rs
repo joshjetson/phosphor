@@ -16,18 +16,53 @@
 //! * **the Prophet VS / Wavestation's vector mix.** Four oscillators balanced
 //!   by a position on a square rather than by four faders — and that position
 //!   is itself a modulation destination, so the balance can move.
+//! * **the Wavestation's wave sequencing.** Each of the four oscillators can
+//!   be handed a step list — waveform, length, crossfade, pitch, level — that
+//!   it walks on its own clock, crossfading between neighbours. See below.
 //!
 //! ```text
-//!   OSC A ─┐
-//!   OSC B ─┤                                        ┌── AMP ──►
-//!   OSC C ─┼─ vector mix ── DRIVE ── LADDER FILTER ─┘
-//!   OSC D ─┘                   ▲          ▲
-//!                              │          │
-//!                        ┌─────┴──────────┴─────┐
-//!                        │      MOD MATRIX      │
-//!                        │  src → dest → amount │
-//!                        └──────────────────────┘
+//!   SEQ ─▶ OSC A ─┐
+//!   SEQ ─▶ OSC B ─┤                                 ┌── AMP ──►
+//!   SEQ ─▶ OSC C ─┼─ vector mix ─ DRIVE ─ LADDER ───┘
+//!   SEQ ─▶ OSC D ─┘                 ▲        ▲
+//!            ▲                      │        │
+//!            │                ┌─────┴────────┴───────┐
+//!            └────────────────┤      MOD MATRIX      │
+//!                             │  src → dest → amount │
+//!                             └──────────────────────┘
 //! ```
+//!
+//! ## Wave sequencing
+//!
+//! A wave sequence is a list of steps. Each step names a waveform from the
+//! bank, a length, a crossfade into the next step, a pitch offset and a level;
+//! an oscillator pointed at a sequence walks the list and crossfades between
+//! neighbours, so its timbre — and its pitch, and its rhythm — evolve on their
+//! own. No envelope can imitate that, because an envelope shapes one waveform
+//! where this replaces it.
+//!
+//! Per *oscillator* rather than per voice, which is the Wavestation's own
+//! shape: four sequences of different lengths running against each other and
+//! mixed on the vector square do not repeat on any period a listener can
+//! count, where one sequence for the whole voice is a loop.
+//!
+//! The sequences live in [`SEQ_BANK`], a `'static` table, and a patch points
+//! each oscillator at one by index — so a sequence is an object a patch
+//! *references*, the way a Wavestation's is, rather than something a patch
+//! contains. The panel selector is the reference, "off" is its first position,
+//! and the oscillator's own controls stay live over the top of it: WAVE picks
+//! whether the step's waveform is read at all, TABLE slides the whole sequence
+//! through the bank, TUNE and LEVEL scale what the steps ask for.
+//!
+//! Timing is a clock in hertz — the SEQ RATE knob — and a step length in
+//! *ticks* of it, rather than a step length in seconds. Two reasons. One knob
+//! then speeds a whole pattern up without changing its rhythm, which is what a
+//! player wants and what seconds-per-step cannot give; and a rate is one
+//! number, so the matrix can push it (`seq hz`) where a table of durations
+//! could not be pushed at all. It free-runs rather than syncing to the
+//! transport because the plugin API carries no tempo — `Plugin::process` is
+//! handed audio and MIDI and nothing else — so sync is not this instrument's
+//! to implement.
 //!
 //! ## Melodic and keymapped patches
 //!
@@ -58,17 +93,26 @@
 //!
 //! Nothing in `process` allocates, locks or panics. The voices are a fixed
 //! array rather than a `Vec`, the MIDI sort runs in a fixed buffer, the key
-//! map is a `'static` table read by a bounded scan at note-on, and the
-//! wavetable bank is built once per process behind a `OnceLock` that the
-//! constructor resolves into a `&'static` — so the audio thread never touches
-//! the cell at all.
+//! map is a `'static` table read by a bounded scan at note-on, the wave
+//! sequences are `'static` step lists that a voice indexes into rather than
+//! scans — twice per step, not per sample — and the wavetable bank is built
+//! once per process behind a `OnceLock` that the constructor resolves into a
+//! `&'static`, so the audio thread never touches the cell at all.
+//!
+//! Every loop is bounded by a compile-time constant except the sample loop
+//! itself. The one that could have grown is the sequence cursor: its increment
+//! is clamped so that it crosses at most one step boundary per sample, which
+//! makes advancing it an `if` rather than the "drain everything pending" loop
+//! that a high enough clock rate would otherwise turn into a stall.
 //!
 //! That is checked rather than claimed. `the_audio_path_does_not_allocate`
 //! counts allocations on its own thread across a buffer with three times as
-//! many simultaneous keys as there are voices, and asserts the count is zero.
-//! The Odyssey had a `Vec` that could reallocate inside the callback on the
-//! seventeenth simultaneous key, and nothing caught it, because "no allocation
-//! in `process`" is a property of the code rather than of its output.
+//! many simultaneous keys as there are voices, on a sequenced patch, with
+//! every sequence in the bank pointed at every oscillator in turn under a held
+//! chord — and asserts the count is zero. The Odyssey had a `Vec` that could
+//! reallocate inside the callback on the seventeenth simultaneous key, and
+//! nothing caught it, because "no allocation in `process`" is a property of
+//! the code rather than of its output.
 
 use std::sync::OnceLock;
 
@@ -102,13 +146,26 @@ const MAX_VOICES: usize = 8;
 /// eight-note chord — past the master limiter's ceiling, burning 5 dB of
 /// saturation against a 2 dB budget — and nothing measured it.
 /// `the_panel_at_its_extremes_stays_under_the_ceiling` is what replaced that
-/// silence: fourteen deliberately hostile panels, each on five voicings at two
-/// velocities, covering every oscillator shape at full level, every corner of
-/// the vector, every matrix slot at full depth pointed at cutoff, resonance
-/// and the vector at once, and the filter self-oscillating with no oscillator
-/// at all. The worst of the 140 renders measures 0.6982, which is *under* the
-/// saturator's knee — so even the extremes are the trimmed voice sum sample
-/// for sample, and the bounding stage never engages anywhere on the panel.
+/// silence: thirty-two deliberately hostile panels, each on five voicings at
+/// two velocities, covering every oscillator shape at full level, every corner
+/// of the vector, every matrix slot at full depth pointed at cutoff, resonance
+/// and the vector at once, every wave sequence in the bank on all four
+/// oscillators at two clock rates, the clock itself pushed to both ends of its
+/// travel from every slot at once, and the filter self-oscillating with no
+/// oscillator at all. The worst of the 320 renders measures 0.6982, which is
+/// *under* the saturator's knee — so even the extremes are the trimmed voice
+/// sum sample for sample, and the bounding stage never engages anywhere on the
+/// panel.
+///
+/// Sequencing did not move that figure at all: it is the same case and the
+/// same number as before there were sequences — every matrix slot at full
+/// depth from velocity, on an eight-note chord — with the loudest sequenced
+/// panel 0.0003 behind it. The reason is worth stating, because it is the
+/// property that makes a step list safe to add: every waveform in the bank is
+/// bounded by one, a step's level is bounded by one, and a crossfade between
+/// two bounded values is bounded, so a step list cannot introduce level. The
+/// vector mix is still bounded by the largest level knob, which is the
+/// argument this trim already rested on.
 ///
 /// Holding to the knee rather than to the 2 dB saturation budget the other
 /// banks are allowed costs about 1.3 dB of level. It is worth it here: the
@@ -129,67 +186,82 @@ const OUTPUT_TRIM: f32 = 0.116;
 
 pub const P_PATCH: usize = 0;
 
+/// How many controls one oscillator has, and therefore the distance between
+/// oscillator A's first knob and oscillator B's.
+///
+/// Public because an editor that wants to draw the four oscillators as four
+/// rows needs the stride, and counting it from the index constants is the kind
+/// of arithmetic that goes stale when a control is added — as one just was.
+pub const P_OSC_STRIDE: usize = 6;
+
 // OSC A
 pub const P_A_WAVE: usize = 1;
 pub const P_A_TABLE: usize = 2;
 pub const P_A_TUNE: usize = 3;
 pub const P_A_FINE: usize = 4;
 pub const P_A_LEVEL: usize = 5;
+pub const P_A_SEQ: usize = 6;
 // OSC B
-pub const P_B_WAVE: usize = 6;
-pub const P_B_TABLE: usize = 7;
-pub const P_B_TUNE: usize = 8;
-pub const P_B_FINE: usize = 9;
-pub const P_B_LEVEL: usize = 10;
+pub const P_B_WAVE: usize = 7;
+pub const P_B_TABLE: usize = 8;
+pub const P_B_TUNE: usize = 9;
+pub const P_B_FINE: usize = 10;
+pub const P_B_LEVEL: usize = 11;
+pub const P_B_SEQ: usize = 12;
 // OSC C
-pub const P_C_WAVE: usize = 11;
-pub const P_C_TABLE: usize = 12;
-pub const P_C_TUNE: usize = 13;
-pub const P_C_FINE: usize = 14;
-pub const P_C_LEVEL: usize = 15;
+pub const P_C_WAVE: usize = 13;
+pub const P_C_TABLE: usize = 14;
+pub const P_C_TUNE: usize = 15;
+pub const P_C_FINE: usize = 16;
+pub const P_C_LEVEL: usize = 17;
+pub const P_C_SEQ: usize = 18;
 // OSC D
-pub const P_D_WAVE: usize = 16;
-pub const P_D_TABLE: usize = 17;
-pub const P_D_TUNE: usize = 18;
-pub const P_D_FINE: usize = 19;
-pub const P_D_LEVEL: usize = 20;
-pub const P_D_MODE: usize = 21;
+pub const P_D_WAVE: usize = 19;
+pub const P_D_TABLE: usize = 20;
+pub const P_D_TUNE: usize = 21;
+pub const P_D_FINE: usize = 22;
+pub const P_D_LEVEL: usize = 23;
+pub const P_D_SEQ: usize = 24;
+pub const P_D_MODE: usize = 25;
+
+/// The wave sequence clock, shared by the four oscillators.
+pub const P_SEQ_RATE: usize = 26;
 
 // MIX
-pub const P_VECTOR_X: usize = 22;
-pub const P_VECTOR_Y: usize = 23;
-pub const P_PULSE_WIDTH: usize = 24;
+pub const P_VECTOR_X: usize = 27;
+pub const P_VECTOR_Y: usize = 28;
+pub const P_PULSE_WIDTH: usize = 29;
 
 // FILTER
-pub const P_DRIVE: usize = 25;
-pub const P_CUTOFF: usize = 26;
-pub const P_RESO: usize = 27;
-pub const P_FILTER_ENV: usize = 28;
-pub const P_KEY_FOLLOW: usize = 29;
+pub const P_DRIVE: usize = 30;
+pub const P_CUTOFF: usize = 31;
+pub const P_RESO: usize = 32;
+pub const P_FILTER_ENV: usize = 33;
+pub const P_KEY_FOLLOW: usize = 34;
 
 // AMP
-pub const P_VELOCITY: usize = 30;
-pub const P_GAIN: usize = 31;
+pub const P_VELOCITY: usize = 35;
+pub const P_GAIN: usize = 36;
 
 // LFOs
-pub const P_LFO1_WAVE: usize = 32;
-pub const P_LFO1_RATE: usize = 33;
-pub const P_LFO2_WAVE: usize = 34;
-pub const P_LFO2_RATE: usize = 35;
+pub const P_LFO1_WAVE: usize = 37;
+pub const P_LFO1_RATE: usize = 38;
+pub const P_LFO2_WAVE: usize = 39;
+pub const P_LFO2_RATE: usize = 40;
 
 // ENVELOPES
-pub const P_ATTACK1: usize = 36;
-pub const P_DECAY1: usize = 37;
-pub const P_SUSTAIN1: usize = 38;
-pub const P_RELEASE1: usize = 39;
-pub const P_ATTACK2: usize = 40;
-pub const P_DECAY2: usize = 41;
-pub const P_SUSTAIN2: usize = 42;
-pub const P_RELEASE2: usize = 43;
+pub const P_ATTACK1: usize = 41;
+pub const P_DECAY1: usize = 42;
+pub const P_SUSTAIN1: usize = 43;
+pub const P_RELEASE1: usize = 44;
+pub const P_ATTACK2: usize = 45;
+pub const P_DECAY2: usize = 46;
+pub const P_SUSTAIN2: usize = 47;
+pub const P_RELEASE2: usize = 48;
 
 /// The first of the matrix's slots. Slot `i` is three consecutive indices from
 /// here: source, destination, amount.
-pub const P_MOD_BASE: usize = 44;
+pub const P_MOD_BASE: usize = 49;
 
 /// How many source → destination → amount slots the matrix has.
 ///
@@ -198,7 +270,7 @@ pub const P_MOD_BASE: usize = 44;
 /// hard-wired here — envelope 2 to cutoff, keyboard to cutoff, velocity to
 /// amplitude, envelope 1 to amplitude — so six free slots go further than
 /// four do there. Past six the panel starts to be mostly matrix: at three
-/// parameters a slot, six is already 18 of the 62 controls.
+/// parameters a slot, six is already 18 of the 67 controls.
 pub const MOD_SLOTS: usize = 6;
 
 pub const PARAM_COUNT: usize = P_MOD_BASE + MOD_SLOTS * 3;
@@ -223,10 +295,11 @@ pub const fn p_mod_amount(slot: usize) -> usize {
 
 pub const PARAM_NAMES: [&str; PARAM_COUNT] = [
     "patch",
-    "a wave", "a table", "a tune", "a fine", "a level",
-    "b wave", "b table", "b tune", "b fine", "b level",
-    "c wave", "c table", "c tune", "c fine", "c level",
-    "d wave", "d table", "d tune", "d fine", "d level", "d mode",
+    "a wave", "a table", "a tune", "a fine", "a level", "a seq",
+    "b wave", "b table", "b tune", "b fine", "b level", "b seq",
+    "c wave", "c table", "c tune", "c fine", "c level", "c seq",
+    "d wave", "d table", "d tune", "d fine", "d level", "d seq", "d mode",
+    "seq rate",
     "vector x", "vector y", "pw",
     "drive", "cutoff", "reso", "vcf env", "kybd",
     "vel", "gain",
@@ -250,11 +323,11 @@ pub const PARAM_DEFAULTS: [f32; PARAM_COUNT] = chart_params(0);
 // ── Discrete controls ──
 //
 // Everything that picks a thing rather than sets a level: the patch selector,
-// the four oscillator shape switches, the oscillator D mode switch, the two
-// LFO shape switches, the four coarse tune knobs and the matrix's twelve
-// source and destination selectors. All of them are stored in the same 0..1
-// parameter block as the sliders, so a selector is a knob divided into `n`
-// equal steps.
+// the four oscillator shape switches, the four wave sequence selectors, the
+// oscillator D mode switch, the two LFO shape switches, the four coarse tune
+// knobs and the matrix's twelve source and destination selectors. All of them
+// are stored in the same 0..1 parameter block as the sliders, so a selector is
+// a knob divided into `n` equal steps.
 
 /// How many positions a selector has, or `None` for a slider.
 fn discrete_steps(index: usize) -> Option<usize> {
@@ -268,6 +341,7 @@ fn discrete_steps(index: usize) -> Option<usize> {
     match index {
         P_PATCH => Some(PATCH_COUNT),
         P_A_WAVE | P_B_WAVE | P_C_WAVE | P_D_WAVE => Some(SHAPE_COUNT),
+        P_A_SEQ | P_B_SEQ | P_C_SEQ | P_D_SEQ => Some(SEQ_SLOTS),
         P_A_TUNE | P_B_TUNE | P_C_TUNE | P_D_TUNE => Some(TUNE_STEPS),
         P_D_MODE => Some(3),
         P_LFO1_WAVE | P_LFO2_WAVE => Some(LFO_SHAPE_COUNT),
@@ -332,6 +406,7 @@ pub fn discrete_label(index: usize, value: f32) -> Option<&'static str> {
     Some(match index {
         P_PATCH => PATCH_LABELS[step],
         P_A_WAVE | P_B_WAVE | P_C_WAVE | P_D_WAVE => SHAPE_LABELS[step],
+        P_A_SEQ | P_B_SEQ | P_C_SEQ | P_D_SEQ => SEQ_LABELS[step],
         P_A_TUNE | P_B_TUNE | P_C_TUNE | P_D_TUNE => TUNE_LABELS[step],
         P_D_MODE => ["audio", "mod", "mod lo"][step],
         P_LFO1_WAVE | P_LFO2_WAVE => LFO_SHAPE_LABELS[step],
@@ -339,13 +414,19 @@ pub fn discrete_label(index: usize, value: f32) -> Option<&'static str> {
     })
 }
 
-/// A slider's value in seconds, for the six that measure time. `None` for the
-/// ones that read as a percentage.
+/// A slider's value in seconds, for the seven that measure time. `None` for
+/// the ones that read as a percentage.
+///
+/// SEQ RATE is a rate and reports the *period* it works out to — how long one
+/// tick of the sequence clock lasts — because a step length is the number a
+/// player matches against a tempo, and "125 ms" is that number where "62%" is
+/// not. It is the one control here whose readout falls as the knob rises.
 #[must_use]
 pub fn param_seconds(index: usize, value: f32) -> Option<f64> {
     match index {
         P_ATTACK1 | P_ATTACK2 => Some(attack_seconds(f64::from(value))),
         P_DECAY1 | P_RELEASE1 | P_DECAY2 | P_RELEASE2 => Some(decay_seconds(f64::from(value))),
+        P_SEQ_RATE => Some(1.0 / seq_hz(f64::from(value))),
         _ => None,
     }
 }
@@ -382,6 +463,45 @@ const LFO_MAX_HZ: f64 = 30.0;
 
 fn lfo_hz(slider: f64) -> f64 {
     LFO_MIN_HZ * (LFO_MAX_HZ / LFO_MIN_HZ).powf(slider.clamp(0.0, 1.0))
+}
+
+/// The wave sequence clock, exponential end to end: 0.25 Hz to 32 Hz, which is
+/// a tick every four seconds at the bottom and every 31 ms at the top.
+///
+/// Seven octaves, chosen around what a step length is *for*: at 120 BPM a
+/// sixteenth is 8 Hz, an eighth 4 Hz and a quarter 2 Hz, so the band a player
+/// spends their time in sits in the middle of the travel with three octaves
+/// either side. The top is past rhythm and into timbre, where the crossfades
+/// start to be heard as a waveform of their own — which is a thing the machine
+/// this borrows from is known for, so it is left reachable rather than trimmed
+/// off.
+const SEQ_MIN_HZ: f64 = 0.25;
+const SEQ_MAX_HZ: f64 = 32.0;
+/// How many octaves the rate slider covers, which is `log2(max/min)` written
+/// out so that the bank can name a rate without a logarithm. Held to the two
+/// constants above by `the_sequence_clock_covers_the_range_it_claims`.
+const SEQ_OCTAVES: f32 = 7.0;
+
+fn seq_hz(slider: f64) -> f64 {
+    SEQ_MIN_HZ * (SEQ_MAX_HZ / SEQ_MIN_HZ).powf(slider.clamp(0.0, 1.0))
+}
+
+/// The knob position that asks for `SEQ_MIN_HZ * 2^octaves`.
+///
+/// How a patch names its clock. The taper is exponential end to end, so an
+/// octave above the bottom of the travel is an exact fraction of it — which
+/// keeps the conversion `const`, and [`PARAM_DEFAULTS`] is a `const` derived
+/// from the first row of the bank.
+const fn seq_rate_at(octaves: f32) -> f32 {
+    octaves / SEQ_OCTAVES
+}
+
+/// The knob position for a rate in hertz, for a caller that has one — a test,
+/// an editor, an import. The inverse of [`seq_hz`].
+#[must_use]
+pub fn seq_rate_knob(hz: f32) -> f32 {
+    let ratio = f64::from(hz).max(f64::MIN_POSITIVE) / SEQ_MIN_HZ;
+    (ratio.log2() / f64::from(SEQ_OCTAVES)).clamp(0.0, 1.0) as f32
 }
 
 /// Oscillator D in its low-frequency mode, from the coarse tune selector:
@@ -842,6 +962,38 @@ impl Osc {
         Self { phase: 0.0, noise: seed | 1 }
     }
 
+    /// One step of the phase accumulator: where in the cycle it now sits, and
+    /// how much of a cycle one sample covers — the latter being what the
+    /// band-limited step needs.
+    #[inline]
+    fn advance(&mut self, freq: f64, sr: f64) -> (f64, f64) {
+        let dt = (freq / sr).clamp(0.0, 0.45);
+        self.phase += dt;
+        if self.phase >= 1.0 {
+            self.phase -= self.phase.floor();
+        }
+        (self.phase, dt)
+    }
+
+    /// Two positions in the wavetable bank, crossfaded — what a wave sequence
+    /// asks for while it is between steps.
+    ///
+    /// One phase accumulator rather than two, so the two waveforms are read at
+    /// the same point of the same cycle: a crossfade between them is then a
+    /// waveform in its own right rather than two oscillators beating. The
+    /// second lookup is skipped outright when the crossfade is not running,
+    /// which is most of every step.
+    #[inline]
+    fn tick_blend(&mut self, freq: f64, sr: f64, a: f64, b: f64, mix: f64, bank: &WaveBank) -> f64 {
+        let (t, _) = self.advance(freq, sr);
+        let level = mip_level(freq, sr);
+        let first = bank.at(a, level, t);
+        if mix <= 0.0 {
+            return first;
+        }
+        first + mix * (bank.at(b, level, t) - first)
+    }
+
     #[inline]
     fn tick(
         &mut self,
@@ -857,12 +1009,7 @@ impl Osc {
             return f64::from(self.noise as i32) / f64::from(i32::MAX);
         }
 
-        let dt = (freq / sr).clamp(0.0, 0.45);
-        self.phase += dt;
-        if self.phase >= 1.0 {
-            self.phase -= self.phase.floor();
-        }
-        let t = self.phase;
+        let (t, dt) = self.advance(freq, sr);
 
         match shape {
             Shape::Saw => 2.0 * t - 1.0 - poly_blep(t, dt),
@@ -887,6 +1034,476 @@ impl Osc {
             _ => bank.at(table_pos, mip_level(freq, sr), t),
         }
     }
+}
+
+// ── Wave sequencing ──
+//
+// A step list per oscillator, walked on a clock, crossfading between
+// neighbours. The Wavestation's defining feature, and the reason it still
+// sounds like nothing else: an envelope shapes one waveform, where a sequence
+// replaces it.
+//
+// The shape of the thing, and why:
+//
+// * **a step names a waveform by index**, not a position between two. The
+//   WAVE knob is already a continuous sweep through the bank and the matrix
+//   can already move it; what a sequence wants instead is to *land* on a
+//   waveform, so the step list reads as a list of sounds rather than of
+//   fractions.
+// * **a step's length is in ticks of a clock**, not in seconds. One knob then
+//   moves a whole pattern without changing its rhythm.
+// * **a step's crossfade is a fraction of its own length**, not a time. Speed
+//   the clock up and the fades scale with the steps instead of swallowing
+//   them, and the fraction is bounded to 0..1 by construction, so the
+//   per-sample form needs no clamp.
+// * **a step carries a pitch offset and a level.** Pitch is what makes a
+//   sequence a riff rather than a texture; level at zero is a rest, which is
+//   what makes it a rhythm. Both are crossfaded along with the waveform, so a
+//   step with a long fade glides into the next and one with none snaps.
+// * **the waveform column is the only one that needs a wavetable oscillator.**
+//   The WAVE switch wins: pointing a sequence at a sawtooth gives a sawtooth
+//   riff with rests, which is half of what `SEQ RIFF` is made of, and it is
+//   why that switch is not dead on a sequenced oscillator. The cost is that a
+//   sequence which varies *nothing but* its waveform — `morph 8` is the one in
+//   this bank — is exactly inert on any shape but `table`, and nothing on the
+//   panel says so. `a_waveform_only_sequence_needs_an_oscillator_that_reads_
+//   waveforms` asserts it in both directions so that it is at least a stated
+//   property rather than a surprise.
+// * **the cursor is per voice and per oscillator**, and starts at note-on. A
+//   free-running sequence would put every note at a different point of the
+//   pattern, which is what a sequence shared by the whole instrument sounds
+//   like and is not what this is for. The oscillator *phase* stays free
+//   running, as it was.
+//
+// Everything the per-sample path touches is resolved when a step ends: the
+// current step and the one it fades into, in engine units, along with the
+// reciprocals that turn the crossfade into a multiply. What is left per sample
+// is an add, a compare, two lerps and — only while a fade is actually running
+// — a second wavetable lookup.
+
+/// The most steps a sequence may carry.
+///
+/// Nothing in the engine needs a bound: the cursor indexes rather than scans,
+/// so a longer list costs no more per sample. It is here for the editor that
+/// will eventually build one of these, and it is asserted against the bank so
+/// that the two cannot drift.
+pub const MAX_STEPS: usize = 32;
+
+/// How far the cursor may move in one sample, as a fraction of a step.
+///
+/// A half, so a step lasts at least two samples, the cursor crosses at most
+/// one boundary per sample, and advancing it is an `if` rather than a loop —
+/// bounded work per sample, with no "drain everything pending" pattern that a
+/// high enough rate could turn into a stall. A step every two samples is
+/// 22 kHz of sequence, which is well past the point where the clock has
+/// stopped being a clock at all.
+const MAX_STEP_ADVANCE: f64 = 0.5;
+
+/// How far the matrix can push the clock, in octaves either way at full depth.
+const SEQ_RATE_OCTAVES: f64 = 3.0;
+
+/// One step of a wave sequence.
+#[derive(Debug, Clone, Copy)]
+struct Step {
+    /// Which waveform in the bank, by index. Read only by an oscillator whose
+    /// WAVE switch says `table` — on any other shape the step still sets the
+    /// pitch, the level and the timing, so a sequence works on a sawtooth as
+    /// a riff even though it has no waveform to give it.
+    wave: u8,
+    /// How long the step lasts, in ticks of the sequence clock. Zero reads as
+    /// one: a step of no length would be a cursor that never leaves it.
+    ticks: u8,
+    /// How much of the step is spent crossfading into the next, as a fraction
+    /// of the step's own length. Zero is a hard cut.
+    fade: f32,
+    /// Semitones from the note's own pitch.
+    pitch: i8,
+    /// What the step is worth in the mix, 0..1. Zero is a rest.
+    level: f32,
+}
+
+/// One wave sequence: a name, a step list, and what happens at the end.
+#[derive(Debug, Clone, Copy)]
+struct SeqChart {
+    /// Cut to the twelve columns the editor's selector row leaves for a label.
+    name: &'static str,
+    steps: &'static [Step],
+    /// Whether the list repeats, or plays once and holds its last step.
+    ///
+    /// One-shot is not a lesser loop: three short steps that resolve into a
+    /// fourth and stay there is an attack transient no envelope can make,
+    /// because what changes across it is the waveform.
+    looping: bool,
+}
+
+/// A step in the units the voice runs on.
+#[derive(Debug, Clone, Copy)]
+struct StepVoice {
+    /// Position in the wavetable bank, 0..1.
+    wave: f64,
+    level: f64,
+    /// Frequency multiplier from the step's pitch offset.
+    ratio: f64,
+}
+
+/// What a cursor with no sequence on it asks for: the oscillator as the panel
+/// has it, at its own pitch and its own level.
+const STEP_UNITY: StepVoice = StepVoice { wave: 0.0, level: 1.0, ratio: 1.0 };
+
+impl Step {
+    fn resolve(self) -> StepVoice {
+        StepVoice {
+            wave: wave_position(self.wave),
+            level: f64::from(self.level).clamp(0.0, 1.0),
+            ratio: 2.0f64.powf(f64::from(self.pitch) / 12.0),
+        }
+    }
+}
+
+/// Where waveform `index` of the bank sits on the 0..1 position the TABLE knob
+/// and the matrix both work in.
+fn wave_position(index: u8) -> f64 {
+    let top = (WAVE_COUNT - 1) as u8;
+    f64::from(index.min(top)) / f64::from(top)
+}
+
+/// What one oscillator's sequence is asking for, this sample.
+#[derive(Debug, Clone, Copy)]
+struct SeqPoint {
+    /// The step's waveform and the one it is fading into, as bank positions.
+    wave: [f64; 2],
+    /// How far between them, 0..1. Zero outside a crossfade, which is most of
+    /// every step and is the case that costs one wavetable lookup instead of
+    /// two.
+    mix: f64,
+    level: f64,
+    ratio: f64,
+}
+
+const SEQ_IDLE: SeqPoint = SeqPoint { wave: [0.0; 2], mix: 0.0, level: 1.0, ratio: 1.0 };
+
+/// One oscillator's place in one sequence.
+#[derive(Debug, Clone, Copy)]
+struct SeqCursor {
+    /// The selector position this cursor was started from. Zero is off.
+    ///
+    /// Kept so that a selector moved while a note is sounding restarts that
+    /// oscillator's sequence rather than being ignored until the next note —
+    /// the panel's promise is that every control is live, and a knob that only
+    /// takes effect on the next note-on is not.
+    slot: usize,
+    seq: Option<&'static SeqChart>,
+    index: usize,
+    /// How far through the current step, 0..1.
+    phase: f64,
+    /// How far `phase` moves per tick of the clock: 1/ticks.
+    per_tick: f64,
+    /// Where in the step the crossfade begins, and the reciprocal of what is
+    /// left after it, so the fade is a subtract and a multiply rather than a
+    /// divide.
+    fade_from: f64,
+    fade_scale: f64,
+    now: StepVoice,
+    next: StepVoice,
+    /// A one-shot that has reached its last step. The clock stops rather than
+    /// running on against a step it can never leave.
+    held: bool,
+}
+
+impl SeqCursor {
+    const OFF: Self = Self {
+        slot: 0,
+        seq: None,
+        index: 0,
+        phase: 0.0,
+        per_tick: 1.0,
+        fade_from: 1.0,
+        fade_scale: 0.0,
+        now: STEP_UNITY,
+        next: STEP_UNITY,
+        held: true,
+    };
+
+    /// Point a cursor at selector position `slot`, on step zero.
+    ///
+    /// The one place a step list is looked up. Bounded and allocation-free —
+    /// an index into a `'static` table and a copy of two of its rows — and it
+    /// runs at note-on, which is where [`KeyChart`] is resolved and for the
+    /// same reason.
+    fn start(slot: usize) -> Self {
+        let Some(seq) = sequence_at(slot) else { return Self::OFF };
+        if seq.steps.is_empty() {
+            return Self::OFF;
+        }
+        let mut cursor = Self { slot, seq: Some(seq), held: false, ..Self::OFF };
+        cursor.load();
+        cursor
+    }
+
+    fn is_running(self) -> bool {
+        self.seq.is_some()
+    }
+
+    /// Resolve the current step and the one it fades into.
+    ///
+    /// Off the per-sample path: it runs when a step ends, which at the top of
+    /// the rate travel is every 1400 samples and at the bottom every few
+    /// seconds. That is what buys the two `powf` calls in [`Step::resolve`].
+    fn load(&mut self) {
+        let Some(seq) = self.seq else { return };
+        let steps = seq.steps;
+        let step = steps[self.index.min(steps.len() - 1)];
+        self.per_tick = 1.0 / f64::from(step.ticks.max(1));
+        let fade = f64::from(step.fade).clamp(0.0, 1.0);
+        self.fade_from = 1.0 - fade;
+        self.fade_scale = if fade > 0.0 { 1.0 / fade } else { 0.0 };
+        self.now = step.resolve();
+        // What it fades into: the next step, the first again on a loop, or —
+        // on the last step of a one-shot — itself, which is to say nothing.
+        let following = match steps.get(self.index + 1) {
+            Some(next) => *next,
+            None if seq.looping => steps[0],
+            None => step,
+        };
+        self.next = following.resolve();
+    }
+
+    /// One sample of the clock.
+    ///
+    /// Total and bounded: the increment is clamped, so at most one step
+    /// boundary is crossed per sample and `phase` cannot leave 0..1; and a
+    /// rate that arrives as an infinity or a NaN stalls the cursor rather than
+    /// poisoning it, which matters because `params` is public and the rate
+    /// knob can be set to anything at all.
+    fn advance(&mut self, hz: f64, sr: f64) -> SeqPoint {
+        if self.seq.is_none() {
+            return SEQ_IDLE;
+        }
+        if !self.held {
+            let step = hz * self.per_tick / sr;
+            let step = if step.is_finite() { step.clamp(0.0, MAX_STEP_ADVANCE) } else { 0.0 };
+            self.phase += step;
+            if self.phase >= 1.0 {
+                // The leftover is carried in the *old* step's units rather
+                // than rescaled into the new one's. At the top of the rate
+                // travel a step is 1400 samples, so the error a step of a
+                // different length inherits is a fraction of one sample, and
+                // it does not accumulate: the next boundary carries its own
+                // leftover and nothing sums them.
+                self.phase -= 1.0;
+                self.next_step();
+            }
+        }
+        let mix = if self.phase > self.fade_from {
+            ((self.phase - self.fade_from) * self.fade_scale).min(1.0)
+        } else {
+            0.0
+        };
+        SeqPoint {
+            wave: [self.now.wave, self.next.wave],
+            mix,
+            level: self.now.level + mix * (self.next.level - self.now.level),
+            ratio: self.now.ratio + mix * (self.next.ratio - self.now.ratio),
+        }
+    }
+
+    fn next_step(&mut self) {
+        let Some(seq) = self.seq else { return };
+        if self.index + 1 < seq.steps.len() {
+            self.index += 1;
+        } else if seq.looping {
+            self.index = 0;
+        } else {
+            self.phase = 0.0;
+            self.held = true;
+            return;
+        }
+        self.load();
+    }
+}
+
+/// Which sequence a selector position names. Position zero is off.
+fn sequence_at(slot: usize) -> Option<&'static SeqChart> {
+    slot.checked_sub(1).and_then(|index| SEQ_BANK.get(index))
+}
+
+/// How many sequences the bank holds.
+pub const SEQ_COUNT: usize = 8;
+
+/// How many positions an oscillator's sequence selector has: "off", then one
+/// per sequence in the bank.
+pub const SEQ_SLOTS: usize = SEQ_COUNT + 1;
+
+/// The sequences.
+///
+/// Eight, and chosen so that no two of them do the same job: a gate, a morph,
+/// a vowel drift, a riff, two one-shots, an odd-length shuffle and a stab.
+/// Their lengths are 4, 8, 10, 4, 6 and 8 ticks, which is deliberate — four
+/// oscillators pointed at four of these do not come back into step for the
+/// length of their least common multiple, and that is the whole reason for
+/// sequencing per oscillator rather than per voice.
+const SEQ_BANK: [SeqChart; SEQ_COUNT] = [
+    // A rhythm and nothing else: one waveform, gated on and off. It works on
+    // any WAVE setting, which is what makes it the one to reach for on an
+    // oscillator that is already the sound the patch wants.
+    SeqChart {
+        name: "gate 4",
+        looping: true,
+        steps: &[
+            Step { wave: 5, ticks: 1, fade: 0.06, pitch: 0, level: 1.0 },
+            Step { wave: 5, ticks: 1, fade: 0.06, pitch: 0, level: 0.0 },
+            Step { wave: 5, ticks: 1, fade: 0.06, pitch: 0, level: 0.85 },
+            Step { wave: 5, ticks: 1, fade: 0.06, pitch: 0, level: 0.0 },
+        ],
+    },
+    // The other extreme: eight waveforms with the crossfade set to the whole
+    // step, so the bank is walked continuously and there is no step to hear at
+    // all — only a timbre that never stops moving.
+    //
+    // The one sequence in the bank that carries nothing but waveforms — every
+    // step is at full level and at the note's own pitch — so it is the one
+    // that does nothing at all on an oscillator whose WAVE switch is not on
+    // `table`. That is the design working rather than failing, but it is the
+    // trap in this bank and it is worth knowing which entry it is.
+    SeqChart {
+        name: "morph 8",
+        looping: true,
+        steps: &[
+            Step { wave: 5, ticks: 1, fade: 1.0, pitch: 0, level: 1.0 },
+            Step { wave: 6, ticks: 1, fade: 1.0, pitch: 0, level: 1.0 },
+            Step { wave: 7, ticks: 1, fade: 1.0, pitch: 0, level: 1.0 },
+            Step { wave: 8, ticks: 1, fade: 1.0, pitch: 0, level: 1.0 },
+            Step { wave: 9, ticks: 1, fade: 1.0, pitch: 0, level: 1.0 },
+            Step { wave: 10, ticks: 1, fade: 1.0, pitch: 0, level: 1.0 },
+            Step { wave: 11, ticks: 1, fade: 1.0, pitch: 0, level: 1.0 },
+            Step { wave: 12, ticks: 1, fade: 1.0, pitch: 0, level: 1.0 },
+        ],
+    },
+    // Two vowels and two reeds on unequal steps, half-crossfaded: a voice that
+    // keeps changing its mind. Ten ticks, so it walks against anything in four
+    // or eight.
+    SeqChart {
+        name: "vox 4",
+        looping: true,
+        steps: &[
+            Step { wave: 10, ticks: 3, fade: 0.6, pitch: 0, level: 1.0 },
+            Step { wave: 11, ticks: 2, fade: 0.6, pitch: 0, level: 1.0 },
+            Step { wave: 7, ticks: 3, fade: 0.6, pitch: 0, level: 0.95 },
+            Step { wave: 8, ticks: 2, fade: 0.6, pitch: 0, level: 0.9 },
+        ],
+    },
+    // A riff: the clavinet, four pitches, and just enough crossfade to keep
+    // the step boundaries from clicking.
+    SeqChart {
+        name: "riff 5th",
+        looping: true,
+        steps: &[
+            Step { wave: 14, ticks: 1, fade: 0.05, pitch: 0, level: 1.0 },
+            Step { wave: 14, ticks: 1, fade: 0.05, pitch: 7, level: 0.9 },
+            Step { wave: 12, ticks: 1, fade: 0.05, pitch: 12, level: 1.0 },
+            Step { wave: 14, ticks: 1, fade: 0.05, pitch: 3, level: 0.85 },
+        ],
+    },
+    // Played once: a bell and a clavinet an octave and a fifth up, resolving
+    // into a drawbar organ that is then held for as long as the key is. The
+    // attack of an instrument that does not exist.
+    SeqChart {
+        name: "attack",
+        looping: false,
+        steps: &[
+            Step { wave: 12, ticks: 1, fade: 0.3, pitch: 12, level: 1.0 },
+            Step { wave: 14, ticks: 1, fade: 0.3, pitch: 7, level: 0.95 },
+            Step { wave: 6, ticks: 1, fade: 0.3, pitch: 0, level: 0.9 },
+        ],
+    },
+    // The same idea over a wider run: four bells falling two octaves into a
+    // held organ. One-shot, so it is an attack rather than a pattern.
+    SeqChart {
+        name: "bell run",
+        looping: false,
+        steps: &[
+            Step { wave: 12, ticks: 1, fade: 0.1, pitch: 24, level: 0.9 },
+            Step { wave: 12, ticks: 1, fade: 0.1, pitch: 19, level: 0.9 },
+            Step { wave: 12, ticks: 1, fade: 0.1, pitch: 12, level: 0.95 },
+            Step { wave: 13, ticks: 1, fade: 0.2, pitch: 7, level: 1.0 },
+            Step { wave: 5, ticks: 4, fade: 0.2, pitch: 0, level: 1.0 },
+        ],
+    },
+    // Three drawbar registrations on 3, 2 and 1 ticks: six ticks, which is the
+    // odd length in the bank and the one that makes two sequences drift.
+    SeqChart {
+        name: "organ 3",
+        looping: true,
+        steps: &[
+            Step { wave: 6, ticks: 3, fade: 0.25, pitch: 0, level: 1.0 },
+            Step { wave: 5, ticks: 2, fade: 0.25, pitch: 0, level: 0.9 },
+            Step { wave: 7, ticks: 1, fade: 0.25, pitch: 0, level: 0.8 },
+        ],
+    },
+    // Brass stabs with the rests written in, an octave drop and a fourth up:
+    // eight ticks of rhythm and pitch together, which is a sequence doing the
+    // one thing an envelope and an LFO cannot do between them.
+    SeqChart {
+        name: "stab",
+        looping: true,
+        steps: &[
+            Step { wave: 9, ticks: 1, fade: 0.08, pitch: 0, level: 1.0 },
+            Step { wave: 9, ticks: 1, fade: 0.08, pitch: 0, level: 0.0 },
+            Step { wave: 9, ticks: 2, fade: 0.08, pitch: -12, level: 0.9 },
+            Step { wave: 15, ticks: 1, fade: 0.08, pitch: 0, level: 0.0 },
+            Step { wave: 9, ticks: 1, fade: 0.08, pitch: 5, level: 0.95 },
+            Step { wave: 9, ticks: 2, fade: 0.08, pitch: 0, level: 0.0 },
+        ],
+    },
+];
+
+/// The sequence selector's labels: "off", then the bank in order.
+const SEQ_LABELS: [&str; SEQ_SLOTS] = derive_seq_labels();
+
+const fn derive_seq_labels() -> [&'static str; SEQ_SLOTS] {
+    let mut out = ["off"; SEQ_SLOTS];
+    let mut i = 0;
+    while i < SEQ_COUNT {
+        out[i + 1] = SEQ_BANK[i].name;
+        i += 1;
+    }
+    out
+}
+
+/// The knob position that points an oscillator at sequence `index`, or at
+/// nothing when `index` is `None`.
+///
+/// The midpoint of the selector's step, which is the one position in it that
+/// no amount of float rounding can push into a neighbour — the same rule
+/// [`patch_knob`] follows.
+#[must_use]
+pub fn seq_knob(index: Option<usize>) -> f32 {
+    let slot = index.map_or(0, |i| i.min(SEQ_COUNT - 1) + 1);
+    knob_for(slot, SEQ_SLOTS)
+}
+
+/// Which sequence a selector knob names, or `None` for off.
+#[must_use]
+pub fn seq_index(value: f32) -> Option<usize> {
+    selector(value, SEQ_SLOTS).checked_sub(1)
+}
+
+/// The name of sequence `index`.
+#[must_use]
+pub fn seq_name(index: usize) -> &'static str {
+    SEQ_BANK[index.min(SEQ_COUNT - 1)].name
+}
+
+/// How many steps sequence `index` has.
+#[must_use]
+pub fn seq_step_count(index: usize) -> usize {
+    SEQ_BANK[index.min(SEQ_COUNT - 1)].steps.len()
+}
+
+/// Whether sequence `index` repeats, or plays once and holds its last step.
+#[must_use]
+pub fn seq_loops(index: usize) -> bool {
+    SEQ_BANK[index.min(SEQ_COUNT - 1)].looping
 }
 
 // ── Drive ──
@@ -1363,11 +1980,14 @@ enum Dest {
     Amplitude = 6,
     VectorX = 7,
     VectorY = 8,
+    /// The wave sequence clock, in octaves either way — so an envelope can
+    /// start a pattern fast and let it settle, and an LFO can swing it.
+    SeqRate = 9,
 }
 
-const DEST_COUNT: usize = 9;
+const DEST_COUNT: usize = 10;
 const DEST_LABELS: [&str; DEST_COUNT] = [
-    "off", "pitch", "pw", "wave", "cutoff", "reso", "amp", "vec x", "vec y",
+    "off", "pitch", "pw", "wave", "cutoff", "reso", "amp", "vec x", "vec y", "seq hz",
 ];
 
 impl Dest {
@@ -1381,6 +2001,7 @@ impl Dest {
             6 => Self::Amplitude,
             7 => Self::VectorX,
             8 => Self::VectorY,
+            9 => Self::SeqRate,
             _ => Self::Off,
         }
     }
@@ -1419,6 +2040,22 @@ struct OscSetting {
 #[derive(Debug, Clone, Copy)]
 struct Panel {
     osc: [OscSetting; 4],
+    /// Which sequence each oscillator is pointed at: zero for none, otherwise
+    /// a position in [`SEQ_BANK`] plus one. Always zero on a keymapped patch,
+    /// where the oscillators are the recipe's rather than the panel's.
+    seq: [usize; 4],
+    /// The sequence clock, in hertz, before the matrix.
+    seq_rate: f64,
+    /// How far each TABLE knob has been moved from where this patch left it.
+    ///
+    /// What that knob means on a *sequenced* oscillator, because the step
+    /// names the waveform and the knob can only shift it. Measured from the
+    /// patch rather than from the middle of the travel, which is the same
+    /// choice `cutoff_trim` makes below and for a stronger version of the same
+    /// reason: a trim measured from a fixed position is only neutral on a
+    /// patch that happens to sit there, so switching a sequence on would move
+    /// the sound of every patch that does not.
+    table_trim: [f64; 4],
     d_mode: DMode,
     vector: [f64; 2],
     pulse_width: f64,
@@ -1464,6 +2101,9 @@ fn vector_weights(x: f64, y: f64) -> [f64; 4] {
 #[derive(Debug, Clone)]
 struct Voice {
     osc: [Osc; 4],
+    /// Where each oscillator stands in its wave sequence. Per voice, so two
+    /// notes played a beat apart each hear the pattern from its beginning.
+    seq: [SeqCursor; 4],
     filter: Ladder,
     env: [Envelope; 2],
     /// Oscillator D's last sample, which is what the matrix reads when D is a
@@ -1487,6 +2127,7 @@ impl Voice {
             osc: std::array::from_fn(|i| {
                 Osc::new(0x9E37_79B9 ^ ((index * 4 + i) as u32).wrapping_mul(2_246_822_519))
             }),
+            seq: [SeqCursor::OFF; 4],
             filter: Ladder::new(),
             env: [Envelope::new(sr), Envelope::new(sr)],
             last_d: 0.0,
@@ -1505,6 +2146,12 @@ impl Voice {
         // The one place the key map is read. A bounded scan of a `'static`
         // table and a copy of the result, both off the per-sample path.
         self.key = key_for_note(panel.keys, note).map(KeyVoice::resolve);
+        // The sequences start where the note does, which is what makes a
+        // one-shot an attack transient and a loop lock to the key rather than
+        // to whenever the instrument was loaded.
+        for (cursor, slot) in self.seq.iter_mut().zip(panel.seq) {
+            *cursor = SeqCursor::start(slot);
+        }
         let (times, resonance) = self
             .key
             .map_or((panel.env, panel.resonance), |key| (key.env, key.resonance));
@@ -1529,6 +2176,7 @@ impl Voice {
         self.filter.reset();
         self.last_d = 0.0;
         self.key = None;
+        self.seq = [SeqCursor::OFF; 4];
     }
 
     fn is_sounding(&self) -> bool {
@@ -1630,43 +2278,84 @@ impl Voice {
         let table_shift = bus[Dest::Wave as usize];
         let base_freq = key.map_or_else(|| note_to_freq(self.note), |k| k.base_hz) * pitch_ratio;
 
+        // The sequence clock, and one sample of each of the four cursors.
+        //
+        // The selector is compared against the cursor rather than read at
+        // note-on and forgotten, so moving it under a held note restarts that
+        // oscillator's sequence. That restart is a bounded table read on the
+        // one sample the knob moved, which is the same work note-on does.
+        let seq_rate = if bus[Dest::SeqRate as usize] == 0.0 {
+            panel.seq_rate
+        } else {
+            panel.seq_rate * 2.0f64.powf(bus[Dest::SeqRate as usize] * SEQ_RATE_OCTAVES)
+        };
+        let mut seq = [SEQ_IDLE; 4];
+        let mut sequenced = [false; 4];
+        for (i, cursor) in self.seq.iter_mut().enumerate() {
+            if cursor.slot != panel.seq[i] {
+                *cursor = SeqCursor::start(panel.seq[i]);
+            }
+            sequenced[i] = cursor.is_running();
+            seq[i] = cursor.advance(seq_rate, sr);
+        }
+
         // Oscillator D first, so that its contribution to the mix and its
         // value on the matrix are the same sample.
         let d = &oscillators[3];
-        let d_freq = if panel.d_mode == DMode::ModLo {
+        let d_base = if panel.d_mode == DMode::ModLo {
             d.lo_hz * pitch_ratio
         } else {
             base_freq * d.ratio
         };
-        let d_out = self.osc[3].tick(
-            d.shape,
-            d_freq,
-            sr,
-            width,
-            d.table + table_shift,
-            bank,
-        );
+        let d_freq = d_base * seq[3].ratio;
+        let d_out = if sequenced[3] && d.shape == Shape::Table {
+            let shift = panel.table_trim[3] + table_shift;
+            self.osc[3].tick_blend(
+                d_freq,
+                sr,
+                seq[3].wave[0] + shift,
+                seq[3].wave[1] + shift,
+                seq[3].mix,
+                bank,
+            )
+        } else {
+            self.osc[3].tick(d.shape, d_freq, sr, width, d.table + table_shift, bank)
+        };
         self.last_d = d_out;
 
         let vector_x = vector[0] + bus[Dest::VectorX as usize];
         let vector_y = vector[1] + bus[Dest::VectorY as usize];
         let weights = vector_weights(vector_x, vector_y);
 
+        // The mix. A sequenced oscillator takes its waveform, its pitch and
+        // its level from the step it is on; its own knobs stay live over the
+        // top — TUNE and LEVEL multiply what the step asks for, and TABLE
+        // shifts the whole sequence through the bank, from wherever the patch
+        // left that knob. The step's *waveform* is the one thing a sequence
+        // can only give to an oscillator that is reading the bank, so on any
+        // other shape the WAVE switch still wins and what is left of the
+        // sequence is a riff and a rhythm.
         let mut mix = 0.0;
         for i in 0..3 {
             let o = &oscillators[i];
-            let value = self.osc[i].tick(
-                o.shape,
-                base_freq * o.ratio,
-                sr,
-                width,
-                o.table + table_shift,
-                bank,
-            );
-            mix += weights[i] * o.level * value;
+            let freq = base_freq * o.ratio * seq[i].ratio;
+            let value = if sequenced[i] && o.shape == Shape::Table {
+                let shift = panel.table_trim[i] + table_shift;
+                self.osc[i].tick_blend(
+                    freq,
+                    sr,
+                    seq[i].wave[0] + shift,
+                    seq[i].wave[1] + shift,
+                    seq[i].mix,
+                    bank,
+                )
+            } else {
+                self.osc[i].tick(o.shape, freq, sr, width, o.table + table_shift, bank)
+            };
+            mix += weights[i] * o.level * seq[i].level * value;
         }
         if panel.d_mode == DMode::Audio {
-            mix += weights[3] * d.level * d_out;
+            mix += weights[3] * d.level * seq[3].level * d_out;
         }
 
         let driven = drive_stage(mix, panel.drive);
@@ -1699,7 +2388,7 @@ fn note_to_freq(note: u8) -> f64 {
 // conversion from chart to panel that the default parameter block is also
 // derived from. Adding a patch after this is a row of data.
 
-pub const PATCH_COUNT: usize = 9;
+pub const PATCH_COUNT: usize = 11;
 
 /// One row of the bank: where every control sits on that patch.
 #[derive(Debug, Clone, Copy)]
@@ -1710,6 +2399,11 @@ struct Chart {
     /// What the keyboard does on this patch.
     keys: KeyMap,
     osc: [OscChart; 4],
+    /// Which wave sequence each oscillator is pointed at: `None` for none,
+    /// otherwise a position in [`SEQ_BANK`].
+    seq: [Option<usize>; 4],
+    /// The sequence clock, as [`seq_rate_at`] names it.
+    seq_rate: f32,
     /// 0 = audio, 1 = mod, 2 = mod lo.
     d_mode: u8,
     /// The vector position: x, y.
@@ -1907,6 +2601,7 @@ const BANK: [Chart; PATCH_COUNT] = [
             OscChart { shape: 0, table: 0.0, semitones: 0, cents: -7.0, level: 0.85 },
             OscChart { shape: 0, table: 0.0, semitones: -12, cents: 0.0, level: 0.85 },
         ],
+        seq: [None; 4], seq_rate: seq_rate_at(4.0),
         d_mode: 0, vector: [0.5, 0.5], pulse_width: 0.0, drive: 0.0,
         filter: [0.66, 0.12, 0.58, 0.35], velocity: 0.6, gain: 1.0,
         lfo: [(0, 0.35), (0, 0.15)],
@@ -1925,6 +2620,7 @@ const BANK: [Chart; PATCH_COUNT] = [
             OscChart { shape: 0, table: 0.0, semitones: -12, cents: 0.0, level: 1.0 },
             OscChart { shape: 3, table: 0.0, semitones: -24, cents: 0.0, level: 0.8 },
         ],
+        seq: [None; 4], seq_rate: seq_rate_at(4.0),
         d_mode: 0, vector: [0.45, 0.40], pulse_width: 0.35, drive: 0.55,
         filter: [0.28, 0.55, 0.72, 0.30], velocity: 0.75, gain: 1.0,
         lfo: [(0, 0.30), (4, 0.55)],
@@ -1945,6 +2641,7 @@ const BANK: [Chart; PATCH_COUNT] = [
             OscChart { shape: 1, table: 0.0, semitones: 0, cents: -12.0, level: 0.95 },
             OscChart { shape: 3, table: 0.0, semitones: 10, cents: 0.0, level: 1.0 },
         ],
+        seq: [None; 4], seq_rate: seq_rate_at(4.0),
         d_mode: 2, vector: [0.5, 0.35], pulse_width: 0.25, drive: 0.40,
         filter: [0.55, 0.35, 0.60, 0.40], velocity: 0.5, gain: 1.0,
         lfo: [(0, 0.45), (1, 0.20)],
@@ -1967,6 +2664,7 @@ const BANK: [Chart; PATCH_COUNT] = [
             OscChart { shape: 4, table: 0.72, semitones: 0, cents: -5.0, level: 1.0 },
             OscChart { shape: 4, table: 0.90, semitones: -12, cents: 0.0, level: 0.9 },
         ],
+        seq: [None; 4], seq_rate: seq_rate_at(4.0),
         d_mode: 0, vector: [0.5, 0.5], pulse_width: 0.0, drive: 0.15,
         filter: [0.62, 0.20, 0.55, 0.30], velocity: 0.4, gain: 1.0,
         lfo: [(1, 0.16), (1, 0.10)],
@@ -1989,6 +2687,7 @@ const BANK: [Chart; PATCH_COUNT] = [
             OscChart { shape: 3, table: 0.0, semitones: 19, cents: 0.0, level: 0.5 },
             OscChart { shape: 4, table: 1.0, semitones: 24, cents: 0.0, level: 0.35 },
         ],
+        seq: [None; 4], seq_rate: seq_rate_at(4.0),
         d_mode: 0, vector: [0.4, 0.4], pulse_width: 0.0, drive: 0.0,
         filter: [0.80, 0.10, 0.58, 0.50], velocity: 0.85, gain: 1.0,
         lfo: [(1, 0.55), (4, 0.65)],
@@ -2010,6 +2709,7 @@ const BANK: [Chart; PATCH_COUNT] = [
             OscChart { shape: 4, table: 0.60, semitones: 7, cents: 0.0, level: 0.9 },
             OscChart { shape: 4, table: 1.0, semitones: 0, cents: -6.0, level: 0.9 },
         ],
+        seq: [None; 4], seq_rate: seq_rate_at(4.0),
         d_mode: 0, vector: [0.5, 0.5], pulse_width: 0.0, drive: 0.25,
         filter: [0.66, 0.30, 0.55, 0.30], velocity: 0.5, gain: 1.0,
         lfo: [(3, 0.55), (0, 0.38)],
@@ -2033,6 +2733,7 @@ const BANK: [Chart; PATCH_COUNT] = [
             OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 0.35 },
             OscChart { shape: 3, table: 0.0, semitones: -12, cents: 0.0, level: 0.30 },
         ],
+        seq: [None; 4], seq_rate: seq_rate_at(4.0),
         d_mode: 0, vector: [0.5, 0.5], pulse_width: 0.0, drive: 0.0,
         filter: [0.30, 0.98, 0.66, 0.60], velocity: 0.4, gain: 1.0,
         lfo: [(0, 0.22), (1, 0.12)],
@@ -2053,12 +2754,88 @@ const BANK: [Chart; PATCH_COUNT] = [
             OscChart { shape: 0, table: 0.0, semitones: -12, cents: 0.0, level: 0.8 },
             OscChart { shape: 4, table: 0.60, semitones: 12, cents: 0.0, level: 0.6 },
         ],
+        seq: [None; 4], seq_rate: seq_rate_at(4.0),
         d_mode: 0, vector: [0.45, 0.45], pulse_width: 0.0, drive: 0.45,
         filter: [0.62, 0.35, 0.70, 0.45], velocity: 0.8, gain: 1.0,
         lfo: [(2, 0.60), (4, 0.70)],
         env: [[0.0, 0.28, 0.10, 0.18], [0.0, 0.18, 0.0, 0.15]],
         matrix: [
             (5, 3, 0.15),   // velocity → wavetable position
+            NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE,
+        ],
+    },
+    // The wave sequencer as a pad: three of the four oscillators walking step
+    // lists of 8, 10 and 6 ticks, which do not come back into step for 120 of
+    // them — two minutes at this clock — while the fourth holds a steady bed
+    // underneath so the patch has something that does not move. The vector
+    // walks between them under two slow LFOs, so which sequence is loudest is
+    // itself changing. Nothing about this sound repeats on a period a listener
+    // can count, and no envelope in the instrument could produce any of it.
+    Chart {
+        name: "SEQ PAD", label: "SEQ PAD",
+        osc: [
+            // The three sequenced oscillators sit at TABLE 0.5. Any value
+            // would play the sequence as written — the knob is an offset from
+            // whatever the patch left it at — and the middle is chosen so that
+            // a player has travel in both directions.
+            OscChart { shape: 4, table: 0.5, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 4, table: 0.5, semitones: 0, cents: 6.0, level: 1.0 },
+            OscChart { shape: 4, table: 0.35, semitones: -12, cents: 0.0, level: 0.9 },
+            OscChart { shape: 4, table: 0.5, semitones: 0, cents: -6.0, level: 0.9 },
+        ],
+        keys: KeyMap::Melodic,
+        // morph 8, vox 4, — and organ 3: 8, 10 and 6 ticks.
+        seq: [Some(1), Some(2), None, Some(6)],
+        seq_rate: seq_rate_at(3.0),      // 2 Hz, a step every half second
+        // The vector rests towards the A corner rather than in the middle, so
+        // that one sequence is in front and the other two are behind it. Dead
+        // centre is four things at a quarter each, and four timbres all moving
+        // at once average out into one that does not.
+        d_mode: 0, vector: [0.35, 0.35], pulse_width: 0.0, drive: 0.15,
+        // The cutoff is well up, and it has to be: what a wave sequence
+        // changes is the harmonics above the fourth, and a corner down where a
+        // pad's usually sits takes the sequence off with them.
+        filter: [0.75, 0.15, 0.50, 0.30], velocity: 0.4, gain: 1.0,
+        lfo: [(1, 0.14), (1, 0.09)],
+        env: [[0.35, 0.55, 0.85, 0.60], [0.20, 0.60, 0.40, 0.50]],
+        matrix: [
+            (1, 7, 0.20),   // LFO 1 → vector x
+            (2, 8, 0.20),   // LFO 2 → vector y: a slow drift behind the
+                            // sequences rather than over the top of them
+            (4, 9, 0.20),   // envelope 2 → sequence clock: the pattern comes
+                            // in fast and settles as the note does
+            NO_ROUTE, NO_ROUTE, NO_ROUTE,
+        ],
+    },
+    // The other thing a step list is for: a part rather than a texture. The
+    // clavinet riff on A is four steps of pitch, the pulse under it on B is
+    // four steps of *rhythm* — the same sequencer with the waveform column
+    // doing nothing, because a pulse oscillator has no table to read — and C
+    // plays its bell-and-clav attack once and holds, so the note has a strike
+    // on it that no envelope shape could give. D is the bass and is not
+    // sequenced at all.
+    Chart {
+        name: "SEQ RIFF", label: "SEQ RIFF",
+        osc: [
+            OscChart { shape: 4, table: 0.5, semitones: 0, cents: 0.0, level: 1.0 },
+            OscChart { shape: 1, table: 0.0, semitones: -12, cents: 4.0, level: 0.9 },
+            OscChart { shape: 4, table: 0.5, semitones: 0, cents: -4.0, level: 0.85 },
+            OscChart { shape: 0, table: 0.0, semitones: -24, cents: 0.0, level: 0.7 },
+        ],
+        keys: KeyMap::Melodic,
+        // riff 5th, gate 4, attack (played once), —
+        seq: [Some(3), Some(0), Some(4), None],
+        seq_rate: seq_rate_at(5.0),      // 8 Hz, a sixteenth at 120
+        d_mode: 0, vector: [0.40, 0.40], pulse_width: 0.30, drive: 0.35,
+        filter: [0.68, 0.35, 0.55, 0.30], velocity: 0.7, gain: 1.0,
+        lfo: [(3, 0.42), (0, 0.20)],
+        env: [[0.004, 0.45, 0.70, 0.18], [0.0, 0.30, 0.20, 0.20]],
+        matrix: [
+            // Nothing here is pointed at the vector, which is unusual for this
+            // instrument and is the point: on this patch the thing that moves
+            // is the step list, and an LFO stepping the mix underneath it
+            // would only be a second answer to the same question.
+            (5, 4, 0.25),   // velocity → cutoff
             NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE, NO_ROUTE,
         ],
     },
@@ -2078,6 +2855,7 @@ const BANK: [Chart; PATCH_COUNT] = [
             OscChart { shape: 5, table: 0.0, semitones: 0, cents: 0.0, level: 0.9 },
             OscChart { shape: 3, table: 0.0, semitones: 19, cents: 0.0, level: 0.6 },
         ],
+        seq: [None; 4], seq_rate: seq_rate_at(4.0),
         d_mode: 0, vector: [0.15, 0.15], pulse_width: 0.0, drive: 0.30,
         filter: [0.60, 0.30, 0.50, 0.0], velocity: 0.8, gain: 1.0,
         lfo: [(0, 0.35), (0, 0.20)],
@@ -2307,15 +3085,20 @@ const fn chart_params(index: usize) -> [f32; PARAM_COUNT] {
     let mut i = 0;
     while i < 4 {
         let o = &c.osc[i];
-        let base = P_A_WAVE + i * 5;
+        let base = P_A_WAVE + i * P_OSC_STRIDE;
         p[base] = knob_for(o.shape as usize, SHAPE_COUNT);
         p[base + 1] = o.table;
         p[base + 2] = tune_knob(o.semitones);
         p[base + 3] = fine_knob(o.cents);
         p[base + 4] = o.level;
+        p[base + 5] = match c.seq[i] {
+            Some(index) => knob_for(index + 1, SEQ_SLOTS),
+            None => knob_for(0, SEQ_SLOTS),
+        };
         i += 1;
     }
     p[P_D_MODE] = knob_for(c.d_mode as usize, 3);
+    p[P_SEQ_RATE] = c.seq_rate;
 
     p[P_VECTOR_X] = c.vector[0];
     p[P_VECTOR_Y] = c.vector[1];
@@ -2454,7 +3237,7 @@ impl PhosphorSynth {
         let p = &self.params;
         let chart = &BANK[patch_index(p[P_PATCH])];
         let osc = std::array::from_fn(|i| {
-            let base = P_A_WAVE + i * 5;
+            let base = P_A_WAVE + i * P_OSC_STRIDE;
             let semitones = tune_semitones(p[base + 2]);
             let cents = fine_cents(p[base + 3]);
             OscSetting {
@@ -2481,8 +3264,26 @@ impl PhosphorSynth {
             slot_count += 1;
         }
 
+        // The sequence selectors, and the one case where they are not read:
+        // on a keymapped patch the oscillators belong to the recipe the note
+        // picked, and a sequence is an oscillator control. The four selectors
+        // are inert on a kit for the same reason the four WAVE switches are.
+        let keymapped = !chart.keys.table().is_empty();
+        let seq = std::array::from_fn(|i| {
+            if keymapped {
+                0
+            } else {
+                selector(p[P_A_WAVE + i * P_OSC_STRIDE + 5], SEQ_SLOTS)
+            }
+        });
+
         Panel {
             osc,
+            seq,
+            seq_rate: seq_hz(f64::from(p[P_SEQ_RATE])),
+            table_trim: std::array::from_fn(|i| {
+                f64::from(p[P_A_WAVE + i * P_OSC_STRIDE + 1]) - f64::from(chart.osc[i].table)
+            }),
             d_mode: DMode::from_index(selector(p[P_D_MODE], 3)),
             vector: [f64::from(p[P_VECTOR_X]), f64::from(p[P_VECTOR_Y])],
             pulse_width: f64::from(p[P_PULSE_WIDTH]),
@@ -2630,7 +3431,8 @@ impl Plugin for PhosphorSynth {
             max: 1.0,
             default: PARAM_DEFAULTS[index],
             unit: match index {
-                P_ATTACK1 | P_DECAY1 | P_RELEASE1 | P_ATTACK2 | P_DECAY2 | P_RELEASE2 => "s".into(),
+                P_ATTACK1 | P_DECAY1 | P_RELEASE1 | P_ATTACK2 | P_DECAY2 | P_RELEASE2
+                | P_SEQ_RATE => "s".into(),
                 P_LFO1_RATE | P_LFO2_RATE => "Hz".into(),
                 _ => String::new(),
             },
@@ -2759,6 +3561,15 @@ mod tests {
         s.init(44_100.0, 256);
         let mut out = vec![0.0f32; 256];
 
+        // On a sequenced patch, so that the step tables, the cursors and the
+        // restart a moved selector causes are all inside the count. A step
+        // list is a `'static` slice and a cursor is a plain struct in the
+        // voice, so none of it should reach the allocator — but that is a
+        // property of the code rather than of its output, which is the whole
+        // reason this test counts rather than listens.
+        let riff = PATCH_NAMES.iter().position(|n| *n == "SEQ RIFF").unwrap();
+        s.set_parameter(P_PATCH, patch_knob(riff));
+
         // Warm everything the first call would touch: the wavetable bank,
         // which is built once per process behind a `OnceLock`.
         s.process(&[], &mut [&mut out], &[note_on(60, 100, 0)]);
@@ -2774,6 +3585,14 @@ mod tests {
             let mut outs: [&mut [f32]; 1] = [&mut out];
             s.process(&[], &mut outs, &events);
             for _ in 0..8 {
+                s.process(&[], &mut outs, &[]);
+            }
+            // Every sequence in the bank pointed at every oscillator under a
+            // held chord, which is the restart path at its busiest.
+            for seq in 0..SEQ_COUNT {
+                for i in 0..4 {
+                    s.params[P_A_SEQ + i * P_OSC_STRIDE] = seq_knob(Some(seq));
+                }
                 s.process(&[], &mut outs, &[]);
             }
             s.process(&[], &mut outs, &releases);
@@ -3396,6 +4215,779 @@ mod tests {
         }
     }
 
+    // ── Wave sequencing ──
+    //
+    // The claim to be proved is "the timbre evolves on its own", and the
+    // measurement has to be able to tell that apart from "the note got louder"
+    // and "the note changed pitch", because a sequence does both of those too.
+    //
+    // So what is measured is the *shape* of the spectrum: magnitudes at 24
+    // log-spaced frequencies, normalised to sum to one, and the L1 distance
+    // between the two most distant windows of a render. Zero is one unchanging
+    // timbre; two is two windows with no frequency in common. Normalising is
+    // what makes it blind to level, and using bins rather than harmonics of
+    // the played note is what makes it blind to pitch.
+    //
+    // A direct transform rather than an FFT because this crate has neither and
+    // the measurement is a handful of windows rather than a spectrogram: 24
+    // bins over a 4096-point window is 200k multiply-adds, which is nothing
+    // against the render that produced it.
+
+    const SPECTRUM_BINS: usize = 24;
+
+    fn bin_hz(bin: usize) -> f64 {
+        200.0 * (10_000.0f64 / 200.0).powf(bin as f64 / (SPECTRUM_BINS - 1) as f64)
+    }
+
+    fn magnitude_of(window: &[f32], hz: f64, sr: f64) -> f64 {
+        let w = TWO_PI * hz / sr;
+        let (mut re, mut im) = (0.0, 0.0);
+        for (n, v) in window.iter().enumerate() {
+            let p = w * n as f64;
+            re += f64::from(*v) * p.cos();
+            im -= f64::from(*v) * p.sin();
+        }
+        (re * re + im * im).sqrt() / window.len() as f64
+    }
+
+    /// The window's spectrum, normalised to sum to one.
+    fn spectrum_shape(window: &[f32]) -> [f64; SPECTRUM_BINS] {
+        let mut out = [0.0; SPECTRUM_BINS];
+        let mut total = 0.0;
+        for (bin, slot) in out.iter_mut().enumerate() {
+            *slot = magnitude_of(window, bin_hz(bin), 44_100.0);
+            total += *slot;
+        }
+        if total > 0.0 {
+            for slot in &mut out {
+                *slot /= total;
+            }
+        }
+        out
+    }
+
+    /// How far apart the two most different windows of a render are.
+    fn timbre_travel(samples: &[f32], window: usize) -> f64 {
+        let shapes: Vec<[f64; SPECTRUM_BINS]> =
+            samples.chunks_exact(window).map(spectrum_shape).collect();
+        let mut worst = 0.0f64;
+        for (i, a) in shapes.iter().enumerate() {
+            for b in shapes.iter().skip(i + 1) {
+                worst = worst.max(a.iter().zip(b.iter()).map(|(p, q)| (p - q).abs()).sum::<f64>());
+            }
+        }
+        worst
+    }
+
+    /// How deeply the amplitude envelope swings at `hz`, as a fraction of its
+    /// own mean — which is what a rhythm is, measured.
+    ///
+    /// Hann-windowed, and it has to be: the envelope is sampled every 64
+    /// samples and no interesting rate fits a whole number of times into a
+    /// render, so an unwindowed transform reads the note's own attack as
+    /// several tenths of modulation at every frequency. That is what the first
+    /// version of this measured, and it put a patch's rhythm at 0.05 whether
+    /// its sequences were running or not.
+    fn envelope_modulation(samples: &[f32], hz: f64) -> f64 {
+        const HOP: usize = 64;
+        let env: Vec<f32> = samples.chunks_exact(HOP).map(peak).collect();
+        if env.len() < 8 {
+            return 0.0;
+        }
+        let rate = 44_100.0 / HOP as f64;
+        let mean = f64::from(env.iter().sum::<f32>()) / env.len() as f64;
+        if mean <= 0.0 {
+            return 0.0;
+        }
+        let w = TWO_PI * hz / rate;
+        let (mut re, mut im, mut norm) = (0.0, 0.0, 0.0);
+        for (n, v) in env.iter().enumerate() {
+            let hann = 0.5 - 0.5 * (TWO_PI * n as f64 / env.len() as f64).cos();
+            let p = w * n as f64;
+            let x = (f64::from(*v) - mean) * hann;
+            re += x * p.cos();
+            im -= x * p.sin();
+            norm += hann;
+        }
+        2.0 * (re * re + im * im).sqrt() / norm / mean
+    }
+
+    /// One wavetable oscillator alone at the A corner, filter open, envelope
+    /// holding — a panel on which nothing moves except what the sequence does.
+    ///
+    /// TABLE is left where the patch has it, which is what makes the sequence
+    /// play as written: the knob is an offset from the patch's own value.
+    fn bare_sequence_panel(seq: Option<usize>, hz: f32) -> PhosphorSynth {
+        let mut s = PhosphorSynth::new();
+        s.init(44_100.0, 64);
+        s.set_parameter(P_VECTOR_X, 0.0);
+        s.set_parameter(P_VECTOR_Y, 0.0);
+        s.set_parameter(P_A_WAVE, knob_for(Shape::Table as usize, SHAPE_COUNT));
+        s.set_parameter(P_A_SEQ, seq_knob(seq));
+        s.set_parameter(P_SEQ_RATE, seq_rate_knob(hz));
+        s.set_parameter(P_CUTOFF, 1.0);
+        s.set_parameter(P_FILTER_ENV, 0.5);
+        s.set_parameter(P_ATTACK1, 0.0);
+        s.set_parameter(P_DECAY1, 0.0);
+        s.set_parameter(P_SUSTAIN1, 1.0);
+        s
+    }
+
+    /// The headline claim, and the one thing no envelope can imitate: with a
+    /// sequence on, the timbre keeps moving, and with the same panel and no
+    /// sequence it does not.
+    ///
+    /// Measured on one oscillator with nothing else on the panel moving, so
+    /// what is left is the step list and only the step list. Every sequence in
+    /// the bank travels between 0.98 and 1.74 where the same oscillator with
+    /// its selector at "off" travels 0.089 — an order of magnitude, on a
+    /// measurement that is blind to level and to pitch.
+    #[test]
+    fn a_wave_sequence_moves_the_timbre_and_an_unsequenced_oscillator_does_not() {
+        let still =
+            process_buffers(&mut bare_sequence_panel(None, 4.0), &[note_on(60, 100, 0)], 700);
+        let unsequenced = timbre_travel(&still[..44_100], 4096);
+        assert!(
+            unsequenced < 0.2,
+            "the panel moves on its own: an unsequenced oscillator travels {unsequenced:.3}"
+        );
+
+        for seq in 0..SEQ_COUNT {
+            let out = process_buffers(
+                &mut bare_sequence_panel(Some(seq), 4.0),
+                &[note_on(60, 100, 0)],
+                700,
+            );
+            let travel = timbre_travel(&out[..44_100], 4096);
+            assert!(peak(&out) > 0.01, "{} is silent", seq_name(seq));
+            assert!(out.iter().all(|v| v.is_finite()), "{} is not finite", seq_name(seq));
+            assert!(
+                travel > 0.6,
+                "{} holds one timbre: it travels {travel:.3} where a still panel travels \
+                 {unsequenced:.3}",
+                seq_name(seq)
+            );
+            assert!(
+                travel > unsequenced * 4.0,
+                "{} moves no more than the panel it is on: {travel:.3} against {unsequenced:.3}",
+                seq_name(seq)
+            );
+        }
+    }
+
+    /// A sequence that plays once stops on its last step and holds it; one
+    /// that loops does not.
+    ///
+    /// Measured over the last two seconds of a four-second note, which is past
+    /// the end of both one-shots in the bank. They travel 0.202 and 0.314
+    /// there, against 1.002 to 1.557 for the six that loop.
+    #[test]
+    fn a_one_shot_sequence_stops_where_a_loop_carries_on() {
+        for seq in 0..SEQ_COUNT {
+            let out = process_buffers(
+                &mut bare_sequence_panel(Some(seq), 4.0),
+                &[note_on(60, 100, 0)],
+                2800,
+            );
+            let late = timbre_travel(&out[out.len() - 88_200..], 4096);
+            if seq_loops(seq) {
+                assert!(
+                    late > 0.7,
+                    "{} loops but has stopped moving: {late:.3}",
+                    seq_name(seq)
+                );
+            } else {
+                assert!(
+                    late < 0.45,
+                    "{} plays once but is still moving two seconds after it ended: {late:.3}",
+                    seq_name(seq)
+                );
+                assert!(peak(&out[out.len() - 88_200..]) > 0.01, "{} went silent", seq_name(seq));
+            }
+        }
+    }
+
+    /// The cursor itself, away from the audio it produces: a one-shot ends on
+    /// its last step and stays there, a loop comes back round to its first.
+    #[test]
+    fn the_cursor_holds_a_one_shot_and_wraps_a_loop() {
+        let run = |slot: usize, samples: usize| {
+            let mut cursor = SeqCursor::start(slot);
+            let mut visited = Vec::new();
+            for _ in 0..samples {
+                cursor.advance(40.0, 44_100.0);
+                if visited.last() != Some(&cursor.index) {
+                    visited.push(cursor.index);
+                }
+            }
+            (cursor, visited)
+        };
+
+        for index in 0..SEQ_COUNT {
+            let steps = seq_step_count(index);
+            // Long enough for several passes at 40 Hz: the longest sequence in
+            // the bank is 16 ticks, which is 0.4 s.
+            let (cursor, visited) = run(index + 1, 44_100 * 3);
+            assert!(cursor.is_running(), "{} did not start", seq_name(index));
+            if seq_loops(index) {
+                assert!(!cursor.held, "{} stopped, but it loops", seq_name(index));
+                assert!(
+                    visited.len() > steps,
+                    "{} visited {} of its {steps} steps and did not come round",
+                    seq_name(index),
+                    visited.len()
+                );
+                assert!(visited.contains(&0) && visited.contains(&(steps - 1)));
+            } else {
+                assert!(cursor.held, "{} loops, but it should play once", seq_name(index));
+                assert_eq!(
+                    cursor.index,
+                    steps - 1,
+                    "{} stopped somewhere other than its last step",
+                    seq_name(index)
+                );
+                assert_eq!(
+                    visited.len(),
+                    steps,
+                    "{} did not visit every step once",
+                    seq_name(index)
+                );
+                // Held really means held: the point it hands out stops moving.
+                let mut settled = cursor;
+                let first = settled.advance(40.0, 44_100.0);
+                for _ in 0..10_000 {
+                    let point = settled.advance(40.0, 44_100.0);
+                    assert_eq!(point.wave, first.wave);
+                    assert_eq!(point.mix, first.mix);
+                    assert_eq!(point.level, first.level);
+                    assert_eq!(point.ratio, first.ratio);
+                }
+            }
+        }
+    }
+
+    /// The clock runs at the rate the knob names, and the readout under the
+    /// bar is the tick length that rate works out to.
+    #[test]
+    fn the_sequence_clock_runs_at_the_rate_the_knob_names() {
+        // The taper's ends, and the octave count the bank names rates with.
+        assert!((seq_hz(0.0) - SEQ_MIN_HZ).abs() < 1e-12);
+        assert!((seq_hz(1.0) - SEQ_MAX_HZ).abs() < 1e-9);
+        assert!(
+            (SEQ_MIN_HZ * 2.0f64.powf(f64::from(SEQ_OCTAVES)) - SEQ_MAX_HZ).abs() < 1e-9,
+            "SEQ_OCTAVES does not span the taper"
+        );
+        for (octaves, hz) in [(0.0, 0.25), (3.0, 2.0), (5.0, 8.0), (7.0, 32.0)] {
+            let knob = seq_rate_at(octaves);
+            assert!(
+                (seq_hz(f64::from(knob)) - hz).abs() < 1e-6,
+                "seq_rate_at({octaves}) is {} Hz, not {hz}",
+                seq_hz(f64::from(knob))
+            );
+            assert!((f64::from(seq_rate_knob(hz as f32)) - f64::from(knob)).abs() < 1e-6);
+            // The panel prints the tick length rather than the rate.
+            let seconds = param_seconds(P_SEQ_RATE, knob).unwrap();
+            assert!((seconds - 1.0 / hz).abs() < 1e-6, "the panel reads {seconds} s at {hz} Hz");
+        }
+
+        // ...and the cursor actually advances at it. `gate 4` is four one-tick
+        // steps, so at 8 Hz it crosses eight boundaries a second.
+        for hz in [2.0f64, 8.0, 30.0] {
+            let mut cursor = SeqCursor::start(1);
+            let mut boundaries = 0;
+            let mut previous = cursor.index;
+            for _ in 0..44_100 {
+                cursor.advance(hz, 44_100.0);
+                if cursor.index != previous {
+                    boundaries += 1;
+                    previous = cursor.index;
+                }
+            }
+            let measured = f64::from(boundaries);
+            assert!(
+                (measured - hz).abs() <= 1.0,
+                "at {hz} Hz the cursor crossed {measured} step boundaries in a second"
+            );
+        }
+    }
+
+    /// The cursor is total. `params` is public, so the rate can arrive as
+    /// anything at all, and a sequence is the one thing on this panel with a
+    /// state machine in it.
+    #[test]
+    fn the_sequence_cursor_is_bounded_and_total() {
+        for hz in [0.0f64, -1.0, 1e9, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            for slot in 0..=SEQ_COUNT {
+                let mut cursor = SeqCursor::start(slot);
+                let mut previous = cursor.index;
+                for _ in 0..20_000 {
+                    let point = cursor.advance(hz, 44_100.0);
+                    assert!(
+                        (0.0..1.0).contains(&cursor.phase),
+                        "rate {hz} put the cursor at phase {}",
+                        cursor.phase
+                    );
+                    assert!((0.0..=1.0).contains(&point.mix), "rate {hz} gave mix {}", point.mix);
+                    assert!((0.0..=1.0).contains(&point.level));
+                    assert!(point.ratio.is_finite() && point.ratio > 0.0);
+                    assert!(point.wave.iter().all(|w| (0.0..=1.0).contains(w)));
+                    // At most one step boundary per sample, which is what
+                    // makes the work per sample bounded.
+                    if let Some(seq) = cursor.seq {
+                        let moved = cursor.index != previous;
+                        let stepped_by_one = (previous + 1) % seq.steps.len() == cursor.index;
+                        assert!(!moved || stepped_by_one, "rate {hz} skipped a step");
+                    }
+                    previous = cursor.index;
+                }
+            }
+        }
+        // A selector position past the end of the bank is off, not a panic.
+        assert!(!SeqCursor::start(SEQ_COUNT + 5).is_running());
+        assert!(!SeqCursor::start(0).is_running());
+        assert_eq!(SeqCursor::start(0).advance(4.0, 44_100.0).level, 1.0);
+    }
+
+    /// The matrix reaches the clock: a slot pointed at `seq hz` makes the
+    /// pattern run faster, and the rhythm moves with it.
+    ///
+    /// `gate 4` at 4 Hz gates the amplitude twice a second — its two loud
+    /// steps — so the envelope swings at 2 Hz. Velocity at full and a slot at
+    /// +0.5 multiplies the clock by 2^1.5, which puts the same swing at 5.7 Hz.
+    #[test]
+    fn the_matrix_can_push_the_sequence_clock() {
+        let render = |amount: Option<f32>| {
+            let mut s = bare_sequence_panel(Some(0), 4.0);
+            if let Some(amount) = amount {
+                s.set_parameter(p_mod_src(0), knob_for(Source::Velocity as usize, SOURCE_COUNT));
+                s.set_parameter(p_mod_dest(0), knob_for(Dest::SeqRate as usize, DEST_COUNT));
+                s.set_parameter(p_mod_amount(0), bipolar_knob(amount));
+            }
+            process_buffers(&mut s, &[note_on(60, 127, 0)], 1400)
+        };
+        let plain = render(None);
+        let pushed = render(Some(0.5));
+
+        let slow = 2.0;
+        let fast = slow * 2.0f64.powf(0.5 * SEQ_RATE_OCTAVES);
+        assert!(
+            envelope_modulation(&plain, slow) > 0.2,
+            "the gate is not audible at rest: {:.4}",
+            envelope_modulation(&plain, slow)
+        );
+        assert!(
+            envelope_modulation(&pushed, fast) > envelope_modulation(&plain, fast) * 4.0,
+            "pushing the clock did not move the rhythm to {fast:.1} Hz: {:.4} against {:.4}",
+            envelope_modulation(&pushed, fast),
+            envelope_modulation(&plain, fast)
+        );
+        assert!(
+            envelope_modulation(&pushed, slow) < envelope_modulation(&plain, slow) * 0.5,
+            "the rhythm is still at {slow} Hz after the clock was pushed: {:.4} against {:.4}",
+            envelope_modulation(&pushed, slow),
+            envelope_modulation(&plain, slow)
+        );
+    }
+
+    /// A sequence on an oscillator that is not reading the wavetable bank is
+    /// still a rhythm and a riff — the step's waveform is the one column that
+    /// needs a table to land on.
+    #[test]
+    fn a_sequence_on_a_shape_with_no_table_is_still_a_rhythm() {
+        let render = |shape: Shape, seq: Option<usize>| {
+            let mut s = bare_sequence_panel(seq, 4.0);
+            s.set_parameter(P_A_WAVE, knob_for(shape as usize, SHAPE_COUNT));
+            process_buffers(&mut s, &[note_on(60, 110, 0)], 700)
+        };
+        for shape in [Shape::Saw, Shape::Pulse, Shape::Triangle, Shape::Sine, Shape::Noise] {
+            let gated = render(shape, Some(0));
+            let plain = render(shape, None);
+            assert!(
+                envelope_modulation(&gated, 2.0) > envelope_modulation(&plain, 2.0) * 4.0,
+                "{shape:?} does not answer the gate: {:.4} against {:.4}",
+                envelope_modulation(&gated, 2.0),
+                envelope_modulation(&plain, 2.0)
+            );
+            // ...and the WAVE switch still wins: the step's waveform column
+            // did not quietly turn the oscillator into a wavetable.
+            let table = render(Shape::Table, Some(0));
+            let difference: f32 = gated
+                .iter()
+                .zip(table.iter())
+                .map(|(a, b)| (a - b).abs())
+                .sum::<f32>()
+                / gated.len() as f32;
+            assert!(difference > 1e-4, "{shape:?} sounds like the wavetable oscillator");
+        }
+    }
+
+    /// Moving a sequence selector under a held note takes effect on that note.
+    ///
+    /// The step list is resolved at note-on the way the key map is, but the
+    /// *reference* is checked every sample, so the panel keeps its promise
+    /// that every control is live.
+    #[test]
+    fn moving_a_sequence_selector_under_a_held_note_takes_effect() {
+        let mut held = bare_sequence_panel(Some(0), 4.0);
+        let mut switched = bare_sequence_panel(Some(0), 4.0);
+        let before_a = process_buffers(&mut held, &[note_on(60, 110, 0)], 100);
+        let before_b = process_buffers(&mut switched, &[note_on(60, 110, 0)], 100);
+        assert_eq!(before_a, before_b, "the two panels did not start the same");
+
+        switched.set_parameter(P_A_SEQ, seq_knob(Some(3)));
+        let after_a = process_buffers(&mut held, &[], 200);
+        let after_b = process_buffers(&mut switched, &[], 200);
+        let difference: f32 = after_a
+            .iter()
+            .zip(after_b.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum::<f32>()
+            / after_a.len() as f32;
+        assert!(difference > 1e-4, "the selector did nothing under a held note ({difference:e})");
+
+        // ...and switching it off leaves the oscillator as the panel has it.
+        let mut turned_off = bare_sequence_panel(Some(0), 4.0);
+        process_buffers(&mut turned_off, &[note_on(60, 110, 0)], 100);
+        turned_off.set_parameter(P_A_SEQ, seq_knob(None));
+        let out = process_buffers(&mut turned_off, &[], 400);
+        assert!(
+            timbre_travel(&out, 4096) < 0.2,
+            "the oscillator is still sequenced after the selector was turned off: {:.3}",
+            timbre_travel(&out, 4096)
+        );
+    }
+
+    /// The two sequenced patches are actually made of their sequences: turning
+    /// the four selectors off changes the render by a substantial fraction of
+    /// its own level, and the rhythm at the patch's own clock collapses.
+    #[test]
+    fn the_sequenced_patches_are_mostly_their_sequences() {
+        // SEQ PAD's clock is 2 Hz and its level steps land on it; SEQ RIFF's
+        // is 8 Hz and `gate 4` puts two loud steps in every four, so its
+        // rhythm is at half the clock.
+        for (name, clock) in [("SEQ PAD", 2.0), ("SEQ RIFF", 4.0)] {
+            let index = PATCH_NAMES.iter().position(|n| *n == name).unwrap();
+            let render = |off: bool| {
+                let mut s = PhosphorSynth::new();
+                s.init(44_100.0, 64);
+                s.set_parameter(P_PATCH, patch_knob(index));
+                if off {
+                    for i in 0..4 {
+                        s.set_parameter(P_A_SEQ + i * P_OSC_STRIDE, seq_knob(None));
+                    }
+                }
+                process_buffers(&mut s, &[note_on(60, 100, 0)], 3400)
+            };
+            let on = render(false);
+            let off = render(true);
+
+            let difference = on
+                .iter()
+                .zip(off.iter())
+                .map(|(a, b)| f64::from((a - b).abs()))
+                .sum::<f64>()
+                / on.len() as f64;
+            let level = f64::from(rms(&on));
+            assert!(
+                difference > level * 0.25,
+                "{name} barely uses its sequences: turning them off moved {difference:.5} \
+                 against {level:.5} RMS"
+            );
+
+            // A second in, so the attack is not what is being transformed.
+            let body = &on[44_100..];
+            let quiet = &off[44_100..];
+            assert!(
+                envelope_modulation(body, clock) > 0.04,
+                "{name} has no rhythm at its own {clock} Hz clock: {:.4}",
+                envelope_modulation(body, clock)
+            );
+            assert!(
+                envelope_modulation(body, clock) > envelope_modulation(quiet, clock) * 3.0,
+                "{name}'s rhythm is not the sequences': {:.4} against {:.4} with them off",
+                envelope_modulation(body, clock),
+                envelope_modulation(quiet, clock)
+            );
+        }
+    }
+
+    /// The bank, as the editor and the engine both have to read it.
+    #[test]
+    fn the_sequence_bank_is_the_shape_the_editor_expects() {
+        assert_eq!(SEQ_BANK.len(), SEQ_COUNT);
+        assert_eq!(SEQ_SLOTS, SEQ_COUNT + 1);
+        assert_eq!(SEQ_LABELS[0], "off");
+        for (index, seq) in SEQ_BANK.iter().enumerate() {
+            assert!(!seq.name.is_empty(), "sequence {index} has no name");
+            assert!(
+                seq.name.chars().count() <= 12,
+                "sequence {index} label {:?} does not fit the panel",
+                seq.name
+            );
+            assert!(!seq.steps.is_empty(), "{} has no steps", seq.name);
+            assert!(seq.steps.len() <= MAX_STEPS, "{} has more than MAX_STEPS", seq.name);
+            for (n, step) in seq.steps.iter().enumerate() {
+                assert!(step.ticks >= 1, "{} step {n} lasts no time", seq.name);
+                assert!(
+                    (0.0..=1.0).contains(&step.fade),
+                    "{} step {n} crossfades {} of itself",
+                    seq.name,
+                    step.fade
+                );
+                assert!((0.0..=1.0).contains(&step.level), "{} step {n} is out of range", seq.name);
+                assert!(
+                    (step.wave as usize) < WAVE_COUNT,
+                    "{} step {n} names waveform {} of {WAVE_COUNT}",
+                    seq.name,
+                    step.wave
+                );
+                assert!(
+                    step.pitch.abs() <= 24,
+                    "{} step {n} transposes past two octaves",
+                    seq.name
+                );
+            }
+            // The accessors an editor reads it through.
+            assert_eq!(seq_name(index), seq.name);
+            assert_eq!(seq_step_count(index), seq.steps.len());
+            assert_eq!(seq_loops(index), seq.looping);
+            assert_eq!(SEQ_LABELS[index + 1], seq.name);
+            // ...and the selector lands where it says it does.
+            assert_eq!(seq_index(seq_knob(Some(index))), Some(index));
+            assert_eq!(discrete_label(P_A_SEQ, seq_knob(Some(index))), Some(seq.name));
+        }
+        assert_eq!(seq_index(seq_knob(None)), None);
+        assert_eq!(discrete_label(P_D_SEQ, seq_knob(None)), Some("off"));
+        // Out of range in either direction still answers.
+        assert_eq!(seq_knob(Some(SEQ_COUNT + 9)), seq_knob(Some(SEQ_COUNT - 1)));
+        assert_eq!(seq_name(SEQ_COUNT + 9), seq_name(SEQ_COUNT - 1));
+        assert_eq!(seq_index(9.0), Some(SEQ_COUNT - 1));
+        assert_eq!(seq_index(-1.0), None);
+        // Both endings are represented, or one of them is untested by every
+        // test above that walks the bank.
+        assert!(SEQ_BANK.iter().any(|s| s.looping));
+        assert!(SEQ_BANK.iter().any(|s| !s.looping));
+        // And a waveform is named by index rather than swept to: the two ends
+        // of the bank are the first and last waveform exactly.
+        assert!((wave_position(0) - 0.0).abs() < 1e-12);
+        assert!((wave_position((WAVE_COUNT - 1) as u8) - 1.0).abs() < 1e-12);
+        assert!((wave_position(200) - 1.0).abs() < 1e-12);
+    }
+
+    /// Every sequence in the bank changes the output, reached the way a player
+    /// reaches it: the panel the instrument loads with, one oscillator turned
+    /// to `table`, one selector moved, one note.
+    ///
+    /// The guard the matrix has had all along in
+    /// `every_source_reaches_every_destination`, and the one the bank did not.
+    /// What it would have caught: the TABLE knob is an offset the sequence is
+    /// shifted through the bank by, and it was first written as an offset from
+    /// the *middle of the travel* rather than from where the patch left the
+    /// knob. Seven of the eleven patches leave it at zero, so on all of them a
+    /// sequence was dragged half a bank downwards and its low steps clamped
+    /// onto waveform 0 — which on the default panel made `organ 3` six times
+    /// weaker than it should be and `morph 8` bit-identical to no sequence for
+    /// its first two steps.
+    #[test]
+    fn every_sequence_in_the_bank_changes_the_output() {
+        let render = |seq: Option<usize>| {
+            let mut s = PhosphorSynth::new();
+            s.init(44_100.0, 64);
+            s.set_parameter(P_A_WAVE, knob_for(Shape::Table as usize, SHAPE_COUNT));
+            s.set_parameter(P_A_LEVEL, 1.0);
+            s.set_parameter(P_A_SEQ, seq_knob(seq));
+            // Four seconds, which is past a full cycle of the longest
+            // sequence in the bank at the clock this panel loads with. A
+            // shorter render is the other way a sequence looks inert: at
+            // 4 Hz `vox 4` holds its first step for 750 ms, so a third of a
+            // second of audio cannot tell it from no sequence at all.
+            process_buffers(&mut s, &[note_on(60, 110, 0)], 2800)
+        };
+        let unsequenced = render(None);
+        for index in 0..SEQ_COUNT {
+            let out = render(Some(index));
+            let differing = out.iter().zip(unsequenced.iter()).filter(|(a, b)| a != b).count();
+            let travelled: f64 = out
+                .iter()
+                .zip(unsequenced.iter())
+                .map(|(a, b)| f64::from((a - b).abs()))
+                .sum();
+            assert!(
+                differing > out.len() / 4,
+                "{} changed only {differing} of {} samples against no sequence at all",
+                seq_name(index),
+                out.len()
+            );
+            assert!(
+                travelled > 100.0,
+                "{} barely changes the sound: {travelled:.1} summed against no sequence",
+                seq_name(index)
+            );
+        }
+    }
+
+    /// Which columns of a sequence an oscillator can actually read depends on
+    /// its WAVE switch, and a sequence that varies nothing but the waveform is
+    /// therefore *exactly* inert on a shape that has no waveform to read.
+    ///
+    /// That is the deliberate half of the design — it is what lets `gate 4`
+    /// put a rhythm on a sawtooth bass — and it is stated here as an assertion
+    /// rather than left as a surprise, because the surprise is a good one: an
+    /// oscillator switched to `noise` with `morph 8` on it renders bit for bit
+    /// the same as one with no sequence at all, and nothing on the panel says
+    /// why.
+    #[test]
+    fn a_waveform_only_sequence_needs_an_oscillator_that_reads_waveforms() {
+        /// Whether every step asks for the same level and the same pitch, so
+        /// that the waveform column is the only one carrying anything.
+        fn waveform_only(seq: &SeqChart) -> bool {
+            let first = seq.steps[0];
+            seq.steps
+                .iter()
+                .all(|s| s.level == first.level && s.pitch == first.pitch)
+        }
+
+        // Four seconds, so that every sequence has passed several step
+        // boundaries: a level or a pitch can only show up when the cursor
+        // moves, where a waveform shows up on the first sample.
+        let render = |shape: Shape, seq: Option<usize>| {
+            let mut s = PhosphorSynth::new();
+            s.init(44_100.0, 64);
+            s.set_parameter(P_A_WAVE, knob_for(shape as usize, SHAPE_COUNT));
+            s.set_parameter(P_A_LEVEL, 1.0);
+            s.set_parameter(P_A_SEQ, seq_knob(seq));
+            process_buffers(&mut s, &[note_on(60, 110, 0)], 2800)
+        };
+
+        // The bank has one of each, or half of this test is vacuous.
+        assert!(SEQ_BANK.iter().any(waveform_only), "no sequence in the bank is waveform-only");
+        assert!(SEQ_BANK.iter().any(|s| !waveform_only(s)));
+
+        for shape in [Shape::Saw, Shape::Pulse, Shape::Triangle, Shape::Sine, Shape::Noise] {
+            let plain = render(shape, None);
+            for (index, seq) in SEQ_BANK.iter().enumerate() {
+                let out = render(shape, Some(index));
+                if waveform_only(seq) {
+                    // Bit-identical, not merely close: a step's level and
+                    // pitch that never change multiply the oscillator by
+                    // exactly one, and one is exact.
+                    assert_eq!(
+                        out, plain,
+                        "{} varies only its waveform, so on {shape:?} it should be inert",
+                        seq.name
+                    );
+                } else {
+                    // Measured over the first 1.5 s rather than the whole
+                    // render, because two of the bank's sequences are
+                    // one-shots that resolve to unity and hold there — past
+                    // the end of `bell run` a sawtooth really is the plain
+                    // sawtooth again, and that is the sequence working rather
+                    // than failing.
+                    let head = 66_150.min(out.len());
+                    let differing = out[..head]
+                        .iter()
+                        .zip(plain[..head].iter())
+                        .filter(|(a, b)| a != b)
+                        .count();
+                    assert!(
+                        differing > head / 4,
+                        "{} carries a level or a pitch, so it should still work on \
+                         {shape:?}: only {differing} of {head} samples moved",
+                        seq.name
+                    );
+                }
+            }
+            // ...and on the wavetable oscillator every one of them works,
+            // which is what makes the inertness a property of the shape rather
+            // than of the sequence.
+            let table = render(Shape::Table, None);
+            for index in 0..SEQ_COUNT {
+                assert_ne!(render(Shape::Table, Some(index)), table, "{}", seq_name(index));
+            }
+        }
+    }
+
+    /// A sequenced oscillator's own knobs stay live, which is the whole reason
+    /// the sequence is a *reference* on the panel rather than a mode the
+    /// oscillator goes into. TABLE becomes a bipolar shift of the sequence
+    /// through the bank with its middle as the neutral position; TUNE and
+    /// LEVEL still multiply what the steps ask for.
+    #[test]
+    fn a_sequenced_oscillators_own_knobs_stay_live() {
+        let render = |set: &dyn Fn(&mut PhosphorSynth)| {
+            let mut s = bare_sequence_panel(Some(0), 4.0);
+            set(&mut s);
+            process_buffers(&mut s, &[note_on(60, 110, 0)], 100)
+        };
+        let mean_difference = |a: &[f32], b: &[f32]| -> f64 {
+            a.iter().zip(b.iter()).map(|(p, q)| f64::from((p - q).abs())).sum::<f64>()
+                / a.len() as f64
+        };
+
+        let neutral = render(&|_| {});
+        for (name, knob, index) in [
+            ("table", P_A_TABLE, 0.30f32),
+            ("tune", P_A_TUNE, tune_knob(7)),
+            ("level", P_A_LEVEL, 0.4),
+        ]
+        {
+            let moved = render(&|s| s.set_parameter(knob, index));
+            assert!(
+                mean_difference(&neutral, &moved) > 1e-5,
+                "the {name} knob is dead on a sequenced oscillator"
+            );
+        }
+        // ...and TABLE where the patch left it is the sequence as written.
+        // `gate 4` is four steps of one waveform — the sixth in the bank — and
+        // this window is inside its first step, so a sequenced oscillator with
+        // that knob untouched has to be the plain oscillator pointed at that
+        // waveform. Not bit-identical, only because the position that names
+        // waveform 5 is a third, which f32 cannot hold and the step table does
+        // not have to: the two differ by 3e-8 of a bank position.
+        let plain = {
+            let mut s = bare_sequence_panel(None, 4.0);
+            s.set_parameter(P_A_TABLE, 5.0 / (WAVE_COUNT - 1) as f32);
+            process_buffers(&mut s, &[note_on(60, 110, 0)], 100)
+        };
+        let difference = mean_difference(&neutral, &plain);
+        assert!(
+            difference < 1e-5,
+            "TABLE at the middle of its travel is not the sequence as written: {difference:e}"
+        );
+        // The comparison only means something if that knob position matters.
+        let elsewhere = {
+            let mut s = bare_sequence_panel(None, 4.0);
+            s.set_parameter(P_A_TABLE, 8.0 / (WAVE_COUNT - 1) as f32);
+            process_buffers(&mut s, &[note_on(60, 110, 0)], 100)
+        };
+        assert!(mean_difference(&neutral, &elsewhere) > 1e-3);
+    }
+
+    /// A keymapped patch is a set of recipes, and a recipe owns its
+    /// oscillators — so the four sequence selectors are inert on one, exactly
+    /// as the four WAVE switches already are.
+    #[test]
+    fn a_keymapped_patch_ignores_the_sequence_selectors() {
+        let render = |seq: Option<usize>| {
+            let mut s = kit();
+            for i in 0..4 {
+                s.set_parameter(P_A_SEQ + i * P_OSC_STRIDE, seq_knob(seq));
+            }
+            process_buffers(&mut s, &[note_on(38, 110, 0)], 400)
+        };
+        assert_eq!(render(None), render(Some(1)), "a kit answered the sequence selector");
+        // The same selector on a melodic patch is not inert, or the assertion
+        // above would hold for the wrong reason.
+        let melodic = |seq: Option<usize>| {
+            let mut s = PhosphorSynth::new();
+            s.init(44_100.0, 64);
+            s.set_parameter(P_A_WAVE, knob_for(Shape::Table as usize, SHAPE_COUNT));
+            s.set_parameter(P_A_SEQ, seq_knob(seq));
+            process_buffers(&mut s, &[note_on(60, 110, 0)], 400)
+        };
+        assert_ne!(melodic(None), melodic(Some(1)));
+    }
+
     // ── The vector mix ──
 
     #[test]
@@ -3432,7 +5024,7 @@ mod tests {
             s.init(44_100.0, 64);
             // Four different shapes, so the corners cannot be confused.
             for (i, shape) in [0usize, 1, 2, 3].into_iter().enumerate() {
-                s.set_parameter(P_A_WAVE + i * 5, knob_for(shape, SHAPE_COUNT));
+                s.set_parameter(P_A_WAVE + i * P_OSC_STRIDE, knob_for(shape, SHAPE_COUNT));
             }
             s.set_parameter(P_VECTOR_X, x);
             s.set_parameter(P_VECTOR_Y, y);
@@ -3785,11 +5377,19 @@ mod tests {
     }
 
     /// A panel on which every destination is audible: oscillator D on the
-    /// matrix, wavetables and a pulse in the mix, the vector off-centre and
-    /// the cutoff with room either way.
+    /// matrix, wavetables and a pulse in the mix, the vector off-centre, the
+    /// cutoff with room either way, and a wave sequence running on oscillator
+    /// A so that the clock is something a slot can push.
+    ///
+    /// `morph 8` rather than one of the stepped sequences, because the window
+    /// this test renders is 0.22 s and a stepped pattern at any sane clock
+    /// would not reach its second step inside it — a continuous morph moves on
+    /// every sample, so a rate change shows up immediately.
     fn setup_matrix_panel(s: &mut PhosphorSynth) {
         s.set_parameter(P_A_WAVE, knob_for(Shape::Table as usize, SHAPE_COUNT));
         s.set_parameter(P_A_TABLE, 0.4);
+        s.set_parameter(P_A_SEQ, seq_knob(Some(1)));
+        s.set_parameter(P_SEQ_RATE, seq_rate_at(6.0));
         s.set_parameter(P_B_WAVE, knob_for(Shape::Pulse as usize, SHAPE_COUNT));
         s.set_parameter(P_C_WAVE, knob_for(Shape::Table as usize, SHAPE_COUNT));
         s.set_parameter(P_C_TABLE, 0.7);
@@ -3849,7 +5449,7 @@ mod tests {
             let mut s = PhosphorSynth::new();
             s.init(44_100.0, 64);
             for i in 0..4 {
-                let base = P_A_WAVE + i * 5;
+                let base = P_A_WAVE + i * P_OSC_STRIDE;
                 s.set_parameter(base, knob_for(Shape::Sine as usize, SHAPE_COUNT));
                 s.set_parameter(base + 2, tune_knob(0));
                 s.set_parameter(base + 3, fine_knob(0.0));
@@ -3945,7 +5545,7 @@ mod tests {
     /// at maximum — reached 0.9470 on an eight-note chord at velocity 127,
     /// past the master limiter's ceiling and burning 5 dB of saturation
     /// against a 2 dB budget, and nothing measured it.
-    fn hostile_panels() -> Vec<(&'static str, PhosphorSynth)> {
+    fn hostile_panels() -> Vec<(String, PhosphorSynth)> {
         let mut cases = Vec::new();
 
         for (shape_index, shape_name) in SHAPE_LABELS.iter().enumerate() {
@@ -3953,7 +5553,7 @@ mod tests {
             // filter wide open and holding, the drive at the top.
             let mut s = PhosphorSynth::new();
             for i in 0..4 {
-                let base = P_A_WAVE + i * 5;
+                let base = P_A_WAVE + i * P_OSC_STRIDE;
                 s.set_parameter(base, knob_for(shape_index, SHAPE_COUNT));
                 s.set_parameter(base + 1, 1.0);
                 s.set_parameter(base + 4, 1.0);
@@ -3967,7 +5567,7 @@ mod tests {
             s.set_parameter(P_ATTACK1, 0.0);
             s.set_parameter(P_DECAY1, 0.0);
             s.set_parameter(P_VELOCITY, 0.0);
-            cases.push((*shape_name, s));
+            cases.push(((*shape_name).to_string(), s));
         }
 
         // Every corner of the vector, so no single oscillator is hidden by the
@@ -3980,7 +5580,7 @@ mod tests {
         ] {
             let mut s = PhosphorSynth::new();
             for i in 0..4 {
-                let base = P_A_WAVE + i * 5;
+                let base = P_A_WAVE + i * P_OSC_STRIDE;
                 s.set_parameter(base, knob_for(Shape::Pulse as usize, SHAPE_COUNT));
                 s.set_parameter(base + 4, 1.0);
             }
@@ -3994,7 +5594,7 @@ mod tests {
             s.set_parameter(P_ATTACK1, 0.0);
             s.set_parameter(P_DECAY1, 0.0);
             s.set_parameter(P_VELOCITY, 0.0);
-            cases.push((name, s));
+            cases.push((name.to_string(), s));
         }
 
         // Every slot in the matrix pointed at cutoff, resonance and the
@@ -4006,7 +5606,7 @@ mod tests {
         ] {
             let mut s = PhosphorSynth::new();
             for i in 0..4 {
-                s.set_parameter(P_A_WAVE + i * 5 + 4, 1.0);
+                s.set_parameter(P_A_WAVE + i * P_OSC_STRIDE + 4, 1.0);
             }
             s.set_parameter(P_CUTOFF, 0.8);
             s.set_parameter(P_RESO, 0.9);
@@ -4022,13 +5622,88 @@ mod tests {
                 s.set_parameter(p_mod_dest(slot), knob_for(dest as usize, DEST_COUNT));
                 s.set_parameter(p_mod_amount(slot), 1.0);
             }
-            cases.push((name, s));
+            cases.push((name.to_string(), s));
+        }
+
+        // Every sequence in the bank on all four oscillators at once, with
+        // every level at the top, the filter open and holding and the drive
+        // at the top — the same panel as the shape sweep above, with the step
+        // lists added.
+        //
+        // A sequence cannot introduce level: every waveform in the bank is
+        // bounded by one, a step's level is bounded by one, and a crossfade
+        // between two values bounded by one is bounded by one, so the vector
+        // mix is still bounded by the largest level knob. What a sequence
+        // *can* do is put a louder waveform under the corner the vector is
+        // resting on, and transpose it down where the filter passes more of
+        // it — which is why this is measured rather than argued.
+        for (index, name) in [
+            (0usize, "seq gate 4"),
+            (1, "seq morph 8"),
+            (2, "seq vox 4"),
+            (3, "seq riff 5th"),
+            (4, "seq attack"),
+            (5, "seq bell run"),
+            (6, "seq organ 3"),
+            (7, "seq stab"),
+        ] {
+            for (rate, rate_name) in [(0.5f32, "slow"), (24.0, "fast")] {
+                let mut s = PhosphorSynth::new();
+                for i in 0..4 {
+                    let base = P_A_WAVE + i * P_OSC_STRIDE;
+                    s.set_parameter(base, knob_for(Shape::Table as usize, SHAPE_COUNT));
+                    s.set_parameter(base + 4, 1.0);
+                    s.set_parameter(base + 5, seq_knob(Some(index)));
+                }
+                s.set_parameter(P_SEQ_RATE, seq_rate_knob(rate));
+                s.set_parameter(P_CUTOFF, 1.0);
+                s.set_parameter(P_RESO, 1.0);
+                s.set_parameter(P_FILTER_ENV, 1.0);
+                s.set_parameter(P_DRIVE, 1.0);
+                s.set_parameter(P_SUSTAIN1, 1.0);
+                s.set_parameter(P_SUSTAIN2, 1.0);
+                s.set_parameter(P_ATTACK1, 0.0);
+                s.set_parameter(P_DECAY1, 0.0);
+                s.set_parameter(P_VELOCITY, 0.0);
+                cases.push((format!("{name} {rate_name}"), s));
+            }
+        }
+
+        // The clock itself pushed by the matrix, from every slot at once and
+        // in both directions, on the sequence with the deepest rests: a rest
+        // that is being crossed faster than the crossfade can follow is the
+        // shape of edge a step list can make that nothing else on the panel
+        // can.
+        for (name, amount) in [("seq clock up", 1.0f32), ("seq clock down", 0.0)] {
+            let mut s = PhosphorSynth::new();
+            for i in 0..4 {
+                let base = P_A_WAVE + i * P_OSC_STRIDE;
+                s.set_parameter(base, knob_for(Shape::Table as usize, SHAPE_COUNT));
+                s.set_parameter(base + 4, 1.0);
+                s.set_parameter(base + 5, seq_knob(Some(7)));
+            }
+            s.set_parameter(P_SEQ_RATE, seq_rate_knob(16.0));
+            s.set_parameter(P_CUTOFF, 0.9);
+            s.set_parameter(P_RESO, 0.95);
+            s.set_parameter(P_DRIVE, 1.0);
+            s.set_parameter(P_SUSTAIN1, 1.0);
+            s.set_parameter(P_ATTACK1, 0.0);
+            s.set_parameter(P_DECAY1, 0.0);
+            s.set_parameter(P_VELOCITY, 0.0);
+            s.set_parameter(P_LFO1_RATE, 0.6);
+            for slot in 0..MOD_SLOTS {
+                let source = [Source::Lfo1, Source::Env2, Source::Velocity][slot % 3];
+                s.set_parameter(p_mod_src(slot), knob_for(source as usize, SOURCE_COUNT));
+                s.set_parameter(p_mod_dest(slot), knob_for(Dest::SeqRate as usize, DEST_COUNT));
+                s.set_parameter(p_mod_amount(slot), amount);
+            }
+            cases.push((name.to_string(), s));
         }
 
         // The filter as the source: no oscillator at all, resonance at the top.
         let mut self_osc = PhosphorSynth::new();
         for i in 0..4 {
-            self_osc.set_parameter(P_A_WAVE + i * 5 + 4, 0.0);
+            self_osc.set_parameter(P_A_WAVE + i * P_OSC_STRIDE + 4, 0.0);
         }
         self_osc.set_parameter(P_RESO, 1.0);
         self_osc.set_parameter(P_CUTOFF, 0.5);
@@ -4036,7 +5711,7 @@ mod tests {
         self_osc.set_parameter(P_ATTACK1, 0.0);
         self_osc.set_parameter(P_DECAY1, 0.0);
         self_osc.set_parameter(P_VELOCITY, 0.0);
-        cases.push(("self-oscillating", self_osc));
+        cases.push(("self-oscillating".to_string(), self_osc));
 
         cases
     }
@@ -4100,8 +5775,11 @@ mod tests {
             worst.0
         );
         // The number `OUTPUT_TRIM`'s comment quotes, pinned so that the two
-        // cannot drift: the worst of the 140 renders is every matrix slot at
-        // full depth from velocity, on an eight-note chord.
+        // cannot drift: the worst of the 320 renders is every matrix slot at
+        // full depth from velocity, on an eight-note chord — the same case as
+        // before this instrument could sequence, because a step list cannot
+        // introduce level. The loudest sequenced panel is `riff 5th` at
+        // 0.6979, which is 0.0003 behind it.
         assert!(
             (0.68..0.71).contains(&worst.0),
             "the worst panel ({}) measures {:.4}, where OUTPUT_TRIM says 0.6982",
