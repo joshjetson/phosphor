@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>A terminal-native DAW built in Rust</strong><br/>
-  7 built-in synthesizers, 15 drum kits, 300+ patches, 9 color themes, animated splash screen, session save/load, undo/redo, and a plugin system designed for extensibility.
+  7 built-in synthesizers, 18 drum kits, 300+ patches, 9 color themes, animated splash screen, session save/load, undo/redo, and a plugin system designed for extensibility.
 </p>
 
 <p align="center">
@@ -101,12 +101,18 @@ cargo run --release -- --no-midi
 | **tsty-2** | Acoustic modal — Bessel membrane modes, multi-phase envelopes |
 | **tsty-3** | 88 unique sounds — every note a distinct synthesis |
 | **tsty-4** | Extended hats/snares with long decays, varied synthesis methods |
+| **jazz** | Live acoustic — two-headed drums coupled through a sealed shell, brushes, dark complex ride |
+| **funk** | Live acoustic — ported kick with a Helmholtz resonance, crisp snare, tight toms |
+| **studio** | Live acoustic — pillowed kick, damped and gated, the driest of the three |
 | **tsty-5** | Resonator-based — impulse exciter into tuned bandpass filters, wire-coupled snares |
 | **LinnDrum** | 15 recordings through a mu-255 companded 8-bit converter; tuning is the read clock, so pitch and length move together |
 | **DMX** | 11 recordings making 15 sounds, companded 8-bit, per-card pitch trimmer at half an octave |
 | **SDS-V** | Five analog modules — triangle VCO, noise and click through a 4-pole SSM2044, ramp VCAs that stop rather than fade |
 | **727** | The 707's converter with the Latin voice set: congas, bongos, timbales, agogo, cabasa, maracas, whistles, quijada, star chime |
 | **CR-78** | Pre-808 Roland analog — a snare with no oscillator in it at all, one LC band-pass for every metal voice, and the metallic beat |
+| **jazz** | Live acoustic drums, modelled — a small bebop kit: sealed 18" kick with the two heads coupled through the shell, thin heads left to ring, a dark 20" ride, and brushes |
+| **funk** | The same physics, a different drummer — 22" ported kick with a felt strip, a cranked snare over twenty tight strands, gel on the toms, and a ride with a ping |
+| **studio** | Very dry and gated — a pillow in the kick that all but closes the two-head coupling, a muffling ring on the snare, taped toms, and a downward expander across every voice |
 
 ### Patch Highlights
 
@@ -173,7 +179,7 @@ has no patch memory):
 - **ARP Odyssey**: the full front panel — two VCOs with coarse and fine tuning over the panel's 20 Hz-2 kHz range, hard sync, per-oscillator pulse width and PWM, two frequency-mod inputs each, a keyboard switch that drops VCO-1 into the LFO range, the sample-and-hold mixer with its own sources, clock and lag, an XOR ring modulator sharing a fader with white or pink noise, all three filter revisions (12 dB 4023 SVF / 24 dB 4035 ladder / 24 dB 4075 Norton) on one 16 Hz-16 kHz sweep and each resonating to self-oscillation, a non-resonant HPF, three filter modulation slots, VCA gain and drive, and both envelope generators — the ADSR and the AR — with their own sliders and their own LFO-repeat gating. Envelope times follow ARP's published 5 ms-10 s specification and the pitch pads are mapped to pitch bend and the modulation wheel
 - **Juno-60**: the full front panel — LFO rate/delay, DCO with PWM depth and a 3-position PWM mode (LFO/MANUAL/ENV), saw/pulse/sub/noise and a 16'/8'/4' range switch, 4-position HPF, IR3109-style 24 dB/oct resonant VCF with env polarity, LFO and keyboard follow, ENV/GATE VCA, shared ADSR, and BBD stereo chorus (I / II / I+II). Envelope taper, LFO rate taper, filter corner frequencies and chorus rates are calibrated against measurements of the hardware rather than approximated. All 56 factory patches are the instrument's own, transcribed from Roland's published patch charts
 - **Rhodes**: a physical model rather than a sample set, because velocity on a Rhodes changes the *spectrum* and a layered sample set is three photographs of that. A hammer strikes a tine — a steel cantilever, so its overtones are inharmonic, at 6.27, 17.5, 34.4 and 56.8 times the fundamental — and those overtones die far faster than the fundamental does, which is why the attack is a bell and the sustain is almost a pure tone. The tine is paired with a tonebar in an asymmetric tuning fork, so the sustain undulates as energy crosses between them. Sustain per register comes from measured Q values on a 1974 Mark I, interpolated rather than fitted: E flat 2 at 3.88 s, E flat 3 at 1.50, E flat 4 at 1.56, E flat 5 at 1.11, E flat 6 at 0.45 — not monotonic, and left that way. The bark is the pickup: the coil senses the flux gradient where the tine happens to be, and that gradient is an odd function of the tine's offset from the pickup axis, so **voicing** — moving the tine's rest position, the adjustment a technician actually makes — takes the fundamental and every odd partial away and leaves the second partial dominant, exactly as the literature describes. Struck harder the tine swings further into that nonlinearity, so velocity changes the timbre through the pickup rather than through a brightness knob. Felt dampers on release, none above the sixth octave as on the real action, sustain pedal, and the Suitcase's stereo tremolo — which is a pan between two amp channels, not an amplitude modulation
-- **Drum Rack**: 15 kits including circuit-accurate 808/909/707/606, creative 777, warm tape-saturated tsty series, and resonator-based physical modeling
+- **Drum Rack**: 18 kits — circuit-accurate 808/909/707/606/727/CR-78, companded-PCM LinnDrum and DMX, the analog SDS-V, the creative 777, the warm tape-saturated tsty series, and three **live acoustic kits** that are physics rather than voicing. An acoustic kick is two membranes coupled through the air inside the shell, and that coupling — not a filter — is what puts two low modes a sixth apart where a drum machine has one; the front head's muffling is a knob that moves the interval between them. The snare's strands are a bouncing-contact model, so they choke on a hard backbeat and ring on after the drum instead of being a noise burst under an envelope. Cymbals are banks of forty complex resonators with frequency gating, so hitting one harder brings in modes that were not there at all, and with a modal cascade that carries energy from the low modes up into the high ones — bow, bell and edge are one plate struck in three places, and a hi-hat is two plates that clamp
 
 **Session Management**
 - Save/load projects as `.phos` files (human-readable JSON)
@@ -242,7 +248,7 @@ has no patch memory):
 - Shared domain models via atomics (no locks between threads)
 - Command channel pattern for UI-to-audio communication
 - Plugin trait for instruments and effects — same interface for built-in and third-party
-- 661 tests covering DSP, MIDI, engine, mixer, navigation, and persistence
+- 683 tests covering DSP, MIDI, engine, mixer, navigation, and persistence
 
 ---
 
@@ -539,7 +545,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace  # 661 tests
+cargo test --workspace  # 683 tests
 ```
 
 ---

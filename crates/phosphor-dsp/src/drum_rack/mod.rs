@@ -1,6 +1,6 @@
-//! Drum rack — synthesized drum machines.
+//! Drum rack — synthesized drum machines, and three sets of real drums.
 //!
-//! The nine machines modelled here are not nine voicings of one synthesizer;
+//! The machines modelled here are not so many voicings of one synthesizer;
 //! most of them do not even generate sound the same way as each other, and
 //! each one is built as the machine it is:
 //!
@@ -33,6 +33,16 @@
 //! * **CR-78** — pre-808 Roland analog: a snare made of nothing but filtered
 //!   noise, one LC band-pass for all of the metal, and three square waves for
 //!   the metallic beat.
+//!
+//! ...and then the other half, which is not a machine at all. **jazz**,
+//! **funk** and **studio** are three sets of drums, modelled: two membranes
+//! coupled through the air inside a shell, snare strands that bounce on the
+//! bottom head rather than buzzing at one rate, and cymbals as banks of
+//! complex resonators with the DAFx-19 paper's frequency gating and modal
+//! cascade on them. They share one engine — [`racks::acoustic`] for the
+//! physics, [`racks::acoustic_voice`] for the voice — and differ in the drums
+//! it is pointed at, which is what the difference between two kits is. Each
+//! is a voicing sheet: `kit_jazz.rs`, `kit_funk.rs`, `kit_studio.rs`.
 //!
 //! # The panel
 //!
@@ -67,6 +77,14 @@
 //! | CY, RD  | level           | level        | —                         | CY only | CY only |
 //! | OH      | level           | level        | —                         | — | — |
 //! | CH      | level, decay    | level        | —                         | — | level |
+//!
+//! The three acoustic kits are the one place on this panel where nearly
+//! everything is live, and the reason is that they are not machines: every
+//! control here is one a drummer really has. TUNE is head tension and cymbal
+//! size, DECAY is how much the drum is muffled, TONE is what is against the
+//! front head of the kick and how bright the cymbal was bought, ATTACK is the
+//! beater, SNAPPY is the strainer. The one dead fader is CP — there is no hand
+//! clap on a drum kit, and a GM hand clap is played as a flam on the snare.
 //!
 //! A knob a machine does not have reads as centred on that machine — see
 //! [`DrumKit::is_live`] — rather than being invented for it. The 707, the 606,
@@ -360,16 +378,16 @@ fn decay_seconds_808(index: usize, knob: f64) -> Option<f64> {
 
 // ── Kit definitions ──
 
-pub const KIT_COUNT: usize = 15;
+pub const KIT_COUNT: usize = 18;
 
 /// Kit names, in selector order.
 ///
-/// The five machines added after the first ten are appended rather than sorted
-/// in beside the Rolands, so that [`DrumKit::from_index`] keeps the numbering
+/// Every kit added after the first ten is appended rather than sorted in
+/// beside the Rolands, so that [`DrumKit::from_index`] keeps the numbering
 /// every test and every export already uses.
 pub const KIT_LABELS: [&str; KIT_COUNT] = [
     "808", "909", "707", "606", "777", "tsty-1", "tsty-2", "tsty-3", "tsty-4", "tsty-5",
-    "linn", "dmx", "sds-v", "727", "cr-78",
+    "linn", "dmx", "sds-v", "727", "cr-78", "jazz", "funk", "studio",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -389,6 +407,9 @@ pub enum DrumKit {
     KitSdsV,
     Kit727,
     KitCr78,
+    KitJazz,
+    KitFunk,
+    KitStudio,
 }
 
 impl DrumKit {
@@ -414,7 +435,10 @@ impl DrumKit {
             11 => Self::KitDmx,
             12 => Self::KitSdsV,
             13 => Self::Kit727,
-            _ => Self::KitCr78,
+            14 => Self::KitCr78,
+            15 => Self::KitJazz,
+            16 => Self::KitFunk,
+            _ => Self::KitStudio,
         }
     }
 
@@ -436,6 +460,9 @@ impl DrumKit {
             Self::KitSdsV => 12,
             Self::Kit727 => 13,
             Self::KitCr78 => 14,
+            Self::KitJazz => 15,
+            Self::KitFunk => 16,
+            Self::KitStudio => 17,
         }
     }
 
@@ -452,6 +479,9 @@ impl DrumKit {
             Self::KitSdsV => racks::kit_sdsv::decay_seconds(index, knob),
             Self::Kit727 => racks::kit_727::decay_seconds(index),
             Self::KitCr78 => racks::kit_cr78::decay_seconds(index),
+            Self::KitJazz => racks::kit_jazz::decay_seconds(index, knob),
+            Self::KitFunk => racks::kit_funk::decay_seconds(index, knob),
+            Self::KitStudio => racks::kit_studio::decay_seconds(index, knob),
             // A multiplier over a per-note recipe table is not a time.
             Self::Kit777
             | Self::KitTsty1
@@ -687,6 +717,19 @@ impl DrumKit {
                     | P_DRIVE
                     | P_GAIN
             ),
+            // The three acoustic kits are the one place on this panel where
+            // nearly everything is live, and the reason is that these are not
+            // machines: every control here is one a drummer really has.
+            // TUNE is head tension and cymbal size, DECAY is how much the drum
+            // is muffled, TONE is what is against the far head of the kick and
+            // how bright the cymbal is, ATTACK is the beater, SNAPPY is the
+            // strainer.
+            //
+            // The one dead fader is the CLAP, because there is no hand clap on
+            // a drum kit and nothing is played from that strip — a note that
+            // would land there is played on the snare as a flam. See
+            // `racks::acoustic::articulation`.
+            Self::KitJazz | Self::KitFunk | Self::KitStudio => index != P_CP_LEVEL,
             _ => true,
         }
     }
@@ -863,6 +906,11 @@ pub(crate) fn instrument_of(sound: DrumSound, kit: DrumKit) -> Instrument {
         DrumKit::KitCr78 => return racks::kit_cr78::voice_cr78(sound).strip(),
         DrumKit::KitLinn => return racks::kit_linn::voice_linn(sound).strip(),
         DrumKit::KitDmx => return racks::kit_dmx::voice_dmx(sound).strip(),
+        // The three acoustic kits share one articulation table, and it is the
+        // same table their synthesis dispatches on so the two cannot disagree.
+        DrumKit::KitJazz | DrumKit::KitFunk | DrumKit::KitStudio => {
+            return racks::acoustic::articulation(sound).strip()
+        }
         DrumKit::Kit909 => {
             // The 909 has no cowbell circuit. Its rimshot is the only pitched
             // click on the machine, so that is where a cowbell part goes.
@@ -1632,6 +1680,15 @@ pub(crate) struct DrumVoice {
     modal_decays: [f64; 8],  // per-mode decay time in seconds
     hit_seed: u32,           // per-hit random seed for variation
 
+    /// The three acoustic kits' modal bank: twenty-four complex one-poles,
+    /// which is every mode of every drum and cymbal on those kits.
+    bank: racks::acoustic::ModalBank,
+    /// The strands under the snare's bottom head, and the two plates of a
+    /// half-open hat, which rattle through the same contact model.
+    wires: racks::acoustic::Wires,
+    /// Everything else one acoustic hit needs, built on its first sample.
+    acoustic: racks::acoustic_voice::Acoustic,
+
     /// The sample-playback clock of the two machines that have one, as a
     /// fraction of one conversion.
     dac_phase: f64,
@@ -2064,6 +2121,9 @@ impl DrumVoice {
             modal_amps: [0.0; 8],
             modal_decays: [0.0; 8],
             hit_seed: 0,
+            bank: racks::acoustic::ModalBank::new(),
+            wires: racks::acoustic::Wires::new(),
+            acoustic: racks::acoustic_voice::Acoustic::new(),
             dac_phase: 0.0,
             dac_hold: 0.0,
             dac_address: 0,
@@ -2140,6 +2200,11 @@ impl DrumVoice {
             // The CR-78's metal is an oscillator bank as the 808's is, at its
             // own frequencies.
             DrumKit::KitCr78 => self.synth_cr78(sr, &c, metal),
+            // Three sets of real drums through one modal engine. The bank they
+            // run on is built on the hit's first sample and read from there.
+            DrumKit::KitJazz => self.synth_jazz(sr, &c),
+            DrumKit::KitFunk => self.synth_funk(sr, &c),
+            DrumKit::KitStudio => self.synth_studio(sr, &c),
         };
 
         // A closed hat cuts an open hat off on the instrument — one VCA, and
@@ -2787,7 +2852,7 @@ mod tests {
 
         // Total: every float lands on a kit, because `params` is public.
         assert_eq!(DrumKit::from_param(-1.0), DrumKit::Kit808);
-        assert_eq!(DrumKit::from_param(9.0), DrumKit::KitCr78);
+        assert_eq!(DrumKit::from_param(9.0), DrumKit::from_index(KIT_COUNT - 1));
         assert_eq!(DrumKit::from_param(f32::NAN), DrumKit::Kit808);
         for (kit, label) in KIT_LABELS.iter().enumerate() {
             assert_eq!(DrumKit::from_param(kit_knob(kit)).index(), kit);
@@ -4298,6 +4363,654 @@ mod tests {
         // ...and the machine has no ride or open hat to put it on instead.
         for index in [P_RD_LEVEL, P_OH_LEVEL] {
             assert!(!DrumKit::KitCr78.is_live(index), "{}", PARAM_NAMES[index]);
+        }
+    }
+
+    // ── The machines that were already here ──
+
+    /// FNV-1a over the raw bits of a render, so that one sample out of a
+    /// million moves the number.
+    fn digest(x: &[f32]) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for &s in x {
+            for byte in s.to_bits().to_le_bytes() {
+                h ^= u64::from(byte);
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        h
+    }
+
+    /// Every note this rack maps, struck at three velocities on one kit,
+    /// hashed into one number.
+    fn kit_digest(kit: usize) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for note in 0u8..128 {
+            for velocity in [40u8, 90, 127] {
+                h ^= digest(&strike(kit, note, velocity, 0.25, &[]));
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        h
+    }
+
+    // ── The three acoustic kits ──
+
+    /// Where the acoustic kits start in the selector.
+    const ACOUSTIC_FIRST: usize = 15;
+
+    /// Energy in a window, as RMS.
+    fn window_rms(x: &[f32], from: f64, to: f64) -> f64 {
+        let a = (from * SR) as usize;
+        let b = ((to * SR) as usize).min(x.len());
+        if b <= a {
+            return 0.0;
+        }
+        let sum: f64 = x[a..b].iter().map(|&s| f64::from(s) * f64::from(s)).sum();
+        (sum / (b - a) as f64).sqrt()
+    }
+
+    /// The same, through a high-pass, which is where the strands live.
+    fn window_rms_above(x: &[f32], hz: f64, from: f64, to: f64) -> f64 {
+        let mut f = Svf::new();
+        let filtered: Vec<f32> =
+            x.iter().map(|&s| f.highpass(f64::from(s), hz, 0.707, SR) as f32).collect();
+        window_rms(&filtered, from, to)
+    }
+
+    /// The local maxima of the spectrum between `lo` and `hi`, strongest
+    /// first, each as (Hz, level relative to the strongest).
+    fn spectral_peaks(x: &[f32], lo: f64, hi: f64, step: f64) -> Vec<(f64, f64)> {
+        let mut found: Vec<(f64, f64)> = Vec::new();
+        let (mut prev, mut prev2) = ((0.0, 0.0), (0.0, 0.0));
+        let mut f = lo;
+        while f < hi {
+            let m = magnitude(x, f);
+            if prev.1 > prev2.1 && prev.1 > m {
+                found.push(prev);
+            }
+            prev2 = prev;
+            prev = (f, m);
+            f += step;
+        }
+        found.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let top = found.first().map_or(1.0, |p| p.1);
+        found.into_iter().map(|(f, m)| (f, m / top)).collect()
+    }
+
+    /// **Two membranes coupled through the air in the shell**, which is the
+    /// thing about an acoustic kick that no drum machine in this rack can be
+    /// retuned into.
+    ///
+    /// A bridged-T is one resonator and has one low mode. A drum with two
+    /// heads has *two*, because the air between them is a spring the pair
+    /// share: one mode is the heads moving the same way in space, which does
+    /// not change the enclosed volume and does not feel the spring, and the
+    /// other is the heads moving towards each other, which does. Two modes a
+    /// sixth apart beat, and the beat is the "boom-woomp" of a real kick.
+    ///
+    /// Two things are asserted, and the second is the interesting one.
+    ///
+    /// **The model predicts the render.** [`racks::acoustic::couple`] is an
+    /// eigenproblem solved on the first sample of the hit; the two strongest
+    /// peaks in the rendered spectrum land on its two roots to within a
+    /// quarter of a Hertz.
+    ///
+    /// **The cavity is what sets the interval.** The bass drum's TONE knob on
+    /// these kits is what is against the front head — nothing at the top of
+    /// its travel, a pillow at the bottom — and it moves nothing else. One
+    /// drum, one knob:
+    ///
+    /// | TONE | jazz  | funk  | studio |
+    /// |------|-------|-------|--------|
+    /// | 0.0  | 1.144 | 1.112 | 1.107  |
+    /// | 0.5  | 1.390 | 1.182 | 1.118  |
+    /// | 1.0  | 1.624 | 1.277 | 1.143  |
+    ///
+    /// A minor second to a minor sixth on the jazz kick, from a control that
+    /// adds no oscillator and moves no filter — and almost nothing at all on
+    /// the studio kick, whose cavity has a pillow in it before the knob gets
+    /// there. The 808's kick, for comparison, has one peak and nothing else
+    /// within 21 dB of it, because it is one circuit.
+    #[test]
+    fn the_two_heads_split_an_acoustic_kick_where_one_resonator_cannot() {
+        use racks::acoustic::{couple, loaded_ratio};
+
+        // One circuit, one mode, whatever else the 808's kick has on it.
+        let machine = strike(0, 36, 127, 2.0, &[]);
+        let from = (0.02 * SR) as usize;
+        let p = spectral_peaks(&machine[from..from + 65536], 25.0, 220.0, 0.2);
+        assert!(p[1].1 < 0.05, "the 808's kick has a second bass mode at {:.3}", p[1].1);
+
+        let kicks = [
+            (15usize, racks::kit_jazz::KIT.kick),
+            (16, racks::kit_funk::KIT.kick),
+            (17, racks::kit_studio::KIT.kick),
+        ];
+        let predicted = |d: &racks::acoustic::Drum, tone: f64| {
+            let load = loaded_ratio(0, d.air_load);
+            let air = d.air_spring * (0.15 + 1.7 * tone);
+            let [(lo, _), (hi, _)] = couple(d.batter * load, d.reso * load, air);
+            (lo, hi)
+        };
+
+        // The eigenproblem's roots are where the drum really rings.
+        for (kit, d) in kicks {
+            let x = strike(kit, 36, 127, 2.0, &[]);
+            let found = spectral_peaks(&x[from..from + 65536], 25.0, 220.0, 0.2);
+            let (lo, hi) = predicted(&d, 0.5);
+            assert!(
+                (found[0].0 - lo).abs() < 0.5,
+                "{}: the model puts the lower mode at {lo:.1} Hz and the render at {:.1}",
+                KIT_LABELS[kit],
+                found[0].0
+            );
+            // The upper mode is only resolvable as a separate peak while the
+            // cavity is holding it apart from the lower one, which is the
+            // point — the studio kick's pair is four Hertz apart and merges.
+            if hi / lo > 1.15 {
+                assert!(
+                    (found[1].0 - hi).abs() < 0.5,
+                    "{}: the model puts the upper mode at {hi:.1} Hz and the render at {:.1}",
+                    KIT_LABELS[kit],
+                    found[1].0
+                );
+            }
+        }
+
+        // Opening the front head opens the interval, on every kit, because the
+        // interval is the cavity.
+        let mut detent = [0.0f64; 3];
+        for (i, (kit, d)) in kicks.into_iter().enumerate() {
+            let mut last = 0.0;
+            for tone in [0.0f64, 0.5, 1.0] {
+                let (lo, hi) = predicted(&d, tone);
+                let interval = hi / lo;
+                assert!(
+                    interval > last * 1.008,
+                    "{}: TONE {tone} left the interval at {interval:.3}, was {last:.3}",
+                    KIT_LABELS[kit]
+                );
+                last = interval;
+                if tone == 0.5 {
+                    detent[i] = interval;
+                }
+            }
+        }
+        // ...and the three kits are three cavities: a sealed jazz kick, a
+        // ported funk one, and a studio kick with a pillow in it.
+        assert!(
+            detent[0] > detent[1] && detent[1] > detent[2],
+            "the three kicks come out in the wrong order: {detent:?}"
+        );
+        assert!(
+            detent[0] > 1.3 && detent[2] < 1.15,
+            "the sealed kick is at {:.3} and the pillowed one at {:.3}",
+            detent[0],
+            detent[2]
+        );
+    }
+
+    /// The snare's strands are not a noise burst under an envelope. They
+    /// **bounce on the bottom head**, and every musical thing they do falls
+    /// out of when they happen to land.
+    ///
+    /// Measured above 3 kHz, where the strands are and the drum is not:
+    ///
+    /// * a **soft** stroke barely lifts them, so they rattle evenly — the
+    ///   5-20 ms window and the 20-60 ms window come out within 6 % of each
+    ///   other;
+    /// * a **hard** stroke throws them clear. The 5-20 ms window, which is
+    ///   the loudest part of the drum, has 43 % *less* wire in it than the
+    ///   window after it. That is the choke, and an envelope cannot do it —
+    ///   an envelope is monotonic;
+    /// * and after 60 ms, when the drum is four time constants down, a hard
+    ///   stroke has nine times the wire of a soft one where the drum itself
+    ///   has only twice the level. The strands ring on.
+    #[test]
+    fn the_snare_wires_choke_on_a_hard_stroke_and_ring_on_after_it() {
+        let soft = strike(16, 38, 40, 1.0, &[]);
+        let hard = strike(16, 38, 127, 1.0, &[]);
+        let wire = |x: &[f32], a: f64, b: f64| window_rms_above(x, 3000.0, a, b);
+
+        let soft_early = wire(&soft, 0.005, 0.020);
+        let soft_late = wire(&soft, 0.020, 0.060);
+        assert!(
+            (soft_early / soft_late - 1.0).abs() < 0.25,
+            "a soft stroke is not an even rattle: {soft_early:.5} then {soft_late:.5}"
+        );
+
+        let hard_early = wire(&hard, 0.005, 0.020);
+        let hard_late = wire(&hard, 0.020, 0.060);
+        assert!(
+            hard_late > hard_early * 1.4,
+            "a hard stroke did not choke: {hard_early:.5} in 5-20 ms, {hard_late:.5} in 20-60"
+        );
+
+        // And the strands are not a fixed proportion of the hit. From
+        // velocity 40 to 127 the whole drum gets 3.9 times louder and the wire
+        // energy after 60 ms — when the drum itself is four time constants
+        // down — gets 9.3 times louder, so the strands take more than twice
+        // the share of a hard stroke's late sound as of a soft one's. A noise
+        // burst multiplied by velocity cannot do that either.
+        let body = f64::from(peak(&hard) / peak(&soft));
+        let tail = wire(&hard, 0.060, 0.150) / wire(&soft, 0.060, 0.150);
+        assert!(
+            tail > body * 1.8,
+            "the strands scaled with the drum rather than ringing on: the hit is {body:.2} \
+             times louder and the strands {tail:.2} times"
+        );
+    }
+
+    /// A cymbal hit harder does not just get louder — it **blooms**. Modes
+    /// that are not there at all below a strike energy threshold come in above
+    /// it, which is the frequency gating of the DAFx-19 paper.
+    ///
+    /// The jazz crash, measured as the *share* of its energy above 6 kHz so
+    /// that a plain level change cannot show up here at all:
+    ///
+    /// | velocity | peak   | share above 6 kHz | centroid |
+    /// |----------|--------|-------------------|----------|
+    /// | 30       | 0.0236 | 0.021             | 2005 Hz  |
+    /// | 60       | 0.0346 | 0.022             | 1998 Hz  |
+    /// | 90       | 0.0868 | 0.083             | 2411 Hz  |
+    /// | 127      | 0.1304 | 0.097             | 2510 Hz  |
+    ///
+    /// Between 60 and 90 the level goes up 8 dB and the high-frequency share
+    /// nearly quadruples. A drum machine's velocity is a multiplier and cannot
+    /// do that; this is new content arriving.
+    #[test]
+    fn a_cymbal_blooms_with_velocity_instead_of_only_getting_louder() {
+        let soft = strike(15, 49, 40, 2.0, &[]);
+        let hard = strike(15, 49, 127, 2.0, &[]);
+        let soft_share = energy_above(&soft, 6000.0);
+        let hard_share = energy_above(&hard, 6000.0);
+        assert!(
+            hard_share > soft_share * 3.0,
+            "the crash did not bloom: {soft_share:.4} of its energy above 6 kHz softly, \
+             {hard_share:.4} hard"
+        );
+        assert!(centroid(&hard) > centroid(&soft) * 1.15, "the crash's centroid did not move");
+        // And it does get louder as well, so the bloom is on top of a level
+        // change rather than instead of one.
+        assert!(peak(&hard) > peak(&soft) * 2.0);
+        // Every acoustic crash gates somewhere inside its own bank.
+        for kit in [racks::kit_jazz::KIT, racks::kit_funk::KIT, racks::kit_studio::KIT] {
+            for p in [kit.crash[0], kit.crash[1], kit.ride, kit.china] {
+                assert!(p.gate_from < p.modes, "a plate has no gated modes at all");
+                assert!(p.gate_open < p.gate_full);
+            }
+        }
+    }
+
+    /// Bow, bell and edge are **one cymbal struck in three places**, not three
+    /// samples. The modal bank is the same bank; what changes is which of its
+    /// modes the stick reaches.
+    ///
+    /// The jazz ride, measured: the bow's energy sits at 1372 Hz and its
+    /// strongest partial is the plate's own lowest mode; the bell is a narrow
+    /// band an octave up with almost no wash under it; and the edge is the
+    /// brightest and the longest of the three because striking the rim is the
+    /// one place that reaches every mode at once.
+    #[test]
+    fn bow_bell_and_edge_are_one_cymbal_struck_in_three_places() {
+        use racks::acoustic::{articulation, Articulation, Piece};
+        // One piece of metal.
+        for (note, want) in
+            [(51u8, Articulation::RideBow), (53, Articulation::RideBell), (102, Articulation::RideEdge)]
+        {
+            let a = articulation(note_to_sound(note));
+            assert_eq!(a, want, "note {note}");
+            assert_eq!(racks::acoustic::strike_of(a).on, Piece::Ride, "{a:?} is not on the ride");
+        }
+        let bow = strike(15, 51, 127, 3.0, &[]);
+        let bell = strike(15, 53, 127, 3.0, &[]);
+        let edge = strike(15, 102, 127, 3.0, &[]);
+
+        // The bell is a pitch: its strongest partial is well above the plate's
+        // fundamental, where the bow's and the edge's is the fundamental.
+        let lowest = racks::kit_jazz::KIT.ride.lowest;
+        for (name, x) in [("bow", &bow), ("edge", &edge)] {
+            let f = strongest(&x[..32768], 150.0, 6000.0, 5.0);
+            assert!((f - lowest).abs() < 40.0, "the {name}'s strongest partial is {f:.0} Hz");
+        }
+        let bell_f = strongest(&bell[..32768], 150.0, 6000.0, 5.0);
+        assert!(bell_f > lowest * 3.0, "the bell's strongest partial is {bell_f:.0} Hz");
+
+        // The edge reaches everything, so it is the brightest and the longest.
+        assert!(
+            energy_above(&edge, 4000.0) > energy_above(&bow, 4000.0) * 1.5,
+            "the edge is not brighter than the bow"
+        );
+        assert!(decay_time(&edge, -20.0) > decay_time(&bell, -20.0));
+        // ...and the three are genuinely different sounds, not one at three
+        // levels.
+        for (a, b) in [(&bow, &bell), (&bow, &edge), (&bell, &edge)] {
+            assert!(
+                (centroid(a) - centroid(b)).abs() > 150.0,
+                "two ride articulations share a spectrum: {:.0} and {:.0} Hz",
+                centroid(a),
+                centroid(b)
+            );
+        }
+    }
+
+    /// Closing the hats does the two things closing them really does: it damps
+    /// both plates, and it **takes their low modes away**.
+    ///
+    /// A low mode needs the whole plate free to move and the clamp is exactly
+    /// what stops that, while a high mode lives in a small enough patch of
+    /// metal to carry on regardless. So a closed hat is not an open hat with a
+    /// shorter envelope on it — it is *brighter*, measurably, and that is why
+    /// it reads as two cymbals held together rather than one gated.
+    #[test]
+    fn closing_the_hats_takes_their_low_modes_away() {
+        for kit in [15usize, 16, 17] {
+            let open = strike(kit, 46, 127, 3.0, &[]);
+            let closed = strike(kit, 42, 127, 1.0, &[]);
+            let pedal = strike(kit, 44, 127, 1.0, &[]);
+            let name = KIT_LABELS[kit];
+            assert!(
+                decay_time(&open, -20.0) > decay_time(&closed, -20.0) * 5.0,
+                "{name}: open {:.3} s, closed {:.3} s",
+                decay_time(&open, -20.0),
+                decay_time(&closed, -20.0)
+            );
+            assert!(
+                centroid(&closed) > centroid(&open) * 1.6,
+                "{name}: closing the hats did not brighten them — open {:.0} Hz, closed {:.0}",
+                centroid(&open),
+                centroid(&closed)
+            );
+            // The pedal is the two plates hitting each other rather than a
+            // stick hitting one of them, so it is the darkest of the three and
+            // the quietest.
+            assert!(
+                centroid(&pedal) < centroid(&closed),
+                "{name}: the pedal chick is not darker than the stroke"
+            );
+            assert!(peak(&pedal) < peak(&closed), "{name}: the pedal is louder than the stroke");
+        }
+        // Half open is neither, and it is the two plates rattling on each
+        // other rather than a filter setting between them.
+        let half = strike(15, 99, 127, 3.0, &[]);
+        let open = strike(15, 46, 127, 3.0, &[]);
+        let closed = strike(15, 42, 127, 1.0, &[]);
+        let ring = decay_time(&half, -20.0);
+        assert!(
+            ring > decay_time(&closed, -20.0) * 2.0 && ring < decay_time(&open, -20.0),
+            "the half-open hat rings for {ring:.3} s"
+        );
+    }
+
+    /// A rimshot has a rim in it and a cross-stick has almost no head in it.
+    ///
+    /// Both are the same drum: the difference is where the stick lands and
+    /// what it lands on, which is [`racks::acoustic::Strike`] and nothing else.
+    #[test]
+    fn a_rimshot_has_a_rim_and_a_cross_stick_has_almost_no_head() {
+        for kit in [15usize, 16, 17] {
+            let name = KIT_LABELS[kit];
+            let stroke = strike(kit, 38, 127, 1.0, &[]);
+            let rimshot = strike(kit, 40, 127, 1.0, &[]);
+            let cross = strike(kit, 37, 127, 1.0, &[]);
+            // The rim is a hoop of steel with the head's tension on it, and a
+            // rimshot is the stick on both at once — so it is louder, and it
+            // has a partial in it that an ordinary stroke does not have at
+            // all. Measured at that partial's own frequency, over the first
+            // forty milliseconds, which is as long as the hand holding the
+            // stick against the hoop lets it ring.
+            assert!(
+                peak(&rimshot) > peak(&stroke),
+                "{name}: the rimshot is not louder than the stroke"
+            );
+            assert!(
+                centroid(&rimshot) > centroid(&stroke) * 1.1,
+                "{name}: the rimshot is not harder — {:.0} Hz against {:.0}",
+                centroid(&rimshot),
+                centroid(&stroke)
+            );
+            let rim_hz = match kit {
+                15 => racks::kit_jazz::KIT.snare.batter,
+                16 => racks::kit_funk::KIT.snare.batter,
+                _ => racks::kit_studio::KIT.snare.batter,
+            } * 13.0;
+            let attack = (0.040 * SR) as usize;
+            let with = magnitude(&rimshot[..attack], rim_hz);
+            let without = magnitude(&stroke[..attack], rim_hz);
+            assert!(
+                with > without * 2.0,
+                "{name}: the rim partial at {rim_hz:.0} Hz is {with:.6} on a rimshot and \
+                 {without:.6} on a stroke"
+            );
+            // The cross-stick is the shell. Almost nothing reaches the
+            // membrane, so the drum's own lowest mode is not in it and it is
+            // over long before the drum would be.
+            let low = 1.0 - energy_above(&cross, 350.0);
+            let low_stroke = 1.0 - energy_above(&stroke, 350.0);
+            assert!(
+                low < low_stroke * 0.5,
+                "{name}: the cross-stick carries {low:.3} of its energy under 350 Hz \
+                 against the stroke's {low_stroke:.3}"
+            );
+            assert!(
+                decay_time(&cross, -20.0) < decay_time(&stroke, -20.0) * 1.6,
+                "{name}: the cross-stick rings for {:.3} s",
+                decay_time(&cross, -20.0)
+            );
+        }
+    }
+
+    /// The studio kit has a gate across it and the other two do not, so its
+    /// tails stop where theirs fade.
+    ///
+    /// Measured as the shape of the decay rather than its length: without a
+    /// gate a drum takes about as long again to go from −20 dB to −40 as it
+    /// took to reach −20, because an exponential is an exponential. With one
+    /// it does not.
+    #[test]
+    fn the_studio_kit_gates_what_the_other_two_let_ring() {
+        let shape = |kit: usize| {
+            let x = strike(kit, 45, 127, 3.0, &[]);
+            decay_time(&x, -40.0) / decay_time(&x, -20.0)
+        };
+        let gated = shape(17);
+        for kit in [15usize, 16] {
+            let free = shape(kit);
+            assert!(
+                gated < free * 0.85,
+                "{}: −40 dB at {free:.2} times its −20 dB point, gated kit at {gated:.2}",
+                KIT_LABELS[kit]
+            );
+        }
+        assert!(racks::kit_studio::KIT.gate.is_some());
+        assert!(racks::kit_jazz::KIT.gate.is_none() && racks::kit_funk::KIT.gate.is_none());
+    }
+
+    /// The bass drum's ATTACK knob is a **beater**, which is a contact time
+    /// and therefore a spectrum — not a level and not a filter.
+    ///
+    /// A soft felt beater is in contact with the head for four milliseconds
+    /// and a hard plastic one for half of one; the strike pulse has nothing
+    /// above about `1/contact`, so the beater decides how far up the mode
+    /// series the drum is driven. The impulse is the same either way, which is
+    /// why the low end does not move with it.
+    #[test]
+    fn the_beater_knob_is_a_contact_time_and_not_a_level() {
+        for kit in [15usize, 16, 17] {
+            let felt = strike(kit, 36, 127, 2.0, &[(P_BD_ATTACK, 0.0)]);
+            let hard = strike(kit, 36, 127, 2.0, &[(P_BD_ATTACK, 1.0)]);
+            let name = KIT_LABELS[kit];
+            assert!(
+                energy_above(&hard, 1500.0) > energy_above(&felt, 1500.0) * 3.0,
+                "{name}: the beater did not change the spectrum — {:.5} against {:.5}",
+                energy_above(&felt, 1500.0),
+                energy_above(&hard, 1500.0)
+            );
+            // The drum underneath is the same drum: its lowest mode is where
+            // it was.
+            let from = (0.02 * SR) as usize;
+            let a = strongest(&felt[from..from + 32768], 30.0, 200.0, 0.25);
+            let b = strongest(&hard[from..from + 32768], 30.0, 200.0, 0.25);
+            assert!((a - b).abs() < 1.0, "{name}: the beater retuned the drum, {a:.1} to {b:.1}");
+        }
+    }
+
+    /// Every note speaks on all three kits, and answers the fader in front of
+    /// the player rather than some other one.
+    #[test]
+    fn every_acoustic_note_speaks_and_answers_its_own_fader() {
+        for (kit, name) in KIT_LABELS.iter().enumerate().skip(ACOUSTIC_FIRST) {
+            let machine = DrumKit::from_index(kit);
+            for note in 0u8..128 {
+                let own = level_param(instrument_of(note_to_sound(note), machine));
+                let x = strike(kit, note, 127, 0.4, &[]);
+                assert!(x.iter().all(|s| s.is_finite()), "{name} note {note} is not finite");
+                let loud = peak(&x);
+                assert!(loud > 0.005, "{name} note {note} is silent ({loud})");
+                assert_eq!(
+                    peak(&strike(kit, note, 127, 0.4, &[(own, 0.0)])),
+                    0.0,
+                    "{name} note {note} did not answer {}",
+                    PARAM_NAMES[own]
+                );
+            }
+        }
+    }
+
+    /// There is no hand clap on a drum kit, so that fader is dead — and it is
+    /// dead because nothing is played from it, which is the only reason a
+    /// fader on this panel is ever allowed to be.
+    #[test]
+    fn the_acoustic_kits_have_no_hand_clap() {
+        for (kit, name) in KIT_LABELS.iter().enumerate().skip(ACOUSTIC_FIRST) {
+            let machine = DrumKit::from_index(kit);
+            assert!(!machine.is_live(P_CP_LEVEL), "{name}");
+            for (index, knob) in PARAM_NAMES.iter().enumerate() {
+                assert_eq!(machine.is_live(index), index != P_CP_LEVEL, "{name}: {knob}");
+            }
+            for note in 0u8..128 {
+                assert_ne!(
+                    instrument_of(note_to_sound(note), machine),
+                    Instrument::Clap,
+                    "{name} plays note {note} from a strip it has no voice for",
+                );
+            }
+            // A GM hand clap is played as a flam on the snare, which is what a
+            // drummer gives a part that wants two attacks on the backbeat.
+            assert_eq!(
+                racks::acoustic::articulation(note_to_sound(39)),
+                racks::acoustic::Articulation::SnareFlam
+            );
+            let flam = strike(kit, 39, 127, 1.0, &[]);
+            let first = peak(&flam[..(0.015 * SR) as usize]);
+            let second = peak(&flam[(0.024 * SR) as usize..(0.045 * SR) as usize]);
+            assert!(
+                second > first,
+                "{name}: the flam's grace note is louder than its stroke ({first:.4}, {second:.4})",
+            );
+        }
+    }
+
+    /// No two of the three kits are one kit retuned: on every note all three
+    /// map, they differ in where their energy sits and not only in how much
+    /// of it there is — and none of them is any of the fifteen machines.
+    #[test]
+    fn no_two_acoustic_kits_share_a_spectrum() {
+        // Against the rest of the rack first, sample for sample.
+        for (kit, name) in KIT_LABELS.iter().enumerate().skip(ACOUSTIC_FIRST) {
+            for (other, machine) in KIT_LABELS.iter().enumerate() {
+                if other == kit {
+                    continue;
+                }
+                for note in [36u8, 38, 42, 49] {
+                    let a = strike(kit, note, 127, 0.5, &[]);
+                    let b = strike(other, note, 127, 0.5, &[]);
+                    let apart: f32 = a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).sum();
+                    assert!(apart > 1.0, "{name} and {machine} render note {note} the same: {apart}");
+                }
+            }
+        }
+        const PROBE: &[u8] = &[36, 38, 40, 41, 42, 44, 45, 46, 48, 49, 51, 53, 56, 63, 75];
+        for &note in PROBE {
+            let rendered: Vec<Vec<f32>> =
+                (15..18).map(|k| strike(k, note, 127, 1.5, &[])).collect();
+            for a in 0..3 {
+                for b in a + 1..3 {
+                    let (ca, cb) = (centroid(&rendered[a]), centroid(&rendered[b]));
+                    let (da, db) = (decay_time(&rendered[a], -20.0), decay_time(&rendered[b], -20.0));
+                    let moved = (ca / cb).max(cb / ca) > 1.06 || (da / db).max(db / da) > 1.12;
+                    assert!(
+                        moved,
+                        "note {note}: {} and {} are the same sound — centroid {ca:.0}/{cb:.0} Hz, \
+                         ring {da:.3}/{db:.3} s",
+                        KIT_LABELS[15 + a],
+                        KIT_LABELS[15 + b],
+                    );
+                }
+            }
+        }
+    }
+
+    /// Energy-weighted mean frequency, by filter bank rather than transform.
+    fn centroid(x: &[f32]) -> f64 {
+        let mut num = 0.0;
+        let mut den = 0.0;
+        let mut f = 60.0;
+        while f < 16000.0 {
+            let mut a = Svf::new();
+            let mut e = 0.0;
+            for &s in x {
+                let v = a.bandpass(f64::from(s), f, 2.0, SR);
+                e += v * v;
+            }
+            num += e * f;
+            den += e;
+            f *= 1.15;
+        }
+        num / den.max(1e-30)
+    }
+
+    /// What each of the machines that were already here renders, as one
+    /// number per kit.
+    ///
+    /// Captured before the three acoustic kits were added and not touched
+    /// since. Every note in the map at three velocities through the default
+    /// panel, FNV-1a over the raw f32 bits — one sample different anywhere in
+    /// 384 renders moves the digest.
+    const RENDERED: [u64; 15] = [
+        0xfe82_cfa3_e993_4600, // 808
+        0x50f6_a8a4_0b13_b254, // 909
+        0xdadb_d1ba_5511_daf2, // 707
+        0x35fc_d49c_de66_88e5, // 606
+        0x19bc_cd65_42a4_3154, // 777
+        0xfb55_3913_8929_54bf, // tsty-1
+        0x4b62_c5a6_3ad0_87db, // tsty-2
+        0x92c8_30b2_7e39_3235, // tsty-3
+        0xc0b0_4e38_e93e_8c9a, // tsty-4
+        0x9808_42d9_8585_e41d, // tsty-5
+        0x69f5_3a9a_eb4a_5abe, // linn
+        0xe02e_4c79_4096_46af, // dmx
+        0xf67c_322b_04c7_4d2b, // sds-v
+        0xac4f_8ba4_bf75_d745, // 727
+        0x146d_822a_9039_3047, // cr-78
+    ];
+
+    /// Adding a kit to the selector does not move the fifteen that were there.
+    ///
+    /// The selector is an index into a table whose length changed, the panel
+    /// is shared, and `instrument_of` and `Panel::new` both branch on the kit
+    /// — three places where a sixteenth machine could have leaned on the
+    /// fifteenth. This renders all fifteen and compares the bits.
+    #[test]
+    fn the_fifteen_machines_render_what_they_always_did() {
+        for (kit, &want) in RENDERED.iter().enumerate() {
+            let got = kit_digest(kit);
+            assert_eq!(
+                got, want,
+                "{} renders differently than it did: 0x{got:016x}, was 0x{want:016x}",
+                KIT_LABELS[kit],
+            );
         }
     }
 }

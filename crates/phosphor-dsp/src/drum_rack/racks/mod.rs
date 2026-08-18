@@ -17,3 +17,11 @@ pub mod kit_dmx;
 pub mod kit_sdsv;
 pub mod kit_727;
 pub mod kit_cr78;
+
+// The three acoustic kits share one engine, because they are three sets of
+// drums and not three synthesis methods.
+pub mod acoustic;
+pub mod acoustic_voice;
+pub mod kit_jazz;
+pub mod kit_funk;
+pub mod kit_studio;
