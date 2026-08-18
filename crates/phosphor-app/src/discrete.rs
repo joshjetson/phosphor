@@ -49,6 +49,7 @@ pub fn is_discrete(instrument: InstrumentType, param: usize) -> bool {
         InstrumentType::Jupiter8 => phosphor_dsp::jupiter::is_discrete(param),
         InstrumentType::Odyssey => phosphor_dsp::odyssey::is_discrete(param),
         InstrumentType::Juno60 => phosphor_dsp::juno::is_discrete(param),
+        InstrumentType::Rhodes => phosphor_dsp::rhodes::is_discrete(param),
     }
 }
 
@@ -65,6 +66,7 @@ pub fn step(instrument: InstrumentType, param: usize, value: f32, up: bool) -> f
         InstrumentType::Jupiter8 => phosphor_dsp::jupiter::step_discrete(param, value, up),
         InstrumentType::Odyssey => phosphor_dsp::odyssey::step_discrete(param, value, up),
         InstrumentType::Juno60 => phosphor_dsp::juno::step_discrete(param, value, up),
+        InstrumentType::Rhodes => phosphor_dsp::rhodes::step_discrete(param, value, up),
     }
 }
 
@@ -135,7 +137,7 @@ pub fn knob_at(instrument: InstrumentType, param: usize, index: usize) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phosphor_dsp::{drum_rack, dx7, jupiter, juno, odyssey, synth};
+    use phosphor_dsp::{drum_rack, dx7, jupiter, juno, odyssey, rhodes, synth};
 
     /// Every instrument's selectors, walked with that instrument's own
     /// stepping, come out at the counts the instrument publishes.
@@ -156,6 +158,10 @@ mod tests {
         assert_eq!(
             positions(InstrumentType::Odyssey, odyssey::P_PATCH).unwrap().len(),
             odyssey::PATCH_COUNT
+        );
+        assert_eq!(
+            positions(InstrumentType::Rhodes, rhodes::P_PATCH).unwrap().len(),
+            rhodes::PATCH_COUNT
         );
         assert_eq!(
             positions(InstrumentType::DX7, dx7::P_BANK).unwrap().len(),

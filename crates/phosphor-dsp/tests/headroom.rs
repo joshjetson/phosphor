@@ -34,7 +34,7 @@
 //! every other track with it.
 
 use phosphor_dsp::level::{saturation_input, SATURATION_KNEE};
-use phosphor_dsp::{drum_rack, dx7, juno, jupiter, odyssey, synth};
+use phosphor_dsp::{drum_rack, dx7, juno, jupiter, odyssey, rhodes, synth};
 use phosphor_plugin::{MidiEvent, Plugin};
 
 const SAMPLE_RATE: f64 = 44_100.0;
@@ -170,6 +170,10 @@ fn dx7_voice(index: usize) -> dx7::Dx7Synth {
 /// `the_jupiters_effects_peak_after_the_other_banks_have_finished`, which is
 /// where its real number is. 45 PIPE ORGAN is here too, because it is the
 /// loudest thing in the bank that a player would hold a chord on.
+///
+/// The Rhodes' is Hard Bark, the loudest of its 26: the tine voiced onto the
+/// pickup axis and struck at the top of the STRIKE knob, which is as far into
+/// the pickup's nonlinearity as that panel goes.
 fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
     let dx7_timpani = dx7_voice(147);
     let dx7_harp = dx7_voice(60);
@@ -182,6 +186,8 @@ fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
     odyssey_funk.set_parameter(odyssey::P_PATCH, odyssey::patch_knob(1));
     let mut juno_tuba = juno::Juno60Synth::new();
     juno_tuba.set_parameter(juno::P_PATCH, juno::patch_knob(27));
+    let mut rhodes_bark = rhodes::RhodesPiano::new();
+    rhodes_bark.set_parameter(rhodes::P_PATCH, rhodes::patch_knob(22));
 
     vec![
         ("dx7 147 TIMPANI", Box::new(dx7_timpani)),
@@ -191,6 +197,7 @@ fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
         ("jupiter 45 PIPE ORGN", Box::new(jupiter_organ)),
         ("odyssey 1 Funk", Box::new(odyssey_funk)),
         ("juno 44 TUBA", Box::new(juno_tuba)),
+        ("rhodes Hard Bark", Box::new(rhodes_bark)),
         ("phosphor", Box::new(synth::PhosphorSynth::new())),
     ]
 }
@@ -201,6 +208,7 @@ fn defaults() -> Vec<(&'static str, Box<dyn Plugin>)> {
         ("jupiter default", Box::new(jupiter::Jupiter8Synth::new())),
         ("odyssey default", Box::new(odyssey::OdysseySynth::new())),
         ("juno default", Box::new(juno::Juno60Synth::new())),
+        ("rhodes default", Box::new(rhodes::RhodesPiano::new())),
         ("phosphor default", Box::new(synth::PhosphorSynth::new())),
     ]
 }
@@ -318,6 +326,12 @@ fn no_patch_in_any_bank_exceeds_the_target() {
         s.set_parameter(juno::P_PATCH, juno::patch_knob(index));
         let m = render(&mut s, TWO_HAND_EIGHT, 127, SWEEP_BLOCKS);
         check_patch(&m, "juno", juno::PATCH_LABELS[index], &mut worst);
+    }
+    for index in 0..rhodes::PATCH_COUNT {
+        let mut s = rhodes::RhodesPiano::new();
+        s.set_parameter(rhodes::P_PATCH, rhodes::patch_knob(index));
+        let m = render(&mut s, TWO_HAND_EIGHT, 127, SWEEP_BLOCKS);
+        check_patch(&m, "rhodes", rhodes::PATCH_NAMES[index], &mut worst);
     }
     for index in 0..synth::PATCH_COUNT {
         let mut s = synth::PhosphorSynth::new();
@@ -650,6 +664,8 @@ fn output_knob_cases() -> Vec<KnobCase> {
     juno_tuba.set_parameter(juno::P_PATCH, juno::patch_knob(27));
     let mut odyssey_funk = odyssey::OdysseySynth::new();
     odyssey_funk.set_parameter(odyssey::P_PATCH, odyssey::patch_knob(1));
+    let mut rhodes_bark = rhodes::RhodesPiano::new();
+    rhodes_bark.set_parameter(rhodes::P_PATCH, rhodes::patch_knob(22));
 
     let case = |name, param, notes, plugin| KnobCase { name, param, notes, blocks: BLOCKS, plugin };
     vec![
@@ -660,6 +676,7 @@ fn output_knob_cases() -> Vec<KnobCase> {
         case("phosphor", synth::P_GAIN, TWO_HAND_EIGHT, Box::new(synth::PhosphorSynth::new())),
         case("jupiter 45 PIPE ORGN", jupiter::P_LEVEL, TWO_HAND_EIGHT, Box::new(jupiter_organ)),
         case("juno 44 TUBA", juno::P_LEVEL, TWO_HAND_EIGHT, Box::new(juno_tuba)),
+        case("rhodes Hard Bark", rhodes::P_LEVEL, TWO_HAND_EIGHT, Box::new(rhodes_bark)),
         // Duophonic: a single note is the Odyssey's worst case, not a chord.
         case("odyssey 1 Funk", odyssey::P_LEVEL, SINGLE, Box::new(odyssey_funk)),
     ]
@@ -881,6 +898,7 @@ fn ordinary_playing_is_at_a_usable_level() {
         ("jupiter", TRIAD, Box::new(jupiter::Jupiter8Synth::new())),
         ("odyssey", TRIAD, Box::new(odyssey::OdysseySynth::new())),
         ("juno", TRIAD, Box::new(juno::Juno60Synth::new())),
+        ("rhodes", TRIAD, Box::new(rhodes::RhodesPiano::new())),
         ("phosphor", TRIAD, Box::new(synth::PhosphorSynth::new())),
         ("drum rack", DOWNBEAT, Box::new(drum_rack::DrumRack::new())),
     ];
@@ -997,6 +1015,7 @@ fn instruments_are_level_matched() {
     // The median preset of each bank, so one unusual patch cannot skew the
     // comparison. Indices picked by measuring the triad RMS of every preset.
     // The Jupiter's is 12 NEG PLUCK, the median of its 64 factory patches.
+    // The Rhodes' is MK2 Stage, the median of its 26.
     // The phosphor synth's is patch 0, INIT SAW, which is both its default and
     // the middle of its nine — so `PhosphorSynth::new()` below is already it.
     let mut dx7_mid = dx7_voice(DX7_MEDIAN_VOICE);
@@ -1006,12 +1025,15 @@ fn instruments_are_level_matched() {
     odyssey_mid.set_parameter(odyssey::P_PATCH, odyssey::patch_knob(0));
     let mut juno_mid = juno::Juno60Synth::new();
     juno_mid.set_parameter(juno::P_PATCH, juno::patch_knob(3));
+    let mut rhodes_mid = rhodes::RhodesPiano::new();
+    rhodes_mid.set_parameter(rhodes::P_PATCH, rhodes::patch_knob(13));
 
     let levels = [
         ("dx7", triad_rms(&mut dx7_mid)),
         ("jupiter", triad_rms(&mut jupiter_mid)),
         ("odyssey", triad_rms(&mut odyssey_mid)),
         ("juno", triad_rms(&mut juno_mid)),
+        ("rhodes", triad_rms(&mut rhodes_mid)),
         ("phosphor", triad_rms(&mut synth::PhosphorSynth::new())),
     ];
 

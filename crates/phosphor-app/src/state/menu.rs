@@ -104,6 +104,7 @@ pub enum InstrumentType {
     Jupiter8,
     Odyssey,
     Juno60,
+    Rhodes,
     Sampler,
 }
 
@@ -116,6 +117,7 @@ impl InstrumentType {
             Self::Jupiter8 => "Jupiter-8",
             Self::Odyssey => "Odyssey",
             Self::Juno60 => "Juno-60",
+            Self::Rhodes => "Rhodes",
             Self::Sampler => "Sampler",
         }
     }
@@ -128,11 +130,12 @@ impl InstrumentType {
             Self::Jupiter8 => "dual-VCO analog poly synthesizer",
             Self::Odyssey => "duophonic synth with 3 filter types",
             Self::Juno60 => "single-DCO poly with BBD chorus",
+            Self::Rhodes => "modelled tine electric piano",
             Self::Sampler => "sample-based instrument",
         }
     }
 
-    pub const ALL: &[InstrumentType] = &[Self::Synth, Self::DrumRack, Self::DX7, Self::Jupiter8, Self::Odyssey, Self::Juno60, Self::Sampler];
+    pub const ALL: &[InstrumentType] = &[Self::Synth, Self::DrumRack, Self::DX7, Self::Jupiter8, Self::Odyssey, Self::Juno60, Self::Rhodes, Self::Sampler];
 }
 
 #[derive(Debug)]

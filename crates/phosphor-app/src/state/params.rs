@@ -48,6 +48,9 @@ impl NavState {
                         Some(InstrumentType::Juno60) => {
                             Some(phosphor_dsp::juno::Juno60Synth::params_for_patch(new_val).to_vec())
                         }
+                        Some(InstrumentType::Rhodes) => {
+                            Some(phosphor_dsp::rhodes::RhodesPiano::params_for_patch(new_val).to_vec())
+                        }
                         _ => None,
                     };
                     if let Some(preset_params) = new_params {
@@ -115,7 +118,7 @@ impl NavState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phosphor_dsp::{drum_rack, dx7, juno, jupiter};
+    use phosphor_dsp::{drum_rack, dx7, juno, jupiter, rhodes};
 
     /// A nav state whose selected track is a DX7 at its default parameters.
     fn dx7_track() -> NavState {
@@ -220,6 +223,63 @@ mod tests {
             seen.push(label(&nav));
         }
         assert_eq!(seen, [Some("MAN"), Some("ENV"), Some("ENV")]);
+    }
+
+    /// A nav state whose selected track is a Rhodes at its default panel.
+    fn rhodes_track() -> NavState {
+        let mut nav = NavState::new(super::super::initial_tracks());
+        let mut track = TrackState::new("rhode", 0, true, TrackKind::Instrument, vec![]);
+        track.instrument_type = Some(InstrumentType::Rhodes);
+        track.synth_params = rhodes::PARAM_DEFAULTS.to_vec();
+        nav.tracks.insert(0, track);
+        nav.track_cursor = 0;
+        nav
+    }
+
+    #[test]
+    fn the_rhodes_patch_knob_moves_one_piano_per_keypress() {
+        // Twenty-six patches, stepped by index, and selecting one loads its
+        // panel. The Rhodes' panel is entirely continuous apart from this
+        // knob, so it is the only control here that can stall on a boundary.
+        let mut nav = rhodes_track();
+        nav.clip_view.synth_param_cursor = rhodes::P_PATCH;
+        let patch = |nav: &NavState| {
+            rhodes::patch_index(nav.tracks[0].synth_params[rhodes::P_PATCH])
+        };
+        assert_eq!(rhodes::PATCH_NAMES[patch(&nav)], "MK1 Stage");
+        for step in 1..rhodes::PATCH_COUNT {
+            nav.adjust_synth_param(0.05);
+            assert_eq!(patch(&nav), step, "patch knob step {step}");
+        }
+        nav.adjust_synth_param(0.05);
+        assert_eq!(patch(&nav), rhodes::PATCH_COUNT - 1, "patch knob ran off the top");
+        // ...and the panel that arrived with the last patch is that patch's.
+        let panel = &nav.tracks[0].synth_params;
+        let want = rhodes::RhodesPiano::params_for_patch(panel[rhodes::P_PATCH]);
+        for i in 1..rhodes::PARAM_COUNT {
+            assert!(
+                (panel[i] - want[i]).abs() < 1e-6,
+                "{} came back as {} where the patch says {}",
+                rhodes::PARAM_NAMES[i], panel[i], want[i]
+            );
+        }
+        for step in (0..rhodes::PATCH_COUNT - 1).rev() {
+            nav.adjust_synth_param(-0.05);
+            assert_eq!(patch(&nav), step, "patch knob back to {step}");
+        }
+
+        // Every other control is a fader, and moving one moves only it.
+        let mut nav = rhodes_track();
+        nav.clip_view.synth_param_cursor = rhodes::P_VOICING;
+        let before = nav.tracks[0].synth_params.clone();
+        nav.adjust_synth_param(0.05);
+        let after = &nav.tracks[0].synth_params;
+        assert!((after[rhodes::P_VOICING] - (before[rhodes::P_VOICING] + 0.05)).abs() < 1e-6);
+        for i in 0..after.len() {
+            if i != rhodes::P_VOICING {
+                assert_eq!(before[i], after[i], "{} moved with the voicing", rhodes::PARAM_NAMES[i]);
+            }
+        }
     }
 
     /// A nav state whose selected track is a Jupiter-8 at its default panel.

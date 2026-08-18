@@ -126,6 +126,7 @@ impl NavState {
             InstrumentType::Jupiter8 => "jup8",
             InstrumentType::Odyssey => "odyss",
             InstrumentType::Juno60 => "juno",
+            InstrumentType::Rhodes => "rhode",
             InstrumentType::Sampler => "smplr",
         };
 
@@ -157,6 +158,9 @@ impl NavState {
             }
             InstrumentType::Juno60 => {
                 phosphor_dsp::juno::PARAM_DEFAULTS.to_vec()
+            }
+            InstrumentType::Rhodes => {
+                phosphor_dsp::rhodes::PARAM_DEFAULTS.to_vec()
             }
         };
         // Sync the initial armed state to audio

@@ -174,6 +174,7 @@ pub fn param_names(instrument: InstrumentType) -> &'static [&'static str] {
         InstrumentType::Jupiter8 => &phosphor_dsp::jupiter::PARAM_NAMES,
         InstrumentType::Odyssey => &phosphor_dsp::odyssey::PARAM_NAMES,
         InstrumentType::Juno60 => &phosphor_dsp::juno::PARAM_NAMES,
+        InstrumentType::Rhodes => &phosphor_dsp::rhodes::PARAM_NAMES,
     }
 }
 
@@ -906,6 +907,7 @@ mod tests {
         assert_eq!(param_count(InstrumentType::Jupiter8), phosphor_dsp::jupiter::PARAM_COUNT);
         assert_eq!(param_count(InstrumentType::DX7), phosphor_dsp::dx7::PARAM_COUNT);
         assert_eq!(param_count(InstrumentType::Odyssey), phosphor_dsp::odyssey::PARAM_COUNT);
+        assert_eq!(param_count(InstrumentType::Rhodes), phosphor_dsp::rhodes::PARAM_COUNT);
         assert_eq!(param_count(InstrumentType::DrumRack), phosphor_dsp::drum_rack::PARAM_COUNT);
         assert_eq!(param_count(InstrumentType::Synth), phosphor_dsp::synth::PARAM_COUNT);
         assert_eq!(param_count(InstrumentType::Sampler), phosphor_dsp::synth::PARAM_COUNT);

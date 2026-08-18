@@ -100,6 +100,7 @@ pub fn instrument_key(t: InstrumentType) -> &'static str {
         InstrumentType::Jupiter8 => "jupiter8",
         InstrumentType::Odyssey => "odyssey",
         InstrumentType::Juno60 => "juno60",
+        InstrumentType::Rhodes => "rhodes",
         InstrumentType::Sampler => "sampler",
     }
 }
@@ -116,6 +117,7 @@ fn string_to_instrument_type(s: &str) -> Option<InstrumentType> {
         "jupiter8" => Some(InstrumentType::Jupiter8),
         "odyssey" => Some(InstrumentType::Odyssey),
         "juno60" => Some(InstrumentType::Juno60),
+        "rhodes" => Some(InstrumentType::Rhodes),
         "sampler" => Some(InstrumentType::Sampler),
         _ => None,
     }

@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>A terminal-native DAW built in Rust</strong><br/>
-  6 built-in synthesizers, 15 drum kits, 300+ patches, 9 color themes, animated splash screen, session save/load, undo/redo, and a plugin system designed for extensibility.
+  7 built-in synthesizers, 15 drum kits, 300+ patches, 9 color themes, animated splash screen, session save/load, undo/redo, and a plugin system designed for extensibility.
 </p>
 
 <p align="center">
@@ -84,7 +84,9 @@ cargo run --release -- --no-midi
 | **DX7** | FM | 16 | **256** | All 8 original factory cartridges, decoded from the ROM dumps |
 | **Jupiter-8** | Analog poly | 8 | **64** | All 64 factory patch names, full 32-control panel, two envelopes |
 | **ARP Odyssey** | Duophonic | 2 | 44 | Complete 59-control front panel, all three filter revisions (4023/4035/4075), ADSR *and* AR envelopes, sample and hold |
+| **Rhodes** | Physical model | 16 | 26 | Tine and tonebar as a coupled fork, inharmonic cantilever modes, nonlinear magnetic pickup |
 | **Juno-60** | DCO poly | 6 | **56** | All 56 factory patches, read off Roland's patch charts; complete 25-control front panel measured against the hardware |
+| **Rhodes** | Modelled tine piano | 16 | 26 | A physical model, not a sampler — inharmonic cantilever modes, a tonebar that beats against them, and the pickup nonlinearity the bark actually comes from |
 
 ### Drum Rack
 
@@ -138,6 +140,15 @@ Roland's published description of each patch.
 
 Names and spellings are Roland's, Glockenspeil included.
 
+**Rhodes** (26 patches, by instrument rather than by factory number — a Rhodes
+has no patch memory):
+
+- **Mark I** — MK1 Stage, MK1 Bright, MK1 Mellow, MK1 Bark, MK1 Ballad, MK1 Funk, MK1 Bass
+- **Suitcase** — SC Classic, SC Tremolo, SC SlowTrem, SC Deep, SC Warm, SC 88
+- **Mark II** — MK2 Stage, MK2 Tight, MK2 Dark, MK2 Suitcase
+- **Dyno** — Dyno, Dyno Bell, Dyno Ballad, Dyno Bright
+- **Character** — Bell Tine, Hard Bark, Soft Silk, Woody, Growl Bass
+
 ---
 
 ## Features
@@ -161,6 +172,7 @@ Names and spellings are Roland's, Glockenspeil included.
 - **Jupiter-8**: the full front panel — dual VCOs with sync and exponential cross-modulation, switchable 12/24 dB IR3109 filter with resonance to self-oscillation, non-resonant HPF, two independent ADSR envelopes, LFO with four waveforms and a two-stage delay, portamento, and 4 voice modes (Solo/Unison/Poly1/Poly2). Envelope times follow Roland's published 1 ms-10 s specification; filter corners, LFO taper and keyboard follow are measured rather than approximated
 - **ARP Odyssey**: the full front panel — two VCOs with coarse and fine tuning over the panel's 20 Hz-2 kHz range, hard sync, per-oscillator pulse width and PWM, two frequency-mod inputs each, a keyboard switch that drops VCO-1 into the LFO range, the sample-and-hold mixer with its own sources, clock and lag, an XOR ring modulator sharing a fader with white or pink noise, all three filter revisions (12 dB 4023 SVF / 24 dB 4035 ladder / 24 dB 4075 Norton) on one 16 Hz-16 kHz sweep and each resonating to self-oscillation, a non-resonant HPF, three filter modulation slots, VCA gain and drive, and both envelope generators — the ADSR and the AR — with their own sliders and their own LFO-repeat gating. Envelope times follow ARP's published 5 ms-10 s specification and the pitch pads are mapped to pitch bend and the modulation wheel
 - **Juno-60**: the full front panel — LFO rate/delay, DCO with PWM depth and a 3-position PWM mode (LFO/MANUAL/ENV), saw/pulse/sub/noise and a 16'/8'/4' range switch, 4-position HPF, IR3109-style 24 dB/oct resonant VCF with env polarity, LFO and keyboard follow, ENV/GATE VCA, shared ADSR, and BBD stereo chorus (I / II / I+II). Envelope taper, LFO rate taper, filter corner frequencies and chorus rates are calibrated against measurements of the hardware rather than approximated. All 56 factory patches are the instrument's own, transcribed from Roland's published patch charts
+- **Rhodes**: a physical model rather than a sample set, because velocity on a Rhodes changes the *spectrum* and a layered sample set is three photographs of that. A hammer strikes a tine — a steel cantilever, so its overtones are inharmonic, at 6.27, 17.5, 34.4 and 56.8 times the fundamental — and those overtones die far faster than the fundamental does, which is why the attack is a bell and the sustain is almost a pure tone. The tine is paired with a tonebar in an asymmetric tuning fork, so the sustain undulates as energy crosses between them. Sustain per register comes from measured Q values on a 1974 Mark I, interpolated rather than fitted: E flat 2 at 3.88 s, E flat 3 at 1.50, E flat 4 at 1.56, E flat 5 at 1.11, E flat 6 at 0.45 — not monotonic, and left that way. The bark is the pickup: the coil senses the flux gradient where the tine happens to be, and that gradient is an odd function of the tine's offset from the pickup axis, so **voicing** — moving the tine's rest position, the adjustment a technician actually makes — takes the fundamental and every odd partial away and leaves the second partial dominant, exactly as the literature describes. Struck harder the tine swings further into that nonlinearity, so velocity changes the timbre through the pickup rather than through a brightness knob. Felt dampers on release, none above the sixth octave as on the real action, sustain pedal, and the Suitcase's stereo tremolo — which is a pan between two amp channels, not an amplitude modulation
 - **Drum Rack**: 15 kits including circuit-accurate 808/909/707/606, creative 777, warm tape-saturated tsty series, and resonator-based physical modeling
 
 **Session Management**
@@ -230,7 +242,7 @@ Names and spellings are Roland's, Glockenspeil included.
 - Shared domain models via atomics (no locks between threads)
 - Command channel pattern for UI-to-audio communication
 - Plugin trait for instruments and effects — same interface for built-in and third-party
-- 621 tests covering DSP, MIDI, engine, mixer, navigation, and persistence
+- 661 tests covering DSP, MIDI, engine, mixer, navigation, and persistence
 
 ---
 
@@ -527,7 +539,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace  # 621 tests
+cargo test --workspace  # 661 tests
 ```
 
 ---
@@ -548,6 +560,7 @@ phosphor/
 │   │       ├── jupiter.rs     # Jupiter-8 analog poly (42 patches)
 │   │       ├── odyssey.rs     # ARP Odyssey duophonic (44 patches)
 │   │       ├── juno.rs        # Juno-60 DCO + BBD chorus (56 factory patches)
+│   │       ├── rhodes.rs      # Rhodes tine piano, modal physical model (26 patches)
 │   │       ├── drum_rack/     # Drum machine (10 kits)
 │   │       │   ├── mod.rs     # Shared types, voice, plugin impl
 │   │       │   └── racks/     # Per-kit synthesis (808, 909, 707, 606, 777, tsty1-5)

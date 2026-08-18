@@ -3175,7 +3175,7 @@ impl Plugin for PhosphorSynth {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     // ── An allocation counter for the audio path ──
@@ -3230,7 +3230,11 @@ mod tests {
     #[global_allocator]
     static COUNTING: Counting = Counting;
 
-    fn allocations_during(body: impl FnOnce()) -> u64 {
+    /// How many times the allocator was reached on this thread while `body`
+    /// ran. `pub(crate)` because the counting allocator is installed once for
+    /// the whole test binary, so every instrument that wants to assert its
+    /// audio path is allocation-free shares this one.
+    pub(crate) fn allocations_during(body: impl FnOnce()) -> u64 {
         let before = ALLOCATIONS.with(Cell::get);
         body();
         ALLOCATIONS.with(Cell::get) - before

@@ -10,4 +10,5 @@ pub mod jupiter;
 pub mod level;
 pub mod odyssey;
 pub mod oscillator;
+pub mod rhodes;
 pub mod synth;
