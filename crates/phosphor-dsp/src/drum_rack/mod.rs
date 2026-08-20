@@ -4368,30 +4368,85 @@ mod tests {
 
     // ── The machines that were already here ──
 
-    /// FNV-1a over the raw bits of a render, so that one sample out of a
-    /// million moves the number.
-    fn digest(x: &[f32]) -> u64 {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &s in x {
-            for byte in s.to_bits().to_le_bytes() {
-                h ^= u64::from(byte);
-                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    /// The four stretches of the note map, which do four different jobs: the
+    /// sub kicks below the General MIDI map, the kit proper, the hand
+    /// percussion above it, and the FX noises at the top.
+    const REGIONS: [(u8, u8); 4] = [(0, 36), (36, 56), (56, 76), (76, 128)];
+
+    /// Three numbers per region of the map — see [`kit_fingerprint`].
+    const FEATURES: usize = REGIONS.len() * 3;
+
+    /// What one machine renders, as twelve numbers.
+    ///
+    /// Every note in the map struck at three velocities through the default
+    /// panel, reduced per region to
+    ///
+    /// * the rms of the whole region — how loud it is and for how long;
+    /// * the share of its energy below 300 Hz — how much of it is drum body;
+    /// * the share above 3 kHz — how much of it is cymbal, wire and noise.
+    ///
+    /// All three are sums of squares over about a million samples, which is
+    /// what makes them portable: see [`RENDERED`] for why that matters and
+    /// [`apart`] for how far they are allowed to move. The measuring itself
+    /// adds nothing to worry about — a [`OnePole`] is a multiply, an add and
+    /// a divide, and the only other operation here is `sqrt`, all of which
+    /// IEEE-754 requires to be rounded exactly.
+    fn kit_fingerprint(kit: usize) -> [f64; FEATURES] {
+        let mut out = [0.0; FEATURES];
+        for (region, &(first, last)) in REGIONS.iter().enumerate() {
+            let (mut energy, mut low, mut high, mut samples) = (0.0, 0.0, 0.0, 0usize);
+            for note in first..last {
+                for velocity in [40u8, 90, 127] {
+                    let x = strike(kit, note, velocity, 0.25, &[]);
+                    let (mut lp, mut hp) = (OnePole::new(), OnePole::new());
+                    for &s in &x {
+                        let v = f64::from(s);
+                        let l = lp.tick_lp(v, 300.0, SR);
+                        let h = hp.tick_hp(v, 3000.0, SR);
+                        energy += v * v;
+                        low += l * l;
+                        high += h * h;
+                    }
+                    samples += x.len();
+                }
             }
+            out[region * 3] = (energy / samples as f64).sqrt();
+            out[region * 3 + 1] = low / energy.max(1e-30);
+            out[region * 3 + 2] = high / energy.max(1e-30);
         }
-        h
+        out
     }
 
-    /// Every note this rack maps, struck at three velocities on one kit,
-    /// hashed into one number.
-    fn kit_digest(kit: usize) -> u64 {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for note in 0u8..128 {
-            for velocity in [40u8, 90, 127] {
-                h ^= digest(&strike(kit, note, velocity, 0.25, &[]));
-                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    /// What each number in a fingerprint measures, for the failure message.
+    fn feature_name(index: usize) -> String {
+        const WHERE: [&str; REGIONS.len()] = ["sub kicks", "the kit", "percussion", "fx"];
+        const WHAT: [&str; 3] = ["rms", "share below 300 Hz", "share above 3 kHz"];
+        format!("{}: {}", WHERE[index / 3], WHAT[index % 3])
+    }
+
+    /// An rms may move by this much of itself before it is a different sound.
+    const RMS_TOLERANCE: f64 = 0.01;
+
+    /// A share is already a fraction, so it moves by this much of full scale
+    /// rather than of itself: a share of 0.0002 that doubles is still the
+    /// same sound, where an rms that doubles never is.
+    const SHARE_TOLERANCE: f64 = 0.005;
+
+    /// How far one fingerprint sits from another, in tolerances — 1.0 is the
+    /// edge of the allowance — and which of the twelve numbers is furthest.
+    fn apart(a: &[f64; FEATURES], b: &[f64; FEATURES]) -> (f64, usize) {
+        let mut worst = (0.0, 0);
+        for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+            let d = if i % 3 == 0 {
+                (x - y).abs() / x.abs().max(y.abs()).max(1e-30) / RMS_TOLERANCE
+            } else {
+                (x - y).abs() / SHARE_TOLERANCE
+            };
+            if d > worst.0 {
+                worst = (d, i);
             }
         }
-        h
+        worst
     }
 
     // ── The three acoustic kits ──
@@ -4971,46 +5026,156 @@ mod tests {
         num / den.max(1e-30)
     }
 
-    /// What each of the machines that were already here renders, as one
-    /// number per kit.
+    /// What each of the machines that were already here renders, as twelve
+    /// numbers per kit: for each region of the note map in [`REGIONS`], the
+    /// rms of that region and the share of its energy below 300 Hz and above
+    /// 3 kHz. [`kit_fingerprint`] is what measures them.
     ///
-    /// Captured before the three acoustic kits were added and not touched
-    /// since. Every note in the map at three velocities through the default
-    /// panel, FNV-1a over the raw f32 bits — one sample different anywhere in
-    /// 384 renders moves the digest.
-    const RENDERED: [u64; 15] = [
-        0xfe82_cfa3_e993_4600, // 808
-        0x50f6_a8a4_0b13_b254, // 909
-        0xdadb_d1ba_5511_daf2, // 707
-        0x35fc_d49c_de66_88e5, // 606
-        0x19bc_cd65_42a4_3154, // 777
-        0xfb55_3913_8929_54bf, // tsty-1
-        0x4b62_c5a6_3ad0_87db, // tsty-2
-        0x92c8_30b2_7e39_3235, // tsty-3
-        0xc0b0_4e38_e93e_8c9a, // tsty-4
-        0x9808_42d9_8585_e41d, // tsty-5
-        0x69f5_3a9a_eb4a_5abe, // linn
-        0xe02e_4c79_4096_46af, // dmx
-        0xf67c_322b_04c7_4d2b, // sds-v
-        0xac4f_8ba4_bf75_d745, // 727
-        0x146d_822a_9039_3047, // cr-78
+    /// **This used to be one FNV-1a digest of the raw f32 bits per kit, and
+    /// that is not a portable thing to compare.** Synthesis here runs in f64
+    /// and is rounded to f32 on the way out, and two IEEE-754 platforms only
+    /// agree bit for bit on `+ - * /` and `sqrt`. Everything else — `exp`,
+    /// `sin`, `tan`, `powf`, all of which run several times a sample here —
+    /// comes from the system's libm, and Apple's, glibc's and the MSVC
+    /// runtime's each round the last bit their own way. Nearly always the
+    /// disagreement vanishes in the f64→f32 rounding, which is why fourteen
+    /// of the fifteen digests matched on three architectures for as long as
+    /// they did. But a sample whose f64 value happens to sit within a few
+    /// f64 ULPs of the halfway point between two f32s rounds the other way,
+    /// one f32 in the render differs by one ULP, and a hash of the bits then
+    /// reports a number with nothing in common with the one before it. tsty-5
+    /// lost that lottery on x86_64 while passing on aarch64. Nothing was
+    /// wrong with the audio; the comparison was wrong.
+    ///
+    /// So what is compared is energy, in aggregate, per region. A sum of a
+    /// million squares does not care which way one sample rounded — see
+    /// [`the_fifteen_machines_render_what_they_always_did`] for the numbers
+    /// that back that up. Regenerating this table means printing what
+    /// [`kit_fingerprint`] returns; it is not something to reach for lightly,
+    /// since the point of the table is that it does not move.
+    const RENDERED: [[f64; FEATURES]; 15] = [
+        // Four regions in the order [`REGIONS`] lists them — sub kicks, the
+        // kit, percussion, fx — and for each of them rms, then the share of
+        // its energy below 300 Hz, then the share above 3 kHz.
+        [0.045708, 0.984215, 0.000247, 0.022836, 0.709632, 0.062406,
+         0.022767, 0.245629, 0.143190, 0.023058, 0.001957, 0.630517], // 808
+        [0.070045, 0.936737, 0.002259, 0.032717, 0.757858, 0.040119,
+         0.030015, 0.741196, 0.024898, 0.010402, 0.067796, 0.181588], // 909
+        [0.029826, 0.972681, 0.000727, 0.025942, 0.723531, 0.051405,
+         0.025936, 0.690774, 0.035178, 0.007195, 0.010471, 0.554836], // 707
+        [0.018953, 0.929540, 0.001485, 0.019302, 0.547948, 0.132348,
+         0.017458, 0.484933, 0.059498, 0.002746, 0.003632, 0.572398], // 606
+        [0.069654, 0.861125, 0.002270, 0.058943, 0.755832, 0.046911,
+         0.023036, 0.090227, 0.163609, 0.025634, 0.007592, 0.541600], // 777
+        [0.039737, 0.961377, 0.000466, 0.024425, 0.713743, 0.023711,
+         0.023399, 0.300569, 0.095634, 0.021662, 0.021381, 0.456551], // tsty-1
+        [0.045603, 0.960952, 0.000457, 0.029393, 0.601882, 0.040570,
+         0.034032, 0.230351, 0.123817, 0.036910, 0.056095, 0.364692], // tsty-2
+        [0.025298, 0.961378, 0.000458, 0.027505, 0.732810, 0.032007,
+         0.020425, 0.721600, 0.061024, 0.024504, 0.328469, 0.079563], // tsty-3
+        [0.020009, 0.893835, 0.007200, 0.016554, 0.455300, 0.078120,
+         0.014797, 0.036991, 0.416730, 0.022168, 0.414362, 0.069220], // tsty-4
+        [0.011682, 0.812417, 0.053418, 0.010787, 0.012769, 0.528816,
+         0.030934, 0.039140, 0.510039, 0.010538, 0.058116, 0.424884], // tsty-5
+        [0.041736, 0.960772, 0.000617, 0.027995, 0.738591, 0.047191,
+         0.024508, 0.404940, 0.051969, 0.008890, 0.013327, 0.564357], // linn
+        [0.031979, 0.946099, 0.001056, 0.024436, 0.726415, 0.053083,
+         0.025397, 0.777013, 0.034878, 0.008790, 0.010412, 0.565733], // dmx
+        [0.053112, 0.975789, 0.000257, 0.038739, 0.659880, 0.025859,
+         0.043668, 0.622326, 0.019485, 0.023017, 0.410025, 0.096459], // sds-v
+        [0.041774, 0.702045, 0.004197, 0.028863, 0.373252, 0.141794,
+         0.025690, 0.253551, 0.170826, 0.015260, 0.010908, 0.458079], // 727
+        [0.043034, 0.979239, 0.000219, 0.025030, 0.469860, 0.110198,
+         0.021093, 0.391373, 0.080972, 0.010885, 0.009213, 0.440901], // cr-78
     ];
+
+    /// How far apart two different machines have to be before this test can
+    /// tell them apart at all. Asserted, not assumed — see below.
+    const MACHINES_APART: f64 = 10.0;
 
     /// Adding a kit to the selector does not move the fifteen that were there.
     ///
     /// The selector is an index into a table whose length changed, the panel
     /// is shared, and `instrument_of` and `Panel::new` both branch on the kit
     /// — three places where a sixteenth machine could have leaned on the
-    /// fifteenth. This renders all fifteen and compares the bits.
+    /// fifteenth. This renders all fifteen and measures them.
+    ///
+    /// Two things are asserted, and the second is what gives the first its
+    /// teeth:
+    ///
+    /// **Each machine still measures what it measured**, to within the
+    /// tolerances in [`apart`] — 1% of an rms, half a percent of full scale
+    /// on an energy share.
+    ///
+    /// **No machine is within [`MACHINES_APART`] tolerances of any of the
+    /// other fourteen**, so a kit rendering its neighbour's voices — which is
+    /// what a selector off by one, or a `match` arm that fell through to the
+    /// wrong machine, actually produces — cannot pass by landing inside the
+    /// allowance. The closest pair of the fifteen is 707 and dmx, two PCM
+    /// machines with much the same voices, and even they sit eighteen
+    /// tolerances apart.
+    ///
+    /// Why those tolerances are the right size, given that this has to hold
+    /// on hardware the author cannot run:
+    ///
+    /// * **Floating-point disagreement between platforms is nowhere near
+    ///   them.** Interposing a libm that shifts every fourth `exp`, `sin`,
+    ///   `tan` and `powf` result by 10⁶ ULPs — a relative error of 10⁻¹⁰,
+    ///   about a million times worse than any real libm disagreement — moves
+    ///   these numbers by 3 × 10⁻⁸ of one tolerance. A real one-ULP
+    ///   disagreement is another six orders of magnitude below that.
+    /// * **A handful of individual samples cannot move them either.** Several
+    ///   voices here are comparator squares — the 808's metal bank, the linn
+    ///   and 707 cowbells, the 777's clave — and the fear with a comparator
+    ///   is a phase landing a hair either side of it on two platforms, which
+    ///   flips one sample by the whole peak-to-peak rather than by an ULP.
+    ///   Corrupting samples outright, each by twice the peak of the render it
+    ///   sits in, takes about eighty of them scattered through a kit's four
+    ///   million to reach one tolerance. (It should take none. Every one of
+    ///   those phases is accumulated the way [`advance_phase`] does it —
+    ///   `+`, `/`, `-` and `floor` on a constant frequency, which is the
+    ///   arithmetic IEEE-754 pins down exactly — so both platforms hand the
+    ///   comparator the same number. The eighty is insurance, not a budget
+    ///   being spent.)
+    ///
+    /// A per-sample comparison — "every sample within ε" — would have neither
+    /// property, because one flipped sample is a full-scale error however
+    /// small ε is. Nor would rounding samples to a grid and hashing that:
+    /// that just moves the coin toss to the grid boundary and makes the
+    /// failure intermittent instead of reproducible.
+    ///
+    /// What the tolerances still catch, at the other end: remapping a single
+    /// note out of the hundred and twenty-eight — one `note_to_sound` arm
+    /// pointing at the wrong `DrumSound` — moves the region it lands in by
+    /// 1.7 tolerances, and swapping two machines or dispatching one machine's
+    /// note to another's synthesis moves them by ninety.
     #[test]
     fn the_fifteen_machines_render_what_they_always_did() {
-        for (kit, &want) in RENDERED.iter().enumerate() {
-            let got = kit_digest(kit);
-            assert_eq!(
-                got, want,
-                "{} renders differently than it did: 0x{got:016x}, was 0x{want:016x}",
+        let live: Vec<[f64; FEATURES]> = (0..RENDERED.len()).map(kit_fingerprint).collect();
+        for (kit, got) in live.iter().enumerate() {
+            let (moved, feature) = apart(got, &RENDERED[kit]);
+            assert!(
+                moved <= 1.0,
+                "{} renders differently than it did: {} is {:.6}, was {:.6} — \
+                 {moved:.1} tolerances",
                 KIT_LABELS[kit],
+                feature_name(feature),
+                got[feature],
+                RENDERED[kit][feature],
             );
+            for (other, want) in RENDERED.iter().enumerate() {
+                if other == kit {
+                    continue;
+                }
+                let (gap, _) = apart(got, want);
+                assert!(
+                    gap > MACHINES_APART,
+                    "{} and {} are only {gap:.1} tolerances apart, so this test cannot tell \
+                     one from the other",
+                    KIT_LABELS[kit],
+                    KIT_LABELS[other],
+                );
+            }
         }
     }
 }
