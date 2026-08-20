@@ -364,6 +364,11 @@ impl Mixer {
         let mut master_l = std::mem::take(&mut self.scratch_l);
         let mut master_r = std::mem::take(&mut self.scratch_r);
         let live_events = std::mem::take(&mut self.live_events);
+        // Dead code in practice, and deliberately kept. `max_buffer_size` is
+        // the largest block the device said it could deliver, so a block that
+        // does not fit means a driver exceeded its own stated maximum. One
+        // allocation is a glitch; the alternative here is wrong output or a
+        // panic on the audio thread.
         if master_l.len() < num_frames {
             master_l.resize(num_frames, 0.0);
             master_r.resize(num_frames, 0.0);
@@ -684,6 +689,7 @@ pub fn clip_snapshot_channel() -> (Sender<ClipSnapshot>, Receiver<ClipSnapshot>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpal_backend::{Requested, StreamFormat};
     use crate::project::TrackConfig;
     use phosphor_dsp::synth::PhosphorSynth;
     use phosphor_midi::message::{MidiMessage, MidiMessageType};
@@ -1727,5 +1733,189 @@ mod tests {
                 "fader at {volume} gave {peak}, expected {expected}"
             );
         }
+    }
+
+    // ── The device decides the rate ──
+
+    /// A device that would not give us the rate we asked for.
+    fn refused(asked: u32, sample_rate: u32, max_buffer_frames: u32) -> StreamFormat {
+        StreamFormat {
+            sample_rate,
+            buffer_size: Some(64),
+            max_buffer_frames,
+            channels: 2,
+            sample_rate_request: Requested::Refused(asked),
+            buffer_size_request: Requested::Granted,
+        }
+    }
+
+    /// The defect: the mixer was built from the command-line sample rate while
+    /// the stream ran at the device's. Everything the mixer derives from the
+    /// rate — oscillator increments, envelope times, the tick advance — was
+    /// then wrong by the ratio between the two.
+    #[test]
+    fn the_mixer_runs_at_the_rate_the_device_granted() {
+        let requested = crate::EngineConfig { buffer_size: 64, sample_rate: 44100 };
+        let format = refused(44100, 48000, 4096);
+        let effective = crate::EngineConfig::from(format);
+
+        let (_tx, rx) = mixer_command_channel();
+        let (clip_tx, _clip_rx) = clip_snapshot_channel();
+        let mixer = Mixer::new(
+            rx,
+            Arc::new(VuLevels::new()),
+            clip_tx,
+            effective.sample_rate,
+            format.max_buffer_frames as usize,
+        );
+
+        assert_eq!(mixer.sample_rate, 48000, "mixer must adopt the device's rate");
+        assert_ne!(
+            mixer.sample_rate, requested.sample_rate,
+            "the request was 44100 and the device said 48000; taking the \
+             request here is the 8.84%-sharp bug"
+        );
+        assert_eq!(mixer.max_buffer_size, 4096);
+    }
+
+    /// A device that offers exactly what was asked for changes nothing.
+    #[test]
+    fn a_device_that_agrees_leaves_the_request_alone() {
+        let requested = crate::EngineConfig { buffer_size: 64, sample_rate: 44100 };
+        let format = StreamFormat {
+            sample_rate: 44100,
+            buffer_size: Some(64),
+            max_buffer_frames: 4096,
+            channels: 2,
+            sample_rate_request: Requested::Granted,
+            buffer_size_request: Requested::Granted,
+        };
+        assert_eq!(crate::EngineConfig::from(format), requested);
+    }
+
+    /// The default path, and the one that has to be right for the most
+    /// people: nothing asked for, so the mixer is built at whatever the
+    /// device was already set to.
+    #[test]
+    fn asking_for_nothing_builds_the_mixer_at_the_devices_rate() {
+        let format = StreamFormat {
+            sample_rate: 48000,
+            buffer_size: None,
+            max_buffer_frames: 4096,
+            channels: 2,
+            sample_rate_request: Requested::Unasked,
+            buffer_size_request: Requested::Unasked,
+        };
+        let effective = crate::EngineConfig::from(format);
+
+        let (_tx, rx) = mixer_command_channel();
+        let (clip_tx, _clip_rx) = clip_snapshot_channel();
+        let mixer = Mixer::new(
+            rx,
+            Arc::new(VuLevels::new()),
+            clip_tx,
+            effective.sample_rate,
+            format.max_buffer_frames as usize,
+        );
+        assert_eq!(mixer.sample_rate, 48000);
+        assert_eq!(mixer.max_buffer_size, 4096);
+        assert!(format.divergence_notice().is_none(), "following the device is not news");
+    }
+
+    /// The defect: buffers were sized from the requested block, the device
+    /// handed the callback a larger one, and `process` grew them — a heap
+    /// allocation on the audio thread, on the very first callback.
+    #[test]
+    fn the_largest_block_the_device_promised_never_grows_a_buffer() {
+        let max_frames = 512usize;
+        let (tx, rx) = mixer_command_channel();
+        let (clip_tx, _clip_rx) = clip_snapshot_channel();
+        let mut mixer = Mixer::new(
+            rx,
+            Arc::new(VuLevels::new()),
+            clip_tx,
+            48000,
+            max_frames,
+        );
+        let transport = Arc::new(Transport::new(120.0));
+        let _handle = add_armed_synth(&tx, 0);
+        mixer.drain_commands();
+
+        // Snapshot after the track exists: adding one is a UI-driven
+        // allocation, not a per-callback one.
+        let before = (
+            mixer.scratch_l.capacity(),
+            mixer.scratch_r.capacity(),
+            mixer.tracks[0].buf_l.capacity(),
+            mixer.tracks[0].buf_r.capacity(),
+        );
+
+        transport.play();
+        let mut output = vec![0.0f32; max_frames * 2];
+        mixer.process(&mut output, &[make_note_on(60, 100)], &transport);
+
+        let after = (
+            mixer.scratch_l.capacity(),
+            mixer.scratch_r.capacity(),
+            mixer.tracks[0].buf_l.capacity(),
+            mixer.tracks[0].buf_r.capacity(),
+        );
+        assert_eq!(
+            before, after,
+            "a block the size the device promised must fit the buffers as \
+             allocated; growing one means the audio thread called the allocator"
+        );
+    }
+
+    /// The invariant stated everywhere in this crate, held to by the
+    /// allocator rather than by reading the code: a steady-state callback
+    /// touches no heap.
+    #[test]
+    fn a_steady_state_callback_does_not_allocate() {
+        let max_frames = 512usize;
+        let (tx, rx) = mixer_command_channel();
+        let (clip_tx, _clip_rx) = clip_snapshot_channel();
+        let mut mixer = Mixer::new(rx, Arc::new(VuLevels::new()), clip_tx, 48000, max_frames);
+        let transport = Arc::new(Transport::new(120.0));
+        let _handle = add_armed_synth(&tx, 0);
+        mixer.drain_commands();
+        transport.play();
+
+        let mut output = vec![0.0f32; max_frames * 2];
+        // One warm-up block: anything lazily built on first use — the
+        // wavetable bank behind its `OnceLock`, for one — is built here,
+        // outside the region under test.
+        mixer.process(&mut output, &[make_note_on(60, 100)], &transport);
+
+        let allocations = crate::alloc_count::allocations_during(|| {
+            for _ in 0..8 {
+                mixer.process(&mut output, &[], &transport);
+            }
+        });
+        assert_eq!(allocations, 0, "Mixer::process reached the allocator");
+    }
+
+    /// The same, for the shorter blocks the device may hand us when the
+    /// buffers were sized for its maximum.
+    #[test]
+    fn a_short_callback_does_not_allocate_either() {
+        let max_frames = 512usize;
+        let (tx, rx) = mixer_command_channel();
+        let (clip_tx, _clip_rx) = clip_snapshot_channel();
+        let mut mixer = Mixer::new(rx, Arc::new(VuLevels::new()), clip_tx, 48000, max_frames);
+        let transport = Arc::new(Transport::new(120.0));
+        let _handle = add_armed_synth(&tx, 0);
+        mixer.drain_commands();
+        transport.play();
+
+        let mut output = vec![0.0f32; 64 * 2];
+        mixer.process(&mut output, &[make_note_on(60, 100)], &transport);
+
+        let allocations = crate::alloc_count::allocations_during(|| {
+            for _ in 0..8 {
+                mixer.process(&mut output, &[], &transport);
+            }
+        });
+        assert_eq!(allocations, 0, "Mixer::process reached the allocator");
     }
 }

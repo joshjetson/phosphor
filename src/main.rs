@@ -12,13 +12,16 @@ struct Cli {
     #[arg(long, conflicts_with = "tui")]
     gui: bool,
 
-    /// Audio buffer size in samples (lower = less latency, more CPU)
-    #[arg(long, default_value = "64")]
-    buffer_size: u32,
+    /// Request an audio block size in samples (lower = less latency, more
+    /// CPU). Left alone, the device chooses. Clamped to what it will accept.
+    #[arg(long)]
+    buffer_size: Option<u32>,
 
-    /// Sample rate in Hz
-    #[arg(long, default_value = "44100")]
-    sample_rate: u32,
+    /// Request a sample rate in Hz. Left alone, phosphor runs at whatever the
+    /// device is already set to rather than changing it. If the device does
+    /// not offer the rate asked for, its own is adopted and reported.
+    #[arg(long)]
+    sample_rate: Option<u32>,
 
     /// Disable audio output (useful for UI development)
     #[arg(long)]
@@ -32,7 +35,10 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let config = phosphor_core::EngineConfig {
+    // A request, not a configuration: both halves are optional and both are
+    // usually empty. What the engine runs at is settled against the device,
+    // not here — see `phosphor_core::AudioRequest`.
+    let request = phosphor_core::AudioRequest {
         buffer_size: cli.buffer_size,
         sample_rate: cli.sample_rate,
     };
@@ -47,13 +53,13 @@ fn main() -> Result<()> {
             .init();
 
         tracing::info!(
-            "Phosphor v{} starting (buffer_size={}, sample_rate={})",
+            "Phosphor v{} starting (requested buffer_size={:?}, sample_rate={:?})",
             env!("CARGO_PKG_VERSION"),
             cli.buffer_size,
             cli.sample_rate,
         );
 
-        phosphor_gui::run(config)
+        phosphor_gui::run(request)
     } else {
         // TUI mode: suppress all tracing output to stderr so it doesn't
         // bleed into the splash screen or the terminal UI.
@@ -62,6 +68,6 @@ fn main() -> Result<()> {
             .with_env_filter(tracing_subscriber::EnvFilter::new("off"))
             .init();
 
-        phosphor_tui::run(config, !cli.no_audio, !cli.no_midi)
+        phosphor_tui::run(request, !cli.no_audio, !cli.no_midi)
     }
 }

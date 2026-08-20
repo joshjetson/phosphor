@@ -6,19 +6,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use phosphor_core::clip::ClipSnapshot;
-use phosphor_core::cpal_backend::CpalBackend;
+use phosphor_core::cpal_backend::{CpalBackend, StreamFormat};
 use phosphor_core::engine::{Engine, EngineAudio};
 use phosphor_core::mixer::{Mixer, MixerCommand, clip_snapshot_channel, mixer_command_channel};
 use phosphor_core::transport::Transport;
 use phosphor_core::project::{TrackHandle, TrackKind};
-use phosphor_core::EngineConfig;
+use phosphor_core::{AudioRequest, EngineConfig};
 use phosphor_dsp::synth::PhosphorSynth;
 use phosphor_midi::ring::midi_ring_buffer;
 
@@ -67,9 +67,11 @@ pub struct App {
     clip_rx: crossbeam_channel::Receiver<ClipSnapshot>,
     /// Last saved/loaded file path for Ctrl+S quick save.
     session_path: Option<std::path::PathBuf>,
-    /// Where user preset banks are kept — `~/.phosphor/presets`, or `None`
-    /// when HOME is unset. A field rather than a call so the tests can point
-    /// it at a scratch directory instead of the player's own presets.
+    /// Where user preset banks are kept — `~/.phosphor/presets` on Unix,
+    /// `%APPDATA%\phosphor\presets` on Windows, or `None` when the
+    /// environment names no home directory at all. A field rather than a call
+    /// so the tests can point it at a scratch directory instead of the
+    /// player's own presets.
     pub(crate) preset_dir: Option<std::path::PathBuf>,
     /// Status message shown briefly at bottom of screen.
     pub(crate) status_message: Option<(String, std::time::Instant)>,
@@ -89,10 +91,46 @@ pub struct App {
     pub(crate) mixer_rx: Option<crossbeam_channel::Receiver<MixerCommand>>,
 }
 
+/// What the engine gets built from once the device has had its say.
+struct AudioFormat {
+    /// The rate and block size the engine actually runs at.
+    config: EngineConfig,
+    /// The largest block the audio callback can be handed — what the mixer's
+    /// buffers are sized to, so `Mixer::process` never has to grow one.
+    max_buffer_frames: usize,
+    /// Set when the device would not take the requested format, so the
+    /// divergence reaches the player instead of being inaudible until they
+    /// notice the whole session is sharp.
+    notice: Option<String>,
+}
+
+impl AudioFormat {
+    /// `granted` is `None` when there is no device at all — `--no-audio`, or
+    /// a backend that would not open. Then there is nothing to follow and
+    /// nothing to override the request, so `AudioRequest::without_device`
+    /// fills the gaps; nothing is listening to the result, so nothing can be
+    /// out of tune.
+    fn resolve(request: AudioRequest, granted: Option<StreamFormat>) -> Self {
+        let Some(format) = granted else {
+            let config = request.without_device();
+            return Self {
+                config,
+                max_buffer_frames: config.buffer_size as usize,
+                notice: None,
+            };
+        };
+        Self {
+            config: EngineConfig::from(format),
+            max_buffer_frames: format.max_buffer_frames as usize,
+            notice: format.divergence_notice(),
+        }
+    }
+}
+
 impl App {
     /// Create the app with a splash screen shown during init.
     /// Enters alternate screen once — `run()` reuses it.
-    pub fn new_with_splash(config: EngineConfig, enable_audio: bool, enable_midi: bool) -> Result<Self> {
+    pub fn new_with_splash(request: AudioRequest, enable_audio: bool, enable_midi: bool) -> Result<Self> {
         terminal::enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen, crossterm::cursor::Hide)?;
@@ -103,7 +141,7 @@ impl App {
         crate::splash::show_splash(&mut splash_terminal)?;
 
         // Now init — splash stays visible on screen
-        let app = Self::new(config, enable_audio, enable_midi);
+        let app = Self::new(request, enable_audio, enable_midi);
 
         // Clean up splash terminal (raw mode stays, alternate screen stays)
         // App::run will create its own terminal on the same alternate screen
@@ -113,7 +151,11 @@ impl App {
         Ok(app)
     }
 
-    pub fn new(config: EngineConfig, enable_audio: bool, enable_midi: bool) -> Self {
+    /// `request` is anything that can name an [`AudioRequest`]: the command
+    /// line's optional pair, or a concrete [`EngineConfig`] for the headless
+    /// tests, which open no device and so have nothing to follow.
+    pub fn new(request: impl Into<AudioRequest>, enable_audio: bool, enable_midi: bool) -> Self {
+        let request = request.into();
         let (mixer_tx, mixer_rx) = mixer_command_channel();
         let (clip_tx, clip_rx) = clip_snapshot_channel();
 
@@ -122,6 +164,40 @@ impl App {
         // the mixer needs, since each message goes to exactly one of them.
         #[cfg(test)]
         let mixer_rx_test = (!enable_audio).then(|| mixer_rx.clone());
+
+        // The device is opened first, before anything is built from a sample
+        // rate, because the device is the one that decides what the sample
+        // rate is. `request` is what was asked for on the command line, and
+        // is usually empty; building the engine from it while the stream runs
+        // at something else detunes the whole application by the ratio
+        // between them.
+        //
+        // `--no-audio` never gets here at all, so it queries no device.
+        let mut backend = enable_audio
+            .then(|| CpalBackend::new(request))
+            .transpose()
+            .unwrap_or_else(|e| {
+                tracing::warn!("Failed to init audio: {e}");
+                None
+            });
+
+        let AudioFormat { config, max_buffer_frames, notice: format_notice } =
+            AudioFormat::resolve(request, backend.as_ref().map(CpalBackend::format));
+        // What the engine was actually built at, every launch. The rate is
+        // not visible anywhere in the UI, and "it sounds a bit sharp" is a
+        // hard thing to debug without it written down.
+        crate::debug_log::log(
+            "AUDIO",
+            &format!(
+                "engine at {}Hz, blocks up to {} frames, device: {}",
+                config.sample_rate,
+                max_buffer_frames,
+                if backend.is_some() { "yes" } else { "none" },
+            ),
+        );
+        if let Some(notice) = format_notice.as_deref() {
+            crate::debug_log::log("AUDIO", notice);
+        }
 
         let engine = Arc::new(Engine::with_command_tx(config, mixer_tx.clone()));
         let transport = engine.transport.clone();
@@ -144,17 +220,19 @@ impl App {
         }
 
         // Start audio engine — flush any stale MIDI before first callback
-        let audio_backend = if enable_audio {
+        if let Some(backend) = backend.as_mut() {
             let panic_flag = engine.panic_flag.clone();
             let vu_levels = engine.vu_levels.clone();
 
-            // Create the mixer
+            // Create the mixer. Sized for the largest block the device says it
+            // may deliver, not for the block we asked for: growing a buffer
+            // inside `Mixer::process` is a heap allocation on the audio thread.
             let mixer = Mixer::new(
                 mixer_rx,
                 vu_levels.clone(),
                 clip_tx,
                 config.sample_rate,
-                config.buffer_size as usize,
+                max_buffer_frames,
             );
 
             let mut engine_audio = EngineAudio::with_mixer(
@@ -168,53 +246,28 @@ impl App {
             engine_audio.flush_midi();
             let transport_clone = transport.clone();
 
-            let mut backend = match CpalBackend::new(config.sample_rate, config.buffer_size) {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::warn!("Failed to init audio: {e}");
-                    return Self {
-                        engine,
-                        nav: NavState::new(state::initial_tracks()),
-                        running: true,
-                        _audio_backend: None,
-                        _midi_status: midi_status,
-                        _midi_connection: midi_connection,
-                        next_track_id: 0,
-                        clip_rx,
-                        session_path: None,
-                        preset_dir: phosphor_app::preset::default_dir(),
-                        status_message: None,
-                        yanked_clip: None,
-                        yanked_clip_start: 0,
-                        #[cfg(test)]
-                        mixer_rx: mixer_rx_test,
-                    };
-                }
-            };
-
             if let Err(e) = backend.start(move |data: &mut [f32]| {
                 engine_audio.process(data, &transport_clone);
             }) {
                 tracing::warn!("Failed to start audio stream: {e}");
             }
-
-            Some(backend)
-        } else {
-            None
-        };
+        }
 
         Self {
             engine,
             nav: NavState::new(state::initial_tracks()),
             running: true,
-            _audio_backend: audio_backend,
+            _audio_backend: backend,
             _midi_status: midi_status,
             _midi_connection: midi_connection,
             next_track_id: 0,
             clip_rx,
             session_path: None,
             preset_dir: phosphor_app::preset::default_dir(),
-            status_message: None,
+            // A device that would not take the requested format says so on the
+            // bottom bar. Stderr is not available here — it would be painted
+            // over by the UI — and silence is how the mismatch went unnoticed.
+            status_message: format_notice.map(|m| (m, std::time::Instant::now())),
             yanked_clip: None,
             yanked_clip_start: 0,
             #[cfg(test)]
@@ -569,6 +622,158 @@ fn start_midi_input(
         Err(e) => {
             tracing::warn!("Failed to connect MIDI: {e}");
             None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phosphor_core::cpal_backend::Requested;
+
+    /// A device sitting at 48000 with blocks of its own choosing.
+    fn following(sample_rate: u32) -> StreamFormat {
+        StreamFormat {
+            sample_rate,
+            buffer_size: None,
+            max_buffer_frames: 4096,
+            channels: 2,
+            sample_rate_request: Requested::Unasked,
+            buffer_size_request: Requested::Unasked,
+        }
+    }
+
+    /// A device answering a request, one way or the other.
+    fn answering(sample_rate: u32, rate: Requested, block: Requested, pinned: u32) -> StreamFormat {
+        StreamFormat {
+            sample_rate,
+            buffer_size: Some(pinned),
+            max_buffer_frames: 4096,
+            channels: 2,
+            sample_rate_request: rate,
+            buffer_size_request: block,
+        }
+    }
+
+    /// The default: nothing on the command line, so the engine is built at
+    /// whatever the device was already set to and the device is left alone.
+    #[test]
+    fn asking_for_nothing_runs_at_the_devices_rate() {
+        let resolved = AudioFormat::resolve(AudioRequest::follow_device(), Some(following(48000)));
+        assert_eq!(resolved.config.sample_rate, 48000);
+        assert_ne!(
+            resolved.config.sample_rate,
+            EngineConfig::default().sample_rate,
+            "the no-device fallback must not leak into the path where there is a device"
+        );
+    }
+
+    /// ...and says nothing about it. Following the device is the ordinary
+    /// case; a line on every launch is a line nobody reads.
+    #[test]
+    fn following_the_device_is_silent() {
+        let resolved = AudioFormat::resolve(AudioRequest::follow_device(), Some(following(48000)));
+        assert!(resolved.notice.is_none());
+    }
+
+    /// The defect, in one assertion: the engine was built from the command
+    /// line while the stream ran at the device's rate. 44100 into a 48000
+    /// stream is every note 1.47 semitones sharp and 120 BPM playing at 130.6.
+    #[test]
+    fn a_device_that_disagrees_decides_the_rate() {
+        let request = AudioRequest { sample_rate: Some(22050), buffer_size: None };
+        let resolved = AudioFormat::resolve(
+            request,
+            Some(answering(48000, Requested::Refused(22050), Requested::Unasked, 64)),
+        );
+        assert_eq!(resolved.config.sample_rate, 48000);
+        assert_ne!(resolved.config.sample_rate, request.sample_rate.unwrap());
+    }
+
+    #[test]
+    fn a_device_that_agrees_gives_what_was_asked_for() {
+        let request = AudioRequest { sample_rate: Some(44100), buffer_size: Some(64) };
+        let resolved = AudioFormat::resolve(
+            request,
+            Some(answering(44100, Requested::Granted, Requested::Granted, 64)),
+        );
+        assert_eq!(resolved.config, EngineConfig { buffer_size: 64, sample_rate: 44100 });
+        assert!(resolved.notice.is_none(), "nothing to report when the request stood");
+    }
+
+    #[test]
+    fn a_device_that_disagrees_says_so() {
+        let resolved = AudioFormat::resolve(
+            AudioRequest { sample_rate: Some(22050), buffer_size: None },
+            Some(answering(48000, Requested::Refused(22050), Requested::Unasked, 64)),
+        );
+        let notice = resolved.notice.expect("a silent divergence is the bug");
+        assert!(notice.contains("48000"), "{notice}");
+        assert!(notice.contains("22050"), "{notice}");
+    }
+
+    #[test]
+    fn a_clamped_block_size_is_reported_too() {
+        let resolved = AudioFormat::resolve(
+            AudioRequest { sample_rate: None, buffer_size: Some(4) },
+            Some(answering(48000, Requested::Unasked, Requested::Refused(4), 15)),
+        );
+        assert_eq!(resolved.config.buffer_size, 15);
+        assert!(resolved.notice.is_some());
+    }
+
+    /// Buffers are sized for the largest block the device admits to, not for
+    /// the one we asked for — a bigger block arriving means `Mixer::process`
+    /// grows a Vec on the audio thread.
+    #[test]
+    fn buffers_are_sized_for_the_devices_largest_block() {
+        let resolved = AudioFormat::resolve(AudioRequest::follow_device(), Some(following(48000)));
+        assert_eq!(resolved.max_buffer_frames, 4096);
+    }
+
+    /// `--no-audio`, and the backend that would not open, both land here.
+    #[test]
+    fn without_a_device_the_defaults_stand() {
+        let resolved = AudioFormat::resolve(AudioRequest::follow_device(), None);
+        assert_eq!(resolved.config, EngineConfig::default());
+        assert_eq!(resolved.max_buffer_frames, EngineConfig::default().buffer_size as usize);
+        assert!(resolved.notice.is_none());
+    }
+
+    /// ...but a request made without a device is still honoured, since there
+    /// is nothing to overrule it.
+    #[test]
+    fn without_a_device_what_was_asked_for_still_stands() {
+        let resolved = AudioFormat::resolve(
+            AudioRequest { sample_rate: Some(96000), buffer_size: Some(256) },
+            None,
+        );
+        assert_eq!(resolved.config, EngineConfig { buffer_size: 256, sample_rate: 96000 });
+    }
+
+    /// The same thing end to end: a headless app opens no device, so it runs
+    /// at the no-device numbers.
+    #[test]
+    fn a_headless_app_runs_at_the_no_device_defaults() {
+        let app = App::new(AudioRequest::follow_device(), false, false);
+        assert_eq!(app.engine.config, EngineConfig::default());
+        assert!(
+            app.live_status().is_none(),
+            "no device means no format to complain about"
+        );
+    }
+
+    /// The test apps hand `App::new` concrete numbers rather than a request,
+    /// and with no device those numbers are what it runs at.
+    #[test]
+    fn a_headless_app_honours_concrete_numbers() {
+        for config in [
+            EngineConfig { buffer_size: 64, sample_rate: 44100 },
+            EngineConfig { buffer_size: 256, sample_rate: 96000 },
+        ] {
+            let app = App::new(config, false, false);
+            assert_eq!(app.engine.config, config);
+            assert!(app.live_status().is_none());
         }
     }
 }

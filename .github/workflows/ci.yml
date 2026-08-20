@@ -1,0 +1,130 @@
+# Build and test on the three platforms phosphor claims to run on.
+#
+# There was no CI at all, which is why a Windows build had never been
+# attempted and why `HOME` — a variable Windows does not set — had been the
+# only way to find the presets directory for as long as there had been one.
+# The point of this file is that the question gets answered on every push
+# instead of by inspection.
+#
+# Only first-party actions are used, so there is nothing here to audit but
+# the shell commands, and no secrets: everything runs against the checkout.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# bash on all three runners rather than PowerShell on Windows: one spelling of
+# every step, and `-e` so a failure part way through a multi-line block stops
+# the job. PowerShell only propagates the *last* native command's exit code.
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  # A backtrace is the difference between "a test failed on Windows" and
+  # knowing why, and nobody watching this has a Windows machine to reproduce
+  # it on.
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing should not hide the other two — the whole reason
+      # for this file is finding out which platforms are broken.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # cpal and midir both reach ALSA on Linux, and both link against it at
+      # build time through pkg-config. macOS (CoreAudio/CoreMIDI) and Windows
+      # (WASAPI/WinMM) need nothing installed.
+      #
+      # The rest are for eframe/egui, which phosphor-gui pulls in. That crate
+      # is a stub, but it still has to compile.
+      - name: Install Linux audio and windowing headers
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libasound2-dev \
+            libudev-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libgl1-mesa-dev
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Check
+        run: cargo check --workspace --all-targets
+
+      # No audio device on a runner, and nothing here opens one: every test
+      # builds its app with audio and MIDI disabled.
+      - name: Test
+        run: cargo test --workspace
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux audio and windowing headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libasound2-dev \
+            libudev-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libgl1-mesa-dev
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ubuntu-clippy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ubuntu-clippy-
+
+      # Not `-D warnings` yet: the workspace carries about forty existing
+      # lints, and turning them into errors now would mean this job is red
+      # from its first run and nobody reads it again. It reports, and the day
+      # the count reaches zero the flag goes on and this becomes a gate.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets

@@ -3272,6 +3272,66 @@ pub(crate) mod tests {
         (sum / samples.len() as f64).sqrt() as f32
     }
 
+    // ── Sample rate independence ──
+
+    /// Zero-crossings per second over a held note. Proportional to the
+    /// fundamental, but unlike a period estimate it cannot lock onto an
+    /// octave, and the patch's own detuning makes a period estimate unstable.
+    fn crossings_per_second(sample_rate: f64, note: u8) -> f64 {
+        let mut s = PhosphorSynth::new();
+        s.init(sample_rate, 256);
+        let mut out = vec![0.0f32; 256];
+        s.process(&[], &mut [&mut out], &[note_on(note, 100, 0)]);
+
+        // Past the attack, so the window is the steady part of the note.
+        let blocks_per_sec = sample_rate / 256.0;
+        for _ in 0..(blocks_per_sec * 0.2) as usize {
+            out.fill(0.0);
+            s.process(&[], &mut [&mut out], &[]);
+        }
+
+        let mut crossings = 0usize;
+        let mut samples = 0usize;
+        let mut prev = 0.0f32;
+        for _ in 0..(blocks_per_sec * 0.4) as usize {
+            out.fill(0.0);
+            s.process(&[], &mut [&mut out], &[]);
+            for &v in &out {
+                if (prev <= 0.0 && v > 0.0) || (prev >= 0.0 && v < 0.0) {
+                    crossings += 1;
+                }
+                prev = v;
+                samples += 1;
+            }
+        }
+        crossings as f64 / (samples as f64 / sample_rate)
+    }
+
+    /// The instrument is told its sample rate once, at `init`, and everything
+    /// it does with time has to follow from that number rather than from a
+    /// constant. Nothing else in this crate is exercised at any rate but
+    /// 44100, which is how an engine built at one rate feeding a stream
+    /// running at another went unnoticed: 44100 into a 48000 stream is every
+    /// note 1.47 semitones sharp, and no test here would have said so.
+    #[test]
+    fn pitch_does_not_depend_on_the_sample_rate() {
+        for note in [45u8, 69] {
+            let reference = crossings_per_second(44_100.0, note);
+            assert!(reference > 0.0, "note {note} produced no signal at 44100");
+            for rate in [22_050.0, 48_000.0, 96_000.0] {
+                let measured = crossings_per_second(rate, note);
+                let error = measured / reference - 1.0;
+                assert!(
+                    error.abs() < 0.02,
+                    "note {note} is {:+.2}% off at {rate}Hz ({measured:.1} zc/s against \
+                     {reference:.1} at 44100); the rate the instrument was given is not \
+                     reaching everything that keeps time",
+                    error * 100.0,
+                );
+            }
+        }
+    }
+
     // ── Real-time safety ──
 
     #[test]

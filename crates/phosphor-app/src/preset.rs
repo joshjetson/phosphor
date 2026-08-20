@@ -3,7 +3,8 @@
 //! A factory patch lives in a `const` table and is reachable from the patch
 //! knob. A user preset is the whole parameter block as the player left it —
 //! including whichever factory patch they started from — written to
-//! `~/.phosphor/presets/<instrument>.json`.
+//! `<app dir>/presets/<instrument>.json`, which is `~/.phosphor/presets` on
+//! Unix and `%APPDATA%\phosphor\presets` on Windows. See [`crate::paths`].
 //!
 //! Presets are deliberately *not* appended to the factory bank. The patch
 //! selector stores a normalised fraction, so the index it lands on depends on
@@ -217,15 +218,19 @@ pub fn param_count(instrument: InstrumentType) -> usize {
 
 // ── Paths ──
 
-/// `~/.phosphor/presets`, or `None` when HOME is unset.
+/// `~/.phosphor/presets` on Unix, `%APPDATA%\phosphor\presets` on Windows, or
+/// `None` when the environment names no home directory at all.
 ///
-/// Same shape as the theme's config path: with no home directory there is
-/// nowhere to put presets, and the answer is to do nothing rather than to
-/// scatter files relative to the working directory.
+/// Same shape as the theme's config path, and now literally the same lookup:
+/// this read `HOME` directly for a long time, which Windows does not set, so
+/// every preset save on Windows resolved to `None` and the call sites read
+/// `None` as "do nothing". See [`crate::paths`] for the rule and its tests.
+///
+/// With no home directory there is still nowhere to put presets, and the
+/// answer is still to do nothing rather than to scatter files relative to the
+/// working directory.
 pub fn default_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(|home| PathBuf::from(home).join(".phosphor").join("presets"))
+    crate::paths::preset_dir()
 }
 
 /// The bank file for one instrument inside `dir`.

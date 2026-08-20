@@ -45,7 +45,12 @@ impl App {
 
 
     pub(crate) fn do_load(&mut self, path_str: &str) {
-        let path = std::path::PathBuf::from(path_str);
+        // A relative path is tried against the working directory first, which
+        // is where it has always resolved, and then against the application
+        // directory — so `sessions/take3.phos` still opens once the player
+        // stops launching from a checkout. Saving does not do this: a write
+        // goes exactly where it was typed. See `phosphor_app::paths`.
+        let path = phosphor_app::paths::find_session(std::path::Path::new(path_str));
 
         // Stop the transport before touching any session state. If playback
         // or recording was rolling, the audio thread keeps advancing the

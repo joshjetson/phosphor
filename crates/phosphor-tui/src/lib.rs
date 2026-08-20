@@ -13,6 +13,8 @@ mod test_clips;
 #[cfg(test)]
 mod test_fader;
 #[cfg(test)]
+mod test_keys;
+#[cfg(test)]
 mod test_presets;
 #[cfg(test)]
 mod test_session;
@@ -20,10 +22,14 @@ mod theme;
 mod ui;
 
 use anyhow::Result;
-use phosphor_core::EngineConfig;
+use phosphor_core::AudioRequest;
 
 /// Run the TUI application.
-pub fn run(config: EngineConfig, enable_audio: bool, enable_midi: bool) -> Result<()> {
+///
+/// `request` is what the command line asked for, which is usually nothing at
+/// all — see [`AudioRequest`]. What the engine ends up running at is decided
+/// by the device, inside [`app::App::new`].
+pub fn run(request: AudioRequest, enable_audio: bool, enable_midi: bool) -> Result<()> {
     debug_log::init();
     theme::load_preference();
 
@@ -44,6 +50,6 @@ pub fn run(config: EngineConfig, enable_audio: bool, enable_midi: bool) -> Resul
         default_hook(info);
     }));
 
-    let mut app = app::App::new_with_splash(config, enable_audio, enable_midi)?;
+    let mut app = app::App::new_with_splash(request, enable_audio, enable_midi)?;
     app.run()
 }

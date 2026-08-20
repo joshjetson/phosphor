@@ -35,7 +35,8 @@ pub fn next_theme() {
     set_theme((cur + 1) % THEME_COUNT);
 }
 
-/// Load theme preference from ~/.phosphor/config.json on startup.
+/// Load theme preference from the application directory's config.json on
+/// startup — `~/.phosphor` on Unix, `%APPDATA%\phosphor` on Windows.
 pub fn load_preference() {
     if let Some(home) = dirs_path() {
         let config = home.join("config.json");
@@ -49,7 +50,7 @@ pub fn load_preference() {
     }
 }
 
-/// Save theme preference to ~/.phosphor/config.json.
+/// Save theme preference to the application directory's config.json.
 fn save_preference() {
     if let Some(dir) = dirs_path() {
         let _ = std::fs::create_dir_all(&dir);
@@ -59,8 +60,11 @@ fn save_preference() {
     }
 }
 
+/// Where the preference file lives. This read `HOME` directly, which Windows
+/// does not set — so the theme silently never stuck there. One rule for every
+/// file phosphor owns now lives in `phosphor_app::paths`.
 fn dirs_path() -> Option<std::path::PathBuf> {
-    std::env::var("HOME").ok().map(|h| std::path::PathBuf::from(h).join(".phosphor"))
+    phosphor_app::paths::app_dir()
 }
 
 pub fn theme_name() -> &'static str {

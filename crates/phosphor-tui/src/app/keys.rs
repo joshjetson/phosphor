@@ -9,6 +9,33 @@ impl App {
 
         let Event::Key(key) = event else { return };
 
+        // One keystroke, one trip through everything below.
+        //
+        // A Unix terminal reports a keystroke once and there is nothing else
+        // to report, so this used to be the whole story. The Windows console
+        // reports the key going down *and* coming back up — `ReadConsoleInput`
+        // hands back both records and crossterm turns the second into
+        // `KeyEventKind::Release` — so every action in this function ran
+        // twice per key. A note played twice, a selector stepped two
+        // positions, and worst of all a toggle flipped and flipped straight
+        // back, which reads as a control that does nothing at all.
+        //
+        // `Repeat` is treated as a press. Holding a key is how a knob gets
+        // swept, and a Unix terminal's own auto-repeat already arrives here as
+        // a stream of presses; dropping the kind that means the same thing
+        // would make a held key worse than it is now. Nothing emits `Repeat`
+        // as this is built — crossterm reports it only for the kitty keyboard
+        // protocol, which needs `PushKeyboardEnhancementFlags` and this
+        // application never sends it — so accepting it costs nothing today and
+        // keeps held keys working on the day it does.
+        //
+        // Filtered here rather than beside `event::read`, because this is the
+        // door the tests knock on; a filter the tests cannot reach is a filter
+        // that gets removed.
+        if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            return;
+        }
+
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             dbg::user("Ctrl+C → quit");
             self.running = false;

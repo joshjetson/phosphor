@@ -346,17 +346,30 @@ impl InputModal {
         Self { open: false, kind: InputModalKind::SaveAs, buffer: String::new(), cursor: 0 }
     }
 
+    /// Ask for a filename to save under.
+    ///
+    /// The field starts in `sessions/` when the working directory has one —
+    /// a checkout being run from its own root, which is where every session
+    /// on disk already is — and in the absolute `<app dir>/sessions/`
+    /// otherwise. A bare `sessions/` resolves against wherever the process was
+    /// started, so a shortcut, an alias or a desktop launcher would write the
+    /// file successfully into a directory nobody is going to look in again.
+    /// See [`crate::paths::session_prompt_dir`].
     pub fn open_save(&mut self, default_name: &str) {
         self.open = true;
         self.kind = InputModalKind::SaveAs;
-        self.buffer = format!("sessions/{default_name}");
+        self.buffer = format!("{}{default_name}", crate::paths::session_prompt_dir());
         self.cursor = self.buffer.len();
     }
 
+    /// Ask for a file to open. Same starting directory as [`Self::open_save`];
+    /// a relative path typed here is also looked for under the application
+    /// directory, so the way a checkout spells a session keeps working from
+    /// anywhere. See [`crate::paths::find_session`].
     pub fn open_load(&mut self) {
         self.open = true;
         self.kind = InputModalKind::Open;
-        self.buffer = "sessions/".to_string();
+        self.buffer = crate::paths::session_prompt_dir();
         self.cursor = self.buffer.len();
     }
 

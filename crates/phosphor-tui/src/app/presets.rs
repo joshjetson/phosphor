@@ -1,7 +1,7 @@
 //! App methods: user presets.
 //!
 //! The browser is opened with Space+W on an instrument track. It reads and
-//! writes `~/.phosphor/presets/<instrument>.json` from the UI thread; the
+//! writes `<app dir>/presets/<instrument>.json` from the UI thread; the
 //! audio thread never sees a file. Applying a preset goes out as one
 //! `SetParameter` per control down the same command channel a knob turn uses.
 
@@ -9,8 +9,9 @@ use super::*;
 use phosphor_app::preset::{self, PresetError, StoreOutcome};
 
 impl App {
-    /// Where preset banks live. `None` when HOME is unset, in which case
-    /// presets are unavailable rather than written somewhere arbitrary.
+    /// Where preset banks live. `None` when the environment names no home
+    /// directory at all, in which case presets are unavailable rather than
+    /// written somewhere arbitrary.
     fn preset_dir(&self) -> Option<&std::path::Path> {
         self.preset_dir.as_deref()
     }
@@ -35,7 +36,7 @@ impl App {
 
         let Some(dir) = self.preset_dir().map(std::path::Path::to_path_buf) else {
             self.status_message = Some((
-                "presets: no HOME, nowhere to keep them".into(),
+                "presets: no home directory, nowhere to keep them".into(),
                 std::time::Instant::now(),
             ));
             return;

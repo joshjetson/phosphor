@@ -164,7 +164,11 @@ has no patch memory):
 - Lock-free audio thread — zero allocations, zero mutexes in the hot path
 - Per-track instrument instances with independent processing
 - Per-track and master VU metering via atomic shared state, on a dB scale
-- Configurable buffer size (default 64 samples, ~1.5ms latency at 44.1kHz)
+- Follows the output device: renders natively at whatever sample rate and block
+  size the device is already set to, so nothing is resampled on the way out.
+  `--sample-rate` and `--buffer-size` override it on request, and a device that
+  refuses says so rather than letting the engine drift out of tune with the
+  stream
 - Gain-staged for chords, not single notes — every instrument is sized so a
   two-handed voicing at full velocity still has headroom
 - Soft saturation on each instrument, transparent below its knee, replacing the
@@ -190,13 +194,14 @@ has no patch memory):
   when the session was written, and reopening on a different instrument is the
   kind of wrong that looks perfectly reasonable
 - Atomic writes prevent file corruption
-- Default save directory: `sessions/`
+- Default save directory: `sessions/` when you are running from a checkout,
+  otherwise `<app dir>/sessions/` — see [Where files live](#where-files-live)
 
 **User Presets**
 - `Space+W` opens a preset browser for the selected instrument
 - Every instrument has its own bank, the drum rack included — the whole parameter
   block, including the factory patch it was dialled in from
-- One human-readable file per instrument (`~/.phosphor/presets/<instrument>.json`),
+- One human-readable file per instrument (`<app dir>/presets/<instrument>.json`),
   atomic writes, so a DX7 preset can never be offered to a Juno
 - Presets sit beside the factory tables rather than extending them, so adding one
   cannot move a patch index stored in a saved session
@@ -216,7 +221,7 @@ has no patch memory):
 **Themes**
 - 9 built-in color themes (see [Themes](#themes))
 - `Space+V` cycles themes instantly
-- Theme choice persists across sessions (`~/.phosphor/config.json`)
+- Theme choice persists across sessions (`<app dir>/config.json`)
 
 **MIDI**
 - Auto-detection of MIDI controllers on startup
@@ -492,7 +497,37 @@ Strength runs from 25% to 100%. At 100% notes land exactly on the grid; below th
 | **Catppuccin** | Mocha variant with mauve/pink/sky pastels |
 | **SpaceVim2** | Authentic SpaceVim colorscheme (from SpaceVim.vim) |
 
-Theme choice is saved to `~/.phosphor/config.json` and persists across sessions.
+Theme choice is saved to `<app dir>/config.json` and persists across sessions.
+
+---
+
+## Where files live
+
+Everything phosphor owns — presets, the theme preference, and sessions you have
+not given a path of your own — sits in one directory:
+
+| Platform | Application directory |
+|---|---|
+| macOS, Linux, BSD | `$HOME/.phosphor` |
+| Windows | `%APPDATA%\phosphor`, falling back to `%USERPROFILE%\AppData\Roaming\phosphor` |
+
+Set `PHOSPHOR_HOME` to put it somewhere else — a portable install on a USB
+stick, or a scratch directory while you are experimenting. It names the
+directory itself, not a parent.
+
+Inside it:
+
+```
+<app dir>/config.json                    theme preference
+<app dir>/presets/<instrument>.json      one user preset bank per instrument
+<app dir>/sessions/                      sessions saved without a path
+```
+
+The save and open prompts start in `sessions/` when the working directory has
+one — running from a checkout, which is where the sessions in this repository
+already are — and in the absolute `<app dir>/sessions/` otherwise. Opening a
+relative path looks in the working directory first and then under the
+application directory, so `sessions/take3.phos` keeps working from anywhere.
 
 ---
 
@@ -620,13 +655,23 @@ phosphor [OPTIONS]
 Options:
     --tui                 Launch TUI frontend (default)
     --gui                 Launch GUI frontend (not yet implemented)
-    --buffer-size <N>     Audio buffer size in samples [default: 64]
-    --sample-rate <N>     Sample rate in Hz [default: 44100]
+    --buffer-size <N>     Request an audio block size in samples
+    --sample-rate <N>     Request a sample rate in Hz
     --no-audio            Disable audio output
     --no-midi             Disable MIDI input
     -h, --help            Print help
     -V, --version         Print version
 ```
+
+`--buffer-size` and `--sample-rate` have no defaults on purpose. Left off,
+phosphor renders natively at whatever the output device is already set to. Pin
+a rate the hardware is not at and the platform quietly inserts a sample-rate
+converter in the output path — on macOS the HAL resamples between the audio
+unit and the device — so you get conversion artifacts and added latency with
+nothing on screen to say so. Ask for a rate and it is used if the device offers
+it; if not, the device's own is adopted and the difference is reported on the
+status bar rather than left to be discovered by ear. `--no-audio` has no device
+to follow and runs at 44100 / 64.
 
 ### Debug Logging
 
@@ -636,9 +681,14 @@ PHOSPHOR_DEBUG=1 cargo run --release
 
 Creates `phosphor_debug.log` with timestamped user actions and system responses. Includes a panic handler that captures full backtraces to the log.
 
+It is written to the working directory when that is writable, otherwise to the
+application directory, otherwise to the system temp directory; if none of those
+will take it, phosphor says so on stderr and carries on without a log. The file
+is capped at 8 MB and starts over rather than growing without bound.
+
 ### Theme Persistence
 
-Theme selection is saved to `~/.phosphor/config.json` and automatically loaded on startup.
+Theme selection is saved to `<app dir>/config.json` and automatically loaded on startup.
 
 ---
 
