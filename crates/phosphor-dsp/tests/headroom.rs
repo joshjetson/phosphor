@@ -34,7 +34,7 @@
 //! every other track with it.
 
 use phosphor_dsp::level::{saturation_input, SATURATION_KNEE};
-use phosphor_dsp::{drum_rack, dx7, juno, jupiter, odyssey, rhodes, synth};
+use phosphor_dsp::{drum_rack, dx7, juno, jupiter, odyssey, phatty, rhodes, synth};
 use phosphor_plugin::{MidiEvent, Plugin};
 
 const SAMPLE_RATE: f64 = 44_100.0;
@@ -188,6 +188,8 @@ fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
     juno_tuba.set_parameter(juno::P_PATCH, juno::patch_knob(27));
     let mut rhodes_bark = rhodes::RhodesPiano::new();
     rhodes_bark.set_parameter(rhodes::P_PATCH, rhodes::patch_knob(22));
+    let mut phatty_blip = phatty::LittlePhatty::new();
+    phatty_blip.set_parameter(phatty::P_PATCH, phatty::patch_knob(85));
 
     vec![
         ("dx7 147 TIMPANI", Box::new(dx7_timpani)),
@@ -198,6 +200,7 @@ fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
         ("odyssey 1 Funk", Box::new(odyssey_funk)),
         ("juno 44 TUBA", Box::new(juno_tuba)),
         ("rhodes Hard Bark", Box::new(rhodes_bark)),
+        ("phatty Blip", Box::new(phatty_blip)),
         ("phosphor", Box::new(synth::PhosphorSynth::new())),
     ]
 }
@@ -209,6 +212,7 @@ fn defaults() -> Vec<(&'static str, Box<dyn Plugin>)> {
         ("odyssey default", Box::new(odyssey::OdysseySynth::new())),
         ("juno default", Box::new(juno::Juno60Synth::new())),
         ("rhodes default", Box::new(rhodes::RhodesPiano::new())),
+        ("phatty default", Box::new(phatty::LittlePhatty::new())),
         ("phosphor default", Box::new(synth::PhosphorSynth::new())),
     ]
 }
@@ -332,6 +336,16 @@ fn no_patch_in_any_bank_exceeds_the_target() {
         s.set_parameter(rhodes::P_PATCH, rhodes::patch_knob(index));
         let m = render(&mut s, TWO_HAND_EIGHT, 127, SWEEP_BLOCKS);
         check_patch(&m, "rhodes", rhodes::PATCH_NAMES[index], &mut worst);
+    }
+    for index in 0..phatty::PATCH_COUNT {
+        // Monophonic: a chord is one note here, and a low one is the worst
+        // case rather than a high one, so it gets checked on both.
+        for notes in [SINGLE, TWO_HAND_EIGHT] {
+            let mut s = phatty::LittlePhatty::new();
+            s.set_parameter(phatty::P_PATCH, phatty::patch_knob(index));
+            let m = render(&mut s, notes, 127, SWEEP_BLOCKS);
+            check_patch(&m, "phatty", phatty::PATCH_NAMES[index], &mut worst);
+        }
     }
     for index in 0..synth::PATCH_COUNT {
         let mut s = synth::PhosphorSynth::new();
@@ -845,6 +859,36 @@ fn no_keyboard_drive_setting_exceeds_the_target() {
         }
     }
 
+    // The Little Phatty's OVERLOAD is the one knob in the project that is
+    // *meant* to raise the level: "When set to 100%, Overload adds a volume
+    // boost of about +6dB" (Stage II manual, page 14). So the flat-peak bound
+    // above does not apply to it.
+    //
+    // Neither does the loudness bound, and the reason is worth stating because
+    // it is not a licence: the knob itself is held to it exhaustively in
+    // phatty.rs, where `the_overload_knob_never_takes_loudness_away` sweeps
+    // every input the mixer can produce against every setting of the knob, and
+    // is what sets the shaper's knee. What that cannot cover is the one patch
+    // in the bank whose sound source is the *filter*: Sine Floor is a ladder
+    // self-oscillating at resonance 0.99, and driving a self-oscillating
+    // ladder harder suppresses it, because the nonlinearity in the feedback
+    // path steals the loop gain that was producing the tone. That is the
+    // filter behaving like a filter, not the knob behaving like a fader.
+    //
+    // So what is asserted here is what this suite is for: the whole bank stays
+    // under the ceiling at every setting of the knob.
+    for index in 0..phatty::PATCH_COUNT {
+        for overload in [0.0f32, 0.5, 1.0] {
+            let mut s = phatty::LittlePhatty::new();
+            s.set_parameter(phatty::P_PATCH, phatty::patch_knob(index));
+            s.set_parameter(phatty::P_OVERLOAD, overload);
+            // Monophonic, so a chord is one note; a low one is the worst case.
+            let m = render(&mut s, SINGLE, 127, 32);
+            let name = format!("phatty {} overload {overload}", phatty::PATCH_NAMES[index]);
+            check_patch(&m, "keyboard drive", &name, &mut worst);
+        }
+    }
+
     for index in 0..odyssey::PATCH_COUNT {
         for drive in DRIVE_SETTINGS {
             let mut s = odyssey::OdysseySynth::new();
@@ -899,6 +943,7 @@ fn ordinary_playing_is_at_a_usable_level() {
         ("odyssey", TRIAD, Box::new(odyssey::OdysseySynth::new())),
         ("juno", TRIAD, Box::new(juno::Juno60Synth::new())),
         ("rhodes", TRIAD, Box::new(rhodes::RhodesPiano::new())),
+        ("phatty", TRIAD, Box::new(phatty::LittlePhatty::new())),
         ("phosphor", TRIAD, Box::new(synth::PhosphorSynth::new())),
         ("drum rack", DOWNBEAT, Box::new(drum_rack::DrumRack::new())),
     ];
@@ -1027,6 +1072,11 @@ fn instruments_are_level_matched() {
     juno_mid.set_parameter(juno::P_PATCH, juno::patch_knob(3));
     let mut rhodes_mid = rhodes::RhodesPiano::new();
     rhodes_mid.set_parameter(rhodes::P_PATCH, rhodes::patch_knob(13));
+    // The Little Phatty's is 78 Half Ladder, the median of its hundred. It is
+    // monophonic, so its "triad" is one note — which is why its trim is set on
+    // rms rather than on peak; see OUTPUT_TRIM in phatty.rs.
+    let mut phatty_mid = phatty::LittlePhatty::new();
+    phatty_mid.set_parameter(phatty::P_PATCH, phatty::patch_knob(78));
 
     let levels = [
         ("dx7", triad_rms(&mut dx7_mid)),
@@ -1034,6 +1084,7 @@ fn instruments_are_level_matched() {
         ("odyssey", triad_rms(&mut odyssey_mid)),
         ("juno", triad_rms(&mut juno_mid)),
         ("rhodes", triad_rms(&mut rhodes_mid)),
+        ("phatty", triad_rms(&mut phatty_mid)),
         ("phosphor", triad_rms(&mut synth::PhosphorSynth::new())),
     ];
 

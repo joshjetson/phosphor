@@ -86,7 +86,7 @@ cargo run --release -- --no-midi
 | **ARP Odyssey** | Duophonic | 2 | 44 | Complete 59-control front panel, all three filter revisions (4023/4035/4075), ADSR *and* AR envelopes, sample and hold |
 | **Rhodes** | Physical model | 16 | 26 | Tine and tonebar as a coupled fork, inharmonic cantilever modes, nonlinear magnetic pickup |
 | **Juno-60** | DCO poly | 6 | **56** | All 56 factory patches, read off Roland's patch charts; complete 25-control front panel measured against the hardware |
-| **Rhodes** | Modelled tine piano | 16 | 26 | A physical model, not a sampler — inharmonic cantilever modes, a tonebar that beats against them, and the pickup nonlinearity the bark actually comes from |
+| **Little Phatty** | Mono Moog | 1 | **100** | Continuously morphing oscillators (triangle→saw→square→pulse, band-limited at every position in between), hard sync, 1/2/3/4-pole ladder, pre- and post-filter overload, the one-bus mod matrix with its spare destination, glide, and the three keyboard priorities |
 
 ### Drum Rack
 
@@ -101,9 +101,6 @@ cargo run --release -- --no-midi
 | **tsty-2** | Acoustic modal — Bessel membrane modes, multi-phase envelopes |
 | **tsty-3** | 88 unique sounds — every note a distinct synthesis |
 | **tsty-4** | Extended hats/snares with long decays, varied synthesis methods |
-| **jazz** | Live acoustic — two-headed drums coupled through a sealed shell, brushes, dark complex ride |
-| **funk** | Live acoustic — ported kick with a Helmholtz resonance, crisp snare, tight toms |
-| **studio** | Live acoustic — pillowed kick, damped and gated, the driest of the three |
 | **tsty-5** | Resonator-based — impulse exciter into tuned bandpass filters, wire-coupled snares |
 | **LinnDrum** | 15 recordings through a mu-255 companded 8-bit converter; tuning is the read clock, so pitch and length move together |
 | **DMX** | 11 recordings making 15 sounds, companded 8-bit, per-card pitch trimmer at half an octave |
@@ -146,6 +143,21 @@ Roland's published description of each patch.
 
 Names and spellings are Roland's, Glockenspeil included.
 
+**Little Phatty** (100 patches, ours rather than Moog's — the Stage II's factory
+*names* are printed in its manual but no published source gives the parameter
+values behind them, so the bank is original and named in our own voice, weighted
+towards bass the way the real one is):
+
+- **Moog bass** — Taurus Deep, Sub Anchor, Round Bass, Bass Pillar, Thumb Bass, Wood Bass, Rubber Bass, Octave Bass, Muted Bass, Fifth Bass, Tri Sub, Pulse Bass, Sine Floor, Dub Weight, Slide Bass, Sequence Lo, Fat Unison, Bass Bloom
+- **Overload** — Growl Bass, Tarmac, Coal Face, Snarl, Fuzz Anchor, Grit Stack, Overdriven, Bark Bass, Diesel, Torn Paper, Anvil Bass, Bad Weather
+- **Sync** — Sync Lead, Sync Scream, Sync Sweep, Hard Reset, Sync Bell, Sync Buzz, Sync Whistle, Sync Stab
+- **Lead** — Solo Saw, Reed Lead, Glass Lead, Whistle Top, Portamento, Brass Lead, Ribbon Lead, Flute Solo, Nasal Lead, Octave Lead, Vox Lead, Cut Lead
+- **Wave morph** — Morph Drift, Half Saw, Between, Wave Wash, Slow Morph, Pulse Width, PWM Strings, Thin Ice, Wave Chase, Shape Shift, Morph Bass, Tri To Saw
+- **Sample and hold, and effects** — Random Steps, Sample Hold, Computer, Alarm, Siren, Radio Chirp, Wind Tunnel, Static, Bleep Bloop, Sonar
+- **Slope** — 2 Pole Bass, 1 Pole Pad, Open Ladder, Leaky, Bright 12dB, 6dB Lead, Half Ladder, Slope Swap
+- **Pluck and percussion** — Zap Pluck, Clav Pluck, Wood Block, Kick Drum, Tom Hit, Blip, Marimba, Snap Bass, Dry Tick, Bell Pluck
+- **Drone** — Self Osc, Slow Swell, Held Tone, Deep Drone, Air Pad, Ghost Pad, Filter Wash, Long Fifth, Choir Mono, Night Hum
+
 **Rhodes** (26 patches, by instrument rather than by factory number — a Rhodes
 has no patch memory):
 
@@ -183,6 +195,7 @@ has no patch memory):
 - **ARP Odyssey**: the full front panel — two VCOs with coarse and fine tuning over the panel's 20 Hz-2 kHz range, hard sync, per-oscillator pulse width and PWM, two frequency-mod inputs each, a keyboard switch that drops VCO-1 into the LFO range, the sample-and-hold mixer with its own sources, clock and lag, an XOR ring modulator sharing a fader with white or pink noise, all three filter revisions (12 dB 4023 SVF / 24 dB 4035 ladder / 24 dB 4075 Norton) on one 16 Hz-16 kHz sweep and each resonating to self-oscillation, a non-resonant HPF, three filter modulation slots, VCA gain and drive, and both envelope generators — the ADSR and the AR — with their own sliders and their own LFO-repeat gating. Envelope times follow ARP's published 5 ms-10 s specification and the pitch pads are mapped to pitch bend and the modulation wheel
 - **Juno-60**: the full front panel — LFO rate/delay, DCO with PWM depth and a 3-position PWM mode (LFO/MANUAL/ENV), saw/pulse/sub/noise and a 16'/8'/4' range switch, 4-position HPF, IR3109-style 24 dB/oct resonant VCF with env polarity, LFO and keyboard follow, ENV/GATE VCA, shared ADSR, and BBD stereo chorus (I / II / I+II). Envelope taper, LFO rate taper, filter corner frequencies and chorus rates are calibrated against measurements of the hardware rather than approximated. All 56 factory patches are the instrument's own, transcribed from Roland's published patch charts
 - **Rhodes**: a physical model rather than a sample set, because velocity on a Rhodes changes the *spectrum* and a layered sample set is three photographs of that. A hammer strikes a tine — a steel cantilever, so its overtones are inharmonic, at 6.27, 17.5, 34.4 and 56.8 times the fundamental — and those overtones die far faster than the fundamental does, which is why the attack is a bell and the sustain is almost a pure tone. The tine is paired with a tonebar in an asymmetric tuning fork, so the sustain undulates as energy crosses between them. Sustain per register comes from measured Q values on a 1974 Mark I, interpolated rather than fitted: E flat 2 at 3.88 s, E flat 3 at 1.50, E flat 4 at 1.56, E flat 5 at 1.11, E flat 6 at 0.45 — not monotonic, and left that way. The bark is the pickup: the coil senses the flux gradient where the tine happens to be, and that gradient is an odd function of the tine's offset from the pickup axis, so **voicing** — moving the tine's rest position, the adjustment a technician actually makes — takes the fundamental and every odd partial away and leaves the second partial dominant, exactly as the literature describes. Struck harder the tine swings further into that nonlinearity, so velocity changes the timbre through the pickup rather than through a brightness knob. Felt dampers on release, none above the sixth octave as on the real action, sustain pedal, and the Suitcase's stereo tremolo — which is a pan between two amp channels, not an amplitude modulation
+- **Little Phatty**: the Stage II's whole front panel, plus the eight per-preset parameters Moog put in its Advanced Preset menus. The headline is the **wave control**: each oscillator morphs continuously from triangle through sawtooth through square to a skinny pulse, and the positions between the four labelled shapes are real waveforms rather than crossfades of two others — the oscillator is one trapezoid whose rise, top, fall and bottom move with the knob, band-limited by polyBLAMP at all four corners, and WAVE is a modulation destination because it is voltage-controlled on the hardware. Hard sync with a sub-sample-accurate reset; a transistor ladder whose slope switches between 6, 12, 18 and 24 dB/octave by tapping the ladder rather than shortening it, so a two-pole Phatty still resonates as players describe; pre- and post-filter asymmetric overload with the documented +6 dB at full; two ADSRs with the three gate modes (legato on, legato off, envelope reset); a pitch wheel whose two directions are ranged independently; the one-bus modulation matrix with its six sources, four destinations and the secondary destination the menu adds; constant-rate glide measured against the manual's own five-seconds-across-the-keyboard figure; low, high and last-note keyboard priority; and velocity on the filter and nowhere else, which is most of why an LP feels the way it does. Every range is the manual's — 20 Hz to 16 kHz cutoff (audibly darker than a vintage Moog's, as Sound On Sound notes), 1 ms to 10 s envelopes, 0.2 Hz to 500 Hz LFO, ±7 semitones on oscillator 2
 - **Drum Rack**: 18 kits — circuit-accurate 808/909/707/606/727/CR-78, companded-PCM LinnDrum and DMX, the analog SDS-V, the creative 777, the warm tape-saturated tsty series, and three **live acoustic kits** that are physics rather than voicing. An acoustic kick is two membranes coupled through the air inside the shell, and that coupling — not a filter — is what puts two low modes a sixth apart where a drum machine has one; the front head's muffling is a knob that moves the interval between them. The snare's strands are a bouncing-contact model, so they choke on a hard backbeat and ring on after the drum instead of being a noise burst under an envelope. Cymbals are banks of forty complex resonators with frequency gating, so hitting one harder brings in modes that were not there at all, and with a modal cascade that carries energy from the low modes up into the high ones — bow, bell and edge are one plate struck in three places, and a hi-hat is two plates that clamp
 
 **Session Management**
@@ -602,6 +615,7 @@ phosphor/
 │   │       ├── odyssey.rs     # ARP Odyssey duophonic (44 patches)
 │   │       ├── juno.rs        # Juno-60 DCO + BBD chorus (56 factory patches)
 │   │       ├── rhodes.rs      # Rhodes tine piano, modal physical model (26 patches)
+│   │       ├── phatty.rs      # Little Phatty mono Moog, morphing oscillators (100 patches)
 │   │       ├── drum_rack/     # Drum machine (10 kits)
 │   │       │   ├── mod.rs     # Shared types, voice, plugin impl
 │   │       │   └── racks/     # Per-kit synthesis (808, 909, 707, 606, 777, tsty1-5)

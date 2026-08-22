@@ -51,6 +51,9 @@ impl NavState {
                         Some(InstrumentType::Rhodes) => {
                             Some(phosphor_dsp::rhodes::RhodesPiano::params_for_patch(new_val).to_vec())
                         }
+                        Some(InstrumentType::LittlePhatty) => {
+                            Some(phosphor_dsp::phatty::LittlePhatty::params_for_patch(new_val).to_vec())
+                        }
                         _ => None,
                     };
                     if let Some(preset_params) = new_params {

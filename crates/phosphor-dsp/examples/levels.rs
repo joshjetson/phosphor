@@ -15,7 +15,7 @@
 //! `tests/headroom.rs` asserts the same thing; this prints the numbers.
 
 use phosphor_dsp::level::saturation_input;
-use phosphor_dsp::{drum_rack, dx7, juno, jupiter, odyssey, rhodes, synth};
+use phosphor_dsp::{drum_rack, dx7, juno, jupiter, odyssey, phatty, rhodes, synth};
 use phosphor_plugin::{MidiEvent, Plugin};
 
 const SAMPLE_RATE: f64 = 44_100.0;
@@ -90,23 +90,25 @@ const VOICINGS: [(&str, &[u8]); 5] = [
     ("8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
 ];
 
-const INSTRUMENTS: [(&str, usize); 6] = [
+const INSTRUMENTS: [(&str, usize); 7] = [
     ("dx7", dx7::VOICE_COUNT),
     ("jupiter", jupiter::PATCH_COUNT),
     ("odyssey", odyssey::PATCH_COUNT),
     ("juno", juno::PATCH_COUNT),
     ("rhodes", rhodes::PATCH_COUNT),
+    ("phatty", phatty::PATCH_COUNT),
     ("phosphor", synth::PATCH_COUNT),
 ];
 
 /// The loudest preset of each bank, measured on an eight-note chord at
 /// velocity 127. Re-derive with the `scan` mode after editing a bank.
-const LOUDEST: [(&str, usize); 6] = [
+const LOUDEST: [(&str, usize); 7] = [
     ("dx7", 147),
     ("jupiter", 40), // 61 STARTING UP, whose peak needs `BLOCKS` past 5.5 s
     ("odyssey", 1),
     ("juno", 27), // 44 TUBA
     ("rhodes", 22), // Hard Bark
+    ("phatty", 85), // Blip
     ("phosphor", 8), // SYNTH KIT
 ];
 
@@ -148,6 +150,11 @@ fn build(name: &str, patch: usize) -> Box<dyn Plugin> {
             s.set_parameter(rhodes::P_PATCH, rhodes::patch_knob(patch));
             Box::new(s)
         }
+        "phatty" => {
+            let mut s = phatty::LittlePhatty::new();
+            s.set_parameter(phatty::P_PATCH, phatty::patch_knob(patch));
+            Box::new(s)
+        }
         _ => {
             let mut s = synth::PhosphorSynth::new();
             s.set_parameter(synth::P_PATCH, synth::patch_knob(patch));
@@ -163,6 +170,7 @@ fn patch_name(name: &str, index: usize) -> &'static str {
         "odyssey" => odyssey::PATCH_NAMES[index],
         "juno" => juno::PATCH_LABELS[index],
         "rhodes" => rhodes::PATCH_NAMES[index],
+        "phatty" => phatty::PATCH_NAMES[index],
         "phosphor" => synth::PATCH_NAMES[index],
         _ => "-",
     }
@@ -229,14 +237,16 @@ const ORDINARY: &[u8] = &[60, 64, 67];
 /// The median preset of each bank by triad RMS — the same indices
 /// `tests/headroom.rs` uses to check the instruments are level-matched, so
 /// the RMS column here and that assertion move together.
-const MEDIAN: [(&str, usize); 6] =
-    [("dx7", 8), ("jupiter", 1), ("odyssey", 0), ("juno", 3), ("rhodes", 13), ("phosphor", 0)];
+const MEDIAN: [(&str, usize); 7] = [
+    ("dx7", 8), ("jupiter", 1), ("odyssey", 0), ("juno", 3), ("rhodes", 13),
+    ("phatty", 78), ("phosphor", 0),
+];
 
 /// The worst case each bank can be driven to. Voicing included, because the
 /// duophonic Odyssey does not stack the way the polys do and its worst case
 /// is not reliably a chord — most of its bank peaks louder on a single note,
 /// and `tests/headroom.rs` sweeps it on both.
-const WORST: [(&str, usize, &str, &[u8]); 6] = [
+const WORST: [(&str, usize, &str, &[u8]); 7] = [
     ("dx7", 147, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
     // 61 STARTING UP. Its peak lands 5.5 s into a held chord, so it is the
     // one entry here that `BLOCKS` has to be long enough to see.
@@ -244,6 +254,9 @@ const WORST: [(&str, usize, &str, &[u8]); 6] = [
     ("odyssey", 1, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
     ("juno", 27, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
     ("rhodes", 22, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]), // Hard Bark
+    // Monophonic, so a chord is one note: this bank's worst case is a single
+    // note in the top of the keyboard rather than a stack.
+    ("phatty", 85, "single", &[93]), // Blip
     ("phosphor", 8, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]), // SYNTH KIT
 ];
 

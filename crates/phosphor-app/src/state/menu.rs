@@ -106,6 +106,7 @@ pub enum InstrumentType {
     Juno60,
     Rhodes,
     Sampler,
+    LittlePhatty,
 }
 
 impl InstrumentType {
@@ -119,6 +120,7 @@ impl InstrumentType {
             Self::Juno60 => "Juno-60",
             Self::Rhodes => "Rhodes",
             Self::Sampler => "Sampler",
+            Self::LittlePhatty => "Little Phatty",
         }
     }
 
@@ -132,10 +134,14 @@ impl InstrumentType {
             Self::Juno60 => "single-DCO poly with BBD chorus",
             Self::Rhodes => "modelled tine electric piano",
             Self::Sampler => "sample-based instrument",
+            Self::LittlePhatty => "monophonic Moog with morphing waves",
         }
     }
 
-    pub const ALL: &[InstrumentType] = &[Self::Synth, Self::DrumRack, Self::DX7, Self::Jupiter8, Self::Odyssey, Self::Juno60, Self::Rhodes, Self::Sampler];
+    /// Appended to, never reordered: a session stores an instrument by its
+    /// key rather than by position, but the menu's own order is what a player
+    /// has learned, and the preset browser walks this list.
+    pub const ALL: &[InstrumentType] = &[Self::Synth, Self::DrumRack, Self::DX7, Self::Jupiter8, Self::Odyssey, Self::Juno60, Self::Rhodes, Self::Sampler, Self::LittlePhatty];
 }
 
 #[derive(Debug)]

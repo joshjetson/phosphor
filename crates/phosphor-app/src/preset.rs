@@ -176,6 +176,7 @@ pub fn param_names(instrument: InstrumentType) -> &'static [&'static str] {
         InstrumentType::Odyssey => &phosphor_dsp::odyssey::PARAM_NAMES,
         InstrumentType::Juno60 => &phosphor_dsp::juno::PARAM_NAMES,
         InstrumentType::Rhodes => &phosphor_dsp::rhodes::PARAM_NAMES,
+        InstrumentType::LittlePhatty => &phosphor_dsp::phatty::PARAM_NAMES,
     }
 }
 

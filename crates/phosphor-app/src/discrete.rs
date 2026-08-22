@@ -50,6 +50,7 @@ pub fn is_discrete(instrument: InstrumentType, param: usize) -> bool {
         InstrumentType::Odyssey => phosphor_dsp::odyssey::is_discrete(param),
         InstrumentType::Juno60 => phosphor_dsp::juno::is_discrete(param),
         InstrumentType::Rhodes => phosphor_dsp::rhodes::is_discrete(param),
+        InstrumentType::LittlePhatty => phosphor_dsp::phatty::is_discrete(param),
     }
 }
 
@@ -67,6 +68,9 @@ pub fn step(instrument: InstrumentType, param: usize, value: f32, up: bool) -> f
         InstrumentType::Odyssey => phosphor_dsp::odyssey::step_discrete(param, value, up),
         InstrumentType::Juno60 => phosphor_dsp::juno::step_discrete(param, value, up),
         InstrumentType::Rhodes => phosphor_dsp::rhodes::step_discrete(param, value, up),
+        InstrumentType::LittlePhatty => {
+            phosphor_dsp::phatty::step_discrete(param, value, up)
+        }
     }
 }
 
@@ -137,7 +141,7 @@ pub fn knob_at(instrument: InstrumentType, param: usize, index: usize) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phosphor_dsp::{drum_rack, dx7, jupiter, juno, odyssey, rhodes, synth};
+    use phosphor_dsp::{drum_rack, dx7, jupiter, juno, odyssey, phatty, rhodes, synth};
 
     /// Every instrument's selectors, walked with that instrument's own
     /// stepping, come out at the counts the instrument publishes.
@@ -162,6 +166,16 @@ mod tests {
         assert_eq!(
             positions(InstrumentType::Rhodes, rhodes::P_PATCH).unwrap().len(),
             rhodes::PATCH_COUNT
+        );
+        assert_eq!(
+            positions(InstrumentType::LittlePhatty, phatty::P_PATCH).unwrap().len(),
+            phatty::PATCH_COUNT
+        );
+        // Its velocity sensitivity is the instrument's own -8..+8, seventeen
+        // positions, which is the second longest selector in the project.
+        assert_eq!(
+            positions(InstrumentType::LittlePhatty, phatty::P_VEL_SENS).unwrap().len(),
+            17
         );
         assert_eq!(
             positions(InstrumentType::DX7, dx7::P_BANK).unwrap().len(),

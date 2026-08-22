@@ -103,6 +103,7 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
             let is_odyssey = instrument_type == Some(InstrumentType::Odyssey);
             let is_juno = instrument_type == Some(InstrumentType::Juno60);
             let is_rhodes = instrument_type == Some(InstrumentType::Rhodes);
+            let is_phatty = instrument_type == Some(InstrumentType::LittlePhatty);
             let param_names: &[&str] = if is_drum {
                 &phosphor_dsp::drum_rack::PARAM_NAMES
             } else if is_dx7 {
@@ -115,6 +116,8 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                 &phosphor_dsp::juno::PARAM_NAMES
             } else if is_rhodes {
                 &phosphor_dsp::rhodes::PARAM_NAMES
+            } else if is_phatty {
+                &phosphor_dsp::phatty::PARAM_NAMES
             } else {
                 &phosphor_dsp::synth::PARAM_NAMES
             };
@@ -145,6 +148,8 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                     phosphor_dsp::juno::discrete_label(i, val)
                 } else if is_rhodes {
                     phosphor_dsp::rhodes::discrete_label(i, val)
+                } else if is_phatty {
+                    phosphor_dsp::phatty::discrete_label(i, val)
                 } else if is_dx7 {
                     // Both selectors, and the voice name needs the bank as well
                     // as the patch knob, so this one reads the whole block.
@@ -189,6 +194,8 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                     } else {
                         let secs = if is_juno {
                             phosphor_dsp::juno::param_seconds(i, val)
+                        } else if is_phatty {
+                            phosphor_dsp::phatty::param_seconds(i, val)
                         } else if is_rhodes {
                             phosphor_dsp::rhodes::param_seconds(i, val)
                         } else if is_odyssey {
@@ -744,6 +751,34 @@ mod tests {
                 }
             }
             let name = phosphor_dsp::rhodes::PARAM_NAMES[index];
+            assert!(name.chars().count() <= 8, "parameter name {name:?} overflows its column");
+        }
+    }
+
+    /// The Little Phatty's bank is a hundred patches of our own, named rather
+    /// than numbered for the same reason the Rhodes' is: the numbers on the
+    /// hardware belong to Moog's factory set, which is not what this is.
+    #[test]
+    fn every_little_phatty_patch_name_fits_the_fx_panel() {
+        const LABEL_COLUMN: usize = 12;
+        let room = FX_PANEL_W as usize - LABEL_COLUMN;
+
+        for index in 0..phosphor_dsp::phatty::PATCH_COUNT {
+            let name = phosphor_dsp::phatty::PATCH_NAMES[index];
+            assert!(name.chars().count() <= room,
+                "patch {index} {name:?} needs {} of the {room} columns the panel leaves",
+                name.chars().count());
+        }
+        // Forty-one controls, eighteen of them selectors, and every one of
+        // those prints a word in the same column.
+        for index in 0..phosphor_dsp::phatty::PARAM_COUNT {
+            for position in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0] {
+                if let Some(label) = phosphor_dsp::phatty::discrete_label(index, position) {
+                    assert!(label.chars().count() <= room,
+                        "switch label {label:?} does not fit");
+                }
+            }
+            let name = phosphor_dsp::phatty::PARAM_NAMES[index];
             assert!(name.chars().count() <= 8, "parameter name {name:?} overflows its column");
         }
     }

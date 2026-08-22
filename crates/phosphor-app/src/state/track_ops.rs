@@ -128,6 +128,7 @@ impl NavState {
             InstrumentType::Juno60 => "juno",
             InstrumentType::Rhodes => "rhode",
             InstrumentType::Sampler => "smplr",
+            InstrumentType::LittlePhatty => "phaty",
         };
 
         // Find insert position: before sends/master
@@ -161,6 +162,9 @@ impl NavState {
             }
             InstrumentType::Rhodes => {
                 phosphor_dsp::rhodes::PARAM_DEFAULTS.to_vec()
+            }
+            InstrumentType::LittlePhatty => {
+                phosphor_dsp::phatty::PARAM_DEFAULTS.to_vec()
             }
         };
         // Sync the initial armed state to audio
