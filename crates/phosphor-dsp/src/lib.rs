@@ -11,5 +11,6 @@ pub mod level;
 pub mod odyssey;
 pub mod oscillator;
 pub mod phatty;
+pub mod prophet6;
 pub mod rhodes;
 pub mod synth;

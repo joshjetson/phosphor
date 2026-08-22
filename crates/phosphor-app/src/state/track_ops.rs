@@ -129,6 +129,7 @@ impl NavState {
             InstrumentType::Rhodes => "rhode",
             InstrumentType::Sampler => "smplr",
             InstrumentType::LittlePhatty => "phaty",
+            InstrumentType::Prophet6 => "p6",
         };
 
         // Find insert position: before sends/master
@@ -165,6 +166,11 @@ impl NavState {
             }
             InstrumentType::LittlePhatty => {
                 phosphor_dsp::phatty::PARAM_DEFAULTS.to_vec()
+            }
+            // The only bank whose defaults are decoded from a ROM rather than
+            // written out, so it answers with a call instead of a constant.
+            InstrumentType::Prophet6 => {
+                phosphor_dsp::prophet6::param_defaults().to_vec()
             }
         };
         // Sync the initial armed state to audio

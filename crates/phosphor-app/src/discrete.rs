@@ -51,6 +51,7 @@ pub fn is_discrete(instrument: InstrumentType, param: usize) -> bool {
         InstrumentType::Juno60 => phosphor_dsp::juno::is_discrete(param),
         InstrumentType::Rhodes => phosphor_dsp::rhodes::is_discrete(param),
         InstrumentType::LittlePhatty => phosphor_dsp::phatty::is_discrete(param),
+        InstrumentType::Prophet6 => phosphor_dsp::prophet6::is_discrete(param),
     }
 }
 
@@ -71,6 +72,7 @@ pub fn step(instrument: InstrumentType, param: usize, value: f32, up: bool) -> f
         InstrumentType::LittlePhatty => {
             phosphor_dsp::phatty::step_discrete(param, value, up)
         }
+        InstrumentType::Prophet6 => phosphor_dsp::prophet6::step_discrete(param, value, up),
     }
 }
 
@@ -141,7 +143,7 @@ pub fn knob_at(instrument: InstrumentType, param: usize, index: usize) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phosphor_dsp::{drum_rack, dx7, jupiter, juno, odyssey, phatty, rhodes, synth};
+    use phosphor_dsp::{drum_rack, dx7, jupiter, juno, odyssey, phatty, prophet6, rhodes, synth};
 
     /// Every instrument's selectors, walked with that instrument's own
     /// stepping, come out at the counts the instrument publishes.
@@ -181,6 +183,21 @@ mod tests {
             positions(InstrumentType::DX7, dx7::P_BANK).unwrap().len(),
             dx7::BANK_COUNT
         );
+        // The Prophet-6's two selectors multiply out to its whole factory set,
+        // and its program knob is the longest preset selector in the project
+        // at a hundred positions — well inside MAX_POSITIONS, which is what
+        // stops the walk from being a save-time hang.
+        assert_eq!(
+            positions(InstrumentType::Prophet6, prophet6::P_BANK).unwrap().len(),
+            prophet6::BANK_COUNT
+        );
+        let programs = positions(InstrumentType::Prophet6, prophet6::P_PROGRAM).unwrap().len();
+        assert_eq!(programs, prophet6::PROGRAMS_PER_BANK);
+        assert_eq!(programs * prophet6::BANK_COUNT, prophet6::PROGRAM_COUNT);
+        // Its effect-B type selector is a ten-position list, and its bend
+        // range a thirteen-position one.
+        assert_eq!(positions(InstrumentType::Prophet6, prophet6::P_FXB_TYPE).unwrap().len(), 10);
+        assert_eq!(positions(InstrumentType::Prophet6, prophet6::P_BEND_RANGE).unwrap().len(), 13);
         // The DX7's two selectors multiply out to its whole factory set.
         let patches = positions(InstrumentType::DX7, dx7::P_PATCH).unwrap().len();
         assert_eq!(patches * dx7::BANK_COUNT, dx7::VOICE_COUNT);

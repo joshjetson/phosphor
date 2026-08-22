@@ -28,13 +28,19 @@ impl NavState {
                 };
                 track.synth_params[idx] = new_val;
 
-                // When patch selector changes, sync all params from preset.
+                // When the preset selector changes, sync all params from the
+                // preset. Index 0 for every instrument — except the Prophet-6,
+                // whose preset is two selectors, a bank and a program, so
+                // moving either one has to reload the panel.
+                let is_program_selector = idx == 0
+                    || (instrument == InstrumentType::Prophet6
+                        && idx == phosphor_dsp::prophet6::P_BANK);
                 // The banks no longer agree on how many parameters an
                 // instrument has, so this collects rather than matching on a
                 // fixed-size array, and writes through a zip so a track
                 // carrying a shorter block than its instrument now has cannot
                 // index off the end of itself.
-                if idx == 0 {
+                if is_program_selector {
                     let new_params: Option<Vec<f32>> = match track.instrument_type {
                         Some(InstrumentType::Synth | InstrumentType::Sampler) => {
                             Some(phosphor_dsp::synth::PhosphorSynth::params_for_patch(new_val).to_vec())
@@ -54,6 +60,13 @@ impl NavState {
                         Some(InstrumentType::LittlePhatty) => {
                             Some(phosphor_dsp::phatty::LittlePhatty::params_for_patch(new_val).to_vec())
                         }
+                        Some(InstrumentType::Prophet6) => Some(
+                            phosphor_dsp::prophet6::params_for_program(
+                                track.synth_params[phosphor_dsp::prophet6::P_BANK],
+                                track.synth_params[phosphor_dsp::prophet6::P_PROGRAM],
+                            )
+                            .to_vec(),
+                        ),
                         _ => None,
                     };
                     if let Some(preset_params) = new_params {
@@ -335,6 +348,82 @@ mod tests {
             seen.push(label(&nav));
         }
         assert_eq!(seen, [Some("PLS"), Some("NOISE"), Some("NOISE")]);
+    }
+
+    /// A nav state whose selected track is a Prophet-6 at its default panel.
+    fn prophet6_track() -> NavState {
+        let mut nav = NavState::new(super::super::initial_tracks());
+        let mut track = TrackState::new("p6", 0, true, TrackKind::Instrument, vec![]);
+        track.instrument_type = Some(InstrumentType::Prophet6);
+        track.synth_params = phosphor_dsp::prophet6::param_defaults().to_vec();
+        nav.tracks.insert(0, track);
+        nav.track_cursor = 0;
+        nav
+    }
+
+    /// Both of the Prophet-6's preset selectors reload the panel.
+    ///
+    /// It is the second instrument in the rack whose preset is two controls
+    /// rather than one — the DX7 was the first — and the first whose *panel*
+    /// is loaded from them, so the editor's "index 0 reloads the preset" rule
+    /// is not enough on its own: stepping the bank has to reload as well, or
+    /// four fifths of the factory set is unreachable from the panel.
+    #[test]
+    fn both_prophet_six_selectors_load_the_program() {
+        use phosphor_dsp::prophet6;
+
+        let mut nav = prophet6_track();
+        let panel = |nav: &NavState| nav.tracks[0].synth_params.clone();
+        assert_eq!(panel(&nav), prophet6::params_for_program(0.0, 0.0).to_vec());
+
+        // Step the program knob: the whole panel follows it.
+        nav.clip_view.synth_param_cursor = prophet6::P_PROGRAM;
+        for step in 1..8 {
+            nav.adjust_synth_param(0.05);
+            let expected = prophet6::params_for_program(
+                nav.tracks[0].synth_params[prophet6::P_BANK],
+                nav.tracks[0].synth_params[prophet6::P_PROGRAM],
+            );
+            assert_eq!(panel(&nav), expected.to_vec(), "program knob step {step}");
+            assert_eq!(
+                prophet6::program_index(
+                    nav.tracks[0].synth_params[prophet6::P_BANK],
+                    nav.tracks[0].synth_params[prophet6::P_PROGRAM],
+                ),
+                step
+            );
+        }
+
+        // Step the bank knob: same, a hundred programs further along each time.
+        nav.clip_view.synth_param_cursor = prophet6::P_BANK;
+        for bank in 1..prophet6::BANK_COUNT {
+            nav.adjust_synth_param(0.05);
+            let expected = prophet6::params_for_program(
+                nav.tracks[0].synth_params[prophet6::P_BANK],
+                nav.tracks[0].synth_params[prophet6::P_PROGRAM],
+            );
+            assert_eq!(panel(&nav), expected.to_vec(), "bank knob step {bank}");
+            assert_eq!(
+                prophet6::program_index(
+                    nav.tracks[0].synth_params[prophet6::P_BANK],
+                    nav.tracks[0].synth_params[prophet6::P_PROGRAM],
+                ),
+                bank * prophet6::PROGRAMS_PER_BANK + 7,
+                "the bank knob lost the program knob's position"
+            );
+        }
+
+        // And an ordinary knob does not reload anything.
+        nav.clip_view.synth_param_cursor = prophet6::P_LP_CUTOFF;
+        let before = panel(&nav);
+        nav.adjust_synth_param(0.05);
+        let after = panel(&nav);
+        for (index, (a, b)) in before.iter().zip(&after).enumerate() {
+            if index != prophet6::P_LP_CUTOFF {
+                assert_eq!(a, b, "{} moved with the cutoff", prophet6::PARAM_NAMES[index]);
+            }
+        }
+        assert!(after[prophet6::P_LP_CUTOFF] > before[prophet6::P_LP_CUTOFF]);
     }
 
     /// A nav state whose selected track is a drum rack at its default panel.

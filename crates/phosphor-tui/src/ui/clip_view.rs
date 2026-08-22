@@ -104,6 +104,7 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
             let is_juno = instrument_type == Some(InstrumentType::Juno60);
             let is_rhodes = instrument_type == Some(InstrumentType::Rhodes);
             let is_phatty = instrument_type == Some(InstrumentType::LittlePhatty);
+            let is_prophet6 = instrument_type == Some(InstrumentType::Prophet6);
             let param_names: &[&str] = if is_drum {
                 &phosphor_dsp::drum_rack::PARAM_NAMES
             } else if is_dx7 {
@@ -118,6 +119,8 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                 &phosphor_dsp::rhodes::PARAM_NAMES
             } else if is_phatty {
                 &phosphor_dsp::phatty::PARAM_NAMES
+            } else if is_prophet6 {
+                &phosphor_dsp::prophet6::PARAM_NAMES
             } else {
                 &phosphor_dsp::synth::PARAM_NAMES
             };
@@ -150,6 +153,11 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                     phosphor_dsp::rhodes::discrete_label(i, val)
                 } else if is_phatty {
                     phosphor_dsp::phatty::discrete_label(i, val)
+                } else if is_prophet6 {
+                    // Two selectors, like the DX7: the program name needs the
+                    // bank as well as the program knob, so this one reads the
+                    // whole block.
+                    phosphor_dsp::prophet6::discrete_label(&params, i)
                 } else if is_dx7 {
                     // Both selectors, and the voice name needs the bank as well
                     // as the patch knob, so this one reads the whole block.
@@ -192,7 +200,9 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                     let display_val = if is_dx7 {
                         format!("{:.0}%", val * 100.0)
                     } else {
-                        let secs = if is_juno {
+                        let secs = if is_prophet6 {
+                            phosphor_dsp::prophet6::param_seconds(i, val)
+                        } else if is_juno {
                             phosphor_dsp::juno::param_seconds(i, val)
                         } else if is_phatty {
                             phosphor_dsp::phatty::param_seconds(i, val)
@@ -868,6 +878,45 @@ mod tests {
                 }
             }
             let name = phosphor_dsp::jupiter::PARAM_NAMES[index];
+            assert!(name.chars().count() <= 8, "parameter name {name:?} overflows its column");
+        }
+    }
+
+    /// The Prophet-6 is the widest panel in the rack — 84 controls, 44 of
+    /// them selectors — and the only one whose preset names come out of a ROM
+    /// rather than being written by hand, so nothing stops one of Sequential's
+    /// twenty-character names from running off the end except this.
+    #[test]
+    fn every_prophet_six_panel_label_fits_the_fx_panel() {
+        use phosphor_dsp::prophet6;
+        const LABEL_COLUMN: usize = 12;
+        let room = FX_PANEL_W as usize - LABEL_COLUMN;
+
+        for index in 0..prophet6::PROGRAM_COUNT {
+            let label = prophet6::program_label(index);
+            assert!(
+                label.chars().count() <= room,
+                "program {index} {label:?} needs {} of the {room} columns the panel leaves",
+                label.chars().count()
+            );
+            let name = prophet6::program_name(index);
+            assert!(!name.is_empty() && name.chars().count() <= 20,
+                "program {index} name {name:?} is not a factory name");
+            assert!(name.starts_with(label),
+                "program {index} label {label:?} is not the front of its name {name:?}");
+        }
+
+        let mut params = vec![0.0f32; prophet6::PARAM_COUNT];
+        for index in 0..prophet6::PARAM_COUNT {
+            for position in [0.0f32, 0.3, 0.6, 1.0] {
+                params[index] = position;
+                if let Some(label) = prophet6::discrete_label(&params, index) {
+                    assert!(label.chars().count() <= room,
+                        "switch label {label:?} does not fit");
+                }
+            }
+            params[index] = 0.0;
+            let name = prophet6::PARAM_NAMES[index];
             assert!(name.chars().count() <= 8, "parameter name {name:?} overflows its column");
         }
     }

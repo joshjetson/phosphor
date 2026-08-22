@@ -132,6 +132,7 @@ impl App {
             InstrumentType::DrumRack => Box::new(phosphor_dsp::drum_rack::DrumRack::new()),
             InstrumentType::DX7 => Box::new(phosphor_dsp::dx7::Dx7Synth::new()),
             InstrumentType::Jupiter8 => Box::new(phosphor_dsp::jupiter::Jupiter8Synth::new()),
+            InstrumentType::Prophet6 => Box::new(phosphor_dsp::prophet6::Prophet6::new()),
             InstrumentType::Odyssey => Box::new(phosphor_dsp::odyssey::OdysseySynth::new()),
             InstrumentType::Juno60 => Box::new(phosphor_dsp::juno::Juno60Synth::new()),
             InstrumentType::Rhodes => Box::new(phosphor_dsp::rhodes::RhodesPiano::new()),

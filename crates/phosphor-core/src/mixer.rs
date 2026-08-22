@@ -661,13 +661,27 @@ fn commit_recording(track: &mut AudioTrack, end_tick: i64, clip_tx: &Sender<Clip
     }
 }
 
+/// Which live MIDI messages reach a plugin.
+///
+/// Channel pressure is here because instruments route it: the Prophet-6 has
+/// an aftertouch section with six destinations and an amount that reads as
+/// bipolar, and every one of its 500 factory programs stores a setting for
+/// it. It is a two-byte message, so `raw[2]` is whatever the parser left
+/// there and a plugin reads the pressure from `data1`, as the MIDI
+/// specification puts it.
+///
+/// Polyphonic key pressure is *not* here, and that is the instruments rather
+/// than an oversight — the Prophet-6 provides "monophonic (or 'channel')
+/// aftertouch" and nothing in the rack has a per-key pressure destination.
+/// `phosphor-midi` does not parse it into a variant of its own either.
 pub fn midi_to_plugin_event(msg: &MidiMessage) -> Option<MidiEvent> {
     use phosphor_midi::message::MidiMessageType;
     match msg.message_type {
         MidiMessageType::NoteOn { .. }
         | MidiMessageType::NoteOff { .. }
         | MidiMessageType::ControlChange { .. }
-        | MidiMessageType::PitchBend { .. } => Some(MidiEvent {
+        | MidiMessageType::PitchBend { .. }
+        | MidiMessageType::ChannelPressure { .. } => Some(MidiEvent {
             sample_offset: 0,
             status: msg.raw[0],
             data1: msg.raw[1],
@@ -701,6 +715,29 @@ mod tests {
             raw: [0x90, note, vel],
             len: 3,
         }
+    }
+
+    /// Aftertouch has to reach a plugin, or an instrument with an aftertouch
+    /// section has one that never does anything.
+    #[test]
+    fn channel_pressure_reaches_the_plugin_and_key_pressure_does_not() {
+        let pressure = MidiMessage {
+            timestamp: Some(0),
+            message_type: MidiMessageType::ChannelPressure { channel: 0, pressure: 96 },
+            raw: [0xD0, 96, 0],
+            len: 2,
+        };
+        let event = midi_to_plugin_event(&pressure).expect("channel pressure is dropped");
+        assert_eq!(event.status, 0xD0);
+        assert_eq!(event.data1, 96);
+
+        // Polyphonic key pressure parses as `Other` and stays there: nothing
+        // in the rack has a per-key pressure destination.
+        let key = MidiMessage::from_bytes(&[0xA0, 60, 96], 0).expect("parsed");
+        assert!(
+            midi_to_plugin_event(&key).is_none(),
+            "polyphonic key pressure has no destination in the rack"
+        );
     }
 
     fn make_note_off(note: u8) -> MidiMessage {

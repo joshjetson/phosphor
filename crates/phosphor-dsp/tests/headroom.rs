@@ -34,7 +34,7 @@
 //! every other track with it.
 
 use phosphor_dsp::level::{saturation_input, SATURATION_KNEE};
-use phosphor_dsp::{drum_rack, dx7, juno, jupiter, odyssey, phatty, rhodes, synth};
+use phosphor_dsp::{drum_rack, dx7, juno, jupiter, odyssey, phatty, prophet6, rhodes, synth};
 use phosphor_plugin::{MidiEvent, Plugin};
 
 const SAMPLE_RATE: f64 = 44_100.0;
@@ -174,6 +174,16 @@ fn dx7_voice(index: usize) -> dx7::Dx7Synth {
 /// The Rhodes' is Hard Bark, the loudest of its 26: the tine voiced onto the
 /// pickup axis and struck at the top of the STRIKE knob, which is as far into
 /// the pickup's nonlinearity as that panel goes.
+/// Point a Prophet-6 at one of the 500 factory programs by number. Two
+/// selectors, a bank and a program, so a sweep index is split.
+fn p6_program(index: usize) -> prophet6::Prophet6 {
+    let mut synth = prophet6::Prophet6::new();
+    let (bank, program) = prophet6::program_knobs(index);
+    synth.set_parameter(prophet6::P_BANK, bank);
+    synth.set_parameter(prophet6::P_PROGRAM, program);
+    synth
+}
+
 fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
     let dx7_timpani = dx7_voice(147);
     let dx7_harp = dx7_voice(60);
@@ -190,6 +200,14 @@ fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
     rhodes_bark.set_parameter(rhodes::P_PATCH, rhodes::patch_knob(22));
     let mut phatty_blip = phatty::LittlePhatty::new();
     phatty_blip.set_parameter(phatty::P_PATCH, phatty::patch_knob(85));
+    // The Prophet-6's is 285 Genesis 2, the loudest of its 500 factory
+    // programs on an eight-note chord: a tremolo at 0.09 Hz over both filters
+    // at maximum resonance, so its peak arrives eleven seconds into a held
+    // chord rather than in its attack. 031 Hi Hat is the loudest whose peak
+    // is in the first tenth of a second — white noise at full through a
+    // wide-open four-pole and a high-pass at maximum resonance.
+    let p6_genesis = p6_program(285);
+    let p6_hat = p6_program(31);
 
     vec![
         ("dx7 147 TIMPANI", Box::new(dx7_timpani)),
@@ -201,6 +219,8 @@ fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
         ("juno 44 TUBA", Box::new(juno_tuba)),
         ("rhodes Hard Bark", Box::new(rhodes_bark)),
         ("phatty Blip", Box::new(phatty_blip)),
+        ("prophet6 285 Genesis 2", Box::new(p6_genesis)),
+        ("prophet6 031 Hi Hat", Box::new(p6_hat)),
         ("phosphor", Box::new(synth::PhosphorSynth::new())),
     ]
 }
@@ -213,6 +233,7 @@ fn defaults() -> Vec<(&'static str, Box<dyn Plugin>)> {
         ("juno default", Box::new(juno::Juno60Synth::new())),
         ("rhodes default", Box::new(rhodes::RhodesPiano::new())),
         ("phatty default", Box::new(phatty::LittlePhatty::new())),
+        ("prophet6 default", Box::new(prophet6::Prophet6::new())),
         ("phosphor default", Box::new(synth::PhosphorSynth::new())),
     ]
 }
@@ -347,6 +368,11 @@ fn no_patch_in_any_bank_exceeds_the_target() {
             check_patch(&m, "phatty", phatty::PATCH_NAMES[index], &mut worst);
         }
     }
+    for index in 0..prophet6::PROGRAM_COUNT {
+        let mut s = p6_program(index);
+        let m = render(&mut s, TWO_HAND_EIGHT, 127, SWEEP_BLOCKS);
+        check_patch(&m, "prophet6", prophet6::program_name(index), &mut worst);
+    }
     for index in 0..synth::PATCH_COUNT {
         let mut s = synth::PhosphorSynth::new();
         s.set_parameter(synth::P_PATCH, synth::patch_knob(index));
@@ -432,6 +458,42 @@ fn the_jupiters_effects_peak_after_the_other_banks_have_finished() {
     assert!(
         worst.0 > 0.4,
         "the Jupiter's effects no longer reach the level they were voiced at: {worst:?}"
+    );
+}
+
+/// The same defect again on the Prophet-6, whose 500 programs include slow
+/// tremolos over resonant filters.
+///
+/// 285 Genesis 2 is the loudest program in the bank and the clearest case: an
+/// LFO at 0.09 Hz on the amplifier over both filters at maximum resonance, so
+/// its peak arrives eleven seconds into a held chord — thirty times later
+/// than the 0.37 s sweep looks. Four others peak past the short window for
+/// the same reason.
+#[test]
+fn the_prophet_sixs_slow_tremolos_peak_after_the_other_banks_have_finished() {
+    /// 14 s, which reaches past the slowest of the five.
+    const HOLD: usize = 2_400;
+    const LATE: [(usize, &str); 5] = [
+        (285, "Genesis 2"),
+        (259, "Amiga Chop"),
+        (162, "Synth on Wheels"),
+        (261, "Emotive Pad"),
+        (109, "Chalice"),
+    ];
+
+    let mut worst = (0.0f32, String::new());
+    for (index, name) in LATE {
+        let mut s = p6_program(index);
+        assert_eq!(prophet6::program_name(index), name, "the bank moved under this test");
+        let m = render(&mut s, TWO_HAND_EIGHT, 127, HOLD);
+        check_patch(&m, "prophet6 held", name, &mut worst);
+    }
+    // Measured: 285 Genesis 2 at 0.57, which is 2.4 dB under the saturator
+    // knee and 3.9 dB under the ceiling. The floor is here so that a program
+    // quietened into safety fails rather than passes.
+    assert!(
+        worst.0 > 0.4,
+        "the Prophet-6's slow programs no longer reach the level they were voiced at: {worst:?}"
     );
 }
 
@@ -944,6 +1006,7 @@ fn ordinary_playing_is_at_a_usable_level() {
         ("juno", TRIAD, Box::new(juno::Juno60Synth::new())),
         ("rhodes", TRIAD, Box::new(rhodes::RhodesPiano::new())),
         ("phatty", TRIAD, Box::new(phatty::LittlePhatty::new())),
+        ("prophet6", TRIAD, Box::new(prophet6::Prophet6::new())),
         ("phosphor", TRIAD, Box::new(synth::PhosphorSynth::new())),
         ("drum rack", DOWNBEAT, Box::new(drum_rack::DrumRack::new())),
     ];
@@ -1077,6 +1140,9 @@ fn instruments_are_level_matched() {
     // rms rather than on peak; see OUTPUT_TRIM in phatty.rs.
     let mut phatty_mid = phatty::LittlePhatty::new();
     phatty_mid.set_parameter(phatty::P_PATCH, phatty::patch_knob(78));
+    // The Prophet-6's is 019 Dynamic Phase, the median of its 500 factory
+    // programs by triad RMS.
+    let mut p6_mid = p6_program(19);
 
     let levels = [
         ("dx7", triad_rms(&mut dx7_mid)),
@@ -1085,6 +1151,7 @@ fn instruments_are_level_matched() {
         ("juno", triad_rms(&mut juno_mid)),
         ("rhodes", triad_rms(&mut rhodes_mid)),
         ("phatty", triad_rms(&mut phatty_mid)),
+        ("prophet6", triad_rms(&mut p6_mid)),
         ("phosphor", triad_rms(&mut synth::PhosphorSynth::new())),
     ];
 
