@@ -1509,10 +1509,18 @@ impl LittlePhatty {
             self.pitched = true;
         }
 
-        // A note arriving with nothing held and nothing sounding is a fresh
-        // one whatever the gate mode says; legato only applies to a note that
-        // overlaps another.
-        let fresh = !was_holding && !self.volume_env.is_active();
+        // A note arriving with nothing held is a fresh one whatever the gate
+        // mode says; legato only applies to a note that overlaps another. The
+        // manual's legato is a property of the *key* — "the envelopes aren't
+        // retriggered until the key is fully released" (page 35) — so a press
+        // that arrives after every key is up has to speak, even though the
+        // note before it is still releasing. Releases here are up to ten
+        // seconds long and Taurus Deep's is 40 ms, which is inside the gap
+        // between two detached keys at any tempo worth playing.
+        let fresh = !was_holding;
+        // Whether the voice is still making a sound, read before the trigger
+        // below makes the envelope active either way.
+        let sounding = self.volume_env.is_active();
         if fresh || panel.gate_mode != 0 {
             if panel.gate_mode == 2 {
                 self.filter_env.trigger_from_zero();
@@ -1522,7 +1530,14 @@ impl LittlePhatty {
                 self.volume_env.trigger();
             }
         }
-        if fresh {
+        // Seeding the ladder keeps the stricter condition it has always had.
+        // `start` writes the four integrator states outright, which is a step
+        // in whatever they are carrying, and a step is inaudible only when
+        // nothing is coming out of them: seeding a filter still ringing
+        // through a release tail is a click. It is only there to give a
+        // self-oscillating filter something to oscillate from at the start of
+        // a note, and a filter already ringing does not need one.
+        if fresh && !sounding {
             self.filter.start(panel.resonance);
         }
     }
@@ -3591,6 +3606,78 @@ mod tests {
                 after >= before,
                 "gate mode {mode} retriggered on the way back to the held key: \
                  {before} -> {after}"
+            );
+        }
+    }
+
+    /// The gate is about the *key*. A press that arrives after every key is up
+    /// is a fresh note in every mode, even though the note before it has not
+    /// finished releasing — "the envelopes aren't retriggered until the key is
+    /// fully released", and this key was.
+    ///
+    /// LEG ON used to wait for the envelope instead, which is a different and
+    /// much longer thing: Taurus Deep releases over 40 ms and the panel goes to
+    /// ten seconds, so detached playing kept landing inside the tail and the
+    /// struck key said nothing at all.
+    #[test]
+    fn a_press_during_the_release_tail_starts_a_new_note() {
+        for mode in 0..3 {
+            let mut s = fresh(0);
+            s.set_parameter(P_GATE, knob_for(mode, 3));
+            let _ = render(&mut s, &[note_on(41, 100, 0)], 100);
+            // 640 samples into a 40 ms release: the key is up, the envelope is
+            // still on its way down.
+            let _ = render(&mut s, &[note_off(41, 0)], 10);
+            let during = amp_level(&s);
+            assert!(
+                s.volume_env.is_active() && during > 0.05,
+                "gate mode {mode} was not still releasing, so this tests nothing: {during}"
+            );
+
+            let out = render(&mut s, &[note_on(48, 100, 0)], 20);
+            let after = amp_level(&s);
+            assert!(
+                after > 0.9,
+                "gate mode {mode} left the struck key unsounded: {during} -> {after}"
+            );
+            // And it is audible, which is the part that was reported: by here
+            // the old tail is long finished, so anything at all is the new note.
+            let sounding = peak(&out[out.len() - 320..]);
+            assert!(
+                sounding > 0.02,
+                "gate mode {mode} put out nothing for the struck key: {sounding}"
+            );
+        }
+    }
+
+    /// Seeding the ladder is for a note that starts from silence. Doing it to a
+    /// filter still ringing through a release tail writes over the four
+    /// integrator states mid-flight, which is a step in the output on the
+    /// sample the key arrives — a click, and the reason the seed keeps a
+    /// stricter condition than the trigger next to it.
+    #[test]
+    fn a_press_during_the_release_tail_does_not_step_the_filter() {
+        // Both sides of the self-oscillation knee, since that is what decides
+        // what the seed would have written.
+        for resonance in [0.20f32, 0.95] {
+            let mut s = fresh(0);
+            s.set_parameter(P_RESO, resonance);
+            let _ = render(&mut s, &[note_on(41, 100, 0)], 100);
+            let tail = render(&mut s, &[note_off(41, 0)], 10);
+            let note = render(&mut s, &[note_on(48, 100, 0)], 20);
+
+            let biggest_step =
+                |x: &[f32]| x.windows(2).fold(0.0f32, |m, w| m.max((w[1] - w[0]).abs()));
+            let mut joined = tail.clone();
+            joined.extend_from_slice(&note);
+            let at_the_join = biggest_step(&joined[tail.len() - 2..tail.len() + 3]);
+            // Everything after the attack, as the yardstick for how fast this
+            // patch moves between two samples when nothing has gone wrong.
+            let ordinary = biggest_step(&note[64..]);
+            assert!(
+                at_the_join < ordinary / 3.0,
+                "resonance {resonance} stepped {at_the_join:.6} at the press, against \
+                 {ordinary:.6} for the note itself"
             );
         }
     }

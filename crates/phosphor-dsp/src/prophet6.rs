@@ -1949,6 +1949,19 @@ const DELAY_FEEDBACK_MAX: f64 = 0.92;
 const BBD_LOSS_HZ: f64 = 2_600.0;
 /// How far a bucket-brigade clock wanders, as a fraction of the delay time.
 const BBD_WOW: f64 = 0.0025;
+/// How fast it wanders: how often the clock picks a new place to drift to.
+///
+/// This number is the whole difference between wow and hiss, and it has to be
+/// this low because of what the wander is multiplied by. The read head sits
+/// `delay × sr` samples behind the write head, so a modulator carrying *any*
+/// energy near the top of the band moves the read head by that whole factor
+/// between one sample and the next — at a one-second delay, a modulator whose
+/// high end is 68 dB down still throws the read head eighteen samples a
+/// sample. That is not a wandering clock; it is the delay line being read at
+/// random, and it sounds like a hiss carpet under the repeats that no voice
+/// control can reach because it is not coming from the voice. See
+/// [`FxSlot::wander`] for how the band limit is actually enforced.
+const BBD_WOW_HZ: f64 = 0.6;
 
 /// Chorus sweep centre and the widest it moves, in seconds.
 const CHORUS_CENTRE_S: f64 = 0.0072;
@@ -1978,7 +1991,11 @@ struct FxSlot {
     delay: Vec<f32>,
     write: usize,
     loop_lp: f64,
-    wow: f64,
+    /// Where the bucket-brigade clock drifted from, where it is drifting to,
+    /// and how far along it is. See [`FxSlot::wander`].
+    wow_from: f64,
+    wow_to: f64,
+    wow_phase: f64,
     wow_noise: Noise,
     chorus: Vec<f32>,
     chorus_write: usize,
@@ -1991,7 +2008,9 @@ impl FxSlot {
             delay: Vec::new(),
             write: 0,
             loop_lp: 0.0,
-            wow: 0.0,
+            wow_from: 0.0,
+            wow_to: 0.0,
+            wow_phase: 0.0,
             wow_noise: Noise::new(seed),
             chorus: Vec::new(),
             chorus_write: 0,
@@ -2000,7 +2019,12 @@ impl FxSlot {
     }
 
     fn init(&mut self, sr: f64) {
-        let delay_len = (sr * DELAY_MAX_S) as usize + 2;
+        // The longest delay, plus the furthest the bucket-brigade clock can
+        // drift past it, plus the sample either side that the cubic read
+        // wants. Without the margin a one-second delay reads right up against
+        // the end of its own buffer, and the wander is clamped on the way out
+        // and free on the way back — half a wow, which is not one.
+        let delay_len = (sr * DELAY_MAX_S * (1.0 + BBD_WOW)) as usize + 4;
         self.delay.clear();
         self.delay.resize(delay_len, 0.0);
         let chorus_len = (sr * CHORUS_MAX_S) as usize + 2;
@@ -2016,7 +2040,34 @@ impl FxSlot {
         self.chorus_write = 0;
         self.chorus_phase = 0.0;
         self.loop_lp = 0.0;
-        self.wow = 0.0;
+        self.wow_from = 0.0;
+        self.wow_to = 0.0;
+        self.wow_phase = 0.0;
+    }
+
+    /// The bucket-brigade clock's drift, in ±1, with no high end at all.
+    ///
+    /// A one-pole on white noise is the obvious way to write this and it is
+    /// the wrong one: a filter *attenuates* the top of the band, it does not
+    /// remove it, and the residue is multiplied by the delay length in samples
+    /// before it reaches the read head. What is needed here is a modulator
+    /// whose slope is bounded by construction, so this is a new random target
+    /// [`BBD_WOW_HZ`] times a second with a smoothstep in between: the value
+    /// is continuous, its first derivative is continuous, and the fastest it
+    /// can ever move is `1.5 × span × BBD_WOW_HZ` per second. At the widest
+    /// span and a one-second delay that is a read head moving four thousandths
+    /// of a sample per sample — a few cents of pitch drift on the repeats,
+    /// which is what a wandering clock actually sounds like.
+    #[inline]
+    fn wander(&mut self, sr: f64) -> f64 {
+        self.wow_phase += BBD_WOW_HZ / sr;
+        if self.wow_phase >= 1.0 {
+            self.wow_phase -= self.wow_phase.floor();
+            self.wow_from = self.wow_to;
+            self.wow_to = self.wow_noise.tick();
+        }
+        let t = self.wow_phase;
+        self.wow_from + (self.wow_to - self.wow_from) * t * t * (3.0 - 2.0 * t)
     }
 
     /// Reads `back` samples behind the write head, linearly interpolated.
@@ -2036,6 +2087,34 @@ impl FxSlot {
         a + (b - a) * frac
     }
 
+    /// Reads `back` samples behind the write head, cubically interpolated.
+    ///
+    /// Four-point Catmull-Rom rather than the two-point line [`Self::tap`]
+    /// draws. Both are fractional reads and both are exact on a stationary
+    /// head; the difference shows only when the head is moving, where a line
+    /// puts a slow ripple on the top of the band as the fraction sweeps and a
+    /// cubic does not. It is worth four extra multiplies on the
+    /// bucket-brigade path because that is the only path here whose read head
+    /// moves — the digital delay's is fixed and the chorus keeps the line it
+    /// was voiced with.
+    #[inline]
+    fn tap_cubic(buffer: &[f32], write: usize, back: f64) -> f64 {
+        let frames = buffer.len();
+        if frames < 8 {
+            return 0.0;
+        }
+        // Room for one sample either side of the pair being interpolated.
+        let back = back.clamp(2.0, frames as f64 - 3.0);
+        let whole = back as usize;
+        let f = back - whole as f64;
+        let at = |n: usize| f64::from(buffer[(write + frames - n) % frames]);
+        let (p0, p1, p2, p3) = (at(whole - 1), at(whole), at(whole + 1), at(whole + 2));
+        let a = 3.0 * (p1 - p2) + p3 - p0;
+        let b = 2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3;
+        let c = p2 - p0;
+        p1 + 0.5 * f * (c + f * (b + f * a))
+    }
+
     #[inline]
     fn process(&mut self, left: f64, right: f64, set: &FxSetting, sr: f64) -> (f64, f64) {
         if set.kind == fx::OFF {
@@ -2049,14 +2128,15 @@ impl FxSlot {
                 let frames = self.delay.len();
                 let mono = (left + right) * 0.5;
                 let mut back = set.p1 * sr;
-                if set.kind == fx::BBD {
+                let delayed = if set.kind == fx::BBD {
                     // A bucket-brigade line is clocked by an analog oscillator
                     // and the clock wanders, which is most of why a BBD does
                     // not sound like a digital delay set to the same time.
-                    self.wow += 0.0004 * (self.wow_noise.tick() - self.wow);
-                    back *= 1.0 + self.wow * BBD_WOW * 400.0;
-                }
-                let delayed = Self::tap(&self.delay, self.write, back, 1, 0);
+                    back *= 1.0 + self.wander(sr) * BBD_WOW;
+                    Self::tap_cubic(&self.delay, self.write, back)
+                } else {
+                    Self::tap(&self.delay, self.write, back, 1, 0)
+                };
                 let fed = if set.kind == fx::BBD {
                     let a = raw::one_pole(BBD_LOSS_HZ, sr);
                     self.loop_lp += a * (delayed - self.loop_lp);
@@ -4817,6 +4897,178 @@ pub(crate) mod tests {
                 (gap - target).abs() / target < 0.1,
                 "{name} repeated every {gap:.3} s, and the knob asks for {target:.3}"
             );
+        }
+    }
+
+    /// One effect slot on its own, at a setting given directly rather than
+    /// through the panel: what follows is about the line, not the knob law.
+    fn through_fx(input: &[f64], set: &FxSetting) -> Vec<f32> {
+        let mut slot = FxSlot::new(0x5A5A_1234);
+        slot.init(SR);
+        input.iter().map(|x| slot.process(*x, *x, set, SR).0 as f32).collect()
+    }
+
+    /// Every delay time a program can ask for, either side of the knob law.
+    const DELAY_TIMES: [f64; 4] = [DELAY_MIN_S, 0.05, 0.3, DELAY_MAX_S];
+
+    #[test]
+    fn a_delay_turns_silence_into_silence() {
+        // A delay line with nothing in it puts nothing out — whatever its
+        // feedback, and however far its clock has wandered. Anything a delay
+        // adds on its own arrives as a floor under the whole instrument that
+        // no voice control can reach, because it is not coming from a voice.
+        for kind in [fx::BBD, fx::DDL] {
+            for seconds in DELAY_TIMES {
+                let set = FxSetting { kind, mix: 1.0, p1: seconds, p2: DELAY_FEEDBACK_MAX };
+                let out = through_fx(&vec![0.0; (SR * 2.0) as usize], &set);
+                assert_eq!(
+                    peak(&out),
+                    0.0,
+                    "{} at {seconds} s and full feedback made something out of two seconds \
+                     of silence",
+                    FX_A_TYPES[kind],
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_bucket_brigade_clock_wanders_rather_than_scrambles() {
+        // The bug this pins: the clock's drift used to be white noise through
+        // one one-pole, and a one-pole attenuates the top of the band without
+        // removing it. The residue is multiplied by the delay length in
+        // samples on its way to the read head, so at a one-second delay the
+        // read head moved as much as eighteen samples between one sample and
+        // the next. A read head that jumps by samples is not reading a delay
+        // line, it is sampling it at random, and random samples of a signal
+        // are noise: a hiss carpet under the repeats that rose and fell with
+        // whatever was playing. Two numbers separate wow from that, and they
+        // pull in opposite directions — the drift has to *move* the read head
+        // over seconds and must barely move it at all between samples.
+        let mut slot = FxSlot::new(0x5A5A_1234);
+        slot.init(SR);
+        let seconds = DELAY_MAX_S;
+        let samples = (SR * 20.0) as usize;
+        let (mut lowest, mut highest, mut worst_step) = (f64::MAX, f64::MIN, 0.0f64);
+        let mut previous: Option<f64> = None;
+        for _ in 0..samples {
+            let back = seconds * SR * (1.0 + slot.wander(SR) * BBD_WOW);
+            if let Some(last) = previous {
+                worst_step = worst_step.max((back - last).abs());
+            }
+            previous = Some(back);
+            lowest = lowest.min(back);
+            highest = highest.max(back);
+        }
+        assert!(
+            worst_step < 0.05,
+            "the bucket-brigade read head moves {worst_step:.3} samples between one sample \
+             and the next, which reads the line at random rather than delaying it"
+        );
+        let swing = (highest - lowest) / (seconds * SR);
+        assert!(
+            (0.001..=0.01).contains(&swing),
+            "the bucket-brigade clock drifts over {:.3}% of the delay time, and wow is a \
+             fraction of a percent",
+            swing * 100.0
+        );
+        // And at the longest delay the drift still fits in the line, so the
+        // wander is symmetric rather than clamped on one side.
+        assert!(
+            highest + 2.0 < slot.delay.len() as f64 - 3.0,
+            "at a {seconds} s delay the clock wanders out to {highest:.0} samples and the \
+             line is only {} long",
+            slot.delay.len()
+        );
+    }
+
+    #[test]
+    fn the_bucket_brigade_puts_grit_on_the_signal_rather_than_hiss_under_it() {
+        // A bucket brigade colours what it is given: treble off the repeats,
+        // a little saturation in the loop, a slow drift. All three land *on*
+        // the signal — as loss, as harmonics of it, as movement of it. None
+        // of them is broadband, so a steady tone in comes out as a tone plus
+        // harmonics of that tone and nothing in between. Measured on bins
+        // that are neither the tone nor any harmonic of it; before the clock
+        // was band limited these sat as little as 1 dB below the tone itself,
+        // which is to say the delay's output was noise.
+        const SECONDS: f64 = 3.0;
+        let n = (SR * SECONDS) as usize;
+        let sine: Vec<f64> =
+            (0..n).map(|i| (TAU * 1_000.0 * i as f64 / SR).sin() * 0.3).collect();
+        for kind in [fx::BBD, fx::DDL] {
+            for seconds in DELAY_TIMES {
+                let set = FxSetting { kind, mix: 1.0, p1: seconds, p2: DELAY_FEEDBACK_MAX };
+                let out = through_fx(&sine, &set);
+                // The second half only, so the line is full; 1.5 s holds a
+                // whole number of cycles of every frequency below, which is
+                // what keeps one bin out of its neighbours.
+                let tail = &out[n / 2..];
+                let tone = harmonic(tail, 1_000.0, SR);
+                let hiss = [700.0f64, 1_500.0, 2_500.0, 3_300.0, 4_700.0, 6_100.0]
+                    .iter()
+                    .map(|hz| harmonic(tail, *hz, SR).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                let down = 20.0 * (tone / hiss.max(1.0e-30)).log10();
+                assert!(
+                    down > 50.0,
+                    "{} at {seconds} s puts a noise floor only {down:.1} dB under a 1 kHz \
+                     tone — that is hiss, not grit",
+                    FX_A_TYPES[kind],
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_delay_at_full_feedback_never_stops_decaying() {
+        // "Can't get rid of it once it's on" is not a feature. At the most
+        // feedback a program can store, every repeat has to be quieter than
+        // the one before it and the tail has to reach nothing — measured a
+        // repeat at a time, so this is a claim about the loop gain and not
+        // about a clock. The scrambled read head broke this too: it moved
+        // energy between repeats, and one repeat came back 1.13 times louder
+        // than the one it followed.
+        const REPEATS: usize = 150;
+        for kind in [fx::BBD, fx::DDL] {
+            for seconds in [0.05f64, 0.3] {
+                let set = FxSetting { kind, mix: 1.0, p1: seconds, p2: DELAY_FEEDBACK_MAX };
+                let window = (seconds * SR) as usize;
+                let burst = (SR * 0.05) as usize;
+                let input: Vec<f64> = (0..window * REPEATS)
+                    .map(|i| if i < burst { (TAU * 500.0 * i as f64 / SR).sin() } else { 0.0 })
+                    .collect();
+                let out = through_fx(&input, &set);
+                let mut quiet = None;
+                let mut previous = f64::MAX;
+                for (i, repeat) in
+                    out.chunks(window).enumerate().filter(|(_, c)| c.len() == window)
+                {
+                    let level = rms(repeat);
+                    // The first two windows hold the burst itself and the
+                    // line filling; the loop is what comes after.
+                    if i > 1 {
+                        assert!(
+                            level <= previous * 0.95,
+                            "{} at {seconds} s: repeat {i} came back at {:.2} of the one \
+                             before it, so the loop is not losing energy",
+                            FX_A_TYPES[kind],
+                            level / previous.max(1.0e-30),
+                        );
+                        if quiet.is_none() && level < 1.0e-4 {
+                            quiet = Some(i);
+                        }
+                    }
+                    previous = level;
+                }
+                assert!(
+                    quiet.is_some(),
+                    "{} at {seconds} s is still above -80 dBFS after {REPEATS} repeats at \
+                     full feedback",
+                    FX_A_TYPES[kind],
+                );
+            }
         }
     }
 
