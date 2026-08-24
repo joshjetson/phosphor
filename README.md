@@ -1,14 +1,24 @@
 <p align="center">
-  <img src="https://i.imgur.com/6oA9IPf.png" alt="Phosphor" width="680"/>
+  <img src="assets/banner.svg" alt="Phosphor — a terminal-native DAW built in Rust" width="900"/>
+</p>
+
+<p align="center">
+  <a href="https://github.com/joshjetson/phosphor/actions/workflows/ci.yml"><img src="https://github.com/joshjetson/phosphor/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
+  <a href="https://crates.io/crates/phosphor-studio"><img src="https://img.shields.io/crates/v/phosphor-studio.svg?color=4fe3c0&label=crates.io" alt="crates.io"/></a>
 </p>
 
 <p align="center">
   <strong>A terminal-native DAW built in Rust</strong><br/>
-  8 built-in synthesizers, 18 drum kits, 1,000+ patches, 9 color themes, animated splash screen, session save/load, undo/redo, and a plugin system designed for extensibility.
+  8 built-in synthesizers, 18 drum kits, 1,275 patches, 9 color themes, animated splash screen, session save/load, undo/redo, and a plugin system designed for extensibility.
 </p>
 
 <p align="center">
-  <img src="https://i.imgur.com/1Ia9OH2.png" alt="Phosphor UI" width="680"/>
+  <img src="assets/tracks.svg" alt="The Phosphor track view, animated" width="900"/><br/>
+  <sub><em>an animated impression of the track view — the real thing runs in your terminal:</em></sub>
+</p>
+
+<p align="center">
+  <img src="https://i.imgur.com/1Ia9OH2.png" alt="Phosphor UI screenshot" width="680"/>
 </p>
 
 ---
@@ -80,7 +90,7 @@ cargo run --release -- --no-midi
 
 | Instrument | Type | Voices | Patches | Description |
 |-----------|------|--------|---------|-------------|
-| **Phosphor Synth** | Wavetable / vector | 8 | 11 | Four oscillators with vector mixing, 16 wavetables, per-oscillator wave sequencing, Moog-style ladder, 6-slot mod matrix, keymapped drum patches |
+| **Phosphor Synth** | Wavetable / vector | 8 | **229** | Four oscillators with vector mixing, 16 wavetables, per-oscillator wave sequencing, Moog-style ladder, 6-slot mod matrix, keymapped drum patches |
 | **DX7** | FM | 16 | **256** | All 8 original factory cartridges, decoded from the ROM dumps |
 | **Jupiter-8** | Analog poly | 8 | **64** | All 64 factory patch names, full 32-control panel, two envelopes |
 | **ARP Odyssey** | Duophonic | 2 | 44 | Complete 59-control front panel, all three filter revisions (4023/4035/4075), ADSR *and* AR envelopes, sample and hold |
@@ -167,6 +177,16 @@ has no patch memory):
 - **Mark II** — MK2 Stage, MK2 Tight, MK2 Dark, MK2 Suitcase
 - **Dyno** — Dyno, Dyno Bell, Dyno Ballad, Dyno Bright
 - **Character** — Bell Tine, Hard Bark, Soft Silk, Woody, Growl Bass
+
+**Prophet-6** (all 500 factory programs, decoded from Sequential's own SysEx
+release rather than recreated, in the instrument's five banks of one hundred):
+`Brassed Off`, `Thick Low Brass`, `Jupiter Bass`, `Old School House Org`,
+`TwinCity Kitty`, `Slow S&H Pad`, `It's a Prophet...6!`, `Oberheim`,
+`JarreHead`, `Saw Sync Lead`, `Vox Felicities`, `War of the Worlds`,
+`Wub Acid`, `Circus Triangles`, `Prophet Six String`, `Mass Effect`,
+`T8 Piano` and the rest — including the forty `P5` programs, Sequential's own
+ports of the original Prophet-5 factory bank. Pick a bank with `bank`, a
+program with `program`.
 
 ---
 
@@ -264,12 +284,12 @@ has no patch memory):
 - Clean terminal restore on exit and panic
 
 **Architecture**
-- Workspace with 7 crates, clean dependency graph
+- Workspace of eight crates — seven libraries and the `phosphor-studio` binary — with a clean dependency graph
 - Modular file structure — app, UI, and state split into focused sub-modules
 - Shared domain models via atomics (no locks between threads)
 - Command channel pattern for UI-to-audio communication
 - Plugin trait for instruments and effects — same interface for built-in and third-party
-- 683 tests covering DSP, MIDI, engine, mixer, navigation, and persistence
+- 873 tests covering DSP, MIDI, engine, mixer, navigation, and persistence, run on Linux, macOS and Windows in CI
 
 ---
 
@@ -583,7 +603,10 @@ MIDI Controller --midir--> MidiRingSender --SPSC--> MidiRingReceiver
 - Rust 1.75+ (install via [rustup](https://rustup.rs))
 - System audio libraries:
   - **macOS**: CoreAudio (included with Xcode)
-  - **Linux**: ALSA (`sudo apt install libasound2-dev`) and optionally JACK
+  - **Linux**: ALSA for the DAW itself (`sudo apt install libasound2-dev pkg-config`);
+    building the whole workspace also wants the GUI stub's windowing headers
+    (`libudev-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev`) — the exact
+    list CI uses is in `.github/workflows/ci.yml`
   - **Windows**: WASAPI (included)
 - MIDI support requires a connected MIDI device (optional)
 
@@ -596,7 +619,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace  # 683 tests
+cargo test --workspace  # 873 tests
 ```
 
 ---
@@ -612,18 +635,20 @@ phosphor/
 │   ├── phosphor-core/         # Audio engine, mixer, transport, metronome
 │   ├── phosphor-dsp/          # Built-in instruments
 │   │   └── src/
-│   │       ├── synth.rs       # Phosphor Synth (subtractive)
-│   │       ├── dx7.rs         # DX7 FM synthesizer (51 patches)
-│   │       ├── jupiter.rs     # Jupiter-8 analog poly (42 patches)
+│   │       ├── synth.rs       # Phosphor Synth, wavetable/vector (229 patches)
+│   │       ├── dx7.rs         # DX7 FM synthesizer (256 factory voices from the ROMs)
+│   │       ├── jupiter.rs     # Jupiter-8 analog poly (64 factory patches)
 │   │       ├── odyssey.rs     # ARP Odyssey duophonic (44 patches)
 │   │       ├── juno.rs        # Juno-60 DCO + BBD chorus (56 factory patches)
 │   │       ├── rhodes.rs      # Rhodes tine piano, modal physical model (26 patches)
 │   │       ├── phatty.rs      # Little Phatty mono Moog, morphing oscillators (100 patches)
 │   │       ├── prophet6.rs    # Prophet-6 analog poly with poly mod (500 factory programs)
 │   │       ├── p6_programs.bin # The factory programs, from Sequential's SysEx
-│   │       ├── drum_rack/     # Drum machine (10 kits)
+│   │       ├── drum_rack/     # Drum machine (18 kits)
 │   │       │   ├── mod.rs     # Shared types, voice, plugin impl
-│   │       │   └── racks/     # Per-kit synthesis (808, 909, 707, 606, 777, tsty1-5)
+│   │       │   └── racks/     # Per-kit synthesis: 808, 909, 707, 606, 727, CR-78,
+│   │       │                  #   LinnDrum, DMX, SDS-V, 777, tsty1-5, and the three
+│   │       │                  #   acoustic kits (jazz, funk, studio)
 │   │       └── oscillator.rs  # Waveform oscillators
 │   ├── phosphor-midi/         # MIDI I/O, message parsing, ring buffer
 │   ├── phosphor-plugin/       # Plugin trait definitions
