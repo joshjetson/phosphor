@@ -123,7 +123,10 @@ impl SequencerState {
             live: 0,
             pending: None,
             switch_quant: SwitchQuant::PatternEnd,
-            playing: false,
+            // Running from birth: write steps, press play, hear them. The
+            // run/stop toggle mutes a pattern in a performance; it is not a
+            // second switch between a beginner and their first sound.
+            playing: true,
             chain: [ChainEntry { slot: 0, repeats: 1 }; MAX_CHAIN],
             chain_len: 0,
             lane: 0,

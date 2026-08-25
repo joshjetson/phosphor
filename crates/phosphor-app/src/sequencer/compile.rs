@@ -290,13 +290,14 @@ mod tests {
     /// would otherwise play the same notes at the same ticks.
     #[test]
     fn a_bounce_says_when_it_has_to_stop_the_pattern() {
+        // A fresh sequencer runs by default, so bouncing it stops playback.
         let mut track = four_on_the_floor();
         let state = track.sequencer.as_ref().unwrap();
-        assert!(!bounce_pattern(state, 0, &[]).unwrap().stops_playback);
-
-        dispatch(&mut track, SeqOp::SetPlaying(true));
-        let state = track.sequencer.as_ref().unwrap();
         assert!(bounce_pattern(state, 0, &[]).unwrap().stops_playback);
+
+        dispatch(&mut track, SeqOp::SetPlaying(false));
+        let state = track.sequencer.as_ref().unwrap();
+        assert!(!bounce_pattern(state, 0, &[]).unwrap().stops_playback);
     }
 
     // ── Placement ──

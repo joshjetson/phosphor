@@ -956,7 +956,14 @@ impl PatternBlock {
     /// pattern reads as a different rhythm rather than a swung one.
     pub const MAX_SWING: u8 = 75;
 
-    /// An empty 16-step pattern at a sixteenth, straight, not running.
+    /// An empty 16-step pattern at a sixteenth, straight, and RUNNING.
+    ///
+    /// Running by default is the difference between a sequencer and a trap:
+    /// a user writes steps, presses play, and must hear them. On hardware
+    /// the pattern plays when the machine plays; the run/stop toggle exists
+    /// to mute a pattern during a performance, not to stand between a
+    /// beginner and their first sound. This shipped as `false` once and the
+    /// first real user pressed play into silence.
     #[must_use]
     pub const fn empty() -> Self {
         Self {
@@ -969,7 +976,7 @@ impl PatternBlock {
             mode: Mode::Chromatic,
             tonic: 0,
             lanes: [Lane::empty(); LANES],
-            playing: false,
+            playing: true,
             pending_slot: None,
             switch_quant: SwitchQuant::PatternEnd,
             chain: [ChainEntry { slot: 0, repeats: 1 }; MAX_CHAIN],

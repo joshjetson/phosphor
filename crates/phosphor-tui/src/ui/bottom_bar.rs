@@ -13,12 +13,24 @@ pub(super) fn render_bottom_bar(
         .constraints([Constraint::Length(16), Constraint::Min(20), Constraint::Length(42)])
         .split(area);
 
+    let in_grid = nav.focused_pane == Pane::ClipView
+        && nav.clip_view.clip_tab == ClipTab::Sequencer
+        && nav.clip_view.focus == ClipViewFocus::PianoRoll;
     let (mt, ms) = if nav.loop_editor.active {
         ("-- LOOP --", Style::default().fg(Color::Rgb(80, 180, 80)).bg(theme::bg_val()))
     } else if nav.focused_pane == Pane::Transport && nav.transport_ui.editing {
         ("-- EDIT --", theme::amber_bright())
     } else if nav.focused_pane == Pane::Transport {
         ("-- TRANSPORT --", theme::amber_bright())
+    } else if in_grid {
+        // The step grid is a mode of its own: saying SELECT over a drum
+        // machine describes the track list underneath it, not the thing the
+        // keys are actually driving.
+        if nav.clip_view.sequencer.locked {
+            ("-- HOLD --", theme::amber_bright())
+        } else {
+            ("-- STEP --", theme::amber_bright())
+        }
     } else if nav.track_selected {
         ("-- SELECT --", theme::amber())
     } else {
@@ -68,9 +80,18 @@ pub(super) fn render_bottom_bar(
             Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Sequencer
                 && nav.clip_view.focus == ClipViewFocus::PianoRoll =>
                 match nav.clip_view.sequencer.band {
+                    // On a kit the rows are the sounds, so j/k says so; on a
+                    // melodic pattern there is one row and j/k is the way
+                    // down to the panels.
+                    SeqBand::Grid if nav.current_track()
+                        .and_then(|t| t.sequencer.as_deref())
+                        .is_some_and(|s| !s.pattern().lanes[0].is_pitched()) => vec![
+                        ("hl","step"),("jk","sound"),("n","hit"),("a","accent"),
+                        ("t","play"),("b","bounce"),("r","rec"),
+                    ],
                     SeqBand::Grid => vec![
-                        ("hl","step"),("n","hit"),("a","accent"),("[]","lane"),
-                        ("jk","band"),("b","bounce"),("t","run"),("r","rec"),
+                        ("hl","step"),("n","hit"),("a","accent"),("[]","voice"),
+                        ("jk","panels"),("t","play"),("b","bounce"),
                     ],
                     SeqBand::Step => vec![
                         ("hl","knob"),("enter","hold"),("jk","band"),("_","tie"),

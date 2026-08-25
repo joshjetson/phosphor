@@ -11,12 +11,18 @@
 //! The house pattern, applied to a machine with four bands of controls:
 //!
 //! ```text
-//! j/k      move between bands   grid → step → pattern → slots
-//! h/l      move inside a band   steps, knobs, slots
+//! j/k      down the screen      the sounds, then the panels under them
+//! h/l      along a row          steps, knobs, slots
 //! enter    grid: write a hit · step/pattern: lock the knob · slots: queue
 //! esc      release a knob, then leave the band, then leave the view
-//! [ ]      the lane — one keypress, never a locked knob
+//! [ ]      the sound — one keypress, at any depth, never a locked knob
 //! ```
+//!
+//! `j` and `k` walk the rows that are on the screen. On a kit those are the
+//! sounds, so the hand that reaches down from the kick gets the snare; off
+//! the last one it carries on into the panels below, and back up off the
+//! step panel it lands on the last sound again. One column of things to
+//! stand on, top to bottom.
 //!
 //! A locked knob takes every key it is given, exactly as the fader does:
 //! `h`/`l` move it, `H`/`L` move it in strides, `Esc` lets go, and nothing
@@ -27,7 +33,7 @@ use super::*;
 
 use phosphor_app::sequencer::ops::SeqOp;
 use phosphor_app::sequencer::SequencerState;
-use phosphor_core::pattern::SLOTS;
+use phosphor_core::pattern::{LANES, SLOTS};
 
 use crate::state::{SeqBand, SeqKnob};
 
@@ -216,6 +222,54 @@ impl App {
         }
     }
 
+    /// Whether the grid is showing a row per lane — a kit — or a single row.
+    ///
+    /// On a melodic pattern a lane is a voice rather than a sound and only
+    /// one row is drawn, so `j` there means the panel below rather than the
+    /// second of eight identical-looking rows.
+    fn grid_walks_lanes(&self) -> bool {
+        self.nav
+            .current_track()
+            .and_then(|t| t.sequencer.as_deref())
+            .is_some_and(|state| !state.pattern().lanes[0].is_pitched())
+    }
+
+    /// One row down the screen.
+    fn sequencer_down(&mut self) {
+        if self.nav.clip_view.sequencer.band != SeqBand::Grid || !self.grid_walks_lanes() {
+            self.nav.clip_view.sequencer.move_band(1);
+            return;
+        }
+        let lane = self
+            .nav
+            .current_track()
+            .and_then(|t| t.sequencer.as_deref())
+            .map_or(0, SequencerState::lane_cursor);
+        if lane + 1 < LANES {
+            self.sequencer_op(SeqOp::MoveLane(1));
+        } else {
+            self.nav.clip_view.sequencer.move_band(1);
+        }
+    }
+
+    /// One row up the screen.
+    fn sequencer_up(&mut self) {
+        let view = &self.nav.clip_view.sequencer;
+        if view.band == SeqBand::Grid {
+            if self.grid_walks_lanes() {
+                self.sequencer_op(SeqOp::MoveLane(-1));
+            }
+            return;
+        }
+        let returning = view.band == SeqBand::Step;
+        self.nav.clip_view.sequencer.move_band(-1);
+        // Coming back into the grid lands on the row it was left from, which
+        // is the bottom one — the same square the cursor walked off.
+        if returning && self.grid_walks_lanes() {
+            self.sequencer_op(SeqOp::SelectLane(LANES as u8 - 1));
+        }
+    }
+
     /// The keys whose meaning depends on which band has the cursor. Answers
     /// whether the key was one of them.
     fn sequencer_band_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
@@ -224,15 +278,19 @@ impl App {
         let arrow_right = matches!(key.code, KeyCode::Char('l') | KeyCode::Right);
         let delta: i8 = if arrow_left { -1 } else { 1 };
 
-        // j/k walks the bands everywhere. The lane is on [ and ] instead,
-        // because a lane is chosen mid-pattern and a band is not.
+        // j/k walks *down the screen*. In the grid of a kit that means the
+        // lanes, because the lanes are the rows: a hand reaching down from
+        // the kick expects the snare, not a panel. Walking off the last lane
+        // carries on into the panels below, and walking back up off the step
+        // panel lands on the last lane again, so the whole view is one
+        // continuous column of things to stand on.
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
-                self.nav.clip_view.sequencer.move_band(1);
+                self.sequencer_down();
                 return true;
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.nav.clip_view.sequencer.move_band(-1);
+                self.sequencer_up();
                 return true;
             }
             _ => {}

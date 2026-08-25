@@ -76,12 +76,14 @@ fn a_sequencer_track_is_created_given_a_pattern_and_heard() {
     assert!(track.sequencer.is_some(), "the track is not a sequencer");
     assert_eq!(track.name, "seq");
 
-    // Four on the floor, and run it.
+    // Four on the floor. NO SetPlaying: a fresh pattern runs by default, so
+    // pressing play is all a beginner has to do. This pins the default —
+    // it shipped as not-running once and the first real user pressed play
+    // into silence.
     for step in [0u8, 4, 8, 12] {
         app.sequencer_op(SeqOp::SelectStep(step));
         app.sequencer_op(SeqOp::ToggleStep);
     }
-    app.sequencer_op(SeqOp::SetPlaying(true));
     if let Some(track) = app.nav.current_track_mut() {
         track.volume = 1.0;
         track.sync_to_audio();
@@ -90,11 +92,12 @@ fn a_sequencer_track_is_created_given_a_pattern_and_heard() {
     let (mut mixer, transport) = mixer_from(&app);
     transport.play();
     let peak = render(&mut mixer, &transport, 16);
-    assert!(peak > 0.001, "the sequencer produced no sound, peak={peak}");
+    assert!(peak > 0.001, "a fresh sequencer + play made no sound, peak={peak}");
 }
 
-/// A sequencer that has not been started is silent, so that adding one to a
-/// session does not make a noise nobody asked for.
+/// A sequencer that has been STOPPED is silent — `t` is a real mute. (A
+/// fresh one runs by default; the silence that needs guaranteeing is the one
+/// the player asked for by stopping it.)
 #[test]
 fn a_sequencer_that_is_not_running_is_silent() {
     let mut app = headless();
@@ -103,6 +106,7 @@ fn a_sequencer_that_is_not_running_is_silent() {
         app.sequencer_op(SeqOp::SelectStep(step));
         app.sequencer_op(SeqOp::ToggleStep);
     }
+    app.sequencer_op(SeqOp::SetPlaying(false));
 
     let (mut mixer, transport) = mixer_from(&app);
     transport.play();
@@ -258,7 +262,7 @@ mod grid {
     use phosphor_app::sequencer::ops::SeqOp;
     use phosphor_app::state::{ClipTab, ClipViewFocus, InstrumentType, Pane, SeqBand};
     use phosphor_core::mixer::MixerCommand;
-    use phosphor_core::pattern::{Mode, Step};
+    use phosphor_core::pattern::{Mode, Step, LANES};
 
     use super::headless;
     use crate::app::App;
@@ -335,28 +339,59 @@ mod grid {
         assert_eq!(app.nav.focused_pane, Pane::ClipView);
     }
 
-    /// `j`/`k` walks the bands and stops at both ends; `[`/`]` walks the
-    /// lanes, at any depth, without a knob having to be let go of first.
+    /// `j`/`k` walks *down the screen*: the sounds first, because on a kit
+    /// the rows are the sounds, and then on into the panels below. The hand
+    /// that reaches down from the kick expects the snare.
     #[test]
-    fn the_bands_walk_with_jk_and_the_lanes_with_brackets() {
+    fn jk_walks_the_sounds_then_down_into_the_panels() {
         let mut app = grid_app();
         assert_eq!(app.nav.clip_view.sequencer.band, SeqBand::Grid);
+        assert_eq!(state(&app).lane_cursor(), 0);
 
         press(&mut app, KeyCode::Char('k'));
-        assert_eq!(app.nav.clip_view.sequencer.band, SeqBand::Grid, "k walked off the top");
+        assert_eq!(state(&app).lane_cursor(), 0, "k walked off the top of the kit");
+
+        for expected in 1..LANES {
+            press(&mut app, KeyCode::Char('j'));
+            assert_eq!(state(&app).lane_cursor(), expected);
+            assert_eq!(app.nav.clip_view.sequencer.band, SeqBand::Grid, "j left the grid early");
+        }
+
+        // Off the last sound and into the panels, and back up onto the last
+        // sound again — one continuous column of things to stand on.
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.nav.clip_view.sequencer.band, SeqBand::Step);
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.nav.clip_view.sequencer.band, SeqBand::Grid);
+        assert_eq!(state(&app).lane_cursor(), LANES - 1);
 
         for expected in [SeqBand::Step, SeqBand::Pattern, SeqBand::Slots, SeqBand::Slots] {
             press(&mut app, KeyCode::Char('j'));
             assert_eq!(app.nav.clip_view.sequencer.band, expected);
         }
 
-        // The lane is not a band and never becomes one.
-        press(&mut app, KeyCode::Char(']'));
-        press(&mut app, KeyCode::Char(']'));
-        assert_eq!(state(&app).lane_cursor(), 2);
-        assert_eq!(app.nav.clip_view.sequencer.band, SeqBand::Slots, "] moved the band");
+        // `[` and `]` stay as the fast way between sounds, at any depth.
         press(&mut app, KeyCode::Char('['));
-        assert_eq!(state(&app).lane_cursor(), 1);
+        press(&mut app, KeyCode::Char('['));
+        assert_eq!(state(&app).lane_cursor(), LANES - 3);
+        assert_eq!(app.nav.clip_view.sequencer.band, SeqBand::Slots, "[ moved the band");
+        press(&mut app, KeyCode::Char(']'));
+        assert_eq!(state(&app).lane_cursor(), LANES - 2);
+    }
+
+    /// On a melodic pattern there is one row, so `j` from the grid is the way
+    /// down to the panels rather than a walk through seven voices that look
+    /// exactly like the one being edited.
+    #[test]
+    fn jk_leaves_the_grid_at_once_on_a_melodic_pattern() {
+        let mut app = grid_app();
+        app.sequencer_op(SeqOp::SetChild(InstrumentType::Juno60));
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.nav.clip_view.sequencer.band, SeqBand::Step);
+        assert_eq!(state(&app).lane_cursor(), 0, "j moved a voice on a melodic pattern");
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.nav.clip_view.sequencer.band, SeqBand::Grid);
+        assert_eq!(state(&app).lane_cursor(), 0, "coming back up jumped to the last voice");
     }
 
     /// Enter holds a knob, `h`/`l` turn it, `H`/`L` turn it in strides, and
@@ -393,7 +428,7 @@ mod grid {
     #[test]
     fn a_held_knob_swallows_the_keys_that_would_leave() {
         let mut app = grid_app();
-        press(&mut app, KeyCode::Char('j'));
+        app.nav.clip_view.sequencer.focus_band(SeqBand::Step);
         press(&mut app, KeyCode::Enter);
         assert!(app.nav.clip_view.sequencer.locked);
 
@@ -512,9 +547,7 @@ mod grid {
     #[test]
     fn the_slot_strip_selects_and_queues() {
         let mut app = grid_app();
-        press(&mut app, KeyCode::Char('j'));
-        press(&mut app, KeyCode::Char('j'));
-        press(&mut app, KeyCode::Char('j'));
+        app.nav.clip_view.sequencer.focus_band(SeqBand::Slots);
         assert_eq!(app.nav.clip_view.sequencer.band, SeqBand::Slots);
 
         press(&mut app, KeyCode::Char('l'));
@@ -573,7 +606,7 @@ mod screen {
     use phosphor_app::sequencer::ops::SeqOp;
     use phosphor_app::state::{ClipTab, InstrumentType, Pane, SeqBand};
     use phosphor_core::mixer::MixerCommand;
-    use phosphor_core::pattern::{Chord, Step};
+    use phosphor_core::pattern::{Chord, Step, LANES};
 
     use super::headless;
     use crate::app::App;
@@ -627,6 +660,54 @@ mod screen {
 
     fn joined(app: &App, width: u16, height: u16) -> String {
         screen(app, width, height).join("\n")
+    }
+
+    /// The columns the step grid is drawn in — everything to the right of
+    /// the instrument panel, which draws bars out of the same block
+    /// characters the steps are made of.
+    fn grid_area(app: &App, width: u16, height: u16) -> Vec<String> {
+        const PANEL: usize = 25; // the fx panel and its separator
+        screen(app, width, height)
+            .into_iter()
+            .map(|row| row.chars().skip(PANEL).collect())
+            .collect()
+    }
+
+    /// The rows that have the running light on them, and the columns it
+    /// covers in each — read off the buffer's colours, because a light is a
+    /// background and text cannot show one.
+    fn lit_columns(app: &App) -> std::collections::BTreeMap<usize, Vec<usize>> {
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let snapshot = app.engine.transport.snapshot();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &snapshot, &app.nav, None))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let light = crate::theme::playhead_fg();
+
+        let mut found = std::collections::BTreeMap::new();
+        for y in 0..40u16 {
+            let columns: Vec<usize> = (25..120u16)
+                .filter(|&x| buffer[(x, y)].bg == light)
+                .map(usize::from)
+                .collect();
+            if !columns.is_empty() {
+                found.insert(usize::from(y), columns);
+            }
+        }
+        found
+    }
+
+    /// How many steps are lit on the grid — hits and accents together.
+    ///
+    /// The count a player would make by looking at the screen, which is the
+    /// number that has to match the number of times they pressed `n`.
+    fn marks(app: &App) -> usize {
+        // A button is two solid columns wide at this size, which is the
+        // point of it: a step you can see from across the room.
+        let text = grid_area(app, 120, 40).join("\n");
+        text.matches("\u{2593}\u{2593}").count() + text.matches("\u{2588}\u{2588}").count()
     }
 
     /// `b` compiles the pattern onto the timeline at the next free bar, tells
@@ -737,25 +818,64 @@ mod screen {
         assert!(text.contains("C in 4 steps"), "no countdown on the screen:\n{text}");
     }
 
-    /// The hits from the other lanes are behind the one being edited. Without
-    /// them a kick is written blind against a hat, which is the reason one
-    /// lane at a time is workable at all.
+    /// The complaint that caused this view to be rebuilt: writing one step
+    /// made three marks appear — the step, a ghost of it on the lane being
+    /// looked at, and a dot on a map underneath — and no way to tell which
+    /// of them had been asked for. One toggle, one mark, on the row named
+    /// after the sound it plays.
     #[test]
-    fn the_grid_draws_ghost_hits_from_the_other_lanes() {
+    fn one_toggle_makes_exactly_one_mark() {
         let mut app = grid_app();
-        // A snare on step 5, then back to the kick lane, which is empty.
-        app.sequencer_op(SeqOp::SelectLane(1));
-        app.sequencer_op(SeqOp::SelectStep(4));
-        app.sequencer_op(SeqOp::ToggleStep);
-        app.sequencer_op(SeqOp::SelectLane(0));
+        assert_eq!(marks(&app), 0, "an empty pattern is not empty on the screen");
 
-        let text = joined(&app, 120, 40);
-        assert!(text.contains('\u{25E6}'), "no ghost hit on the grid:\n{text}");
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(marks(&app), 1, "one step written, {} marks drawn", marks(&app));
 
-        // ...and a hit of its own is drawn differently from a ghost of one.
-        app.sequencer_op(SeqOp::ToggleStep);
-        let text = joined(&app, 120, 40);
-        assert!(text.contains('\u{25CF}'), "a written step is not drawn:\n{text}");
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(marks(&app), 2);
+
+        // ...on another sound, still one each.
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(marks(&app), 3);
+
+        // ...and taking one off takes off exactly one.
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(marks(&app), 2);
+    }
+
+    /// Every lane is a row, named, on a terminal with room for them: that is
+    /// what a drum machine looks like, and it is the answer to "how do I
+    /// change the sound on each step" — the sounds are the rows.
+    #[test]
+    fn a_kit_shows_every_sound_as_a_row() {
+        let mut app = grid_app();
+        four_on_the_floor(&mut app);
+        let rows = screen(&app, 120, 40);
+
+        for name in ["BD", "SD", "CH", "OH", "CP", "LT", "MT", "HT"] {
+            let row = rows
+                .iter()
+                .find(|row| row.contains(&format!("{name} \u{2591}")) || row.contains(&format!("{name} \u{2593}")))
+                .unwrap_or_else(|| panic!("no row for {name}:\n{}", rows.join("\n")));
+            assert!(
+                row.matches('\u{2591}').count() + row.matches('\u{2593}').count() >= 16,
+                "the {name} row is not a full set of steps: {row:?}",
+            );
+        }
+
+        // The lane being written is marked, and moving down moves the mark.
+        let marked = |app: &App| {
+            screen(app, 120, 40)
+                .into_iter()
+                .find(|row| row.contains('\u{25B8}'))
+                .unwrap_or_default()
+        };
+        assert!(marked(&app).contains("BD"), "the kick row is not marked: {:?}", marked(&app));
+        press(&mut app, KeyCode::Char('j'));
+        assert!(marked(&app).contains("SD"), "j did not move onto the snare");
     }
 
     /// Eighty by twenty-four is the floor. The bands that carry the cursor
@@ -766,31 +886,59 @@ mod screen {
         four_on_the_floor(&mut app);
         let text = joined(&app, 80, 24);
 
-        assert!(text.contains("seq"), "no header:\n{text}");
-        assert!(text.contains("lane"), "no lane strip:\n{text}");
-        assert!(text.contains("BD"), "no kit names:\n{text}");
+        assert!(text.contains("stopped") || text.contains("step "), "no header:\n{text}");
+        assert!(text.contains("sound "), "no sound strip:\n{text}");
+        assert!(text.contains("BD") && text.contains("SD"), "no kit names:\n{text}");
+        assert!(text.contains(" 16"), "no step numbers:\n{text}");
         assert!(text.contains("slots"), "no pattern strip:\n{text}");
         assert!(text.contains("chain"), "no chain:\n{text}");
-        // ...and the band with the cursor on it is drawn whatever else is not.
+
+        // ...and the knob under the cursor is drawn whatever else is not: a
+        // panel with no room scrolls to the row being used.
         app.nav.clip_view.sequencer.focus_band(SeqBand::Pattern);
+        let swing = crate::app::sequencer_keys::PATTERN_KNOBS
+            .iter()
+            .position(|knob| *knob == phosphor_app::state::SeqKnob::Swing)
+            .unwrap();
+        app.nav.clip_view.sequencer.knob = swing;
         let text = joined(&app, 80, 24);
-        assert!(text.contains("swing"), "the focused panel was dropped:\n{text}");
+        assert!(text.contains("swing"), "the knob under the cursor was dropped:\n{text}");
     }
 
-    /// The mini-map is what a large terminal buys: every lane, one glyph per
-    /// step, without leaving the lane being edited.
+    /// A short terminal scrolls the rows instead of dropping to one of them.
+    /// Three lanes of a kit still shows the kick against the hat, which is
+    /// the thing a step grid is for; one lane shows nothing at all.
     #[test]
-    fn a_tall_terminal_gets_the_whole_pattern() {
+    fn a_short_terminal_scrolls_the_sounds() {
         let mut app = grid_app();
         four_on_the_floor(&mut app);
-        let short = joined(&app, 120, 24);
-        let tall = joined(&app, 120, 44);
 
-        let count = |text: &str| text.matches("BD").count();
+        let rows_named = |app: &App, height: u16| -> Vec<String> {
+            grid_area(app, 120, height)
+                .into_iter()
+                .filter(|row| row.contains('\u{2591}') || row.contains('\u{2593}'))
+                .collect()
+        };
+
+        assert_eq!(rows_named(&app, 40).len(), LANES, "a tall terminal is missing sounds");
+
+        let short = rows_named(&app, 26);
+        assert!(short.len() > 1, "a short terminal fell back to a single sound");
+        assert!(short.len() < LANES, "this height was supposed to be short");
         assert!(
-            count(&tall) > count(&short),
-            "the mini-map did not appear on a terminal with room for it:\n{tall}",
+            joined(&app, 120, 26).contains("sound "),
+            "the strip does not stand in for the rows that are missing",
         );
+
+        // The sound being written is always one of the rows on the screen.
+        for _ in 0..LANES {
+            let visible = rows_named(&app, 26);
+            assert!(
+                visible.iter().any(|row| row.contains('\u{25B8}')),
+                "the sound being written scrolled off the screen: {visible:?}",
+            );
+            press(&mut app, KeyCode::Char('j'));
+        }
     }
 
     /// Nine themes, one grid. Nothing here picks a colour of its own: a view
@@ -850,32 +998,29 @@ mod screen {
         assert_eq!(state(&app).step_cursor(), 1, "a stale digit turned 2 into 12");
     }
 
-    /// Thirty-two steps is two rows of sixteen, and a tie runs its tail into
-    /// the cells its own step does not need.
+    /// Thirty-two steps is two pages of sixteen where sixteen is all that
+    /// fits, and the page follows the cursor. The steps stay the size they
+    /// are: a button squeezed to one character is not a button.
     #[test]
-    fn a_long_pattern_wraps_and_a_tie_shows_its_tail() {
+    fn a_long_pattern_pages_and_a_tie_shows_its_tail() {
         let mut app = grid_app();
         app.sequencer_op(SeqOp::CycleLength(2)); // 16 → 32
-        app.sequencer_op(SeqOp::SelectStep(20));
+        app.sequencer_op(SeqOp::SelectStep(4));
         app.sequencer_op(SeqOp::ToggleStep);
         app.sequencer_op(SeqOp::ToggleTie);
 
-        let rows = screen(&app, 120, 44);
-        assert!(
-            rows.iter().any(|row| row.contains("\u{2502}  BD ")),
-            "no lane row:\n{}",
-            rows.join("\n"),
-        );
-        assert!(
-            rows.iter().any(|row| row.contains("\u{2502}  17 ")),
-            "a thirty-two step pattern did not wrap onto a second row:\n{}",
-            rows.join("\n"),
-        );
-        assert!(
-            rows.iter().any(|row| row.contains('\u{254C}')),
-            "a tie has no tail:\n{}",
-            rows.join("\n"),
-        );
+        let first = grid_area(&app, 80, 24).join("\n");
+        assert!(first.contains("1/2"), "a paged grid does not say which page:\n{first}");
+        assert!(first.contains('\u{2500}'), "a tie has no tail:\n{first}");
+        assert!(first.contains(" 16"), "the first page does not run to sixteen:\n{first}");
+        assert!(!first.contains(" 17"), "both pages were drawn at once:\n{first}");
+
+        // Walking past the sixteenth step turns the page over.
+        app.sequencer_op(SeqOp::SelectStep(20));
+        let second = grid_area(&app, 80, 24).join("\n");
+        assert!(second.contains("2/2"), "the page did not turn:\n{second}");
+        assert!(second.contains(" 17"), "the second page does not start at seventeen");
+        assert_eq!(marks(&app), 0, "a step from the other page was drawn on this one");
     }
 
     /// Any terminal, any size. The view is laid out by what fits rather than
@@ -897,38 +1042,155 @@ mod screen {
         }
     }
 
-    /// The playhead on the grid is the audio thread's, not a cursor of the
-    /// UI's own: it is published by the callback that generated the notes,
-    /// which is the only place that knows where the pattern actually is.
+    /// The walk a person takes the first time they open this, in the order
+    /// they take it. Every assertion is something they can see on the screen
+    /// or hear out of the speakers — this is the test that stands in for the
+    /// user who could not work out how to play the thing.
     #[test]
-    fn the_playhead_marks_the_step_that_is_sounding() {
+    fn a_first_time_walkthrough() {
+        // 1. Add the track. The screen says what to press.
+        let mut app = headless();
+        app.create_instrument_track(InstrumentType::Sequencer);
+        assert_eq!(app.nav.focused_pane, Pane::ClipView, "the keys landed somewhere else");
+        let text = joined(&app, 100, 30);
+        assert!(text.contains("write a step"), "the empty grid teaches nothing:\n{text}");
+        assert!(text.contains("BD") && text.contains("SD"), "the sounds are not named:\n{text}");
+
+        // 2. Write two steps on the kick. Exactly two marks appear.
+        press(&mut app, KeyCode::Char('n'));
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(marks(&app), 2, "two presses of n did not make two marks");
+
+        // 3. Down onto the snare — visibly.
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(state(&app).lane_cursor(), 1);
+        let marked = grid_area(&app, 100, 30)
+            .into_iter()
+            .find(|row| row.contains('\u{25B8}'))
+            .unwrap_or_default();
+        assert!(marked.contains("SD"), "the cursor is not visibly on the snare: {marked:?}");
+        press(&mut app, KeyCode::Char('n'));
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(marks(&app), 4);
+
+        // 4. Space then p — never having pressed `t`. The pattern is running
+        //    from birth, so play is all there is to do.
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('p'));
+        assert!(app.engine.transport.is_playing(), "Space p did not start the transport");
+        assert!(state(&app).is_playing(), "the pattern was not running when play was pressed");
+
+        // ...and what the audio thread publishes lights the grid.
+        let handle = app.nav.current_track().unwrap().handle.clone().unwrap();
+        handle.pattern.publish(0, None, 5, true);
+        app.nav.sync_sequencers_from_audio();
+        assert!(!lit_columns(&app).is_empty(), "the pattern is playing and nothing is lit");
+
+        // 5. Space then 0 — stopped, and the needle back at the beginning.
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('0'));
+        assert!(!app.engine.transport.is_playing());
+        assert_eq!(app.engine.transport.position_ticks(), 0, "stop did not rewind");
+        handle.pattern.publish(0, None, 0, false);
+        app.nav.sync_sequencers_from_audio();
+        assert!(lit_columns(&app).is_empty(), "the light kept running after the stop");
+    }
+
+    /// The running light. A step sequencer is recognised across a room by
+    /// the column of light chasing through it, and this one is drawn on
+    /// every lane at once — the whole bar lights, not a mark on one row.
+    ///
+    /// It is the audio thread's position, not a cursor of the UI's own: the
+    /// callback that generated the notes is the only thing that knows where
+    /// the pattern actually is.
+    #[test]
+    fn the_running_light_chases_across_every_lane() {
         let mut app = grid_app();
-        app.sequencer_op(SeqOp::SetPlaying(true));
+        four_on_the_floor(&mut app);
         let handle = app.nav.current_track().unwrap().handle.clone().unwrap();
 
-        let grid_row = |app: &App| -> String {
-            screen(app, 100, 30)
-                .into_iter()
-                .find(|row| row.contains("\u{2502}  BD "))
-                .map(|row| row.split("  BD ").nth(1).unwrap_or_default().to_string())
-                .expect("no grid row on the screen")
-        };
-        assert!(!grid_row(&app).contains('\u{2502}'), "a stopped pattern has a playhead");
+        assert!(lit_columns(&app).is_empty(), "a stopped pattern has a light on it");
+
+        handle.pattern.publish(0, None, 0, true);
+        app.nav.sync_sequencers_from_audio();
+        let home = lit_columns(&app).values().next().cloned().unwrap();
 
         handle.pattern.publish(0, None, 3, true);
         app.nav.sync_sequencers_from_audio();
-        let row = grid_row(&app);
-        assert!(row.contains('\u{2502}'), "the playhead is not on the grid: {row:?}");
+        let lit = lit_columns(&app);
+        assert!(!lit.is_empty(), "the pattern is running and nothing is lit");
         assert_eq!(
-            row.chars().position(|c| c == '\u{2502}'),
-            Some(9),
-            "the playhead is on the wrong step: {row:?}",
+            lit.len(),
+            LANES + 1,
+            "the light is on {} rows, not on all eight lanes and the ruler",
+            lit.len(),
         );
+        let columns: Vec<&Vec<usize>> = lit.values().collect();
+        assert!(
+            columns.windows(2).all(|pair| pair[0] == pair[1]),
+            "the light is not one column: {lit:?}",
+        );
+        let first = columns[0].clone();
 
-        // A slot that is only being looked at gets no playhead: the marker
-        // belongs to the pattern that is sounding.
+        // ...and it moves along, and wraps.
+        handle.pattern.publish(0, None, 4, true);
+        app.nav.sync_sequencers_from_audio();
+        let next = lit_columns(&app).values().next().cloned().unwrap();
+        assert!(next[0] > first[0], "the light did not move on: {first:?} → {next:?}");
+
+        handle.pattern.publish(0, None, 0, true);
+        app.nav.sync_sequencers_from_audio();
+        let wrapped = lit_columns(&app).values().next().cloned().unwrap();
+        assert_eq!(wrapped, home, "the light did not wrap back to the first step");
+        assert!(first > home, "the light was not moving left to right");
+
+        // A slot that is only being looked at gets no light: it belongs to
+        // the pattern that is sounding.
         app.sequencer_op(SeqOp::SelectSlot(4));
-        assert!(!grid_row(&app).contains('\u{2502}'), "a playhead ran through a silent pattern");
+        assert!(lit_columns(&app).is_empty(), "a light ran through a silent pattern");
+    }
+
+    /// The header says what the machine is doing, in words, because "I
+    /// pressed play and nothing happened" is the first thing that goes wrong
+    /// for someone who has not used this one before.
+    #[test]
+    fn the_header_says_what_the_machine_is_doing() {
+        let mut app = grid_app();
+        let text = joined(&app, 120, 40);
+        assert!(text.contains("stopped"), "a stopped machine does not say so:\n{text}");
+        assert!(text.contains("SPC p"), "and does not say what to press:\n{text}");
+
+        let handle = app.nav.current_track().unwrap().handle.clone().unwrap();
+        handle.pattern.publish(0, None, 4, true);
+        app.nav.sync_sequencers_from_audio();
+        let text = joined(&app, 120, 40);
+        assert!(text.contains("step 5 of 16"), "a running machine does not say where:\n{text}");
+
+        app.sequencer_op(SeqOp::SetPlaying(false));
+        let text = joined(&app, 120, 40);
+        assert!(text.contains("muted"), "a muted pattern does not say so:\n{text}");
+    }
+
+    /// An empty pattern says what to press, and stops saying it the moment
+    /// there is something on the grid to look at instead.
+    #[test]
+    fn an_empty_pattern_coaches_and_then_gets_out_of_the_way() {
+        let mut app = grid_app();
+        let text = joined(&app, 120, 40);
+        assert!(text.contains("write a step"), "an empty grid teaches nothing:\n{text}");
+        assert!(text.contains("pick a sound"));
+        assert!(text.contains("play"));
+
+        press(&mut app, KeyCode::Char('n'));
+        assert!(
+            !joined(&app, 120, 40).contains("write a step"),
+            "the coaching line stayed after the first step was written",
+        );
     }
 
     /// Esc walks back out the way Enter came in: a knob, then the band, then

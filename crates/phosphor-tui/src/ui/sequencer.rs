@@ -2,25 +2,40 @@
 //!
 //! # What is on the screen
 //!
-//! Four bands, top to bottom, and `j`/`k` walks them:
+//! A drum machine's face. Eight lanes, one row each, sixteen buttons across —
+//! the kick above the snare above the hats — with the step numbers over the
+//! top and a light that chases across every lane as the pattern plays.
 //!
-//! * **grid** — one lane's sixteen (or thirty-two) steps, with the hits from
-//!   every other lane behind them as ghosts, so a kick can be written against
-//!   a hat that is not currently being edited;
-//! * **step** — the controls belonging to the step under the cursor: one pitch
-//!   control, chord, voicing, gate;
-//! * **pattern** — length, rate, swing, the velocities, mode and key;
+//! Below it, three bands of controls that `j`/`k` walks down into:
+//!
+//! * **step** — what the step under the cursor plays: one pitch control,
+//!   chord, voicing, gate. On a kit it is the lane's panel instead, because a
+//!   drum step says only *when*;
+//! * **pattern** — the child instrument, length, rate, swing, the velocities,
+//!   mode and key;
 //! * **slots** — the eight patterns, what is queued, and the chain.
 //!
 //! Everything here reads. Not one function in this file changes a pattern —
 //! the keys do that, and only by naming a [`SeqOp`](phosphor_app::sequencer::ops::SeqOp).
 //!
+//! # What this replaced, and why
+//!
+//! One lane at a time, with the other seven behind it as dimmed ghosts and a
+//! one-glyph-per-step map underneath. The first person to use it wrote one
+//! step and watched three marks appear — the step, its ghost, and its dot on
+//! the map — and could not tell which of them they had asked for. Lanes as
+//! rows are what a step sequencer looks like; a hit is now exactly one mark,
+//! on the row named after the sound it plays.
+//!
 //! # Fitting
 //!
-//! The band layout is not fixed: sections are laid out in priority order and
-//! the ones that do not fit are left out, so the view works at the eight rows
-//! an 80×24 terminal leaves it and spreads into the twenty a large one gives.
-//! The per-lane mini-map is the first thing dropped and the last thing added.
+//! Eight rows of lanes and a ruler is eleven of the terminal's lines, and an
+//! eighty-by-twenty-four terminal with four tracks on it has eight. So the
+//! sections are laid out in priority order: the lanes and the band with the
+//! cursor on it are never dropped, and below eleven rows the grid falls back
+//! to the lane being written with the sound strip above it standing in for
+//! the rows. The steps themselves never shrink below two columns — a pattern
+//! is paged rather than squeezed.
 
 use super::*;
 
@@ -29,9 +44,6 @@ use phosphor_core::pattern::{
     Chord, Lane, Mode, PatternBlock, Rate, Step, SwitchQuant, Voicing, LANES, MAX_STEPS, SLOTS,
     STEP_COUNTS,
 };
-
-/// How many steps a display row holds before wrapping to the next.
-const ROW_STEPS: usize = 16;
 
 /// The dial. Five positions is what one cell can say honestly, and the value
 /// is printed beside it, so the glyph is for reading the panel at a glance
@@ -127,6 +139,9 @@ struct Seq<'a> {
     colour: Color,
     /// The instrument the sequencer drives, for the child knob.
     child: Option<InstrumentType>,
+    /// How many lanes get a row. Eight is the machine's face; fewer is a
+    /// terminal too short for it, and the rows scroll under the cursor.
+    lane_window: usize,
     /// How many clips are sitting on the track — a running pattern and a clip
     /// of the same part is the doubled-notes trap.
     clips: usize,
@@ -148,6 +163,47 @@ impl Seq<'_> {
 
     fn lane(&self) -> &Lane {
         self.state.lane()
+    }
+
+    /// Whether this is a kit, in which case a lane is a sound and the grid is
+    /// eight of them stacked up.
+    fn is_kit(&self) -> bool {
+        !self.state.pattern().lanes[0].is_pitched()
+    }
+
+    /// The lanes that get a row, in the order they are drawn.
+    ///
+    /// All eight on a kit with room for them: that is the machine's face, and
+    /// the reason a step written on the snare row is visibly on the snare.
+    /// One row otherwise — a melodic pattern, where a lane is a voice rather
+    /// than a sound, or a terminal with no vertical room for eight.
+    fn lane_rows(&self) -> Vec<usize> {
+        if !self.is_kit() {
+            return vec![self.state.lane_cursor()];
+        }
+        let window = self.lane_window.clamp(1, LANES);
+        // The cursor stays inside the window, roughly in the middle of it, so
+        // that walking down the kit scrolls the rows rather than losing them.
+        let start = self
+            .state
+            .lane_cursor()
+            .saturating_sub(window / 2)
+            .min(LANES - window);
+        (start..start + window).collect()
+    }
+
+    /// Whether the strip has to stand in for rows that are not on the screen.
+    fn shows_every_lane(&self) -> bool {
+        self.is_kit() && self.lane_window >= LANES
+    }
+
+    /// Whether the pattern under the editor has anything on it at all.
+    fn is_empty(&self) -> bool {
+        self.state
+            .pattern()
+            .lanes
+            .iter()
+            .all(|lane| lane.steps.iter().all(|step| !step.on))
     }
 
     fn step(&self) -> &Step {
@@ -241,8 +297,10 @@ impl Seq<'_> {
 
 // ── Sections ──
 
-/// Width of the label column that the grid rows and the mini-map share.
-const LABEL_W: usize = 5;
+/// The lane label column: a cursor mark, two characters of name, and a mute
+/// or solo mark. Narrow, because every column it takes is a column the steps
+/// do not get.
+const LABEL_W: usize = 4;
 
 /// Put text into a pre-allocated row of cells.
 fn write_text(row: &mut [(char, Style)], x: usize, text: &str, style: Style) {
@@ -253,41 +311,115 @@ fn write_text(row: &mut [(char, Style)], x: usize, text: &str, style: Style) {
     }
 }
 
-/// How many cells one step gets. Three when there is room — enough to draw a
-/// tie's tail — and two when there is not.
-fn cell_width(seq: &Seq) -> usize {
-    let per_row = seq.steps().min(ROW_STEPS);
-    if LABEL_W + per_row * 3 <= seq.width {
-        3
-    } else {
-        2
+/// The geometry of one page of the step grid.
+///
+/// A step is a *button*, not a character: three columns of it, two of them
+/// solid, with a gap every fourth step so the beats group the way they do on
+/// the front panel of the machine this is imitating. Two columns per step is
+/// the narrow fallback; below that the grid is paged rather than shrunk,
+/// because a step you cannot see is better than sixteen you cannot read.
+#[derive(Debug, Clone, Copy)]
+struct Geometry {
+    /// Columns per step, including the space that separates it from the next.
+    cell: usize,
+    /// The first step of the page on the screen.
+    first: usize,
+    /// How many steps are on it.
+    count: usize,
+    /// How many pages the pattern is.
+    pages: usize,
+}
+
+impl Geometry {
+    /// The x of a step's cell, or `None` when it is on another page.
+    fn x_of(&self, step: usize) -> Option<usize> {
+        if step < self.first || step >= self.first + self.count {
+            return None;
+        }
+        let offset = step - self.first;
+        Some(LABEL_W + offset * self.cell + offset / BEAT * BEAT_GAP)
+    }
+
+    /// The columns one page needs.
+    fn width(cell: usize, count: usize) -> usize {
+        LABEL_W + count * cell + count.saturating_sub(1) / BEAT * BEAT_GAP
     }
 }
 
-/// The top line: what this is, which slot, and what is about to happen.
+/// Steps to a beat, which is what the gaps in the row count out.
+const BEAT: usize = 4;
+
+/// The gap between beats, in columns.
+const BEAT_GAP: usize = 1;
+
+/// A page of steps, at most sixteen.
+const PAGE: usize = 16;
+
+/// Work out how much of the pattern fits, and which part of it to show.
+///
+/// Everything is tried at full size first: sixteen steps of three columns
+/// each is fifty-five, which is exactly what an eighty-column terminal has
+/// left after the instrument panel. Only when the whole pattern will not fit
+/// at either size does it page, and then the page is the one the cursor is
+/// standing on.
+fn geometry(seq: &Seq) -> Geometry {
+    let steps = seq.steps().max(1);
+    for cell in [3usize, 2] {
+        if Geometry::width(cell, steps) <= seq.width {
+            return Geometry { cell, first: 0, count: steps, pages: 1 };
+        }
+    }
+
+    // Paged. The page is a bar of sixteen where that fits, and whatever does
+    // fit on a terminal too narrow even for that — the steps stay the size
+    // they are and the page gets shorter, rather than the other way round.
+    let cell = if Geometry::width(3, PAGE.min(steps)) <= seq.width { 3 } else { 2 };
+    let mut per_page = PAGE.min(steps);
+    while per_page > 1 && Geometry::width(cell, per_page) > seq.width {
+        per_page -= 1;
+    }
+    let pages = steps.div_ceil(per_page);
+    let page = (seq.state.step_cursor() / per_page).min(pages - 1);
+    let first = page * per_page;
+    Geometry { cell, first, count: per_page.min(steps - first), pages }
+}
+
+/// The top line: what the machine is doing, in words.
+///
+/// A step sequencer that does not say whether it is running is a machine with
+/// no transport lights on it, and "press play and nothing happened" is the
+/// first thing that goes wrong for someone who has not used this one before.
 fn header_line(seq: &Seq) -> Line<'static> {
     let state = seq.state;
-    let mut spans: Vec<Span> = vec![Span::styled(
-        " seq ",
-        if seq.focused {
-            theme::amber_bright().add_modifier(Modifier::BOLD)
-        } else {
-            theme::dim()
-        },
-    )];
+    let mut spans: Vec<Span> = Vec::new();
+
+    match seq.playhead {
+        Some(step) => spans.push(Span::styled(
+            format!(" \u{25B6} step {} of {} ", step + 1, seq.steps()),
+            theme::amber_bright().add_modifier(Modifier::BOLD),
+        )),
+        None if state.is_playing() => spans.push(Span::styled(
+            " \u{25A0} stopped \u{2014} t or SPC p plays ",
+            theme::normal(),
+        )),
+        None => spans.push(Span::styled(
+            " \u{25A0} muted \u{2014} t plays this pattern ",
+            theme::muted(),
+        )),
+    }
+
+    spans.push(Span::styled(" slot ", theme::dim()));
+    spans.push(Span::styled(
+        format!("{} ", slot_letter(state.selected_slot())),
+        theme::amber().add_modifier(Modifier::BOLD),
+    ));
+    if let Some(child) = seq.child {
+        spans.push(Span::styled(format!("\u{00B7} {} ", child.label()), theme::muted()));
+    }
 
     let live = state.live_slot();
-    let running = state.is_playing();
-    spans.push(Span::styled(
-        format!("{} slot {} ", if running { "\u{25B6}" } else { "\u{25A0}" }, slot_letter(state.selected_slot())),
-        if running { theme::amber_bright() } else { theme::normal() },
-    ));
-
-    if running && live != state.selected_slot() {
-        spans.push(Span::styled(
-            format!("(playing {}) ", slot_letter(live)),
-            theme::muted(),
-        ));
+    if state.is_playing() && live != state.selected_slot() {
+        spans.push(Span::styled(format!("(playing {}) ", slot_letter(live)), theme::muted()));
     }
 
     // The countdown. The same arithmetic the audio thread will do, on the
@@ -332,7 +464,7 @@ fn header_line(seq: &Seq) -> Line<'static> {
 
     // The doubled-part warning, where it is looked at rather than only on the
     // track row: a pattern running under clips of its own bounce.
-    if running && seq.clips > 0 {
+    if state.is_playing() && seq.clips > 0 {
         spans.push(Span::styled(
             format!("\u{203C} {} clip{} too ", seq.clips, if seq.clips == 1 { "" } else { "s" }),
             theme::amber_bright(),
@@ -342,151 +474,198 @@ fn header_line(seq: &Seq) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The lane strip: eight names, the current one in brackets.
-fn lane_line(seq: &Seq) -> Line<'static> {
+/// Every lane on one line, for the terminal that has no room to give each of
+/// them a row of their own.
+///
+/// The rows are the lane list when they fit. This is what stands in for them
+/// when they do not: which sounds the kit has, which one is being written,
+/// and which of them have anything on them at all.
+fn lane_strip(seq: &Seq) -> Line<'static> {
     let state = seq.state;
     let current = state.lane_cursor();
-    let mut spans: Vec<Span> = vec![Span::styled(" lane ", theme::dim())];
+    // "sound" on a kit, where a lane is a drum voice; "voice" on a melodic
+    // pattern, where a lane is one of eight notes that can sound at once.
+    let mut spans: Vec<Span> =
+        vec![Span::styled(if seq.is_kit() { " sound " } else { " voice " }, theme::dim())];
 
     for index in 0..LANES {
         let lane = &state.pattern().lanes[index];
         let label = lane_label(state, index);
         let selected = index == current;
-        let audible = state.pattern().lane_audible(index);
+        let used = lane.steps.iter().any(|s| s.on);
 
         let style = if selected && seq.focused {
             theme::amber_bright().add_modifier(Modifier::BOLD)
         } else if lane.soloed {
             Style::default().fg(theme::solo_active_fg()).bg(theme::bg_val())
-        } else if !audible || lane.muted {
+        } else if lane.muted || !state.pattern().lane_audible(index) {
             theme::dim()
-        } else if lane.steps.iter().any(|s| s.on) {
+        } else if used {
             Style::default().fg(seq.colour).bg(theme::bg_val())
         } else {
             theme::muted()
         };
-
-        let text = if selected {
-            format!("[{label}]")
-        } else if lane.muted {
-            format!(" {label}\u{00B7}")
-        } else {
-            format!(" {label} ")
-        };
-        spans.push(Span::styled(text, style));
+        spans.push(Span::styled(
+            if selected { format!("[{label}]") } else { format!(" {label} ") },
+            style,
+        ));
     }
     Line::from(spans)
 }
 
-/// Step numbers above the grid, every fourth one.
-fn ruler_line(seq: &Seq, cw: usize) -> Line<'static> {
+/// The step numbers over the grid, and the running light in the same column
+/// as the lanes below it.
+fn ruler_line(seq: &Seq, geometry: Geometry) -> Line<'static> {
     let mut row = vec![(' ', theme::bg()); seq.width];
     let cursor = seq.state.step_cursor();
-    let per_row = seq.steps().min(ROW_STEPS);
-    for index in 0..per_row {
-        if index % 4 != 0 && index != cursor {
-            continue;
-        }
-        let style = if index == cursor && seq.on(SeqBand::Grid) {
+
+    if geometry.pages > 1 {
+        let page = geometry.first / geometry.count.max(1) + 1;
+        write_text(&mut row, 0, &format!("{page}/{}", geometry.pages), theme::dim());
+    }
+
+    for offset in 0..geometry.count {
+        let step = geometry.first + offset;
+        let Some(x) = geometry.x_of(step) else { continue };
+        let beat = step % BEAT == 0;
+        let lit = seq.playhead == Some(step);
+        let style = if lit {
+            light()
+        } else if step == cursor && seq.on(SeqBand::Grid) {
             theme::amber_bright().add_modifier(Modifier::BOLD)
-        } else if index == cursor {
-            theme::amber()
+        } else if beat {
+            theme::normal().add_modifier(Modifier::BOLD)
         } else {
             theme::dim()
         };
-        write_text(&mut row, LABEL_W + index * cw, &format!("{}", index + 1), style);
+        // The light takes the whole cell first, so the number sits inside a
+        // lit block rather than beside one.
+        if lit {
+            for column in x..x + geometry.cell {
+                if let Some(cell) = row.get_mut(column) {
+                    *cell = (' ', light());
+                }
+            }
+        }
+        // Right-aligned in the solid columns of the cell, so the number sits
+        // over the button rather than beside it.
+        let text = format!("{:>w$}", step + 1, w = geometry.cell.saturating_sub(1).max(1));
+        write_text(&mut row, x, &text, style);
     }
     grid_to_lines(vec![row]).remove(0)
 }
 
-/// The step row (or two) for the lane being edited.
+/// The running light: the column the pattern is on, inverted.
 ///
-/// The hits from the other seven lanes are behind them, dimmed. Editing one
-/// lane at a time is what makes a step grid usable in a terminal, and a lane
-/// edited with no sight of the others is how a kick ends up on the same step
-/// as a crash for the whole of a pattern.
-fn grid_lines(seq: &Seq, cw: usize) -> Vec<Line<'static>> {
+/// Every cell in it, on every lane and on the ruler above them, so the light
+/// reads as one bar sweeping across the machine rather than as eight separate
+/// marks. This is the thing a step sequencer is recognised by from across a
+/// room, and the reason it is the theme's brightest colour on its darkest.
+fn light() -> Style {
+    Style::default()
+        .fg(theme::bg_val())
+        .bg(theme::playhead_fg())
+        .add_modifier(Modifier::BOLD)
+}
+
+/// The grid itself: one row per lane, all of them at once.
+///
+/// This is the whole point of the view. A drum machine's face is its lanes
+/// side by side — the kick against the hat against the snare — and one lane
+/// at a time with the others hinted at is what this replaced: a player who
+/// wrote one step saw three marks appear and could not tell which of them
+/// they had asked for.
+fn grid_lines(seq: &Seq, geometry: Geometry) -> Vec<Line<'static>> {
     let state = seq.state;
-    let steps = seq.steps();
-    let lane = seq.lane();
-    let cursor = state.step_cursor();
-    let rows = steps.div_ceil(ROW_STEPS).max(1);
+    let pattern = state.pattern();
+    let current = state.lane_cursor();
     let mut grid: Vec<Vec<(char, Style)>> = Vec::new();
 
-    for row_index in 0..rows {
+    for &lane_index in seq.lane_rows().iter() {
+        let lane = &pattern.lanes[lane_index];
+        let here = lane_index == current;
+        let audible = pattern.lane_audible(lane_index);
         let mut row = vec![(' ', theme::bg()); seq.width];
-        if row_index == 0 {
-            let label = lane_label(state, state.lane_cursor());
-            let style = if seq.on(SeqBand::Grid) {
-                theme::amber_bright().add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(seq.colour).bg(theme::bg_val())
-            };
-            write_text(&mut row, 0, &format!("{label:>4} "), style);
+
+        // The row's own background, so the lane being written stands out from
+        // the seven that are not.
+        let row_bg = if here && seq.on(SeqBand::Grid) {
+            theme::col_highlight_bg()
         } else {
-            // A second row of sixteen is still the same lane, so the label
-            // column says where it starts instead: the numbers above the
-            // columns are the first row's.
-            write_text(
-                &mut row,
-                0,
-                &format!("{:>4} ", row_index * ROW_STEPS + 1),
-                theme::dim(),
-            );
+            theme::bg_val()
+        };
+        for cell in row.iter_mut() {
+            cell.1 = cell.1.bg(row_bg);
         }
 
-        let start = row_index * ROW_STEPS;
-        for offset in 0..ROW_STEPS.min(steps.saturating_sub(start)) {
-            let index = start + offset;
-            let step = lane.steps[index];
-            let ghost = !step.on
-                && (0..LANES).any(|other| {
-                    other != state.lane_cursor()
-                        && state.pattern().lanes[other].steps[index].on
-                        && state.pattern().lane_audible(other)
-                });
+        let label_style = if here && seq.focused {
+            theme::amber_bright().add_modifier(Modifier::BOLD).bg(row_bg)
+        } else if lane.soloed {
+            Style::default().fg(theme::solo_active_fg()).bg(row_bg)
+        } else if lane.muted || !audible {
+            theme::dim().bg(row_bg)
+        } else {
+            Style::default().fg(theme::dim_color(seq.colour, 70)).bg(row_bg)
+        };
+        let mark = if here { '\u{25B8}' } else { ' ' };
+        let state_mark = if lane.soloed {
+            's'
+        } else if lane.muted {
+            'm'
+        } else {
+            ' '
+        };
+        write_text(
+            &mut row,
+            0,
+            &format!("{mark}{:>2}{state_mark}", lane_label(state, lane_index)),
+            label_style,
+        );
 
-            let here = index == cursor;
-            let playing = seq.playhead == Some(index);
-            let bg = if here && seq.on(SeqBand::Grid) {
-                theme::col_row_bg()
-            } else if here {
-                theme::col_highlight_bg()
-            } else if playing {
-                theme::playhead_bg()
+        for offset in 0..geometry.count {
+            let step = geometry.first + offset;
+            let Some(x) = geometry.x_of(step) else { continue };
+            let value = lane.steps[step];
+            let cursor_here = here && step == state.step_cursor();
+
+            let (glyph, fg) = if value.on && value.accent {
+                ('\u{2588}', theme::amber_bright_val())
+            } else if value.on {
+                ('\u{2593}', if audible { seq.colour } else { theme::dim_color(seq.colour, 40) })
             } else {
-                theme::bg_val()
+                ('\u{2591}', theme::grid_minor())
             };
-
-            let (glyph, fg) = if step.on && step.accent {
-                ('\u{25C9}', theme::amber_bright_val())
-            } else if step.on {
-                ('\u{25CF}', seq.colour)
-            } else if ghost {
-                ('\u{25E6}', theme::dim_color(seq.colour, 35))
-            } else if playing {
-                ('\u{2502}', theme::playhead_fg())
-            } else if index % 4 == 0 {
-                ('\u{250A}', theme::grid_major())
+            let bg = if cursor_here {
+                if seq.on(SeqBand::Grid) { theme::col_row_bg() } else { theme::col_highlight_bg() }
             } else {
-                ('\u{00B7}', theme::grid_minor())
+                row_bg
             };
-
-            let x = LABEL_W + offset * cw;
             let style = Style::default().fg(fg).bg(bg).add_modifier(
-                if step.on { Modifier::BOLD } else { Modifier::empty() },
+                if value.on { Modifier::BOLD } else { Modifier::empty() },
             );
-            if let Some(cell) = row.get_mut(x) {
-                *cell = (glyph, style);
+
+            for column in 0..geometry.cell.saturating_sub(1) {
+                if let Some(cell) = row.get_mut(x + column) {
+                    *cell = (glyph, style);
+                }
             }
-            // A tie's tail runs into the cells the step's own width leaves,
-            // so "hold this until the next hit" is visible on the grid rather
-            // than only in the step's panel.
-            let tail = if step.on && step.gate == Step::TIE { '\u{254C}' } else { ' ' };
-            let tail_style = Style::default().fg(theme::dim_color(seq.colour, 45)).bg(bg);
-            for fill in 1..cw {
-                if let Some(cell) = row.get_mut(x + fill) {
-                    *cell = (tail, tail_style);
+            // The separator column carries a tie's tail, which is how "hold
+            // this until the next hit" is read off the grid rather than out
+            // of the step's panel.
+            if let Some(cell) = row.get_mut(x + geometry.cell - 1) {
+                let tie = value.on && value.gate == Step::TIE;
+                *cell = (
+                    if tie { '\u{2500}' } else { ' ' },
+                    Style::default().fg(theme::dim_color(seq.colour, 45)).bg(bg),
+                );
+            }
+
+            // ...and the light goes over everything, on every lane at once.
+            if seq.playhead == Some(step) {
+                for column in x..x + geometry.cell {
+                    if let Some(cell) = row.get_mut(column) {
+                        *cell = (cell.0, light());
+                    }
                 }
             }
         }
@@ -495,45 +674,22 @@ fn grid_lines(seq: &Seq, cw: usize) -> Vec<Line<'static>> {
     grid_to_lines(grid)
 }
 
-/// One glyph per step per lane: the whole pattern at a glance.
-fn minimap_lines(seq: &Seq) -> Vec<Line<'static>> {
-    let state = seq.state;
-    let steps = seq.steps();
-    let mut grid: Vec<Vec<(char, Style)>> = Vec::new();
-
-    for index in 0..LANES {
-        let lane = &state.pattern().lanes[index];
-        let current = index == state.lane_cursor();
-        let audible = state.pattern().lane_audible(index);
-        let mut row = vec![(' ', theme::bg()); seq.width];
-
-        let label_style = if current && seq.focused {
-            theme::amber_bright()
-        } else if audible {
-            theme::muted()
-        } else {
-            theme::dim()
-        };
-        write_text(&mut row, 0, &format!("{:>4} ", lane_label(state, index)), label_style);
-
-        for step_index in 0..steps.min(seq.width.saturating_sub(LABEL_W)) {
-            let step = lane.steps[step_index];
-            let playing = seq.playhead == Some(step_index);
-            let bg = if playing { theme::playhead_bg() } else { theme::bg_val() };
-            let (glyph, fg) = if !step.on {
-                ('\u{00B7}', theme::grid_minor())
-            } else if !audible {
-                ('\u{25CB}', theme::dim_color(seq.colour, 25))
-            } else if step.accent {
-                ('\u{25C9}', theme::amber_bright_val())
-            } else {
-                ('\u{25CF}', if current { seq.colour } else { theme::dim_color(seq.colour, 60) })
-            };
-            row[LABEL_W + step_index] = (glyph, Style::default().fg(fg).bg(bg));
-        }
-        grid.push(row);
-    }
-    grid_to_lines(grid)
+/// What to press, for a pattern with nothing on it yet.
+///
+/// One quiet line, and only while the pattern is empty: the screen has to
+/// answer "what do I do now" on its own, because the person reading it has
+/// not been told and there is nothing else on the grid to look at.
+fn coaching_line(seq: &Seq) -> Line<'static> {
+    let sounds = if seq.is_kit() { "j/k" } else { "[ ]" };
+    Line::from(vec![
+        Span::styled(format!("{:>w$} ", "", w = LABEL_W), theme::bg()),
+        Span::styled("n", theme::amber_bright().add_modifier(Modifier::BOLD)),
+        Span::styled(" \u{2014} write a step   ", theme::muted()),
+        Span::styled(sounds, theme::amber_bright().add_modifier(Modifier::BOLD)),
+        Span::styled(" \u{2014} pick a sound   ", theme::muted()),
+        Span::styled("t", theme::amber_bright().add_modifier(Modifier::BOLD)),
+        Span::styled(" \u{2014} play", theme::muted()),
+    ])
 }
 
 // ── Panels ──
@@ -684,33 +840,20 @@ fn step_rows(seq: &Seq) -> (Vec<Line<'static>>, usize) {
 /// The chord's name and its notes, always on the screen: a player should not
 /// have to open anything to find out what `min7` in the second inversion
 /// actually sounds like.
+///
+/// Only drawn on a melodic pattern. On a kit the row a step is on is already
+/// named after the sound it plays, which is the same question answered by
+/// the grid itself.
 fn readout_line(seq: &Seq) -> Line<'static> {
     let state = seq.state;
     let pattern = state.pattern();
     let step = *state.step();
-    let lane = seq.lane();
 
     let mark = if step.on { "\u{25B8}" } else { " " };
     let mut spans: Vec<Span> = vec![Span::styled(
         format!("{:>w$} ", mark, w = LABEL_W + 3),
         theme::dim(),
     )];
-
-    if !lane.is_pitched() {
-        spans.push(Span::styled(
-            format!("{} \u{00B7} note {}", drum_label(lane.note), lane.note),
-            if step.on { theme::normal() } else { theme::dim() },
-        ));
-        if step.accent {
-            spans.push(Span::styled(
-                format!("  accent {}", pattern.accent_vel),
-                theme::amber_bright(),
-            ));
-        } else if step.on {
-            spans.push(Span::styled(format!("  vel {}", pattern.base_vel), theme::muted()));
-        }
-        return Line::from(spans);
-    }
 
     let root = step.root();
     spans.push(Span::styled(
@@ -820,10 +963,11 @@ fn slots_line(seq: &Seq) -> Line<'static> {
 
 /// Draw the step grid.
 ///
-/// The sections are laid out by priority rather than by a fixed geometry: the
-/// grid and the band with the cursor on it are never dropped, the mini-map is
-/// only drawn when there is room left over, and the panel being used scrolls
-/// to the row the cursor is on rather than being cut off at the bottom.
+/// The lanes come first and are never dropped: a drum machine that is not
+/// showing its lanes is not showing anything. Everything else is fitted
+/// around them in priority order, and the band with the cursor on it is
+/// always drawn — a panel too tall for its space scrolls to the row being
+/// used rather than being cut off at the bottom.
 pub(super) fn render_sequencer(
     frame: &mut Frame,
     area: Rect,
@@ -844,49 +988,78 @@ pub(super) fn render_sequencer(
         return;
     };
 
-    let seq = Seq {
+    let mut seq = Seq {
         state,
         view: &nav.clip_view.sequencer,
         focused: nav.focused_pane == Pane::ClipView
             && nav.clip_view.focus == ClipViewFocus::PianoRoll
             && nav.clip_view.clip_tab == ClipTab::Sequencer,
         width,
-        // The marker belongs to the pattern that is sounding. Drawing it on a
-        // slot that is only being looked at would be a playhead running
-        // through a pattern nobody can hear.
+        // The light belongs to the pattern that is sounding. Drawing it on a
+        // slot that is only being looked at would be a chase running through
+        // a pattern nobody can hear.
         playhead: nav
             .sequencer_playhead(nav.track_cursor)
-            .filter(|_| state.live_slot() == state.selected_slot())
+            .filter(|_| state.is_playing() && state.live_slot() == state.selected_slot())
             .map(|step| step.min(MAX_STEPS - 1)),
         position: snap.position_ticks,
         colour: theme::track_color(track.color_index),
         child: track.instrument_type,
+        lane_window: LANES,
         clips: track.clips.len(),
     };
+    // Eight rows for eight sounds as soon as there is room for them: that is
+    // the face of the machine, and with it there is no need for the strip.
+    // Below that the rows scroll — three lanes of a kit still shows the kick
+    // against the hat, which one lane never can.
+    //
+    // The four are the header, the ruler, the step panel and the slots; the
+    // fifth, when the rows do not all fit, is the strip that stands in for
+    // them.
+    seq.lane_window = if height >= LANES + 4 {
+        LANES
+    } else {
+        height.saturating_sub(5).clamp(1, LANES)
+    };
+    let seq = seq;
 
-    let cw = cell_width(&seq);
-    let grid = grid_lines(&seq, cw);
+    let geometry = geometry(&seq);
+    let grid = grid_lines(&seq, geometry);
     let (step_panel, step_cursor_row) = step_rows(&seq);
     let (pattern_panel, pattern_cursor_row) = pattern_rows(&seq);
 
-    // header, lanes, ruler, grid, mini-map, step, readout, pattern, slots
+    // header, strip, ruler, grid, coaching, step, readout, pattern, slots
     const HEADER: usize = 0;
-    const LANES_ROW: usize = 1;
+    const STRIP: usize = 1;
     const RULER: usize = 2;
     const GRID: usize = 3;
-    const MINIMAP: usize = 4;
+    const COACH: usize = 4;
     const STEP: usize = 5;
     const READOUT: usize = 6;
     const PATTERN: usize = 7;
     const SLOTS: usize = 8;
 
-    let mut show = [1usize, 1, 0, grid.len(), 0, 1, 1, 1, 1];
+    let coaching = seq.is_empty();
+    let readout = !seq.is_kit();
+    let mut show = [
+        1,
+        usize::from(!seq.shows_every_lane()),
+        1,
+        grid.len(),
+        usize::from(coaching),
+        1,
+        usize::from(readout),
+        1,
+        1,
+    ];
     let sum = |show: &[usize; 9]| show.iter().sum::<usize>();
 
     // Too little room: give up the sections a player can do without, in the
-    // order they can be done without, and never the band being used.
+    // order they can be done without, and never the band being used. The
+    // ruler goes last of all — numbered steps are half of what makes a grid
+    // readable as positions rather than as a wall of blocks.
     let band = seq.band();
-    for &index in &[READOUT, SLOTS, PATTERN, LANES_ROW, STEP] {
+    for &index in &[READOUT, COACH, PATTERN, SLOTS, STEP, STRIP, RULER] {
         if sum(&show) <= height {
             break;
         }
@@ -898,48 +1071,36 @@ pub(super) fn render_sequencer(
         }
     }
 
-    // Room to spare: the rest of the panel being used first, then the step
-    // numbers, then the other panel, then the whole pattern lane by lane.
+    // Room to spare: the rest of the panel being used first, then the other.
     let mut extras: Vec<(usize, usize)> = Vec::new();
     if band == SeqBand::Step {
         extras.push((STEP, step_panel.len()));
     } else if band == SeqBand::Pattern {
         extras.push((PATTERN, pattern_panel.len()));
     }
-    extras.push((RULER, 1));
     extras.push((STEP, step_panel.len()));
     extras.push((PATTERN, pattern_panel.len()));
-    extras.push((MINIMAP, LANES));
     for (index, wanted) in extras {
-        if show[index] >= wanted || (show[index] == 0 && index != RULER && index != MINIMAP) {
+        if show[index] == 0 || show[index] >= wanted {
             continue;
         }
         let spare = height.saturating_sub(sum(&show));
-        // A knob panel takes what it can get and scrolls to the cursor; the
-        // step numbers and the mini-map are only worth drawing whole.
-        let granted = if index == STEP || index == PATTERN {
-            spare.min(wanted - show[index])
-        } else if wanted - show[index] <= spare {
-            wanted - show[index]
-        } else {
-            0
-        };
-        show[index] += granted;
+        show[index] += spare.min(wanted - show[index]);
     }
 
     let mut lines: Vec<Line> = Vec::new();
     if show[HEADER] > 0 {
         lines.push(header_line(&seq));
     }
-    if show[LANES_ROW] > 0 {
-        lines.push(lane_line(&seq));
+    if show[STRIP] > 0 {
+        lines.push(lane_strip(&seq));
     }
     if show[RULER] > 0 {
-        lines.push(ruler_line(&seq, cw));
+        lines.push(ruler_line(&seq, geometry));
     }
     lines.extend(grid.into_iter().take(show[GRID]));
-    if show[MINIMAP] > 0 {
-        lines.extend(minimap_lines(&seq).into_iter().take(show[MINIMAP]));
+    if show[COACH] > 0 {
+        lines.push(coaching_line(&seq));
     }
     lines.extend(window(step_panel, show[STEP], step_cursor_row));
     if show[READOUT] > 0 {
@@ -984,6 +1145,7 @@ mod tests {
             position: 0,
             colour: theme::track_color(0),
             child: None,
+            lane_window: LANES,
             clips: 0,
         }
     }
@@ -1026,20 +1188,62 @@ mod tests {
         }
     }
 
-    /// Steps get three cells where there is room for the tie tails and two
-    /// where there is not, and never fewer — a step grid with no gap between
-    /// its steps is unreadable.
+    /// A step is a button, and a button that has shrunk to one character is
+    /// not one. Below the width that fits them the pattern pages instead —
+    /// sixteen steps of three columns is fifty-five, which is exactly what an
+    /// eighty-column terminal has left after the instrument panel.
     #[test]
-    fn steps_are_three_cells_wide_when_they_fit() {
+    fn steps_are_buttons_and_a_long_pattern_pages_rather_than_shrinking() {
         let state = SequencerState::new(InstrumentType::DrumRack);
         let view = SequencerView::new();
         let mut seq = panel(&state, &view);
-        seq.width = 53;
-        assert_eq!(cell_width(&seq), 3);
-        seq.width = 52;
-        assert_eq!(cell_width(&seq), 2);
-        seq.width = 10;
-        assert_eq!(cell_width(&seq), 2);
+
+        seq.width = 55;
+        let full = geometry(&seq);
+        assert_eq!((full.cell, full.count, full.pages), (3, 16, 1), "80 columns is a full grid");
+        assert_eq!(full.x_of(0), Some(LABEL_W));
+        assert_eq!(full.x_of(4), Some(LABEL_W + 13), "the beats are not grouped");
+
+        seq.width = 54;
+        assert_eq!(geometry(&seq).cell, 2, "a narrower panel goes to two columns");
+
+        seq.width = 20;
+        let tight = geometry(&seq);
+        assert!(tight.cell >= 2, "a step was squeezed below two columns");
+        assert!(tight.pages > 1, "a grid that cannot fit was not paged");
+        assert!(
+            Geometry::width(tight.cell, tight.count) <= 20,
+            "a page wider than the panel it is drawn in",
+        );
+    }
+
+    /// A paged pattern shows the page the cursor is standing on, so walking
+    /// past step sixteen turns over rather than walking off the screen.
+    #[test]
+    fn the_page_follows_the_cursor() {
+        use phosphor_app::sequencer::ops::{dispatch, SeqOp};
+
+        let mut track = phosphor_app::state::TrackState::new(
+            "seq",
+            0,
+            false,
+            phosphor_core::project::TrackKind::Instrument,
+            Vec::new(),
+        );
+        track.sequencer = Some(Box::new(SequencerState::new(InstrumentType::DrumRack)));
+        dispatch(&mut track, SeqOp::CycleLength(2)); // 16 → 32
+        dispatch(&mut track, SeqOp::SelectStep(20));
+
+        let state = track.sequencer.as_deref().unwrap();
+        let view = SequencerView::new();
+        let mut seq = panel(state, &view);
+        seq.width = 55;
+
+        let geometry = geometry(&seq);
+        assert_eq!(geometry.pages, 2);
+        assert_eq!(geometry.first, 16, "the page with the cursor on it is not the one shown");
+        assert!(geometry.x_of(20).is_some());
+        assert!(geometry.x_of(4).is_none(), "a step from the other page was drawn");
     }
 
     /// A panel taller than its space shows the row the cursor is on, wherever
