@@ -178,6 +178,9 @@ pub fn param_names(instrument: InstrumentType) -> &'static [&'static str] {
         InstrumentType::Rhodes => &phosphor_dsp::rhodes::PARAM_NAMES,
         InstrumentType::LittlePhatty => &phosphor_dsp::phatty::PARAM_NAMES,
         InstrumentType::Prophet6 => &phosphor_dsp::prophet6::PARAM_NAMES,
+        // Nothing to save: a sequencer track's presets are its child's, and
+        // its own settings are pattern data in the session.
+        InstrumentType::Sequencer => &[],
     }
 }
 
@@ -216,6 +219,33 @@ pub fn layout_fingerprint(instrument: InstrumentType) -> String {
 /// How many parameters this instrument's panel has.
 pub fn param_count(instrument: InstrumentType) -> usize {
     param_names(instrument).len()
+}
+
+/// The panel an instrument starts on.
+///
+/// One list, because there were two: adding a track wrote one out and
+/// changing a sequencer's child needed the same thing, and two lists of
+/// per-instrument defaults is one list that eventually forgets an instrument.
+///
+/// The Prophet-6 is the only bank whose defaults are decoded from a ROM
+/// rather than written out, so it answers with a call instead of a constant.
+pub fn defaults(instrument: InstrumentType) -> Vec<f32> {
+    match instrument {
+        InstrumentType::Synth | InstrumentType::Sampler => {
+            phosphor_dsp::synth::PARAM_DEFAULTS.to_vec()
+        }
+        InstrumentType::DrumRack => phosphor_dsp::drum_rack::PARAM_DEFAULTS.to_vec(),
+        InstrumentType::DX7 => phosphor_dsp::dx7::PARAM_DEFAULTS.to_vec(),
+        InstrumentType::Jupiter8 => phosphor_dsp::jupiter::PARAM_DEFAULTS.to_vec(),
+        InstrumentType::Odyssey => phosphor_dsp::odyssey::PARAM_DEFAULTS.to_vec(),
+        InstrumentType::Juno60 => phosphor_dsp::juno::PARAM_DEFAULTS.to_vec(),
+        InstrumentType::Rhodes => phosphor_dsp::rhodes::PARAM_DEFAULTS.to_vec(),
+        InstrumentType::LittlePhatty => phosphor_dsp::phatty::PARAM_DEFAULTS.to_vec(),
+        InstrumentType::Prophet6 => phosphor_dsp::prophet6::param_defaults().to_vec(),
+        // The sequencer has no panel of its own: its controls are pattern
+        // data, and the panel on one of its tracks belongs to the child.
+        InstrumentType::Sequencer => Vec::new(),
+    }
 }
 
 // ── Paths ──
@@ -690,7 +720,10 @@ mod tests {
                 .filter(|&p| crate::discrete::is_discrete(*instrument, p))
                 .collect();
             assert_eq!(stored, wanted, "{instrument:?} did not store all of its selectors");
-            assert!(!wanted.is_empty(), "{instrument:?} has no selectors at all");
+            assert!(
+                !wanted.is_empty() || instrument.is_sequencer(),
+                "{instrument:?} has no selectors at all"
+            );
         }
     }
 
@@ -905,10 +938,23 @@ mod tests {
 
     /// Every instrument's declared panel size matches the block a new track
     /// gets, so no instrument is born unable to save a preset.
+    ///
+    /// The sequencer is exempt and is the only thing that ever will be: it is
+    /// not an instrument, it drives one, and the panel on one of its tracks
+    /// belongs to the child.
     #[test]
     fn every_instrument_has_a_panel() {
         for inst in InstrumentType::ALL {
+            if inst.is_sequencer() {
+                assert_eq!(param_count(*inst), 0, "the sequencer grew a panel");
+                continue;
+            }
             assert!(param_count(*inst) > 0, "{inst:?} has no parameters");
+            assert_eq!(
+                crate::preset::defaults(*inst).len(),
+                param_count(*inst),
+                "{inst:?} is born with a block of the wrong size"
+            );
         }
         assert_eq!(param_count(InstrumentType::Juno60), phosphor_dsp::juno::PARAM_COUNT);
         assert_eq!(param_count(InstrumentType::Jupiter8), phosphor_dsp::jupiter::PARAM_COUNT);

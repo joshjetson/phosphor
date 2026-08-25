@@ -482,6 +482,9 @@ impl App {
         while self.running {
             self.nav.tick();
             self.nav.sync_clip_view_target();
+            // Which pattern is playing, and where in it — decided on the
+            // audio thread, so it is read back rather than guessed at.
+            self.nav.sync_sequencers_from_audio();
             for track in &self.nav.tracks {
                 track.sync_to_audio();
             }

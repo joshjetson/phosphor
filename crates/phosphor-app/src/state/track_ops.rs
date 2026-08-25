@@ -130,6 +130,7 @@ impl NavState {
             InstrumentType::Sampler => "smplr",
             InstrumentType::LittlePhatty => "phaty",
             InstrumentType::Prophet6 => "p6",
+            InstrumentType::Sequencer => "seq",
         };
 
         // Find insert position: before sends/master
@@ -142,37 +143,7 @@ impl NavState {
         track.mixer_id = Some(mixer_id);
         track.handle = Some(handle);
         track.instrument_type = Some(instrument);
-        track.synth_params = match instrument {
-            InstrumentType::Synth | InstrumentType::Sampler => {
-                phosphor_dsp::synth::PARAM_DEFAULTS.to_vec()
-            }
-            InstrumentType::DrumRack => {
-                phosphor_dsp::drum_rack::PARAM_DEFAULTS.to_vec()
-            }
-            InstrumentType::DX7 => {
-                phosphor_dsp::dx7::PARAM_DEFAULTS.to_vec()
-            }
-            InstrumentType::Jupiter8 => {
-                phosphor_dsp::jupiter::PARAM_DEFAULTS.to_vec()
-            }
-            InstrumentType::Odyssey => {
-                phosphor_dsp::odyssey::PARAM_DEFAULTS.to_vec()
-            }
-            InstrumentType::Juno60 => {
-                phosphor_dsp::juno::PARAM_DEFAULTS.to_vec()
-            }
-            InstrumentType::Rhodes => {
-                phosphor_dsp::rhodes::PARAM_DEFAULTS.to_vec()
-            }
-            InstrumentType::LittlePhatty => {
-                phosphor_dsp::phatty::PARAM_DEFAULTS.to_vec()
-            }
-            // The only bank whose defaults are decoded from a ROM rather than
-            // written out, so it answers with a call instead of a constant.
-            InstrumentType::Prophet6 => {
-                phosphor_dsp::prophet6::param_defaults().to_vec()
-            }
-        };
+        track.synth_params = crate::preset::defaults(instrument);
         // Sync the initial armed state to audio
         track.sync_to_audio();
         self.tracks.insert(insert_pos, track);

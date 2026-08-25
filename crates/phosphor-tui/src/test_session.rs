@@ -236,12 +236,22 @@ mod tests {
             let file: SessionFile =
                 serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             let track = &file.tracks[0];
+            // What was saved rather than what was picked: choosing the step
+            // sequencer from the menu makes a track carrying its *child*, and
+            // the panel on it is the child's.
+            let saved = crate::session::parse_instrument_type(&track.instrument_type)
+                .unwrap_or(*instrument);
             let expected: Vec<usize> = (0..track.synth_params.len())
-                .filter(|&i| discrete::is_discrete(*instrument, i))
+                .filter(|&i| discrete::is_discrete(saved, i))
                 .collect();
             let stored: Vec<usize> = track.discrete.iter().map(|s| s.param).collect();
             assert_eq!(stored, expected, "{instrument:?}");
             assert!(!expected.is_empty(), "{instrument:?} has no selector at all");
+            assert_eq!(
+                track.sequencer.is_some(),
+                instrument.is_sequencer(),
+                "{instrument:?} saved the wrong kind of track"
+            );
 
             let _ = std::fs::remove_dir_all(path.parent().unwrap());
         }

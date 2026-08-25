@@ -108,6 +108,8 @@ pub enum InstrumentType {
     Sampler,
     LittlePhatty,
     Prophet6,
+    /// The step sequencer. Not an instrument: it drives one.
+    Sequencer,
 }
 
 impl InstrumentType {
@@ -123,6 +125,7 @@ impl InstrumentType {
             Self::Sampler => "Sampler",
             Self::LittlePhatty => "Little Phatty",
             Self::Prophet6 => "Prophet-6",
+            Self::Sequencer => "Step Sequencer",
         }
     }
 
@@ -138,13 +141,26 @@ impl InstrumentType {
             Self::Sampler => "sample-based instrument",
             Self::LittlePhatty => "monophonic Moog with morphing waves",
             Self::Prophet6 => "six-voice analog poly with poly mod",
+            Self::Sequencer => "pattern sequencer driving any instrument",
         }
     }
 
     /// Appended to, never reordered: a session stores an instrument by its
     /// key rather than by position, but the menu's own order is what a player
     /// has learned, and the preset browser walks this list.
-    pub const ALL: &[InstrumentType] = &[Self::Synth, Self::DrumRack, Self::DX7, Self::Jupiter8, Self::Odyssey, Self::Juno60, Self::Rhodes, Self::Sampler, Self::LittlePhatty, Self::Prophet6];
+    pub const ALL: &[InstrumentType] = &[Self::Synth, Self::DrumRack, Self::DX7, Self::Jupiter8, Self::Odyssey, Self::Juno60, Self::Rhodes, Self::Sampler, Self::LittlePhatty, Self::Prophet6, Self::Sequencer];
+
+    /// Whether picking this from the add-track menu builds a step sequencer
+    /// rather than an instrument.
+    ///
+    /// A sequencer track's `instrument_type` is its *child* — the thing in
+    /// the plugin slot making the sound — so this entry never ends up stored
+    /// on a track. It is a choice in a menu, and the track it produces is an
+    /// ordinary instrument track with a pattern player in front of it.
+    #[must_use]
+    pub const fn is_sequencer(self) -> bool {
+        matches!(self, Self::Sequencer)
+    }
 }
 
 #[derive(Debug)]

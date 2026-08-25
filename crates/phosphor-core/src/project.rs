@@ -4,7 +4,7 @@
 //! and the UI thread (TUI/GUI) can reference the same data without
 //! duplicating definitions. Audio-thread-safe state uses atomics.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use crate::engine::VuLevels;
 
@@ -127,6 +127,64 @@ impl Default for TrackConfig {
     }
 }
 
+/// What a sequencer track's pattern player is doing, for the UI to draw.
+///
+/// Four small atomics rather than a channel, and for the same reason as
+/// [`VuLevels`]: the UI redraws on a timer and wants the state *now* rather
+/// than a history of it, and publishing must not make the audio thread
+/// allocate, block, or care whether anyone is listening.
+///
+/// The step and the queued slot are things the UI could work out for itself —
+/// both are functions of the transport position — but only by reimplementing
+/// the audio thread's arithmetic and hoping the two never disagree. Reading
+/// what actually played is one store per callback and cannot drift.
+#[derive(Debug, Default)]
+pub struct PatternStatus {
+    /// Which of the eight slots is sounding.
+    live_slot: AtomicU8,
+    /// The queued slot plus one, or zero when nothing is queued — so that
+    /// "nothing" and "slot 0" are different values in one byte.
+    queued_slot: AtomicU8,
+    /// The step the playhead was over on the last callback.
+    step: AtomicU8,
+    /// Whether the pattern is running at all.
+    running: AtomicBool,
+}
+
+impl PatternStatus {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Called once per callback from the audio thread.
+    pub fn publish(&self, live_slot: u8, queued_slot: Option<u8>, step: u8, running: bool) {
+        self.live_slot.store(live_slot, Ordering::Relaxed);
+        self.queued_slot
+            .store(queued_slot.map_or(0, |s| s.saturating_add(1)), Ordering::Relaxed);
+        self.step.store(step, Ordering::Relaxed);
+        self.running.store(running, Ordering::Relaxed);
+    }
+
+    pub fn live_slot(&self) -> u8 {
+        self.live_slot.load(Ordering::Relaxed)
+    }
+
+    pub fn queued_slot(&self) -> Option<u8> {
+        match self.queued_slot.load(Ordering::Relaxed) {
+            0 => None,
+            n => Some(n - 1),
+        }
+    }
+
+    pub fn step(&self) -> u8 {
+        self.step.load(Ordering::Relaxed)
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+}
+
 /// Shared handle for a track — the UI holds an `Arc<TrackHandle>` to
 /// read VU levels and write mute/solo/arm/volume.
 #[derive(Debug)]
@@ -135,6 +193,9 @@ pub struct TrackHandle {
     pub kind: TrackKind,
     pub config: TrackConfig,
     pub vu: VuLevels,
+    /// Where the step sequencer on this track is, when it has one. Left at
+    /// its defaults on every other track, which costs four bytes.
+    pub pattern: PatternStatus,
 }
 
 impl TrackHandle {
@@ -144,6 +205,7 @@ impl TrackHandle {
             kind,
             config: TrackConfig::new(),
             vu: VuLevels::new(),
+            pattern: PatternStatus::new(),
         }
     }
 }

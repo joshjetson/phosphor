@@ -13,11 +13,17 @@ use phosphor_plugin::{MidiEvent, Plugin};
 use crate::clip::{ClipEvent, ClipSnapshot, MidiClip, RecordBuffer};
 use crate::engine::VuLevels;
 use crate::metronome::Metronome;
+use crate::pattern::{EventSink, PatternBlock, PatternEvent, PatternPlayer, PlaybackWindow};
 use crate::project::{TrackHandle, TrackKind};
 use crate::transport::Transport;
 
 // ── Commands ──
 
+// Clippy would have `SetPattern` box its block, and boxing it is exactly the
+// thing this design exists to avoid: a `Box` arriving on the audio thread is a
+// `free` on the audio thread when the command is dropped. The command queue is
+// short and the memory is nothing; the deadline is not.
+#[allow(clippy::large_enum_variant)]
 pub enum MixerCommand {
     AddTrack {
         kind: TrackKind,
@@ -58,6 +64,21 @@ pub enum MixerCommand {
     RemoveClip {
         track_id: usize,
         clip_index: usize,
+    },
+    /// Give one of a sequencer track's eight pattern slots new contents, and
+    /// with it the UI's current word on the track-level settings that ride on
+    /// a block — see [`PatternBlock`].
+    ///
+    /// The block travels by value. It is [`Copy`] and about two and a half
+    /// kilobytes, so receiving one is a memcpy into memory that already
+    /// exists: no `Vec` to free, no `Box` to drop, nothing for the audio
+    /// thread to hand back to the allocator. The first pattern a track is
+    /// given allocates its player, exactly as `SetInstrument` allocates a
+    /// voice array; every one after it does not.
+    SetPattern {
+        track_id: usize,
+        slot: u8,
+        block: PatternBlock,
     },
 }
 
@@ -106,7 +127,14 @@ fn command_cost(cmd: &MixerCommand) -> u32 {
         | MixerCommand::RemoveTrack { .. }
         | MixerCommand::CreateClip { .. }
         | MixerCommand::UpdateClip { .. }
-        | MixerCommand::RemoveClip { .. } => HEAVY_COMMAND,
+        | MixerCommand::RemoveClip { .. }
+        // Only the first pattern a track receives allocates — it builds the
+        // player — and the cost is charged before the command is opened, so
+        // it cannot be told apart from the ones that only copy. Charging all
+        // of them the allocating rate makes the bound hold for the one that
+        // does; the copy itself is 2.4 kB, which is nothing next to a
+        // `Plugin::init`.
+        | MixerCommand::SetPattern { .. } => HEAVY_COMMAND,
     }
 }
 
@@ -252,6 +280,17 @@ impl MasterLimiter {
 
 // ── AudioTrack ──
 
+/// How many events one track's plugin queue holds before it would have to
+/// grow.
+///
+/// It never grows: the pattern player is handed the queue's remaining room as
+/// its budget and stops when it runs out, and clip playback has always fitted
+/// inside it. Sized for the densest thing the sequencer can ask for — eight
+/// lanes of five-note chords, each with the note-off of whatever it replaced,
+/// across the two or three steps a callback can span — plus room for live
+/// MIDI on top.
+const PLUGIN_EVENT_CAPACITY: usize = 512;
+
 pub struct AudioTrack {
     pub id: usize,
     pub kind: TrackKind,
@@ -259,14 +298,18 @@ pub struct AudioTrack {
     pub instrument: Option<Box<dyn Plugin>>,
     /// Recorded clips on this track's timeline.
     pub clips: Vec<MidiClip>,
+    /// The step sequencer on this track, when it has one.
+    ///
+    /// Boxed because it carries all eight pattern slots — around 19 kB — and
+    /// a track without a sequencer should not pay for them, least of all
+    /// inside the `Vec<AudioTrack>` that is memcpy'd when a track is added.
+    pattern: Option<Box<PatternPlayer>>,
     /// Active recording buffer (when armed + transport recording).
     record_buf: RecordBuffer,
     /// Whether we were recording last buffer (to detect stop).
     was_recording: bool,
     /// Last tick position seen during recording (to detect loop wraps).
     last_record_tick: i64,
-    /// Last tick position seen during playback (to detect loop wraps for clip playback).
-    last_playback_tick: i64,
     buf_l: Vec<f32>,
     buf_r: Vec<f32>,
     plugin_events: Vec<MidiEvent>,
@@ -280,13 +323,64 @@ impl AudioTrack {
             handle,
             instrument: None,
             clips: Vec::new(),
+            pattern: None,
             record_buf: RecordBuffer::new(),
             was_recording: false,
             last_record_tick: -1,
-            last_playback_tick: -1,
             buf_l: vec![0.0; max_buffer_size],
             buf_r: vec![0.0; max_buffer_size],
-            plugin_events: Vec::with_capacity(256),
+            plugin_events: Vec::with_capacity(PLUGIN_EVENT_CAPACITY),
+        }
+    }
+}
+
+/// Writes pattern events straight into a track's plugin queue.
+///
+/// The conversion from song time to buffer position happens here, through
+/// [`PlaybackWindow::sample_offset`] — the same call clip playback makes a few
+/// lines further down, which is what "a pattern step and a clip note on the
+/// same beat land on the same sample" rests on.
+///
+/// The queue is never grown. When it is full the sink refuses, and the
+/// generator stops rather than dropping events out of the middle of a step.
+struct TrackEventSink<'a> {
+    events: &'a mut Vec<MidiEvent>,
+    window: &'a PlaybackWindow,
+}
+
+impl EventSink for TrackEventSink<'_> {
+    fn accept(&mut self, event: PatternEvent) -> bool {
+        if self.events.len() >= self.events.capacity() {
+            return false;
+        }
+        self.events.push(MidiEvent {
+            sample_offset: self.window.sample_offset(event.tick),
+            status: event.status,
+            data1: event.data1,
+            data2: event.data2,
+        });
+        true
+    }
+}
+
+/// Put a track's events in the order the instrument will read them.
+///
+/// A hand-written insertion sort, and not for speed: `slice::sort_by_key` is
+/// a merge sort that allocates a scratch buffer past twenty elements, which
+/// on the audio thread is exactly the thing this whole crate is arranged to
+/// avoid. These lists are short and arrive nearly sorted — clips are stored
+/// in tick order and a pattern generates step by step — so the insertion sort
+/// is linear in practice as well as allocation-free.
+///
+/// Stable, which is load-bearing: a note-off written before a note-on at the
+/// same offset has to stay before it, or a pattern switch kills the voice it
+/// just started.
+fn sort_events_by_offset(events: &mut [MidiEvent]) {
+    for i in 1..events.len() {
+        let mut j = i;
+        while j > 0 && events[j - 1].sample_offset > events[j].sample_offset {
+            events.swap(j - 1, j);
+            j -= 1;
         }
     }
 }
@@ -306,6 +400,14 @@ pub struct Mixer {
     scratch_r: Vec<f32>,
     /// Pre-allocated buffer for live MIDI conversion.
     live_events: Vec<MidiEvent>,
+    /// The window the previous callback rendered, when playback was running.
+    ///
+    /// One per mixer rather than one per track: the window is a fact about
+    /// the transport and the block, so every track's is the same window, and
+    /// two tracks that computed it separately could disagree. `None` whenever
+    /// the transport is not rolling, which is what makes the first block
+    /// after a start discontinuous — see [`PlaybackWindow::is_continuous`].
+    last_window: Option<PlaybackWindow>,
     /// Final stage before the audio device — see [`MasterLimiter`].
     limiter: MasterLimiter,
 }
@@ -329,6 +431,7 @@ impl Mixer {
             scratch_l: vec![0.0; max_buffer_size],
             scratch_r: vec![0.0; max_buffer_size],
             live_events: Vec::with_capacity(256),
+            last_window: None,
             limiter: MasterLimiter::new(sample_rate),
         }
     }
@@ -346,8 +449,23 @@ impl Mixer {
         let current_tick = transport.position_ticks();
         let bpm = transport.tempo_bpm();
         let ticks_per_sample = (bpm * Transport::PPQ as f64) / (60.0 * self.sample_rate as f64);
-        let buffer_ticks = (num_frames as f64 * ticks_per_sample) as i64;
         let loop_end = transport.loop_end();
+
+        // ── The window ──
+        //
+        // The span of song time this callback renders, computed once and read
+        // by everything that turns song time into notes. Clip playback and
+        // pattern playback both take their events from this one value, which
+        // is what makes them sample-identical on the same beat rather than
+        // two implementations that have to be kept in agreement.
+        let window = PlaybackWindow::for_block(
+            current_tick,
+            num_frames as u32,
+            ticks_per_sample,
+            looping.then(|| (transport.loop_start(), loop_end)),
+            self.last_window,
+        );
+        self.last_window = playing.then_some(window);
 
         // Convert live MIDI to plugin events (reuse pre-allocated buffer)
         self.live_events.clear();
@@ -433,45 +551,45 @@ impl Mixer {
                 }
             }
 
-            // ── Playback ──
+            // ── Pattern playback ──
+            //
+            // Before the clips, and unconditionally: a player that has just
+            // been stopped still has note-offs to write, and the transport
+            // being stopped is exactly when it has to write them.
+            if let Some(ref mut player) = track.pattern {
+                let mut sink = TrackEventSink { events: &mut track.plugin_events, window: &window };
+                player.render(&window, playing, &mut sink);
+                track.handle.pattern.publish(
+                    player.live_slot(),
+                    player.queued_slot(),
+                    player.current_step(),
+                    playing && player.is_playing(),
+                );
+            }
+
+            // ── Clip playback ──
+            //
+            // Same window, same `sample_offset`. The loop wrap needs no
+            // branch of its own any more: the window already starts at the
+            // loop point when the transport has just gone round.
             if playing && !track.clips.is_empty() {
-                let from = current_tick;
-                let to = current_tick + buffer_ticks;
-
-                // Detect loop wrap using dedicated playback tick tracker
-                // (separate from recording tick to avoid interference)
-                let just_wrapped = looping && track.last_playback_tick >= 0
-                    && current_tick < track.last_playback_tick;
-                track.last_playback_tick = current_tick;
-
-                if just_wrapped {
-                    // Play events from loop_start to current position (the wrapped portion)
-                    let wrap_start = transport.loop_start();
-                    for clip in &track.clips {
-                        for (tick_offset, event) in clip.events_in_range(wrap_start, to) {
-                            let sample_offset = (tick_offset as f64 / ticks_per_sample) as u32;
-                            track.plugin_events.push(MidiEvent {
-                                sample_offset: sample_offset.min(num_frames as u32 - 1),
-                                status: event.status,
-                                data1: event.data1,
-                                data2: event.data2,
-                            });
+                for clip in &track.clips {
+                    for (tick, event) in clip.events_between(window.from(), window.to()) {
+                        if track.plugin_events.len() >= track.plugin_events.capacity() {
+                            break;
                         }
-                    }
-                } else {
-                    for clip in &track.clips {
-                        for (tick_offset, event) in clip.events_in_range(from, to) {
-                            let sample_offset = (tick_offset as f64 / ticks_per_sample) as u32;
-                            track.plugin_events.push(MidiEvent {
-                                sample_offset: sample_offset.min(num_frames as u32 - 1),
-                                status: event.status,
-                                data1: event.data1,
-                                data2: event.data2,
-                            });
-                        }
+                        track.plugin_events.push(MidiEvent {
+                            sample_offset: window.sample_offset(tick),
+                            status: event.status,
+                            data1: event.data1,
+                            data2: event.data2,
+                        });
                     }
                 }
-                track.plugin_events.sort_by_key(|e| e.sample_offset);
+            }
+
+            if !track.plugin_events.is_empty() {
+                sort_events_by_offset(&mut track.plugin_events);
             }
 
             // Track position for wrap detection (used by both recording and playback)
@@ -567,8 +685,15 @@ impl Mixer {
                 track.record_buf.discard();
             }
             track.was_recording = false;
-            track.last_playback_tick = -1;
+            // A panic resets the instruments underneath the sequencer, so the
+            // notes it is holding are already gone: the table is dropped
+            // rather than sounded, which would only send offs to voices that
+            // no longer exist.
+            if let Some(ref mut player) = track.pattern {
+                player.silence();
+            }
         }
+        self.last_window = None;
         self.metronome.reset();
         self.limiter.reset();
     }
@@ -641,6 +766,12 @@ impl Mixer {
                     if clip_index < track.clips.len() {
                         track.clips.remove(clip_index);
                     }
+                }
+            }
+            MixerCommand::SetPattern { track_id, slot, block } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    let player = track.pattern.get_or_insert_with(|| Box::new(PatternPlayer::new()));
+                    player.apply(slot, block);
                 }
             }
         }
@@ -1930,6 +2061,551 @@ mod tests {
             }
         });
         assert_eq!(allocations, 0, "Mixer::process reached the allocator");
+    }
+
+    // ── The step sequencer ──
+
+    use crate::pattern::{ChainEntry, Lane, PatternEvent, Rate, Step};
+
+    /// A mixer at a given rate, with nothing on it.
+    fn bare_mixer(
+        sample_rate: u32,
+        max_frames: usize,
+    ) -> (Mixer, Sender<MixerCommand>, Arc<Transport>) {
+        let (tx, rx) = mixer_command_channel();
+        let (clip_tx, _clip_rx) = clip_snapshot_channel();
+        let mixer = Mixer::new(rx, Arc::new(VuLevels::new()), clip_tx, sample_rate, max_frames);
+        (mixer, tx, Arc::new(Transport::new(120.0)))
+    }
+
+    /// A pattern with one drum lane on the steps named.
+    fn kick_pattern(on: &[usize]) -> PatternBlock {
+        let mut block = PatternBlock::empty();
+        block.playing = true;
+        block.lanes[0] = Lane::drum(36);
+        for &index in on {
+            block.lanes[0].steps[index].on = true;
+        }
+        block
+    }
+
+    fn add_track(tx: &Sender<MixerCommand>, id: usize) -> Arc<TrackHandle> {
+        let handle = Arc::new(TrackHandle::new(id, TrackKind::Instrument));
+        tx.send(MixerCommand::AddTrack {
+            kind: TrackKind::Instrument,
+            handle: handle.clone(),
+        })
+        .unwrap();
+        handle
+    }
+
+    fn apply_all(mixer: &mut Mixer) {
+        while !mixer.command_rx.is_empty() {
+            mixer.drain_commands();
+        }
+    }
+
+    fn note_ons(track: &AudioTrack) -> impl Iterator<Item = &MidiEvent> {
+        track.plugin_events.iter().filter(|e| e.status == 0x90 && e.data2 > 0)
+    }
+
+    /// **The sync guarantee.** A pattern step and a clip note on the same
+    /// beat have to reach the instrument at the same sample, in the same
+    /// callback — at every block size and every sample rate, because those
+    /// are what a wrong answer would be a function of.
+    ///
+    /// It holds by construction rather than by agreement: both go through
+    /// one `PlaybackWindow`. This is the test that would catch that ceasing
+    /// to be true.
+    #[test]
+    fn a_pattern_step_and_a_clip_note_land_on_the_same_sample() {
+        for sample_rate in [44_100u32, 48_000, 96_000] {
+            for frames in [64usize, 256, 470] {
+                let (mut mixer, tx, transport) = bare_mixer(sample_rate, 512);
+
+                // Track 0: a clip with one note on beat two.
+                let _clip_track = add_track(&tx, 0);
+                tx.send(MixerCommand::CreateClip {
+                    track_id: 0,
+                    start_tick: 0,
+                    length_ticks: 3840,
+                })
+                .unwrap();
+                tx.send(MixerCommand::UpdateClip {
+                    track_id: 0,
+                    clip_index: 0,
+                    events: vec![ClipEvent { tick: 960, status: 0x90, data1: 60, data2: 100 }],
+                })
+                .unwrap();
+
+                // Track 1: a pattern whose fourth sixteenth is beat two.
+                let _seq_track = add_track(&tx, 1);
+                tx.send(MixerCommand::SetPattern {
+                    track_id: 1,
+                    slot: 0,
+                    block: kick_pattern(&[4]),
+                })
+                .unwrap();
+                apply_all(&mut mixer);
+
+                transport.play();
+                let mut output = vec![0.0f32; frames * 2];
+                let mut landed = None;
+                while transport.position_ticks() < 1_200 {
+                    mixer.process(&mut output, &[], &transport);
+                    let clip_note = note_ons(&mixer.tracks[0]).find(|e| e.data1 == 60);
+                    let step_note = note_ons(&mixer.tracks[1]).find(|e| e.data1 == 36);
+                    match (clip_note, step_note) {
+                        (Some(c), Some(s)) => {
+                            landed = Some((c.sample_offset, s.sample_offset));
+                            break;
+                        }
+                        (None, None) => {}
+                        (clip, step) => panic!(
+                            "at {sample_rate} Hz / {frames} frames only one of them fired: \
+                             clip={clip:?} step={step:?}"
+                        ),
+                    }
+                    transport.advance(frames as u32, sample_rate);
+                }
+                let (clip_at, step_at) =
+                    landed.unwrap_or_else(|| panic!("nothing fired at {sample_rate}/{frames}"));
+                assert_eq!(
+                    clip_at, step_at,
+                    "at {sample_rate} Hz / {frames} frames the clip note landed on sample \
+                     {clip_at} and the step on {step_at}"
+                );
+            }
+        }
+    }
+
+    /// A pattern is timed in ticks, so the same pattern has to occupy the
+    /// same wall-clock time at every sample rate the application supports.
+    #[test]
+    fn step_timing_is_the_same_at_every_sample_rate() {
+        let frames = 256usize;
+        for sample_rate in [44_100u32, 48_000, 96_000] {
+            let (mut mixer, tx, transport) = bare_mixer(sample_rate, 512);
+            let _track = add_track(&tx, 0);
+            tx.send(MixerCommand::SetPattern {
+                track_id: 0,
+                slot: 0,
+                block: kick_pattern(&[0, 4, 8, 12]),
+            })
+            .unwrap();
+            apply_all(&mut mixer);
+
+            transport.play();
+            let mut output = vec![0.0f32; frames * 2];
+            let mut seconds = Vec::new();
+            let mut block = 0usize;
+            while seconds.len() < 4 && transport.position_ticks() < 3_600 {
+                mixer.process(&mut output, &[], &transport);
+                for event in note_ons(&mixer.tracks[0]) {
+                    let sample = block * frames + event.sample_offset as usize;
+                    seconds.push(sample as f64 / f64::from(sample_rate));
+                }
+                transport.advance(frames as u32, sample_rate);
+                block += 1;
+            }
+
+            // Four steps a beat apart at 120 BPM: half a second each.
+            assert_eq!(seconds.len(), 4, "at {sample_rate} Hz");
+            for (index, at) in seconds.iter().enumerate() {
+                let expected = index as f64 * 0.5;
+                assert!(
+                    (at - expected).abs() < 0.002,
+                    "at {sample_rate} Hz step {index} landed at {at:.4}s, expected {expected:.4}s"
+                );
+            }
+        }
+    }
+
+    /// The wrap, which is where a sequencer written around a free-running
+    /// cursor loses or repeats a step. Sixteen onsets per time round, every
+    /// time round: the window stops at the loop point so nothing on the far
+    /// side of it plays early, and the step is derived from the position so
+    /// nothing is skipped when it comes back.
+    #[test]
+    fn a_loop_wrap_neither_drops_nor_doubles_the_first_step() {
+        let frames = 256usize;
+        let (mut mixer, tx, transport) = bare_mixer(44_100, 512);
+        let _track = add_track(&tx, 0);
+        let all_sixteen: Vec<usize> = (0..16).collect();
+        tx.send(MixerCommand::SetPattern {
+            track_id: 0,
+            slot: 0,
+            block: kick_pattern(&all_sixteen),
+        })
+        .unwrap();
+        apply_all(&mut mixer);
+
+        transport.set_loop_bars(1, 1);
+        transport.toggle_loop();
+        transport.play();
+
+        let mut output = vec![0.0f32; frames * 2];
+        let mut fired = 0usize;
+        let mut wraps = 0usize;
+        let mut last = transport.position_ticks();
+        for _ in 0..4_000 {
+            mixer.process(&mut output, &[], &transport);
+            fired += note_ons(&mixer.tracks[0]).count();
+            transport.advance(frames as u32, 44_100);
+            let now = transport.position_ticks();
+            if now < last {
+                wraps += 1;
+                if wraps == 4 {
+                    break;
+                }
+            }
+            last = now;
+        }
+        assert_eq!(wraps, 4, "the transport did not loop");
+        assert_eq!(fired, 64, "four times round a 16-step pattern is 64 onsets");
+    }
+
+    /// A sequencer track makes no sound of its own: it drives the instrument
+    /// in the track's plugin slot, which is an ordinary instrument in an
+    /// ordinary slot. Nothing in the audio path knows a sequencer exists.
+    #[test]
+    fn a_sequencer_track_plays_its_child_instrument() {
+        let (mut mixer, tx, transport) = bare_mixer(44_100, 512);
+        let handle = add_track(&tx, 0);
+        handle.config.set_volume(1.0);
+        tx.send(MixerCommand::SetInstrument {
+            track_id: 0,
+            instrument: Box::new(PhosphorSynth::new()),
+        })
+        .unwrap();
+        let mut block = PatternBlock::empty();
+        block.playing = true;
+        block.lanes[0].steps[0].on = true;
+        block.lanes[0].steps[0].gate = 200;
+        tx.send(MixerCommand::SetPattern { track_id: 0, slot: 0, block }).unwrap();
+        apply_all(&mut mixer);
+
+        transport.play();
+        let mut output = vec![0.0f32; 512 * 2];
+        let mut peak = 0.0f32;
+        for _ in 0..8 {
+            mixer.process(&mut output, &[], &transport);
+            peak = peak.max(output.iter().map(|s| s.abs()).fold(0.0, f32::max));
+            transport.advance(512, 44_100);
+        }
+        assert!(peak > 0.001, "the child instrument never sounded, peak={peak}");
+    }
+
+    /// Stopping the transport ends every note the sequencer is holding. A
+    /// tied step has no note-off of its own, so without this it is a voice
+    /// that sounds until the next panic.
+    #[test]
+    fn stopping_the_transport_ends_every_pattern_note() {
+        let (mut mixer, tx, transport) = bare_mixer(44_100, 512);
+        let _track = add_track(&tx, 0);
+        let mut block = kick_pattern(&[0]);
+        block.lanes[0].steps[0].gate = Step::TIE;
+        tx.send(MixerCommand::SetPattern { track_id: 0, slot: 0, block }).unwrap();
+        apply_all(&mut mixer);
+
+        transport.play();
+        let mut output = vec![0.0f32; 256 * 2];
+        mixer.process(&mut output, &[], &transport);
+        assert_eq!(note_ons(&mixer.tracks[0]).count(), 1);
+        transport.advance(256, 44_100);
+
+        transport.pause();
+        mixer.process(&mut output, &[], &transport);
+        let offs: Vec<u8> = mixer.tracks[0]
+            .plugin_events
+            .iter()
+            .filter(|e| e.status == 0x80)
+            .map(|e| e.data1)
+            .collect();
+        assert_eq!(offs, vec![36], "the tied note was left sounding");
+
+        // ...and only once.
+        mixer.process(&mut output, &[], &transport);
+        assert!(mixer.tracks[0].plugin_events.is_empty());
+    }
+
+    /// A panic drops the table rather than sounding it: the instruments are
+    /// being reset underneath, so the offs would be addressed to voices that
+    /// no longer exist.
+    #[test]
+    fn a_panic_leaves_the_sequencer_holding_nothing() {
+        let (mut mixer, tx, transport) = bare_mixer(44_100, 512);
+        let _track = add_track(&tx, 0);
+        let mut block = kick_pattern(&[0]);
+        block.lanes[0].steps[0].gate = Step::TIE;
+        tx.send(MixerCommand::SetPattern { track_id: 0, slot: 0, block }).unwrap();
+        apply_all(&mut mixer);
+
+        transport.play();
+        let mut output = vec![0.0f32; 256 * 2];
+        mixer.process(&mut output, &[], &transport);
+        assert!(mixer.tracks[0].pattern.as_ref().unwrap().held_notes() > 0);
+
+        mixer.reset_all();
+        assert_eq!(mixer.tracks[0].pattern.as_ref().unwrap().held_notes(), 0);
+    }
+
+    /// The bounce, end to end and through a real instrument: one cycle of a
+    /// swung pattern compiled to a clip, played back as a clip, has to be the
+    /// same audio the sequencer produced live. Sample for sample — the two
+    /// paths share a generator, so anything less is a defect rather than a
+    /// tolerance.
+    ///
+    /// Every gate closes inside the cycle. A bounce is one time through, so a
+    /// note that outlives the cycle has nowhere to go and the two renders
+    /// would legitimately differ at the tail.
+    #[test]
+    fn a_bounced_pattern_renders_identically_to_the_live_one() {
+        const SWING: u8 = 62;
+        let mut block = PatternBlock::empty();
+        block.playing = true;
+        block.swing = SWING;
+        block.rate = Rate::Sixteenth;
+        for (index, (key, chord, gate)) in [
+            (0usize, 0u8, 5u8, 50u8),
+            (3, 3, 6, 90),
+            (5, 7, 1, 25),
+            (9, 5, 14, 75),
+            (11, 10, 12, 40),
+            (14, 0, 15, 60),
+        ]
+        .iter()
+        .map(|(i, k, c, g)| (*i, (*k, *c, *g)))
+        {
+            let step = &mut block.lanes[0].steps[index];
+            step.on = true;
+            step.key = key;
+            step.chord = chord;
+            step.gate = gate;
+            step.accent = index % 2 == 1;
+        }
+
+        let cycle = block.length_ticks();
+        let blocks = 24; // 24 x 512 frames at 44.1 kHz covers a bar and a bit
+
+        // Live: the sequencer driving the synth.
+        let live = {
+            let (mut mixer, tx, transport) = bare_mixer(44_100, 512);
+            let handle = add_track(&tx, 0);
+            handle.config.set_volume(1.0);
+            tx.send(MixerCommand::SetInstrument {
+                track_id: 0,
+                instrument: Box::new(PhosphorSynth::new()),
+            })
+            .unwrap();
+            tx.send(MixerCommand::SetPattern { track_id: 0, slot: 0, block }).unwrap();
+            apply_all(&mut mixer);
+            transport.play();
+
+            let mut rendered = Vec::new();
+            let mut output = vec![0.0f32; 512 * 2];
+            for _ in 0..blocks {
+                mixer.process(&mut output, &[], &transport);
+                rendered.extend_from_slice(&output);
+                transport.advance(512, 44_100);
+            }
+            rendered
+        };
+
+        // Bounced: the same cycle compiled to a clip, played as a clip.
+        let bounced = {
+            let mut events = Vec::new();
+            crate::pattern::compile_cycle(&block, 0, &mut events);
+            assert!(!events.is_empty());
+            let clip_events: Vec<ClipEvent> = events
+                .iter()
+                .map(|e: &PatternEvent| ClipEvent {
+                    tick: e.tick,
+                    status: e.status,
+                    data1: e.data1,
+                    data2: e.data2,
+                })
+                .collect();
+
+            let (mut mixer, tx, transport) = bare_mixer(44_100, 512);
+            let handle = add_track(&tx, 0);
+            handle.config.set_volume(1.0);
+            tx.send(MixerCommand::SetInstrument {
+                track_id: 0,
+                instrument: Box::new(PhosphorSynth::new()),
+            })
+            .unwrap();
+            tx.send(MixerCommand::CreateClip {
+                track_id: 0,
+                start_tick: 0,
+                length_ticks: cycle,
+            })
+            .unwrap();
+            tx.send(MixerCommand::UpdateClip {
+                track_id: 0,
+                clip_index: 0,
+                events: clip_events,
+            })
+            .unwrap();
+            apply_all(&mut mixer);
+            transport.play();
+
+            let mut rendered = Vec::new();
+            let mut output = vec![0.0f32; 512 * 2];
+            for _ in 0..blocks {
+                mixer.process(&mut output, &[], &transport);
+                rendered.extend_from_slice(&output);
+                transport.advance(512, 44_100);
+            }
+            rendered
+        };
+
+        assert_eq!(live.len(), bounced.len());
+        let peak = live.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(peak > 0.001, "the live render was silent, so this proves nothing");
+        for (i, (a, b)) in live.iter().zip(&bounced).enumerate() {
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "sample {i} differs: live {a} bounced {b} at {SWING}% swing"
+            );
+        }
+    }
+
+    /// The rule the audio thread lives by, with a sequencer on it: taking a
+    /// new pattern while notes are sounding, switching patterns, advancing a
+    /// chain, playing chords and turning everything off are all writes into
+    /// memory that already exists.
+    #[test]
+    fn pattern_playback_does_not_allocate() {
+        let (mut mixer, tx, transport) = bare_mixer(48_000, 512);
+        let _track = add_track(&tx, 0);
+        tx.send(MixerCommand::SetInstrument {
+            track_id: 0,
+            instrument: Box::new(PhosphorSynth::new()),
+        })
+        .unwrap();
+
+        // Slot 0: chords on a melodic lane. Slot 1: a drum lane.
+        let mut chords = PatternBlock::empty();
+        chords.playing = true;
+        chords.mode = crate::pattern::Mode::Aeolian;
+        for index in 0..16 {
+            let step = &mut chords.lanes[0].steps[index];
+            step.on = true;
+            step.chord = 4; // diatonic seventh
+            step.voicing = 1 | Step::ROOT_BELOW;
+            step.key = (index as u8 * 2) % 12;
+        }
+        let drums = kick_pattern(&[0, 4, 8, 12]);
+
+        tx.send(MixerCommand::SetPattern { track_id: 0, slot: 1, block: drums }).unwrap();
+        tx.send(MixerCommand::SetPattern { track_id: 0, slot: 0, block: chords }).unwrap();
+        // A clip on the same track, so the shared window is exercised from
+        // both sides while the measurement is running.
+        tx.send(MixerCommand::CreateClip { track_id: 0, start_tick: 0, length_ticks: 3840 })
+            .unwrap();
+        tx.send(MixerCommand::UpdateClip {
+            track_id: 0,
+            clip_index: 0,
+            events: (0..16)
+                .flat_map(|i| {
+                    [
+                        ClipEvent { tick: i * 240, status: 0x90, data1: 40, data2: 90 },
+                        ClipEvent { tick: i * 240 + 120, status: 0x80, data1: 40, data2: 0 },
+                    ]
+                })
+                .collect(),
+        })
+        .unwrap();
+        apply_all(&mut mixer);
+        transport.play();
+
+        let mut output = vec![0.0f32; 512 * 2];
+        // Warm-up: anything built lazily on first use is built here.
+        for _ in 0..2 {
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(512, 48_000);
+        }
+
+        let mut queued = chords;
+        queued.pending_slot = Some(1);
+        let mut chained = chords;
+        chained.chain[0] = ChainEntry { slot: 0, repeats: 1 };
+        chained.chain[1] = ChainEntry { slot: 1, repeats: 1 };
+        chained.chain_len = 2;
+
+        let allocations = crate::alloc_count::allocations_during(|| {
+            for block in 0..400 {
+                if block == 20 {
+                    tx.send(MixerCommand::SetPattern { track_id: 0, slot: 0, block: queued })
+                        .unwrap();
+                }
+                if block == 120 {
+                    tx.send(MixerCommand::SetPattern { track_id: 0, slot: 0, block: chained })
+                        .unwrap();
+                }
+                mixer.process(&mut output, &[], &transport);
+                transport.advance(512, 48_000);
+            }
+            transport.pause();
+            mixer.process(&mut output, &[], &transport);
+        });
+        assert_eq!(allocations, 0, "the sequencer reached the allocator");
+    }
+
+    /// What a queued command costs to sit in the channel. The block travels
+    /// by value so that receiving one cannot reach the allocator, and this is
+    /// the price of that: every `MixerCommand`, whichever variant, is now as
+    /// wide as the widest one.
+    ///
+    /// Worth stating out loud rather than discovering later. A full command
+    /// budget in flight is 150 kB of queue, which is nothing on the heap and
+    /// everything on the audio thread's deadline, and that is the trade.
+    #[test]
+    fn a_command_is_as_wide_as_a_pattern() {
+        assert_eq!(
+            std::mem::size_of::<MixerCommand>(),
+            crate::pattern::PatternBlock::SIZE + 11
+        );
+    }
+
+    /// What the UI reads to draw the playhead and the queued-slot countdown.
+    /// Atomics on the track handle, the same shape as the VU meters.
+    #[test]
+    fn the_track_handle_reports_where_the_pattern_is() {
+        let (mut mixer, tx, transport) = bare_mixer(44_100, 512);
+        let handle = add_track(&tx, 0);
+        let all_sixteen: Vec<usize> = (0..16).collect();
+        let block = kick_pattern(&all_sixteen);
+        tx.send(MixerCommand::SetPattern { track_id: 0, slot: 1, block }).unwrap();
+        let mut queued = block;
+        queued.pending_slot = Some(1);
+        tx.send(MixerCommand::SetPattern { track_id: 0, slot: 0, block: queued }).unwrap();
+        apply_all(&mut mixer);
+
+        // One step in, rather than on the downbeat: tick zero is itself a
+        // pattern boundary, so a switch queued there is due immediately.
+        transport.set_position(240);
+        transport.play();
+        let mut output = vec![0.0f32; 256 * 2];
+        mixer.process(&mut output, &[], &transport);
+        assert_eq!(handle.pattern.live_slot(), 0);
+        assert_eq!(handle.pattern.queued_slot(), Some(1));
+        assert_eq!(handle.pattern.step(), 1);
+        assert!(handle.pattern.is_running());
+
+        // Half a bar in: step 8, and the switch has not happened yet.
+        transport.set_position(1920);
+        mixer.process(&mut output, &[], &transport);
+        assert_eq!(handle.pattern.step(), 8);
+        assert_eq!(handle.pattern.live_slot(), 0);
+
+        // Past the pattern end: the queued slot took over.
+        transport.set_position(3840);
+        mixer.process(&mut output, &[], &transport);
+        assert_eq!(handle.pattern.live_slot(), 1);
+        assert_eq!(handle.pattern.queued_slot(), None);
     }
 
     /// The same, for the shorter blocks the device may hand us when the

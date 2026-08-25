@@ -52,6 +52,10 @@ pub fn is_discrete(instrument: InstrumentType, param: usize) -> bool {
         InstrumentType::Rhodes => phosphor_dsp::rhodes::is_discrete(param),
         InstrumentType::LittlePhatty => phosphor_dsp::phatty::is_discrete(param),
         InstrumentType::Prophet6 => phosphor_dsp::prophet6::is_discrete(param),
+        // The sequencer has no plugin panel at all: its controls are pattern
+        // data, edited through `SeqOp`, and the panel the clip view shows on
+        // one of its tracks belongs to the child instrument.
+        InstrumentType::Sequencer => false,
     }
 }
 
@@ -73,6 +77,7 @@ pub fn step(instrument: InstrumentType, param: usize, value: f32, up: bool) -> f
             phosphor_dsp::phatty::step_discrete(param, value, up)
         }
         InstrumentType::Prophet6 => phosphor_dsp::prophet6::step_discrete(param, value, up),
+        InstrumentType::Sequencer => value,
     }
 }
 

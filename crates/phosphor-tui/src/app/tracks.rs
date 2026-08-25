@@ -109,8 +109,18 @@ impl App {
     }
 
     /// Create an instrument track in both the audio mixer and the TUI.
+    ///
+    /// The step sequencer is a choice in this menu but not an instrument: it
+    /// makes an ordinary instrument track carrying its default child, with a
+    /// pattern player in front of it. See [`phosphor_app::sequencer`].
     pub(crate) fn create_instrument_track(&mut self, instrument: InstrumentType) {
         use crate::debug_log as dbg;
+        let sequencer = instrument.is_sequencer();
+        let instrument = if sequencer {
+            phosphor_app::sequencer::DEFAULT_CHILD
+        } else {
+            instrument
+        };
         let track_id = self.next_track_id;
         self.next_track_id += 1;
         dbg::system(&format!("create_instrument_track: id={track_id} type={:?}", instrument));
@@ -127,29 +137,102 @@ impl App {
         dbg::system("  AddTrack sent");
 
         // Send SetInstrument command based on selection
-        let plugin: Box<dyn phosphor_plugin::Plugin + Send> = match instrument {
-            InstrumentType::Synth | InstrumentType::Sampler => Box::new(PhosphorSynth::new()),
-            InstrumentType::DrumRack => Box::new(phosphor_dsp::drum_rack::DrumRack::new()),
-            InstrumentType::DX7 => Box::new(phosphor_dsp::dx7::Dx7Synth::new()),
-            InstrumentType::Jupiter8 => Box::new(phosphor_dsp::jupiter::Jupiter8Synth::new()),
-            InstrumentType::Prophet6 => Box::new(phosphor_dsp::prophet6::Prophet6::new()),
-            InstrumentType::Odyssey => Box::new(phosphor_dsp::odyssey::OdysseySynth::new()),
-            InstrumentType::Juno60 => Box::new(phosphor_dsp::juno::Juno60Synth::new()),
-            InstrumentType::Rhodes => Box::new(phosphor_dsp::rhodes::RhodesPiano::new()),
-            InstrumentType::LittlePhatty => Box::new(phosphor_dsp::phatty::LittlePhatty::new()),
-        };
         dbg::system("  plugin created");
         let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::SetInstrument {
             track_id,
-            instrument: plugin,
+            instrument: build_plugin(instrument),
         });
         dbg::system("  SetInstrument sent");
 
         // Add to TUI track list with the handle wired in
         self.nav.add_instrument_track(instrument, track_id, handle);
         dbg::system(&format!("  track added to TUI, params_len={}", self.nav.tracks[self.nav.track_cursor].synth_params.len()));
+
+        if sequencer {
+            let state = phosphor_app::sequencer::SequencerState::new(instrument);
+            for sync in self.nav.attach_sequencer(state) {
+                let _ = self.engine.shared.mixer_command_tx.send(sync.command());
+            }
+            if let Some(track) = self.nav.current_track_mut() {
+                track.name = "seq".into();
+            }
+            dbg::system("  sequencer attached");
+        }
+    }
+
+    /// Apply one sequencer edit to the track under the cursor, and send the
+    /// audio thread whatever the edit made stale.
+    ///
+    /// Every key, menu item and controller message that touches a sequencer
+    /// comes through here — see [`phosphor_app::sequencer::ops`] for why
+    /// there is exactly one way in.
+    ///
+    /// Nothing in the UI calls it yet: the step grid and its keys are the
+    /// next milestone, and the seam is here first so that when they arrive
+    /// there is one path in rather than two. The tests in `test_sequencer`
+    /// drive the whole route through it.
+    #[allow(dead_code)]
+    pub(crate) fn sequencer_op(&mut self, op: phosphor_app::sequencer::ops::SeqOp) {
+        let (effect, syncs) = self.nav.sequencer_op(op);
+        if effect.child {
+            self.reload_child_instrument();
+        }
+        for sync in syncs {
+            let _ = self.engine.shared.mixer_command_tx.send(sync.command());
+        }
+    }
+
+    /// Put the current track's child instrument in its plugin slot, with its
+    /// whole panel behind it.
+    #[allow(dead_code)]
+    fn reload_child_instrument(&mut self) {
+        let Some(track) = self.nav.current_track() else { return };
+        let (Some(instrument), Some(track_id)) = (track.instrument_type, track.mixer_id) else {
+            return;
+        };
+        let params = track.synth_params.clone();
+        let tx = &self.engine.shared.mixer_command_tx;
+        let _ = tx.send(MixerCommand::SetInstrument {
+            track_id,
+            instrument: build_plugin(instrument),
+        });
+        for (index, &value) in params.iter().enumerate() {
+            let _ = tx.send(MixerCommand::SetParameter {
+                track_id,
+                param_index: index,
+                value,
+            });
+        }
     }
 
     // ── Delete ──
 
+}
+
+/// The plugin behind an instrument type.
+///
+/// One factory, because there were about to be two: a track being created
+/// builds one, and a sequencer track being pointed at a different child
+/// builds another. Two lists of instruments is one list that eventually
+/// forgets an instrument.
+///
+/// The sequencer has no plugin — it drives one — and answers with the
+/// phosphor synth so that the slot is never left empty; nothing reaches this
+/// with it, because a sequencer track carries its child's type.
+pub(crate) fn build_plugin(
+    instrument: InstrumentType,
+) -> Box<dyn phosphor_plugin::Plugin + Send> {
+    match instrument {
+        InstrumentType::Synth | InstrumentType::Sampler | InstrumentType::Sequencer => {
+            Box::new(PhosphorSynth::new())
+        }
+        InstrumentType::DrumRack => Box::new(phosphor_dsp::drum_rack::DrumRack::new()),
+        InstrumentType::DX7 => Box::new(phosphor_dsp::dx7::Dx7Synth::new()),
+        InstrumentType::Jupiter8 => Box::new(phosphor_dsp::jupiter::Jupiter8Synth::new()),
+        InstrumentType::Prophet6 => Box::new(phosphor_dsp::prophet6::Prophet6::new()),
+        InstrumentType::Odyssey => Box::new(phosphor_dsp::odyssey::OdysseySynth::new()),
+        InstrumentType::Juno60 => Box::new(phosphor_dsp::juno::Juno60Synth::new()),
+        InstrumentType::Rhodes => Box::new(phosphor_dsp::rhodes::RhodesPiano::new()),
+        InstrumentType::LittlePhatty => Box::new(phosphor_dsp::phatty::LittlePhatty::new()),
+    }
 }

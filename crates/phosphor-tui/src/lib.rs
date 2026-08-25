@@ -17,6 +17,8 @@ mod test_keys;
 #[cfg(test)]
 mod test_presets;
 #[cfg(test)]
+mod test_sequencer;
+#[cfg(test)]
 mod test_session;
 mod theme;
 mod ui;

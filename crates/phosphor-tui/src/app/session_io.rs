@@ -271,6 +271,14 @@ impl App {
 
                 track.sync_to_audio();
             }
+
+            // The sequencer last, so that it is attached to a track whose
+            // child instrument and panel are already in place.
+            if let Some(stored) = &st.sequencer {
+                for sync in self.nav.attach_sequencer(stored.to_state()) {
+                    let _ = self.engine.shared.mixer_command_tx.send(sync.command());
+                }
+            }
         }
 
         // Clean up any phantom/duplicate clips

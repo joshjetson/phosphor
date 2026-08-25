@@ -89,9 +89,25 @@ pub struct TrackState {
     /// writes go directly to the audio thread via atomics.
     pub handle: Option<std::sync::Arc<phosphor_core::project::TrackHandle>>,
     /// What type of instrument this track has.
+    ///
+    /// On a sequencer track this is the *child*: the thing in the plugin slot
+    /// making the sound. There is no separate instrument type for a
+    /// sequencer, which is what lets the child's panel, preset bank and saved
+    /// parameters all keep working untouched. What marks the track is
+    /// [`TrackState::sequencer`].
     pub instrument_type: Option<super::InstrumentType>,
     /// Parameter values (mirrors the audio thread's plugin params).
     pub synth_params: Vec<f32>,
+    /// The step sequencer driving this track, when it has one.
+    ///
+    /// Edited only through [`crate::sequencer::ops::dispatch`] — see that
+    /// module for why there is exactly one way in.
+    ///
+    /// Boxed because eight patterns are nineteen kilobytes, and a
+    /// `TrackState` is cloned whole for every undo entry and moved whenever
+    /// the track list grows. A track with no sequencer should pay a pointer
+    /// for the possibility, not a pattern bank.
+    pub sequencer: Option<Box<crate::sequencer::SequencerState>>,
 }
 
 impl TrackState {
@@ -127,6 +143,7 @@ impl TrackState {
             handle: None,
             instrument_type: None,
             synth_params: Vec::new(),
+            sequencer: None,
         }
     }
 

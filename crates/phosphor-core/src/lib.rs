@@ -4,6 +4,7 @@ pub mod cpal_backend;
 pub mod engine;
 pub mod metronome;
 pub mod mixer;
+pub mod pattern;
 pub mod project;
 pub mod transport;
 

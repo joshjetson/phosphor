@@ -55,6 +55,13 @@ pub struct SessionTrack {
     pub volume: f32,
     pub color_index: usize,
     pub clips: Vec<SessionClip>,
+    /// The step sequencer on this track, when it has one.
+    ///
+    /// Absent — not null — on every track that is not one, so a session with
+    /// no sequencer in it is byte for byte the file it was before sequencers
+    /// existed. That is what `session_digest` is run against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequencer: Option<crate::sequencer::SessionSequencer>,
 }
 
 /// One discrete control, stored by what it selects.
@@ -104,6 +111,7 @@ pub fn instrument_key(t: InstrumentType) -> &'static str {
         InstrumentType::Sampler => "sampler",
         InstrumentType::LittlePhatty => "phatty",
         InstrumentType::Prophet6 => "prophet6",
+        InstrumentType::Sequencer => "sequencer",
     }
 }
 
@@ -123,6 +131,7 @@ fn string_to_instrument_type(s: &str) -> Option<InstrumentType> {
         "sampler" => Some(InstrumentType::Sampler),
         "phatty" => Some(InstrumentType::LittlePhatty),
         "prophet6" => Some(InstrumentType::Prophet6),
+        "sequencer" => Some(InstrumentType::Sequencer),
         _ => None,
     }
 }
@@ -186,6 +195,13 @@ fn extract_session(nav: &NavState, transport: &Transport) -> SessionFile {
             volume: track.volume,
             color_index: track.color_index,
             clips,
+            sequencer: track.sequencer.as_ref().map(|state| {
+                crate::sequencer::SessionSequencer::from_state(
+                    state,
+                    track.instrument_type.unwrap_or(crate::sequencer::DEFAULT_CHILD),
+                    &track.synth_params,
+                )
+            }),
         });
     }
 
@@ -302,6 +318,7 @@ mod tests {
                     armed: true,
                     volume: 0.75,
                     color_index: 2,
+                    sequencer: None,
                     clips: vec![
                         SessionClip {
                             start_tick: 0,

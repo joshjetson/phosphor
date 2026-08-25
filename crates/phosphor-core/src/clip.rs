@@ -4,7 +4,7 @@
 //! The UI receives read-only snapshots via a channel.
 
 /// A single MIDI event within a clip, positioned by tick.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClipEvent {
     /// Absolute tick position within the clip (0 = clip start).
     pub tick: i64,
@@ -35,17 +35,32 @@ impl MidiClip {
         self.start_tick + self.length_ticks
     }
 
+    /// Events that fall within a tick range [from, to), each paired with the
+    /// absolute song tick it happens at.
+    ///
+    /// An iterator rather than a list, because this is called once per clip
+    /// per audio callback and collecting into a `Vec` is a trip to the
+    /// allocator on the audio thread. Absolute ticks rather than offsets
+    /// because that is what
+    /// [`crate::pattern::PlaybackWindow::sample_offset`] takes, and clips and
+    /// patterns go through the same one.
+    pub fn events_between(
+        &self,
+        from_tick: i64,
+        to_tick: i64,
+    ) -> impl Iterator<Item = (i64, &ClipEvent)> {
+        let start = self.start_tick;
+        self.events
+            .iter()
+            .map(move |e| (start + e.tick, e))
+            .filter(move |(tick, _)| *tick >= from_tick && *tick < to_tick)
+    }
+
     /// Get events that fall within a tick range [from, to).
     /// Returns events with tick offsets relative to `from` for sample-accurate placement.
     pub fn events_in_range(&self, from_tick: i64, to_tick: i64) -> Vec<(i64, &ClipEvent)> {
-        // Convert to clip-local ticks
-        let local_from = from_tick - self.start_tick;
-        let local_to = to_tick - self.start_tick;
-
-        self.events
-            .iter()
-            .filter(|e| e.tick >= local_from && e.tick < local_to)
-            .map(|e| (e.tick - local_from, e)) // offset relative to from_tick
+        self.events_between(from_tick, to_tick)
+            .map(|(tick, e)| (tick - from_tick, e))
             .collect()
     }
 }

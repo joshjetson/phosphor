@@ -673,6 +673,30 @@ fn render_settings(frame: &mut Frame, area: Rect, nav: &NavState) {
         )));
     }
 
+    // A sequencer track's own settings, read-only, until the step grid this
+    // belongs on is built. Everything here is edited through `SeqOp`; nothing
+    // in this panel is a knob yet.
+    if let Some(sequencer) = nav.current_track().and_then(|t| t.sequencer.as_ref()) {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Sequencer",
+            theme::amber_bright().add_modifier(Modifier::BOLD),
+        )));
+        for (label, value) in sequencer.panel_rows() {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {:<10}", label), theme::normal()),
+                Span::styled(format!(" {value}"), theme::muted()),
+            ]));
+        }
+        let playhead = nav
+            .sequencer_playhead(nav.track_cursor)
+            .map_or_else(|| "stopped".to_string(), |step| format!("step {}", step + 1));
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:<10}", "playhead"), theme::normal()),
+            Span::styled(format!(" {playhead}"), theme::muted()),
+        ]));
+    }
+
     frame.render_widget(Paragraph::new(lines), area);
 }
 
