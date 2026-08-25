@@ -156,6 +156,10 @@ impl App {
             if let Some(track) = self.nav.current_track_mut() {
                 track.name = "seq".into();
             }
+            // Opened on its grid rather than on the child's panel: the
+            // sequencer only became one after the track was made, and the
+            // tab that was chosen then was chosen for a track without one.
+            self.nav.show_current_track_controls();
             dbg::system("  sequencer attached");
         }
     }
@@ -167,11 +171,8 @@ impl App {
     /// comes through here — see [`phosphor_app::sequencer::ops`] for why
     /// there is exactly one way in.
     ///
-    /// Nothing in the UI calls it yet: the step grid and its keys are the
-    /// next milestone, and the seam is here first so that when they arrive
-    /// there is one path in rather than two. The tests in `test_sequencer`
-    /// drive the whole route through it.
-    #[allow(dead_code)]
+    /// The step grid's keys are the only caller with a keyboard behind them;
+    /// the tests in `test_sequencer` drive the same route.
     pub(crate) fn sequencer_op(&mut self, op: phosphor_app::sequencer::ops::SeqOp) {
         let (effect, syncs) = self.nav.sequencer_op(op);
         if effect.child {
@@ -184,7 +185,6 @@ impl App {
 
     /// Put the current track's child instrument in its plugin slot, with its
     /// whole panel behind it.
-    #[allow(dead_code)]
     fn reload_child_instrument(&mut self) {
         let Some(track) = self.nav.current_track() else { return };
         let (Some(instrument), Some(track_id)) = (track.instrument_type, track.mixer_id) else {

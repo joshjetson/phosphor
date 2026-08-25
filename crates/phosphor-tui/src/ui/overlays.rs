@@ -4,7 +4,14 @@ use super::*;
 
 pub(super) fn render_space_menu(frame: &mut Frame, nav: &NavState) {
     let area = frame.area();
-    let mh = 10u16.min(area.height.saturating_sub(2));
+    // Tall enough for whichever list is showing: the help section grew a
+    // topic and was the length of the box, so the last one fell off the
+    // bottom of it.
+    let wanted = match nav.space_menu.section {
+        SpaceMenuSection::Help => HELP_TOPICS.len() as u16 + 4,
+        SpaceMenuSection::Actions => 10,
+    };
+    let mh = wanted.min(area.height.saturating_sub(2));
     let my = area.height.saturating_sub(mh + 1);
     let menu_area = Rect::new(0, my, area.width, mh);
 

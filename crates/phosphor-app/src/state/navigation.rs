@@ -331,14 +331,33 @@ impl NavState {
     pub fn cycle_tab(&mut self) {
         if self.focused_pane != Pane::ClipView { return; }
 
+        // The step grid is only a tab on a track that has one. Everywhere else
+        // the cycle steps straight over it, so no key can land on a view with
+        // nothing behind it.
+        let has_sequencer = self.current_track().is_some_and(|t| t.sequencer.is_some());
+
         match (self.clip_view.focus, self.clip_view.fx_panel_tab, self.clip_view.clip_tab) {
             // FX panel: trk fx → synth
             (ClipViewFocus::FxPanel, FxPanelTab::TrackFx, _) => {
                 self.clip_view.fx_panel_tab = FxPanelTab::Synth;
             }
-            // FX panel: synth → inst config
+            // FX panel: synth → the step grid, or past it to inst config.
+            //
+            // The grid sits directly after the child's own panel because that
+            // is the pair a sequencer track is worked on: the sound and the
+            // pattern driving it, one Tab apart.
             (ClipViewFocus::FxPanel, FxPanelTab::Synth, _) => {
                 self.clip_view.focus = ClipViewFocus::PianoRoll;
+                if has_sequencer {
+                    self.clip_view.clip_tab = ClipTab::Sequencer;
+                    self.clip_view.sequencer.focus_band(SeqBand::Grid);
+                } else {
+                    self.clip_view.clip_tab = ClipTab::InstConfig;
+                    self.clip_view.inst_config_cursor = 0;
+                }
+            }
+            // Step grid → inst config
+            (ClipViewFocus::PianoRoll, _, ClipTab::Sequencer) => {
                 self.clip_view.clip_tab = ClipTab::InstConfig;
                 self.clip_view.inst_config_cursor = 0;
             }

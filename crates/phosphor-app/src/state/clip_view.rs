@@ -36,6 +36,10 @@ pub enum ClipTab {
     InstConfig,
     PianoRoll,
     Settings,
+    /// The step grid. Only reachable on a track that has a sequencer on it —
+    /// [`ClipTab::next`] steps over it everywhere else, and the tab strip
+    /// leaves it out.
+    Sequencer,
 }
 
 impl ClipTab {
@@ -44,6 +48,7 @@ impl ClipTab {
             Self::InstConfig => "inst",
             Self::PianoRoll => "piano",
             Self::Settings => "settings",
+            Self::Sequencer => "seq",
         }
     }
 
@@ -52,6 +57,7 @@ impl ClipTab {
             Self::InstConfig => Self::PianoRoll,
             Self::PianoRoll => Self::Settings,
             Self::Settings => Self::InstConfig,
+            Self::Sequencer => Self::InstConfig,
         }
     }
 
@@ -159,6 +165,10 @@ pub struct ClipViewState {
     pub synth_param_cursor: usize,
     /// Cursor position within the inst config panel.
     pub inst_config_cursor: usize,
+    /// Where the cursor is standing in the step grid, and whether a control
+    /// is locked. Only ever cursors: what a sequencer *contains* lives in
+    /// [`crate::sequencer::SequencerState`] and is edited through its ops.
+    pub sequencer: SequencerView,
 }
 
 impl Default for ClipViewState {
@@ -175,7 +185,197 @@ impl ClipViewState {
             fx_cursor: 0,
             synth_param_cursor: 0,
             inst_config_cursor: 0,
+            sequencer: SequencerView::new(),
         }
+    }
+}
+
+// ── Sequencer view ──
+
+/// Which horizontal band of the step grid view has the cursor.
+///
+/// `j`/`k` walk this list; `h`/`l` move inside whichever band is on. The step
+/// cursor, the lane and the selected slot are not here — those are edits, and
+/// live in the sequencer itself so that a controller changing one moves the
+/// same cursor a key does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SeqBand {
+    /// The step row. `h`/`l` walks steps, `n` writes one.
+    #[default]
+    Grid,
+    /// The controls belonging to the step under the cursor.
+    Step,
+    /// The controls belonging to the pattern.
+    Pattern,
+    /// The eight slots and the chain.
+    Slots,
+}
+
+impl SeqBand {
+    pub const ALL: [SeqBand; 4] = [Self::Grid, Self::Step, Self::Pattern, Self::Slots];
+
+    pub fn index(self) -> usize {
+        match self {
+            Self::Grid => 0,
+            Self::Step => 1,
+            Self::Pattern => 2,
+            Self::Slots => 3,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Grid => "grid",
+            Self::Step => "step",
+            Self::Pattern => "pattern",
+            Self::Slots => "slots",
+        }
+    }
+
+    /// One band along, stopping at the ends rather than wrapping: a list that
+    /// wraps makes `j` at the bottom jump back to the top, which reads as the
+    /// cursor having been lost.
+    pub fn stepped(self, delta: i32) -> Self {
+        let target = (self.index() as i32 + delta).clamp(0, Self::ALL.len() as i32 - 1);
+        Self::ALL[target as usize]
+    }
+}
+
+/// One control on the step grid's panels.
+///
+/// Named here rather than in either of the two places that use it, because
+/// both have to agree: the key handler turns a press on one of these into an
+/// op, and the renderer draws the same list in the same order. A knob the
+/// keys know about and the panel does not is a knob nobody can reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeqKnob {
+    // ── The step under the cursor ──
+    /// The one pitch control: semitones, or scale degrees in a mode.
+    Pitch,
+    Chord,
+    Voicing,
+    /// Double the root an octave down.
+    RootBelow,
+    Gate,
+    // ── The lane, when it is pinned to a drum voice ──
+    /// Which kit sound this lane plays.
+    Voice,
+    Mute,
+    Solo,
+    // ── The pattern ──
+    Length,
+    Rate,
+    Swing,
+    /// What a newly written step's gate starts at.
+    DefaultGate,
+    BaseVelocity,
+    AccentVelocity,
+    Mode,
+    Tonic,
+    /// When a queued switch happens.
+    Switch,
+}
+
+impl SeqKnob {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pitch => "pitch",
+            Self::Chord => "chord",
+            Self::Voicing => "voicing",
+            Self::RootBelow => "root\u{2193}",
+            Self::Gate | Self::DefaultGate => "gate",
+            Self::Voice => "sound",
+            Self::Mute => "mute",
+            Self::Solo => "solo",
+            Self::Length => "steps",
+            Self::Rate => "rate",
+            Self::Swing => "swing",
+            Self::BaseVelocity => "base",
+            Self::AccentVelocity => "accent",
+            Self::Mode => "mode",
+            Self::Tonic => "key",
+            Self::Switch => "switch",
+        }
+    }
+}
+
+/// The step grid's cursor: which band, which control inside it, and whether
+/// that control has been locked with Enter.
+///
+/// Nothing here is part of a pattern. It is the same separation the piano
+/// roll keeps — [`PianoRollState`] holds a column and a focus level, the clip
+/// holds the notes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SequencerView {
+    pub band: SeqBand,
+    /// Which control inside [`SequencerView::band`] the cursor is on.
+    pub knob: usize,
+    /// Enter was pressed on a control: `h`/`l` now adjust it and nothing else
+    /// gets a look at the key. The fader's contract, applied to a knob.
+    pub locked: bool,
+    /// The slot `y` picked up, for `p` to paste.
+    pub copy_from: Option<u8>,
+    /// Digits typed towards a step or slot number.
+    pub digits: String,
+}
+
+impl SequencerView {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Move to another band, giving up the lock and the digit buffer with it.
+    pub fn move_band(&mut self, delta: i32) {
+        if self.locked {
+            return;
+        }
+        let next = self.band.stepped(delta);
+        if next != self.band {
+            self.band = next;
+            self.knob = 0;
+            self.digits.clear();
+        }
+    }
+
+    /// Put the cursor on a band directly, as opening the view does.
+    pub fn focus_band(&mut self, band: SeqBand) {
+        self.band = band;
+        self.knob = 0;
+        self.locked = false;
+        self.digits.clear();
+    }
+
+    /// Move the cursor between the controls of the current band. Clamped:
+    /// walking off the end of a knob row and reappearing at the other end is
+    /// how a value gets changed by accident.
+    pub fn move_knob(&mut self, delta: i32, count: usize) {
+        if count == 0 {
+            self.knob = 0;
+            return;
+        }
+        self.knob = (self.knob as i32 + delta).clamp(0, count as i32 - 1) as usize;
+    }
+
+    /// Type a digit towards a number in `1..=max`, and say which one was
+    /// named once it can no longer grow.
+    ///
+    /// The piano roll's rule, because a step grid has the same problem: `1`
+    /// on a 16-step pattern might be step 1 or the front of step 12.
+    pub fn type_digit(&mut self, ch: char, max: usize) -> Option<usize> {
+        self.digits.push(ch);
+        let Ok(number) = self.digits.parse::<usize>() else {
+            self.digits.clear();
+            return None;
+        };
+        if number == 0 || number > max {
+            self.digits.clear();
+            return None;
+        }
+        if number * 10 > max || self.digits.len() >= 2 {
+            self.digits.clear();
+            return Some(number);
+        }
+        None
     }
 }
 

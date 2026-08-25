@@ -22,8 +22,17 @@ pub(super) fn render_clip_view_tabs(frame: &mut Frame, area: Rect, nav: &NavStat
 
     spans.push(Span::styled(" \u{2502} ", theme::border_style()));
 
-    // Right tabs (inst config / piano / auto)
-    for tab in ClipTab::ALL {
+    // Right tabs (step grid / inst config / piano / settings). The grid is
+    // only a tab on a track that has a sequencer on it, and it comes first
+    // because on those tracks it is the tab being worked in.
+    let has_sequencer = nav.current_track().is_some_and(|t| t.sequencer.is_some());
+    let mut tabs: Vec<ClipTab> = Vec::new();
+    if has_sequencer {
+        tabs.push(ClipTab::Sequencer);
+    }
+    tabs.extend(ClipTab::ALL.iter().copied());
+
+    for tab in &tabs {
         let active = nav.clip_view.clip_tab == *tab && nav.clip_view.focus == ClipViewFocus::PianoRoll;
         let s = if active { theme::amber_bright().add_modifier(Modifier::BOLD) }
             else if focused { theme::normal() }
@@ -52,6 +61,24 @@ pub(super) fn render_clip_view_tabs(frame: &mut Frame, area: Rect, nav: &NavStat
         }
     }
 
+    // Which band the step grid's cursor is in, and whether a knob is being
+    // held — the same thing the piano roll says about its edit mode, and for
+    // the same reason: a locked control that does not announce itself is a
+    // keyboard that has stopped working.
+    if nav.clip_view.clip_tab == ClipTab::Sequencer && has_sequencer {
+        let view = &nav.clip_view.sequencer;
+        if let Some(track) = nav.current_track() {
+            spans.push(Span::styled(
+                format!(" {} \u{00B7} seq", track.name.to_uppercase()),
+                theme::normal(),
+            ));
+        }
+        spans.push(Span::styled(
+            format!(" [SEQ:{}{}]", view.band.label(), if view.locked { " hold" } else { "" }),
+            Style::default().fg(theme::amber_val()).add_modifier(Modifier::BOLD),
+        ));
+    }
+
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -76,6 +103,7 @@ pub(super) fn render_clip_view(frame: &mut Frame, area: Rect, nav: &NavState, sn
         ClipTab::InstConfig => render_inst_config(frame, cols[2], nav),
         ClipTab::Settings => render_settings(frame, cols[2], nav),
         ClipTab::PianoRoll => render_piano_roll(frame, cols[2], nav, snap),
+        ClipTab::Sequencer => render_sequencer(frame, cols[2], nav, snap),
     }
 }
 
@@ -671,30 +699,6 @@ fn render_settings(frame: &mut Frame, area: Rect, nav: &NavState) {
             format!("  Edit mode: Space+E ({})", if pr.edit_mode { "active" } else { "off" }),
             theme::muted(),
         )));
-    }
-
-    // A sequencer track's own settings, read-only, until the step grid this
-    // belongs on is built. Everything here is edited through `SeqOp`; nothing
-    // in this panel is a knob yet.
-    if let Some(sequencer) = nav.current_track().and_then(|t| t.sequencer.as_ref()) {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "  Sequencer",
-            theme::amber_bright().add_modifier(Modifier::BOLD),
-        )));
-        for (label, value) in sequencer.panel_rows() {
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {:<10}", label), theme::normal()),
-                Span::styled(format!(" {value}"), theme::muted()),
-            ]));
-        }
-        let playhead = nav
-            .sequencer_playhead(nav.track_cursor)
-            .map_or_else(|| "stopped".to_string(), |step| format!("step {}", step + 1));
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {:<10}", "playhead"), theme::normal()),
-            Span::styled(format!(" {playhead}"), theme::muted()),
-        ]));
     }
 
     frame.render_widget(Paragraph::new(lines), area);

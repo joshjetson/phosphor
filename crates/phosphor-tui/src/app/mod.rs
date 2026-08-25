@@ -26,6 +26,9 @@ use crate::state::{self, ClipTab, ClipViewFocus, ConfirmKind, FxPanelTab, InputM
 mod delete;
 mod edit_mode;
 mod keys;
+mod sequencer_bounce;
+pub(crate) mod sequencer_keys;
+mod sequencer_record;
 mod piano_roll;
 mod presets;
 mod session_io;
@@ -79,6 +82,17 @@ pub struct App {
     pub(crate) yanked_clip: Option<crate::state::Clip>,
     /// Timeline position of the yanked clip (for cross-track paste at same position).
     pub(crate) yanked_clip_start: i64,
+    /// The UI's tap on MIDI input, for step record.
+    ///
+    /// The audio thread's ring has one consumer and this is not it: the
+    /// `midir` callback fills both. `None` when MIDI is off, which is every
+    /// test — those call the step-record entry points directly.
+    pub(crate) midi_ui_rx: Option<crossbeam_channel::Receiver<phosphor_midi::MidiMessage>>,
+    /// Notes with a key still down.
+    pub(crate) held_notes: Vec<u8>,
+    /// Every note touched since the last one was let go — the chord being
+    /// played, which is written when the last finger lifts.
+    pub(crate) recorded_notes: Vec<u8>,
     /// The receiving end of the mixer command channel, kept alive only when
     /// there is no mixer to own it — which is only ever in tests, since a
     /// headless app has no audio thread.
@@ -206,11 +220,13 @@ impl App {
         let (midi_tx, midi_rx) = midi_ring_buffer();
 
         // Start MIDI input FIRST so the controller can finish its init burst
+        let (midi_ui_tx, midi_ui_rx) = crossbeam_channel::unbounded();
         let midi_connection = if enable_midi {
             let status = midi_status.clone();
-            start_midi_input(status, midi_tx)
+            start_midi_input(status, midi_tx, midi_ui_tx)
         } else {
             drop(midi_tx);
+            drop(midi_ui_tx);
             None
         };
 
@@ -270,6 +286,9 @@ impl App {
             status_message: format_notice.map(|m| (m, std::time::Instant::now())),
             yanked_clip: None,
             yanked_clip_start: 0,
+            midi_ui_rx: enable_midi.then_some(midi_ui_rx),
+            held_notes: Vec::new(),
+            recorded_notes: Vec::new(),
             #[cfg(test)]
             mixer_rx: mixer_rx_test,
         }
@@ -485,6 +504,10 @@ impl App {
             // Which pattern is playing, and where in it — decided on the
             // audio thread, so it is read back rather than guessed at.
             self.nav.sync_sequencers_from_audio();
+            // What was played since the last frame, for a sequencer that is
+            // armed. Drained whether or not anything is armed, so the channel
+            // cannot grow while a controller is idling.
+            self.poll_step_record();
             for track in &self.nav.tracks {
                 track.sync_to_audio();
             }
@@ -583,6 +606,7 @@ impl App {
 fn start_midi_input(
     status: Arc<MidiStatus>,
     mut midi_tx: phosphor_midi::ring::MidiRingSender,
+    ui_tx: crossbeam_channel::Sender<phosphor_midi::MidiMessage>,
 ) -> Option<midir::MidiInputConnection<()>> {
     let midi_in = match midir::MidiInput::new("phosphor") {
         Ok(m) => m,
@@ -613,6 +637,9 @@ fn start_midi_input(
                 }
                 status_clone.message_count.fetch_add(1, Ordering::Relaxed);
                 midi_tx.push(msg);
+                // The UI's copy, for step record. A send that fails means
+                // nothing is listening, which is not a reason to stop playing.
+                let _ = ui_tx.send(msg);
             }
         },
         (),

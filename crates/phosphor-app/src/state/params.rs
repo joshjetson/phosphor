@@ -110,8 +110,14 @@ impl NavState {
                 };
                 self.clip_view_target = Some((self.track_cursor, clip_idx));
 
-                // If track has recorded clips, show piano roll. Otherwise show synth.
-                if !track.clips.is_empty() {
+                // A sequencer track opens on its grid: the pattern is the
+                // thing being worked on, and its clips — if it has any — are
+                // bounces of it rather than what is playing.
+                if track.sequencer.is_some() {
+                    self.clip_view.clip_tab = ClipTab::Sequencer;
+                    self.clip_view.focus = ClipViewFocus::PianoRoll;
+                    self.clip_view.sequencer.focus_band(SeqBand::Grid);
+                } else if !track.clips.is_empty() {
                     self.clip_view.clip_tab = ClipTab::PianoRoll;
                     self.clip_view.focus = ClipViewFocus::PianoRoll;
                     self.clip_view.piano_roll.focus = PianoRollFocus::Navigation;

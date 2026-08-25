@@ -59,6 +59,31 @@ pub(super) fn render_bottom_bar(
             Pane::Transport => vec![("hl","nav"),("enter","sel"),("+/-","bpm"),("tab","pane")],
             Pane::Tracks if nav.track_selected => vec![("hl","clip"),("m","mute"),("s","solo"),("r","arm"),("R","rec"),("esc","back")],
             Pane::Tracks => vec![("jk","track"),("enter","sel"),("m","mute"),("s","solo"),("r","arm"),("R","rec")],
+            // The step grid, band by band. A locked knob says only what it
+            // can do, because it is the only thing that can be done.
+            Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Sequencer
+                && nav.clip_view.focus == ClipViewFocus::PianoRoll
+                && nav.clip_view.sequencer.locked =>
+                vec![("hl","turn"),("H/L","stride"),("esc","release")],
+            Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Sequencer
+                && nav.clip_view.focus == ClipViewFocus::PianoRoll =>
+                match nav.clip_view.sequencer.band {
+                    SeqBand::Grid => vec![
+                        ("hl","step"),("n","hit"),("a","accent"),("[]","lane"),
+                        ("jk","band"),("b","bounce"),("t","run"),("r","rec"),
+                    ],
+                    SeqBand::Step => vec![
+                        ("hl","knob"),("enter","hold"),("jk","band"),("_","tie"),
+                        ("n","hit"),("a","accent"),
+                    ],
+                    SeqBand::Pattern => vec![
+                        ("hl","knob"),("enter","hold"),("jk","band"),("[]","lane"),
+                    ],
+                    SeqBand::Slots => vec![
+                        ("hl","slot"),("enter","queue"),("c","chain"),("y/p","copy"),
+                        ("X","clear"),("jk","band"),
+                    ],
+                },
             Pane::ClipView if nav.clip_view.focus == ClipViewFocus::PianoRoll
                 && nav.clip_view.clip_tab == ClipTab::InstConfig =>
                 vec![("jk","select"),("hl","adjust"),("tab","next"),("esc","back")],

@@ -59,6 +59,7 @@ impl App {
             && !self.nav.instrument_modal.open && !self.nav.fx_menu.open
             && !self.nav.preset_modal.open
             && !self.nav.element_locked && !self.nav.clip_view.piano_roll.edit_mode
+            && !self.nav.clip_view.sequencer.locked
         {
             if key.code == KeyCode::Char('u') && !key.modifiers.contains(KeyModifiers::SHIFT) {
                 dbg::user("u → performing undo");
@@ -279,8 +280,17 @@ impl App {
             return;
         }
 
-        // Tab — blocked while piano roll is in column/row editing mode
+        // Tab — blocked while piano roll is in column/row editing mode, and
+        // while a step grid knob is being held: a locked control takes every
+        // key, or "h adjusts" and "h moves" are the same press.
         match key.code {
+            KeyCode::Tab | KeyCode::BackTab
+                if self.nav.focused_pane == Pane::ClipView
+                    && self.nav.clip_view.clip_tab == ClipTab::Sequencer
+                    && self.nav.clip_view.sequencer.locked =>
+            {
+                return;
+            }
             KeyCode::Tab if self.nav.focused_pane == Pane::ClipView
                 && (self.nav.clip_view.piano_roll.focus != PianoRollFocus::Navigation
                     || self.nav.clip_view.piano_roll.edit_mode) => {
@@ -585,6 +595,17 @@ impl App {
                 }
                 _ => {}
             }
+            return;
+        }
+
+        // The step grid takes its own keys. Checked before the tabs below it
+        // because every one of them — j, k, h, l, Enter, the digits — means
+        // something different on a step grid, and a key that falls through to
+        // the piano roll from here would move a cursor nobody can see.
+        if self.nav.clip_view.focus == ClipViewFocus::PianoRoll
+            && self.nav.clip_view.clip_tab == ClipTab::Sequencer
+        {
+            self.handle_sequencer_keys(key);
             return;
         }
 

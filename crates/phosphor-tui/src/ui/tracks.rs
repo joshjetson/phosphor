@@ -178,7 +178,7 @@ pub(super) fn render_header(frame: &mut Frame, area: Rect, ctx: &TrackCtx) {
         .fg(theme::dim_color(tc, if dim { 20 } else { 55 }))
         .bg(theme::piano_black_bg());
 
-    let r1: Vec<Span> = vec![
+    let mut r1: Vec<Span> = vec![
         Span::styled(ac, ac_s),
         Span::styled("  ", theme::bg()),
         Span::styled("m", theme::btn_style(track.muted, m_f, tc)),
@@ -187,6 +187,25 @@ pub(super) fn render_header(frame: &mut Frame, area: Rect, ctx: &TrackCtx) {
         Span::styled(" ", theme::bg()),
         Span::styled(vu_bar, vu_s),
     ];
+
+    // A pattern running on this track, and — the one that matters — a pattern
+    // running on a track that also has clips on it. Those are two copies of
+    // the same part playing, which sounds like a badly tuned instrument
+    // rather than like a mistake anyone made, so it is said out loud on the
+    // row itself.
+    if let Some(sequencer) = track.sequencer.as_deref() {
+        if sequencer.is_playing() {
+            let doubled = !track.clips.is_empty();
+            r1.push(Span::styled(
+                if doubled { " \u{203C}" } else { " \u{25B6}" },
+                if doubled {
+                    theme::amber_bright().add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme::dim_color(tc, 60)).bg(theme::bg_val())
+                },
+            ));
+        }
+    }
 
     // Row 2: divider line across header
     let r2 = Line::from(vec![

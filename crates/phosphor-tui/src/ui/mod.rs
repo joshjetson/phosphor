@@ -18,6 +18,8 @@ mod clip_view;
 use clip_view::*;
 mod overlays;
 use overlays::*;
+mod sequencer;
+use sequencer::*;
 mod top_bar;
 use top_bar::*;
 mod tracks;
