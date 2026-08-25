@@ -23,6 +23,7 @@ impl NavState {
             '2' => { self.focus_pane(Pane::Tracks); None }
             '3' => { self.focus_pane(Pane::ClipView); None }
             'p' => Some(SpaceAction::PlayPause),
+            '0' => Some(SpaceAction::Stop),
             'r' => Some(SpaceAction::ToggleRecord),
             'l' => Some(SpaceAction::ToggleLoop),
             'm' => Some(SpaceAction::ToggleMetronome),

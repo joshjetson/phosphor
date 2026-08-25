@@ -74,7 +74,9 @@ pub(super) fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap
         .bg(if met_sel { hi } else { theme::bg_val() }));
 
     // Seq
-    let seq = if snap.playing { Span::styled("seq:on", theme::normal()) } else { Span::styled("seq:off", theme::dim()) };
+    // "seq" predates the step sequencer; with a real sequencer in the rack a
+    // top-bar "seq:on" that means "the transport is rolling" reads as a lie.
+    let seq = if snap.playing { Span::styled("play:on", theme::normal()) } else { Span::styled("play:off", theme::dim()) };
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![

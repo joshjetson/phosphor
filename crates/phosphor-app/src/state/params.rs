@@ -117,6 +117,11 @@ impl NavState {
                     self.clip_view.clip_tab = ClipTab::Sequencer;
                     self.clip_view.focus = ClipViewFocus::PianoRoll;
                     self.clip_view.sequencer.focus_band(SeqBand::Grid);
+                    // And the keyboard goes with it. The grid displaying in
+                    // one pane while the keys land in another is a sequencer
+                    // you can see but not touch — the tab and the inner focus
+                    // above are only two thirds of "opened on its grid".
+                    self.focused_pane = Pane::ClipView;
                 } else if !track.clips.is_empty() {
                     self.clip_view.clip_tab = ClipTab::PianoRoll;
                     self.clip_view.focus = ClipViewFocus::PianoRoll;

@@ -315,6 +315,7 @@ program with `program`.
 | `Space` `2` | Focus tracks |
 | `Space` `3` | Focus clip view |
 | `Space` `p` | Play / pause |
+| `Space` `0` | Stop and return to bar 1 |
 | `Space` `r` | Toggle recording |
 | `Space` `l` | Edit loop region |
 | `Space` `m` | Toggle metronome |
@@ -360,6 +361,31 @@ written, and a preset that reopens on a different drum machine is the kind of wr
 that looks perfectly reasonable. Presets written before this still load — the knob
 position is the only evidence they carry — and the status bar says to check the
 patch when one does.
+
+### Step Sequencer (a track type — drives any instrument)
+
+Add one from `Space+A` → Step Sequencer. It opens on its step grid with the
+keyboard already there. `j`/`k` walk the four bands — grid, step panel,
+pattern panel, slots — `h`/`l` move inside a band, `Enter` holds a knob the
+way the fader locks, `Esc` walks back out.
+
+| Key | Action |
+|-----|--------|
+| `n` | Toggle the step under the cursor |
+| `a` | Accent it |
+| `[` / `]` | Previous / next lane (kit sounds on a drum child) |
+| `m` / `s` | Mute / solo the lane |
+| `t` | Run the pattern — starts the transport too if it is stopped |
+| `r` | Arm step record: play your keyboard to write pitches and chords, `.` rests, `_` ties |
+| `b` | Bounce the pattern (or chain) to a real clip at the next free bar |
+| `c` / `C` | Chain the slot under the cursor (again for ×2, ×3…) / clear the chain |
+| `y` / `p` | Copy / paste a pattern between slots |
+| `1`–`8` on the slot band | Select a slot; `Enter` queues it for the next pattern end |
+
+The pattern band's first knob is **child** — which instrument the sequencer
+drives. Patterns are 4–32 steps (12 and 24 included) at six rates with swing,
+gates up to a TIE, accent against a base velocity, and modes that make the
+pitch knob walk scale degrees with diatonic chords derived from the degree.
 
 ### Tracks Pane
 

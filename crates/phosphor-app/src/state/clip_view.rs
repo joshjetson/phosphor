@@ -274,6 +274,8 @@ pub enum SeqKnob {
     Tonic,
     /// When a queued switch happens.
     Switch,
+    /// Which instrument the sequencer drives.
+    Child,
 }
 
 impl SeqKnob {
@@ -295,6 +297,7 @@ impl SeqKnob {
             Self::Mode => "mode",
             Self::Tonic => "key",
             Self::Switch => "switch",
+            Self::Child => "child",
         }
     }
 }

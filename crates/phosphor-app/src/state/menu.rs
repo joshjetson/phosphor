@@ -290,6 +290,8 @@ impl PresetModal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpaceAction {
     PlayPause,
+    /// Stop and return the playhead to the top of the song.
+    Stop,
     ToggleRecord,
     ToggleLoop,
     ToggleMetronome,
@@ -516,6 +518,7 @@ pub const SPACE_ACTIONS: &[(&str, &str, &str)] = &[
     ("spc+2", "tracks",    "focus the tracks panel"),
     ("spc+3", "clip view", "focus clip / piano roll panel"),
     ("spc+p", "play/pause","toggle transport playback"),
+    ("spc+0", "stop",      "stop and return to bar 1"),
     ("spc+r", "record",    "toggle global recording"),
     ("spc+l", "loop",      "edit loop region"),
     ("spc+m", "metronome", "toggle click track"),

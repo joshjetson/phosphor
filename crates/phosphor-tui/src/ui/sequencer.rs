@@ -125,6 +125,8 @@ struct Seq<'a> {
     /// Transport position, for the countdown to a queued switch.
     position: i64,
     colour: Color,
+    /// The instrument the sequencer drives, for the child knob.
+    child: Option<InstrumentType>,
     /// How many clips are sitting on the track — a running pattern and a clip
     /// of the same part is the doubled-notes trap.
     clips: usize,
@@ -559,6 +561,15 @@ fn knob_of(seq: &Seq, knob: SeqKnob) -> Knob {
     let label = knob.label();
 
     match knob {
+        SeqKnob::Child => {
+            let choices: Vec<_> = crate::app::sequencer_keys::child_choices().collect();
+            let at = seq
+                .child
+                .and_then(|c| choices.iter().position(|&x| x == c))
+                .unwrap_or(0);
+            let name = seq.child.map_or("—", InstrumentType::label);
+            Knob::at(label, name, at, choices.len())
+        }
         SeqKnob::Pitch => {
             // One control. The storage is an octave and a key; what the
             // player is given is a note, and a degree beside it when the
@@ -849,6 +860,7 @@ pub(super) fn render_sequencer(
             .map(|step| step.min(MAX_STEPS - 1)),
         position: snap.position_ticks,
         colour: theme::track_color(track.color_index),
+        child: track.instrument_type,
         clips: track.clips.len(),
     };
 
@@ -971,6 +983,7 @@ mod tests {
             playhead: None,
             position: 0,
             colour: theme::track_color(0),
+            child: None,
             clips: 0,
         }
     }

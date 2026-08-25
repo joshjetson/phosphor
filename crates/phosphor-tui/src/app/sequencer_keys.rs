@@ -44,8 +44,11 @@ pub(crate) fn step_knobs(state: &SequencerState) -> &'static [SeqKnob] {
     }
 }
 
-/// The controls the pattern band shows, in cursor order.
-pub(crate) const PATTERN_KNOBS: [SeqKnob; 9] = [
+/// The controls the pattern band shows, in cursor order. The child comes
+/// first: which instrument the sequencer drives is the biggest decision on
+/// the band, and a knob nobody scrolls to is a knob nobody finds.
+pub(crate) const PATTERN_KNOBS: [SeqKnob; 10] = [
+    SeqKnob::Child,
     SeqKnob::Length,
     SeqKnob::Rate,
     SeqKnob::Swing,
@@ -121,7 +124,14 @@ fn knob_ops(state: &SequencerState, knob: SeqKnob, delta: i8, coarse: bool) -> V
             vec![SeqOp::SetTonic(next)]
         }
         SeqKnob::Switch => vec![SeqOp::CycleSwitchQuant(delta)],
+        // Needs the track, not the sequencer state — handled by the caller.
+        SeqKnob::Child => Vec::new(),
     }
+}
+
+/// The instruments a sequencer may drive: everything except itself.
+pub(crate) fn child_choices() -> impl Iterator<Item = InstrumentType> {
+    InstrumentType::ALL.iter().copied().filter(|t| !t.is_sequencer())
 }
 
 impl App {
@@ -188,6 +198,18 @@ impl App {
         };
         let knobs = knobs_of(state, view_band);
         let Some(&knob) = knobs.get(cursor) else { return };
+        // The child knob walks the instrument list, which lives on the track
+        // rather than in the sequencer state the pure knob table can see.
+        if knob == SeqKnob::Child {
+            let current = self.nav.current_track().and_then(|t| t.instrument_type);
+            let choices: Vec<_> = child_choices().collect();
+            let at = current
+                .and_then(|c| choices.iter().position(|&x| x == c))
+                .unwrap_or(0);
+            let next = (at as i32 + i32::from(delta)).rem_euclid(choices.len() as i32) as usize;
+            self.sequencer_op(SeqOp::SetChild(choices[next]));
+            return;
+        }
         let ops = knob_ops(state, knob, delta, coarse);
         for op in ops {
             self.sequencer_op(op);
@@ -370,8 +392,21 @@ impl App {
             .current_track()
             .and_then(|t| t.sequencer.as_deref())
             .is_some_and(SequencerState::is_playing);
+        // A pattern only sounds while the transport rolls, and "make it play"
+        // is one gesture on every drum machine ever shipped — so starting the
+        // pattern starts the transport too. Stopping the pattern leaves the
+        // transport alone: other tracks may still be playing.
+        let started_transport = running && !self.engine.transport.is_playing();
+        if started_transport {
+            self.sync_loop_to_transport();
+            self.engine.transport.play();
+        }
         self.status_message = Some((
-            if running { "pattern running".into() } else { "pattern stopped".to_string() },
+            match (running, started_transport) {
+                (true, true) => "pattern running · transport started".to_string(),
+                (true, false) => "pattern running".to_string(),
+                (false, _) => "pattern stopped".to_string(),
+            },
             std::time::Instant::now(),
         ));
     }

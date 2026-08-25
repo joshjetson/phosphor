@@ -6,6 +6,17 @@ impl App {
 
     pub(crate) fn handle_space_action(&mut self, action: SpaceAction) {
         match action {
+            SpaceAction::Stop => {
+                use crate::debug_log as dbg;
+                dbg::system("stop → return to bar 1");
+                self.stop_playback();
+                self.engine.transport.stop();
+                self.status_message = Some((
+                    "stopped · back to bar 1".to_string(),
+                    std::time::Instant::now(),
+                ));
+                self.log_transport_state();
+            }
             SpaceAction::PlayPause => {
                 use crate::debug_log as dbg;
                 if self.engine.transport.is_playing() {

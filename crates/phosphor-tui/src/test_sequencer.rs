@@ -421,14 +421,32 @@ mod grid {
                 for index in 0..count {
                     app.nav.clip_view.sequencer.focus_band(band);
                     app.nav.clip_view.sequencer.knob = index;
+                    let knob = crate::app::sequencer_keys::knobs_of(state(&app), band)[index];
                     let before = state(&app).clone();
+                    let child_before = app.nav.current_track().and_then(|t| t.instrument_type);
                     press(&mut app, KeyCode::Enter);
                     press(&mut app, KeyCode::Char('l'));
                     // Either direction counts: the accent velocity starts at
                     // the top of its travel, and a knob already against its
                     // stop is not a dead knob.
-                    if &before == state(&app) {
+                    if &before == state(&app)
+                        && child_before == app.nav.current_track().and_then(|t| t.instrument_type)
+                    {
                         press(&mut app, KeyCode::Char('h'));
+                    }
+                    // The child knob edits the track, not the pattern — that
+                    // is its whole point — so it is judged on what it edits.
+                    if knob == phosphor_app::state::SeqKnob::Child {
+                        assert_ne!(
+                            child_before,
+                            app.nav.current_track().and_then(|t| t.instrument_type),
+                            "the child knob on {child:?} changed nothing",
+                        );
+                        press(&mut app, KeyCode::Esc);
+                        // Put the child back so the rest of the band is
+                        // tested on the instrument this pass is about.
+                        app.sequencer_op(SeqOp::SetChild(child));
+                        continue;
                     }
                     assert_ne!(
                         &before,
