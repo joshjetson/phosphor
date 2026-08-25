@@ -364,28 +364,117 @@ patch when one does.
 
 ### Step Sequencer (a track type — drives any instrument)
 
-Add one from `Space+A` → Step Sequencer. It opens on its step grid with the
-keyboard already there. `j`/`k` walk the four bands — grid, step panel,
-pattern panel, slots — `h`/`l` move inside a band, `Enter` holds a knob the
-way the fader locks, `Esc` walks back out.
+A pattern sequencer in the TR/Elektron lineage. It makes no sound of its own:
+it drives a **child instrument** — the drum rack by default, or any synth in
+the rack — and it is sample-locked to the transport, so a pattern step and a
+clip note on the same beat land on the same sample.
 
-| Key | Action |
-|-----|--------|
-| `n` | Toggle the step under the cursor |
-| `a` | Accent it |
-| `[` / `]` | Previous / next lane (kit sounds on a drum child) |
-| `m` / `s` | Mute / solo the lane |
-| `t` | Run the pattern — starts the transport too if it is stopped |
-| `r` | Arm step record: play your keyboard to write pitches and chords, `.` rests, `_` ties |
-| `b` | Bounce the pattern (or chain) to a real clip at the next free bar |
-| `c` / `C` | Chain the slot under the cursor (again for ×2, ×3…) / clear the chain |
-| `y` / `p` | Copy / paste a pattern between slots |
-| `1`–`8` on the slot band | Select a slot; `Enter` queues it for the next pattern end |
+**First beat in thirty seconds:**
 
-The pattern band's first knob is **child** — which instrument the sequencer
-drives. Patterns are 4–32 steps (12 and 24 included) at six rates with swing,
-gates up to a TIE, accent against a base velocity, and modes that make the
-pitch knob walk scale degrees with diatonic chords derived from the degree.
+1. `Space` `a` → **Step Sequencer** → `Enter`. You land on the grid.
+2. `n` writes a hit. `h`/`l` move along the steps. Write a few.
+3. `j`/`k` move between the sound rows (`BD` `SD` `CH`…). Write a hat line
+   against the kick.
+4. `t` — it plays. A light chases across every row and wraps.
+5. `Space` `0` stops and returns to bar 1.
+
+**The screen:**
+
+```
+ ▶ step 7 of 16  slot A · Drum Rack        ← what the machine is doing
+     1  2  3  4   5  6  7  8   9 10 …      ← step ruler, grouped by beat
+ BD ▓▓ ░░ ░░ ░░  ▓▓ ░░ ░░ ░░  ▓▓ ░░       ← one row per sound; ▓▓ hit,
+▸SD ░░ ░░ ░░ ░░  ██ ░░ ░░ ░░  ░░ ░░          ██ accent, ▸ = row being written
+ CH ░░ ░░ ▓▓ ░░  ░░ ░░ ▓▓ ░░  ░░ ░░
+lane SD   sound ◑ SD 38  mute ○ off …      ← the row's own controls
+pattern   child ○ Drum Rack  steps ◑ 16 …  ← the pattern's controls
+  slots  ▶A  B  C  D  E  F  G  H  chain —  ← eight patterns, queue, chain
+```
+
+`j`/`k` walk down the sounds and keep going into the panels below — lane,
+pattern, slots — and `k` walks back up. `h`/`l` move along whatever row you
+are on. `Enter` **holds** a knob (like the volume fader): while held, `h`/`l`
+adjust it, `H`/`L` take bigger strides, `Esc` lets go.
+
+**Changing which sounds the rows play.** The eight rows start as kick, snare,
+hats, clap and toms, but every kit has more — rimshot, crash, ride, cowbell,
+percussion. Walk `j` down to the **lane** panel, `Enter` on the `sound` knob,
+then `h`/`l` step through every sound in the kit one at a time (`H`/`L` jump
+an octave of notes at once). The row's name follows the sound — `BD` becomes
+`RS`, `CR`, `RD`, `CB`… (a sound with no short name shows its note number).
+`Esc` releases. The pattern keeps playing while you do this.
+
+**Sequencing a synth instead of drums.** Walk `j` to the **pattern** panel.
+Its first knob is `child` — the instrument this sequencer drives. `Enter`,
+then `h`/`l` cycle through everything in the rack: the DX7, the Jupiter-8,
+the Prophet-6, the Phatty, all of them. The grid switches to one melodic row,
+and the panel above the pattern row becomes the **step** panel:
+
+- `pitch` — what the step plays. `h`/`l` walk semitones, `H`/`L` jump
+  octaves. With a **mode** active (see below) `h`/`l` walk scale degrees
+  instead, and the readout shows both: `iii·E4`.
+- `chord` — from a single note through maj/min/dim/sus/6ths/7ths/quartal
+  4ths, plus **diatonic** (the chord quality follows the scale degree).
+- `voicing` — close, drop-2, first or second inversion; `root↓` doubles the
+  root an octave down.
+- `gate` — how long the note holds, up to **TIE**, which holds it into the
+  next step (the 303 slide feel).
+
+The readout line under the step panel always names what the step will play:
+`Cm7 · C4 D#4 G4 A#4`. The child's own panel (patch, cutoff, everything)
+stays on the left side of the screen — pick the patch there as usual.
+
+**Mode and key** (pattern panel): choose Dorian, Phrygian, Lydian… and a
+tonic, and the pitch knob snaps to the scale; chords set to *diatonic* pick
+their own quality per degree, so a progression stays in key by itself.
+
+**Accent and feel** (pattern panel): `a` on a step makes it hit at the
+`accent` velocity instead of `base`. `swing` delays the off-beats,
+MPC-style. `steps` masks rather than deletes — shorten 16 → 8 and the hidden
+half comes back when you lengthen again. `rate` runs from quarters to
+sixteenth triplets; 12 or 24 steps give 3/4 and shuffle feels.
+
+**Patterns, slots, chains** (slots row): eight patterns per sequencer, `A`
+through `H`. `h`/`l` choose one to look at, digits `1`–`8` jump. `Enter`
+queues the slot to take over **at the end of the current pattern** — the
+header counts it down. `c` chains the slot under the cursor (press again for
+×2, ×3…), building an arrangement like `A×4 B×2 A×2`; the chain plays in
+order and loops. `C` clears it. `y`/`p` copy a pattern from one slot to
+another.
+
+**Bounce** (`b`): compiles the pattern — or the whole chain — into a real
+clip on the timeline at the next free bar, and stops the live pattern so
+nothing plays twice. The clip is then ordinary: edit it in the piano roll,
+undo it with `u`.
+
+**Step record** (`r`): arm it and play your MIDI keyboard — each key writes
+its pitch to the step under the cursor and moves on; hold several keys and
+the step gets the chord, named in the readout. `.` writes a rest (skips a
+step), `_` ties the previous step. `r` again to disarm.
+
+**All keys, in one place:**
+
+| Key | Where | Action |
+|-----|-------|--------|
+| `h` / `l` | everywhere | Move along steps / knobs / slots; adjust a held knob |
+| `j` / `k` | everywhere | Down / up: sounds, then lane, pattern, slots panels |
+| `n` | grid | Write / erase the step under the cursor |
+| `a` | grid | Accent it |
+| `Enter` | grid | Write the step · panels: hold the knob · slots: queue |
+| `H` / `L` | held knob | Big strides (octaves, ±5 swing, ±10 velocity…) |
+| `[` / `]` | everywhere | Previous / next sound row, from any depth |
+| `x` | everywhere | Clear the step under the cursor |
+| `m` / `s` | everywhere | Mute / solo the row being written |
+| `t` | everywhere | Run / stop the pattern (starts the transport if stopped) |
+| `r`, `.`, `_` | everywhere | Step record: arm · rest · tie |
+| `b` | everywhere | Bounce pattern or chain to a clip |
+| `c` / `C` | everywhere | Chain the slot under the cursor (repeat to stack) / clear the chain |
+| `y` / `p` | everywhere | Copy / paste a pattern between slots |
+| `digits` | grid / slots | Jump to a step / jump to a slot |
+| `X` | everywhere | Clear the whole pattern |
+| `Esc` | everywhere | Release knob → leave panel → leave the sequencer |
+| `Space` `p` | global | Play — a fresh pattern runs from birth, so this alone makes sound |
+| `Space` `0` | global | Stop and return to bar 1 |
 
 ### Tracks Pane
 
