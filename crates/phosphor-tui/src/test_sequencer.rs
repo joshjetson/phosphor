@@ -379,19 +379,102 @@ mod grid {
         assert_eq!(state(&app).lane_cursor(), LANES - 2);
     }
 
-    /// On a melodic pattern there is one row, so `j` from the grid is the way
-    /// down to the panels rather than a walk through seven voices that look
-    /// exactly like the one being edited.
+    /// A keyboard has eight rows too, and `j`/`k` walks them exactly as it
+    /// walks a kit's sounds. They are what a chord gets layered across — a
+    /// seventh on one row, the ninth above it on the next — which the engine
+    /// has always played and the view used to hide.
     #[test]
-    fn jk_leaves_the_grid_at_once_on_a_melodic_pattern() {
+    fn jk_walks_the_rows_on_a_keyboard_too() {
+        let mut app = grid_app();
+        app.sequencer_op(SeqOp::SetChild(InstrumentType::Juno60));
+        assert!(state(&app).lane().is_pitched());
+
+        for expected in 1..LANES {
+            press(&mut app, KeyCode::Char('j'));
+            assert_eq!(state(&app).lane_cursor(), expected, "j did not walk the voices");
+            assert_eq!(app.nav.clip_view.sequencer.band, SeqBand::Grid);
+        }
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.nav.clip_view.sequencer.band, SeqBand::Step, "the last row is a dead end");
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(state(&app).lane_cursor(), LANES - 1);
+    }
+
+    /// Enter opens what is under the cursor — the step's panel on a keyboard,
+    /// the lane's on a kit — with the cursor on its first control. It used to
+    /// be a second `n`, which left no key for "what is this step set to".
+    #[test]
+    fn enter_opens_the_panel_for_what_is_under_the_cursor() {
+        for child in [InstrumentType::DrumRack, InstrumentType::Juno60] {
+            let mut app = grid_app();
+            app.sequencer_op(SeqOp::SetChild(child));
+            app.nav.clip_view.sequencer.knob = 3;
+
+            press(&mut app, KeyCode::Enter);
+            assert_eq!(
+                app.nav.clip_view.sequencer.band,
+                SeqBand::Step,
+                "enter did not open the panel on {child:?}",
+            );
+            assert_eq!(app.nav.clip_view.sequencer.knob, 0, "it did not land on the first knob");
+            assert!(!app.nav.clip_view.sequencer.locked, "it held a knob without being asked");
+            assert!(
+                state(&app).lane().steps.iter().all(|step| !step.on),
+                "enter wrote a step on {child:?}",
+            );
+
+            // ...and Esc comes straight back out to the grid.
+            press(&mut app, KeyCode::Esc);
+            assert_eq!(app.nav.clip_view.sequencer.band, SeqBand::Grid);
+
+            // `n` is still the only key that writes one.
+            press(&mut app, KeyCode::Char('n'));
+            assert!(state(&app).step().on);
+        }
+    }
+
+    /// The panel edits the row under the cursor, not the first one. A pitch
+    /// set on voice three has to land on voice three or layering is writing
+    /// into one place eight times.
+    #[test]
+    fn the_panel_edits_the_row_under_the_cursor() {
         let mut app = grid_app();
         app.sequencer_op(SeqOp::SetChild(InstrumentType::Juno60));
         press(&mut app, KeyCode::Char('j'));
-        assert_eq!(app.nav.clip_view.sequencer.band, SeqBand::Step);
-        assert_eq!(state(&app).lane_cursor(), 0, "j moved a voice on a melodic pattern");
-        press(&mut app, KeyCode::Char('k'));
-        assert_eq!(app.nav.clip_view.sequencer.band, SeqBand::Grid);
-        assert_eq!(state(&app).lane_cursor(), 0, "coming back up jumped to the last voice");
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(state(&app).lane_cursor(), 2);
+
+        press(&mut app, KeyCode::Enter); // the step panel
+        press(&mut app, KeyCode::Enter); // hold the pitch knob
+        let before = state(&app).pattern().lanes[2].steps[0].root();
+        press(&mut app, KeyCode::Char('l'));
+
+        let pattern = state(&app).pattern();
+        assert_eq!(pattern.lanes[2].steps[0].root(), before + 1, "the edit missed its row");
+        assert_eq!(pattern.lanes[0].steps[0].root(), before, "the edit landed on row one");
+        assert!(!pattern.lanes[0].steps[0].on, "row one was written to at all");
+    }
+
+    /// Mute and solo are per row on a keyboard as they are on a kit: they go
+    /// through the same ops, and a layered chord needs one voice out of it.
+    #[test]
+    fn mute_and_solo_work_on_a_keyboards_rows() {
+        let mut app = grid_app();
+        app.sequencer_op(SeqOp::SetChild(InstrumentType::Juno60));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('m'));
+        assert!(state(&app).pattern().lanes[1].muted);
+        assert!(!state(&app).pattern().lanes[0].muted, "mute reached the wrong row");
+        assert!(!state(&app).pattern().lane_audible(1), "a muted row is still audible");
+
+        press(&mut app, KeyCode::Char('m'));
+        assert!(!state(&app).pattern().lanes[1].muted);
+
+        press(&mut app, KeyCode::Char('s'));
+        assert!(state(&app).pattern().lanes[1].soloed);
+        assert!(!state(&app).pattern().lane_audible(0), "a solo did not silence the others");
+        assert!(state(&app).pattern().lane_audible(1));
     }
 
     /// Enter holds a knob, `h`/`l` turn it, `H`/`L` turn it in strides, and
@@ -402,7 +485,7 @@ mod grid {
         // A melodic child, so the step has a pitch to set at all.
         app.sequencer_op(SeqOp::SetChild(InstrumentType::Juno60));
         press(&mut app, KeyCode::Char('n'));
-        press(&mut app, KeyCode::Char('j')); // → the step's panel
+        press(&mut app, KeyCode::Enter); // open the step's panel
         press(&mut app, KeyCode::Enter); // hold the pitch knob
         assert!(app.nav.clip_view.sequencer.locked);
 
@@ -521,8 +604,8 @@ mod grid {
         app.sequencer_op(SeqOp::SetTonic(0));
         assert_eq!(state(&app).pattern().mode, Mode::Dorian);
 
-        press(&mut app, KeyCode::Char('j'));
-        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter); // → the step's panel
+        press(&mut app, KeyCode::Enter); // → hold the pitch knob
         let root = state(&app).step().root();
         press(&mut app, KeyCode::Char('l'));
         press(&mut app, KeyCode::Char('l'));
@@ -1040,6 +1123,83 @@ mod screen {
                 assert!(rows.iter().all(|row| row.chars().count() == width as usize));
             }
         }
+    }
+
+    /// The layering ask, end to end: a seventh chord on one row and the
+    /// ninth above it on the next, sounding together.
+    ///
+    /// The eight rows were always played — the generator walks every lane
+    /// whatever the child is — and the view was the only thing that said a
+    /// keyboard had one. This is what unhiding them buys: chords a single
+    /// row's chord table cannot spell.
+    #[test]
+    fn rows_layer_into_a_chord_the_table_cannot_spell() {
+        // Not `grid_app`: that one empties the command channel to keep the
+        // command-counting tests honest, and this one has to build a mixer
+        // out of exactly those commands and listen to it.
+        let mut app = headless();
+        app.create_instrument_track(InstrumentType::Sequencer);
+        app.nav.focus_pane(Pane::ClipView);
+        app.sequencer_op(SeqOp::SetChild(InstrumentType::Juno60));
+
+        // Row one: a C major seventh.
+        press(&mut app, KeyCode::Char('n'));
+        for _ in 0..Chord::Maj7.index() {
+            app.sequencer_op(SeqOp::CycleChord(1));
+        }
+        let seventh = pitches_at(&app, 0);
+        assert_eq!(seventh, vec![60, 64, 67, 71], "row one is not a Cmaj7: {seventh:?}");
+
+        // Row two: the ninth above it, on the same step.
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('n'));
+        press(&mut app, KeyCode::Enter); // the step panel, on the pitch knob
+        press(&mut app, KeyCode::Enter); // hold it
+        for _ in 0..14 {
+            press(&mut app, KeyCode::Char('l'));
+        }
+        press(&mut app, KeyCode::Esc);
+
+        let layered = pitches_at(&app, 0);
+        assert_eq!(
+            layered,
+            vec![60, 64, 67, 71, 74],
+            "the two rows did not stack into a ninth chord: {layered:?}",
+        );
+        assert!(
+            layered.len() > seventh.len(),
+            "layering a second row produced no more notes than one row alone",
+        );
+
+        // ...and the child plays all five at once.
+        if let Some(track) = app.nav.current_track_mut() {
+            track.volume = 1.0;
+            track.sync_to_audio();
+        }
+        let (mut mixer, transport) = super::mixer_from(&app);
+        transport.set_position(0);
+        transport.play();
+        assert!(
+            super::render(&mut mixer, &transport, 16) > 0.001,
+            "a layered chord made no sound",
+        );
+    }
+
+    /// The distinct pitches a pattern starts at `tick`, as the generator
+    /// produces them — the same arithmetic the audio thread runs.
+    fn pitches_at(app: &App, tick: i64) -> Vec<u8> {
+        let state = state(app);
+        let block = state.block(state.selected_slot() as usize);
+        let mut events = Vec::new();
+        phosphor_core::pattern::compile_cycle(&block, 0, &mut events);
+        let mut pitches: Vec<u8> = events
+            .iter()
+            .filter(|event| event.is_note_on() && event.tick == tick)
+            .map(|event| event.data1)
+            .collect();
+        pitches.sort_unstable();
+        pitches.dedup();
+        pitches
     }
 
     /// The walk a person takes the first time they open this, in the order

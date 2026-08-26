@@ -13,16 +13,18 @@
 //! ```text
 //! j/k      down the screen      the sounds, then the panels under them
 //! h/l      along a row          steps, knobs, slots
-//! enter    grid: write a hit · step/pattern: lock the knob · slots: queue
+//! n        write a hit under the cursor
+//! enter    grid: open its panel · step/pattern: hold the knob · slots: queue
 //! esc      release a knob, then leave the band, then leave the view
 //! [ ]      the sound — one keypress, at any depth, never a locked knob
 //! ```
 //!
 //! `j` and `k` walk the rows that are on the screen. On a kit those are the
-//! sounds, so the hand that reaches down from the kick gets the snare; off
-//! the last one it carries on into the panels below, and back up off the
-//! step panel it lands on the last sound again. One column of things to
-//! stand on, top to bottom.
+//! sounds, so the hand that reaches down from the kick gets the snare; on a
+//! keyboard they are the eight voices a chord can be layered across. Off the
+//! last one it carries on into the panels below, and back up off the step
+//! panel it lands on the last row again. One column of things to stand on,
+//! top to bottom.
 //!
 //! A locked knob takes every key it is given, exactly as the fader does:
 //! `h`/`l` move it, `H`/`L` move it in strides, `Esc` lets go, and nothing
@@ -222,21 +224,9 @@ impl App {
         }
     }
 
-    /// Whether the grid is showing a row per lane — a kit — or a single row.
-    ///
-    /// On a melodic pattern a lane is a voice rather than a sound and only
-    /// one row is drawn, so `j` there means the panel below rather than the
-    /// second of eight identical-looking rows.
-    fn grid_walks_lanes(&self) -> bool {
-        self.nav
-            .current_track()
-            .and_then(|t| t.sequencer.as_deref())
-            .is_some_and(|state| !state.pattern().lanes[0].is_pitched())
-    }
-
     /// One row down the screen.
     fn sequencer_down(&mut self) {
-        if self.nav.clip_view.sequencer.band != SeqBand::Grid || !self.grid_walks_lanes() {
+        if self.nav.clip_view.sequencer.band != SeqBand::Grid {
             self.nav.clip_view.sequencer.move_band(1);
             return;
         }
@@ -254,18 +244,15 @@ impl App {
 
     /// One row up the screen.
     fn sequencer_up(&mut self) {
-        let view = &self.nav.clip_view.sequencer;
-        if view.band == SeqBand::Grid {
-            if self.grid_walks_lanes() {
-                self.sequencer_op(SeqOp::MoveLane(-1));
-            }
+        let band = self.nav.clip_view.sequencer.band;
+        if band == SeqBand::Grid {
+            self.sequencer_op(SeqOp::MoveLane(-1));
             return;
         }
-        let returning = view.band == SeqBand::Step;
         self.nav.clip_view.sequencer.move_band(-1);
         // Coming back into the grid lands on the row it was left from, which
         // is the bottom one — the same square the cursor walked off.
-        if returning && self.grid_walks_lanes() {
+        if band == SeqBand::Step {
             self.sequencer_op(SeqOp::SelectLane(LANES as u8 - 1));
         }
     }
@@ -332,10 +319,20 @@ impl App {
         match key.code {
             KeyCode::Enter => {
                 match band {
-                    // A step grid's big button writes a hit. There is nothing
-                    // to go deeper into from here: the step's own controls are
-                    // one band down, on j.
-                    SeqBand::Grid => self.sequencer_op(SeqOp::ToggleStep),
+                    // Enter opens what is under the cursor, which is what it
+                    // does everywhere else in this application: on a track,
+                    // on a fader, on a knob, in a menu. It used to write a
+                    // hit — a second `n` — and in doing so it took away the
+                    // only key a player would think to press to find out
+                    // what a step is set to. `n` writes; Enter looks inside.
+                    SeqBand::Grid => {
+                        self.nav.clip_view.sequencer.focus_band(SeqBand::Step);
+                        self.status_message = Some((
+                            "step panel: h/l picks a control, enter holds it, esc goes back"
+                                .into(),
+                            std::time::Instant::now(),
+                        ));
+                    }
                     SeqBand::Step | SeqBand::Pattern => {
                         let count = self
                             .nav
@@ -444,27 +441,31 @@ impl App {
 
     /// Whether the pattern on this track is generating notes.
     fn toggle_pattern_playback(&mut self) {
+        // With the transport stopped, `t` means GO — full stop. Patterns run
+        // from birth, so a toggle here would MUTE a fresh pattern: the first
+        // real play-through pressed t on a brand-new beat and silenced it
+        // while the coaching line was still saying "t — play". A drum
+        // machine's start button never needs the machine explained to it.
+        // While the transport rolls, `t` is the pattern's mute — stopping the
+        // pattern leaves the transport alone, other tracks may be playing.
+        if !self.engine.transport.is_playing() {
+            self.sequencer_op(SeqOp::SetPlaying(true));
+            self.sync_loop_to_transport();
+            self.engine.transport.play();
+            self.status_message = Some((
+                "pattern running · transport started".to_string(),
+                std::time::Instant::now(),
+            ));
+            return;
+        }
         self.sequencer_op(SeqOp::TogglePlaying);
         let running = self
             .nav
             .current_track()
             .and_then(|t| t.sequencer.as_deref())
             .is_some_and(SequencerState::is_playing);
-        // A pattern only sounds while the transport rolls, and "make it play"
-        // is one gesture on every drum machine ever shipped — so starting the
-        // pattern starts the transport too. Stopping the pattern leaves the
-        // transport alone: other tracks may still be playing.
-        let started_transport = running && !self.engine.transport.is_playing();
-        if started_transport {
-            self.sync_loop_to_transport();
-            self.engine.transport.play();
-        }
         self.status_message = Some((
-            match (running, started_transport) {
-                (true, true) => "pattern running · transport started".to_string(),
-                (true, false) => "pattern running".to_string(),
-                (false, _) => "pattern stopped".to_string(),
-            },
+            if running { "pattern running".to_string() } else { "pattern muted — t unmutes".to_string() },
             std::time::Instant::now(),
         ));
     }

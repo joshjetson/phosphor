@@ -173,14 +173,14 @@ impl Seq<'_> {
 
     /// The lanes that get a row, in the order they are drawn.
     ///
-    /// All eight on a kit with room for them: that is the machine's face, and
-    /// the reason a step written on the snare row is visibly on the snare.
-    /// One row otherwise — a melodic pattern, where a lane is a voice rather
-    /// than a sound, or a terminal with no vertical room for eight.
+    /// All eight, on a kit and on a keyboard alike. On a kit that is the
+    /// machine's face — a step written on the snare row is visibly on the
+    /// snare. On a melodic pattern the same eight rows are how a chord gets
+    /// layered: a seventh on one row and the ninth above it on the next,
+    /// which is a thing the engine has always played and the view used to
+    /// hide. Fewer rows only when the terminal is too short for eight, and
+    /// then they scroll under the cursor.
     fn lane_rows(&self) -> Vec<usize> {
-        if !self.is_kit() {
-            return vec![self.state.lane_cursor()];
-        }
         let window = self.lane_window.clamp(1, LANES);
         // The cursor stays inside the window, roughly in the middle of it, so
         // that walking down the kit scrolls the rows rather than losing them.
@@ -194,7 +194,7 @@ impl Seq<'_> {
 
     /// Whether the strip has to stand in for rows that are not on the screen.
     fn shows_every_lane(&self) -> bool {
-        self.is_kit() && self.lane_window >= LANES
+        self.lane_window >= LANES
     }
 
     /// Whether the pattern under the editor has anything on it at all.
@@ -680,13 +680,17 @@ fn grid_lines(seq: &Seq, geometry: Geometry) -> Vec<Line<'static>> {
 /// answer "what do I do now" on its own, because the person reading it has
 /// not been told and there is nothing else on the grid to look at.
 fn coaching_line(seq: &Seq) -> Line<'static> {
-    let sounds = if seq.is_kit() { "j/k" } else { "[ ]" };
+    // A kit's rows are sounds; a keyboard's are voices to layer a chord
+    // across. Same key, and the word says which machine this is.
+    let rows = if seq.is_kit() { "pick a sound" } else { "pick a row" };
     Line::from(vec![
         Span::styled(format!("{:>w$} ", "", w = LABEL_W), theme::bg()),
         Span::styled("n", theme::amber_bright().add_modifier(Modifier::BOLD)),
         Span::styled(" \u{2014} write a step   ", theme::muted()),
-        Span::styled(sounds, theme::amber_bright().add_modifier(Modifier::BOLD)),
-        Span::styled(" \u{2014} pick a sound   ", theme::muted()),
+        Span::styled("j/k", theme::amber_bright().add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" \u{2014} {rows}   "), theme::muted()),
+        Span::styled("enter", theme::amber_bright().add_modifier(Modifier::BOLD)),
+        Span::styled(" \u{2014} edit it   ", theme::muted()),
         Span::styled("t", theme::amber_bright().add_modifier(Modifier::BOLD)),
         Span::styled(" \u{2014} play", theme::muted()),
     ])
@@ -1015,11 +1019,12 @@ pub(super) fn render_sequencer(
     //
     // The four are the header, the ruler, the step panel and the slots; the
     // fifth, when the rows do not all fit, is the strip that stands in for
-    // them.
-    seq.lane_window = if height >= LANES + 4 {
+    // them, and the sixth is the chord readout a melodic pattern carries.
+    let fixed = if seq.is_kit() { 5 } else { 6 };
+    seq.lane_window = if height >= LANES + fixed - 1 {
         LANES
     } else {
-        height.saturating_sub(5).clamp(1, LANES)
+        height.saturating_sub(fixed).clamp(1, LANES)
     };
     let seq = seq;
 
@@ -1055,11 +1060,15 @@ pub(super) fn render_sequencer(
     let sum = |show: &[usize; 9]| show.iter().sum::<usize>();
 
     // Too little room: give up the sections a player can do without, in the
-    // order they can be done without, and never the band being used. The
-    // ruler goes last of all — numbered steps are half of what makes a grid
-    // readable as positions rather than as a wall of blocks.
+    // order they can be done without, and never the band being used.
+    //
+    // The pattern's settings go first — they are set once and read rarely.
+    // The chord readout outlives them, because on a keyboard it is the only
+    // thing that says what a step is actually playing. The ruler goes last
+    // of all: numbered steps are half of what makes a grid readable as
+    // positions rather than as a wall of blocks.
     let band = seq.band();
-    for &index in &[READOUT, COACH, PATTERN, SLOTS, STEP, STRIP, RULER] {
+    for &index in &[PATTERN, READOUT, COACH, SLOTS, STEP, STRIP, RULER] {
         if sum(&show) <= height {
             break;
         }

@@ -579,7 +579,7 @@ pub const HELP_TOPICS: &[(&str, &str)] = &[
     ("tracks",      "mute, solo, arm, fx, volume, routing"),
     ("clips",       "selecting, jumping, clip-level fx"),
     ("piano roll",  "editing MIDI notes, velocity, quantize"),
-    ("step grid",   "n hit \u{00B7} jk sound \u{00B7} a accent \u{00B7} t play \u{00B7} b bounce"),
+    ("step grid",   "n hit \u{00B7} jk row \u{00B7} enter edit \u{00B7} a accent \u{00B7} t play \u{00B7} b bounce"),
     ("fx & mixing", "adding effects, sends, master bus"),
     ("shortcuts",   "full keyboard shortcut reference"),
     ("plugins",     "loading and managing plugins"),

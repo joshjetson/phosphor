@@ -373,8 +373,8 @@ clip note on the same beat land on the same sample.
 
 1. `Space` `a` → **Step Sequencer** → `Enter`. You land on the grid.
 2. `n` writes a hit. `h`/`l` move along the steps. Write a few.
-3. `j`/`k` move between the sound rows (`BD` `SD` `CH`…). Write a hat line
-   against the kick.
+3. `j`/`k` move between the rows — the kit's sounds (`BD` `SD` `CH`…), or a
+   synth's eight voices. Write a hat line against the kick.
 4. `t` — it plays. A light chases across every row and wraps.
 5. `Space` `0` stops and returns to bar 1.
 
@@ -391,10 +391,12 @@ pattern   child ○ Drum Rack  steps ◑ 16 …  ← the pattern's controls
   slots  ▶A  B  C  D  E  F  G  H  chain —  ← eight patterns, queue, chain
 ```
 
-`j`/`k` walk down the sounds and keep going into the panels below — lane,
+`j`/`k` walk down the rows and keep going into the panels below — lane,
 pattern, slots — and `k` walks back up. `h`/`l` move along whatever row you
-are on. `Enter` **holds** a knob (like the volume fader): while held, `h`/`l`
-adjust it, `H`/`L` take bigger strides, `Esc` lets go.
+are on. `n` writes a step; `Enter` **opens** whatever the cursor is standing
+on — the row's panel on a kit, the step's panel on a synth — and `Enter`
+again **holds** the knob under it (like the volume fader): while held,
+`h`/`l` adjust it, `H`/`L` take bigger strides, `Esc` lets go.
 
 **Changing which sounds the rows play.** The eight rows start as kick, snare,
 hats, clap and toms, but every kit has more — rimshot, crash, ride, cowbell,
@@ -407,8 +409,9 @@ an octave of notes at once). The row's name follows the sound — `BD` becomes
 **Sequencing a synth instead of drums.** Walk `j` to the **pattern** panel.
 Its first knob is `child` — the instrument this sequencer drives. `Enter`,
 then `h`/`l` cycle through everything in the rack: the DX7, the Jupiter-8,
-the Prophet-6, the Phatty, all of them. The grid switches to one melodic row,
-and the panel above the pattern row becomes the **step** panel:
+the Prophet-6, the Phatty, all of them. The rows become eight voices —
+`L1` through `L8` — and the panel above the pattern row becomes the **step**
+panel:
 
 - `pitch` — what the step plays. `h`/`l` walk semitones, `H`/`L` jump
   octaves. With a **mode** active (see below) `h`/`l` walk scale degrees
@@ -423,6 +426,13 @@ and the panel above the pattern row becomes the **step** panel:
 The readout line under the step panel always names what the step will play:
 `Cm7 · C4 D#4 G4 A#4`. The child's own panel (patch, cutoff, everything)
 stays on the left side of the screen — pick the patch there as usual.
+
+**Layering chords across the rows.** The eight rows are eight independent
+voices on the same step, which is how you build a chord the chord table has
+no name for: put a `maj7` on `L1`, walk `j` to `L2`, write the same step and
+run its pitch up to the ninth — now the step plays a five-note ninth chord.
+Each row keeps its own pitch, chord, voicing and gate, and `m`/`s` mute or
+solo one of them while the rest keep playing.
 
 **Mode and key** (pattern panel): choose Dorian, Phrygian, Lydian… and a
 tonic, and the pitch knob snaps to the scale; chords set to *diatonic* pick
@@ -457,15 +467,15 @@ step), `_` ties the previous step. `r` again to disarm.
 | Key | Where | Action |
 |-----|-------|--------|
 | `h` / `l` | everywhere | Move along steps / knobs / slots; adjust a held knob |
-| `j` / `k` | everywhere | Down / up: sounds, then lane, pattern, slots panels |
+| `j` / `k` | everywhere | Down / up: the rows, then lane, pattern, slots panels |
 | `n` | grid | Write / erase the step under the cursor |
 | `a` | grid | Accent it |
-| `Enter` | grid | Write the step · panels: hold the knob · slots: queue |
+| `Enter` | grid | Open the panel for what is under the cursor · panels: hold the knob · slots: queue |
 | `H` / `L` | held knob | Big strides (octaves, ±5 swing, ±10 velocity…) |
 | `[` / `]` | everywhere | Previous / next sound row, from any depth |
 | `x` | everywhere | Clear the step under the cursor |
 | `m` / `s` | everywhere | Mute / solo the row being written |
-| `t` | everywhere | Run / stop the pattern (starts the transport if stopped) |
+| `t` | everywhere | Play — while stopped it always starts everything; while playing it mutes/unmutes this pattern |
 | `r`, `.`, `_` | everywhere | Step record: arm · rest · tie |
 | `b` | everywhere | Bounce pattern or chain to a clip |
 | `c` / `C` | everywhere | Chain the slot under the cursor (repeat to stack) / clear the chain |

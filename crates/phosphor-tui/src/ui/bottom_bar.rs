@@ -80,18 +80,20 @@ pub(super) fn render_bottom_bar(
             Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Sequencer
                 && nav.clip_view.focus == ClipViewFocus::PianoRoll =>
                 match nav.clip_view.sequencer.band {
-                    // On a kit the rows are the sounds, so j/k says so; on a
-                    // melodic pattern there is one row and j/k is the way
-                    // down to the panels.
+                    // The rows are sounds on a kit and voices on a keyboard,
+                    // and j/k walks them either way.
+                    // Trimmed to what fits beside the pane-jump hints on a
+                    // 120-column terminal — a hint bar that runs into its
+                    // neighbour reads as "b·boun", which hints at nothing.
                     SeqBand::Grid if nav.current_track()
                         .and_then(|t| t.sequencer.as_deref())
                         .is_some_and(|s| !s.pattern().lanes[0].is_pitched()) => vec![
-                        ("hl","step"),("jk","sound"),("n","hit"),("a","accent"),
-                        ("t","play"),("b","bounce"),("r","rec"),
+                        ("hl","step"),("jk","sound"),("n","hit"),("enter","edit"),
+                        ("a","acc"),("t","play"),
                     ],
                     SeqBand::Grid => vec![
-                        ("hl","step"),("n","hit"),("a","accent"),("[]","voice"),
-                        ("jk","panels"),("t","play"),("b","bounce"),
+                        ("hl","step"),("jk","row"),("n","hit"),("enter","edit"),
+                        ("a","acc"),("t","play"),
                     ],
                     SeqBand::Step => vec![
                         ("hl","knob"),("enter","hold"),("jk","band"),("_","tie"),
