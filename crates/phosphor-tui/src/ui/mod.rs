@@ -18,6 +18,7 @@ mod clip_view;
 use clip_view::*;
 mod overlays;
 use overlays::*;
+mod params;
 mod sequencer;
 use sequencer::*;
 mod top_bar;

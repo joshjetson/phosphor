@@ -191,19 +191,48 @@ pub(super) fn render_input_modal(frame: &mut Frame, nav: &NavState) {
         InputModalKind::PresetName => "name: ",
     };
 
-    let buf = nav.input_modal.value();
-    let cursor_pos = nav.input_modal.cursor;
-    let (before, after) = buf.split_at(cursor_pos.min(buf.len()));
-    let cursor_char = if after.is_empty() { "\u{2588}" } else { &after[..1] };
-    let rest = if after.len() > 1 { &after[1..] } else { "" };
+    // The field, as characters rather than bytes: a path can contain any of
+    // them, and slicing one down the middle of a multi-byte character is a
+    // panic in the middle of somebody's filename.
+    let buf: Vec<char> = nav.input_modal.value().chars().collect();
+    let cursor_pos = nav.input_modal.cursor.min(buf.len());
+    // The name Enter would use if the field is left as it is, drawn dim
+    // after the cursor. It is a suggestion, not text: typing replaces it
+    // rather than landing after it.
+    let placeholder = nav.input_modal.placeholder();
+
+    // Scrolled to keep the cursor — and what follows it — in view. The
+    // application directory is an absolute path on a machine whose home
+    // directory can be any length, so the field is routinely longer than the
+    // box it is drawn in, and what scrolls off must not be the part being
+    // typed.
+    let field_w = (inner.width as usize).saturating_sub(prompt.chars().count()).max(1);
+    let after_cursor = buf.len() - cursor_pos + placeholder.chars().count() + 1;
+    let mut skipped = 0usize;
+    if cursor_pos + after_cursor > field_w {
+        skipped = (cursor_pos + after_cursor + 1).saturating_sub(field_w);
+    }
+    let elided = skipped > 0;
+    let skipped = skipped.min(cursor_pos);
+
+    let before: String = buf[skipped..cursor_pos].iter().collect();
+    let cursor_char = buf.get(cursor_pos).copied().unwrap_or('\u{2588}').to_string();
+    let rest: String = buf.get(cursor_pos + 1..).unwrap_or(&[]).iter().collect();
+
+    let mut field: Vec<Span> = vec![Span::styled(prompt, theme::dim())];
+    if elided {
+        field.push(Span::styled("\u{2026}", theme::dim()));
+    }
+    field.push(Span::styled(before, theme::amber_bright().add_modifier(Modifier::BOLD)));
+    field.push(Span::styled(
+        cursor_char,
+        Style::default().fg(theme::overlay_bg()).bg(theme::amber_bright_val()),
+    ));
+    field.push(Span::styled(rest, theme::amber_bright().add_modifier(Modifier::BOLD)));
+    field.push(Span::styled(placeholder, theme::dim()));
 
     let lines = vec![
-        Line::from(vec![
-            Span::styled(prompt, theme::dim()),
-            Span::styled(before, theme::amber_bright().add_modifier(Modifier::BOLD)),
-            Span::styled(cursor_char, Style::default().fg(theme::overlay_bg()).bg(theme::amber_bright_val())),
-            Span::styled(rest, theme::amber_bright().add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(field),
         Line::from(""),
         Line::from(vec![
             Span::styled("  enter", theme::dim()),

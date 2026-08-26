@@ -116,43 +116,20 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
 
     let mut lines: Vec<Line> = Vec::new();
 
-    // Synth tab: show synth parameters with knob-style controls
+    // Synth tab: the same parameters the [inst] tab draws, in the width this
+    // column has. How each one reads is `params`' answer, not this panel's —
+    // two panels showing the same control differently is how one of them
+    // ends up wrong.
     if nav.clip_view.fx_panel_tab == FxPanelTab::Synth {
         let track = nav.tracks.get(nav.track_cursor);
-        let params = track.map(|t| &t.synth_params).cloned().unwrap_or_default();
+        let values = track.map(|t| &t.synth_params).cloned().unwrap_or_default();
 
-        if params.is_empty() {
+        if values.is_empty() {
             lines.push(Line::from(Span::styled("  (no instrument)", theme::dim())));
         } else {
-            let instrument_type = track.and_then(|t| t.instrument_type);
-            let is_drum = instrument_type == Some(InstrumentType::DrumRack);
-            let is_dx7 = instrument_type == Some(InstrumentType::DX7);
-            let is_jupiter = instrument_type == Some(InstrumentType::Jupiter8);
-            let is_odyssey = instrument_type == Some(InstrumentType::Odyssey);
-            let is_juno = instrument_type == Some(InstrumentType::Juno60);
-            let is_rhodes = instrument_type == Some(InstrumentType::Rhodes);
-            let is_phatty = instrument_type == Some(InstrumentType::LittlePhatty);
-            let is_prophet6 = instrument_type == Some(InstrumentType::Prophet6);
-            let param_names: &[&str] = if is_drum {
-                &phosphor_dsp::drum_rack::PARAM_NAMES
-            } else if is_dx7 {
-                &phosphor_dsp::dx7::PARAM_NAMES
-            } else if is_jupiter {
-                &phosphor_dsp::jupiter::PARAM_NAMES
-            } else if is_odyssey {
-                &phosphor_dsp::odyssey::PARAM_NAMES
-            } else if is_juno {
-                &phosphor_dsp::juno::PARAM_NAMES
-            } else if is_rhodes {
-                &phosphor_dsp::rhodes::PARAM_NAMES
-            } else if is_phatty {
-                &phosphor_dsp::phatty::PARAM_NAMES
-            } else if is_prophet6 {
-                &phosphor_dsp::prophet6::PARAM_NAMES
-            } else {
-                &phosphor_dsp::synth::PARAM_NAMES
-            };
-            let param_count = params.len().min(param_names.len());
+            let instrument = track.and_then(|t| t.instrument_type);
+            let names = params::names(instrument);
+            let count = values.len().min(names.len());
 
             let visible_rows = h.saturating_sub(2);
             let cursor = nav.clip_view.synth_param_cursor;
@@ -162,104 +139,27 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                 0
             };
 
-            for (i, &val) in params[..param_count].iter().enumerate().skip(scroll_offset).take(visible_rows) {
-                let is_cur = focused && nav.clip_view.synth_param_cursor == i;
-                let name = param_names.get(i).copied().unwrap_or("?");
+            for (i, &val) in values[..count].iter().enumerate().skip(scroll_offset).take(visible_rows) {
+                let is_cur = focused && cursor == i;
+                let name = names.get(i).copied().unwrap_or("?");
 
                 let indicator = if is_cur { "\u{25B6}" } else { " " };
                 let name_s = if is_cur { theme::amber_bright().add_modifier(Modifier::BOLD) } else { theme::normal() };
                 let dim_s = if is_cur { theme::amber() } else { theme::dim() };
 
-                // Discrete selector (waveform, kit, patch, mode, etc.)
-                let discrete_label = if is_jupiter {
-                    phosphor_dsp::jupiter::discrete_label(i, val)
-                } else if is_odyssey {
-                    phosphor_dsp::odyssey::discrete_label(i, val)
-                } else if is_juno {
-                    phosphor_dsp::juno::discrete_label(i, val)
-                } else if is_rhodes {
-                    phosphor_dsp::rhodes::discrete_label(i, val)
-                } else if is_phatty {
-                    phosphor_dsp::phatty::discrete_label(i, val)
-                } else if is_prophet6 {
-                    // Two selectors, like the DX7: the program name needs the
-                    // bank as well as the program knob, so this one reads the
-                    // whole block.
-                    phosphor_dsp::prophet6::discrete_label(&params, i)
-                } else if is_dx7 {
-                    // Both selectors, and the voice name needs the bank as well
-                    // as the patch knob, so this one reads the whole block.
-                    phosphor_dsp::dx7::discrete_label(&params, i)
-                } else if is_drum {
-                    phosphor_dsp::drum_rack::discrete_label(i, val)
-                } else {
-                    // The phosphor synth and the sampler, which share its
-                    // panel. This used to be a hard-coded waveform label on
-                    // index 0, from when that panel had one selector and
-                    // twelve controls; it now has 25 of them, including a
-                    // patch bank and twelve matrix selectors, and the
-                    // instrument answers for all of them.
-                    phosphor_dsp::synth::discrete_label(i, val)
-                };
-                if let Some(label) = discrete_label {
+                if let Some(label) = params::discrete_label(instrument, &values, i) {
                     lines.push(Line::from(vec![
                         Span::styled(format!(" {indicator} "), name_s),
                         Span::styled(format!("{name:<8}"), name_s),
                         Span::styled(format!(" {label}"), dim_s),
                     ]));
                 } else {
-                    // Bar display
                     let bar_w = (w.saturating_sub(14)).min(10);
-                    let filled = (val * bar_w as f32) as usize;
-                    let bar: String = "\u{2588}".repeat(filled)
-                        + &"\u{2591}".repeat(bar_w.saturating_sub(filled));
-
-                    // Format value nicely. No instrument's time controls are
-                    // linear in time, and no two of them sit at the same
-                    // indices, so each reports its own seconds. The DX7 is
-                    // the one panel with no time slider on it — its rates are
-                    // the operators' own — so it is the only one that falls
-                    // through to a percentage.
-                    //
-                    // The rack goes one further: its decay times are the
-                    // selected machine's, not one machine's answer for all
-                    // fifteen, so the kit selector has to be read as well as
-                    // the knob.
-                    let display_val = if is_dx7 {
-                        format!("{:.0}%", val * 100.0)
-                    } else {
-                        let secs = if is_prophet6 {
-                            phosphor_dsp::prophet6::param_seconds(i, val)
-                        } else if is_juno {
-                            phosphor_dsp::juno::param_seconds(i, val)
-                        } else if is_phatty {
-                            phosphor_dsp::phatty::param_seconds(i, val)
-                        } else if is_rhodes {
-                            phosphor_dsp::rhodes::param_seconds(i, val)
-                        } else if is_odyssey {
-                            phosphor_dsp::odyssey::param_seconds(i, val)
-                        } else if is_jupiter {
-                            phosphor_dsp::jupiter::param_seconds(i, val)
-                        } else if is_drum {
-                            let kit = phosphor_dsp::drum_rack::DrumKit::from_param(
-                                params.get(phosphor_dsp::drum_rack::P_KIT).copied().unwrap_or(0.0),
-                            );
-                            phosphor_dsp::drum_rack::param_seconds(kit, i, val)
-                        } else {
-                            phosphor_dsp::synth::param_seconds(i, val)
-                        };
-                        match secs {
-                            Some(secs) if secs < 1.0 => format!("{:.0}ms", secs * 1000.0),
-                            Some(secs) => format!("{secs:.1}s"),
-                            None => format!("{:.0}%", val * 100.0),
-                        }
-                    };
-
                     lines.push(Line::from(vec![
                         Span::styled(format!(" {indicator} "), name_s),
                         Span::styled(format!("{name:<8}"), name_s),
-                        Span::styled(bar, if is_cur { theme::amber() } else { theme::muted() }),
-                        Span::styled(format!(" {display_val}"), dim_s),
+                        Span::styled(params::bar(val, bar_w), if is_cur { theme::amber() } else { theme::muted() }),
+                        Span::styled(format!(" {}", params::value_text(instrument, &values, i)), dim_s),
                     ]));
                 }
             }
@@ -319,6 +219,21 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+/// The instrument's real panel, in the room the right pane affords.
+///
+/// # What this replaced
+///
+/// A mock-up. The tab drew `LFO rate / depth / wave / target`, `Filter type /
+/// cutoff / reso` and so on — four sections of plausible-looking controls at
+/// a hard-coded `0%`, wired to nothing, answering `j`/`k` and `h`/`l` with
+/// silence. The real panel, the patch selector included, was in the narrow
+/// column on the left; a player who pressed Tab to reach their instrument
+/// found the fake one and typed into it.
+///
+/// It is the same panel as the left strip and the same cursor: what changes
+/// is the width. Eighty-four controls do not fit in a column twenty-four
+/// wide, and they do fit in three columns of a hundred, which is the whole
+/// reason this tab is worth having.
 pub(super) fn render_inst_config(frame: &mut Frame, area: Rect, nav: &NavState) {
     let (w, h) = (area.width as usize, area.height as usize);
     if w == 0 || h == 0 { return; }
@@ -327,78 +242,158 @@ pub(super) fn render_inst_config(frame: &mut Frame, area: Rect, nav: &NavState) 
         && nav.clip_view.focus == ClipViewFocus::PianoRoll
         && nav.clip_view.clip_tab == ClipTab::InstConfig;
 
-    let track = match nav.active_clip_track().or_else(|| nav.current_track()) {
-        Some(t) => t,
-        None => {
-            frame.render_widget(Paragraph::new(Span::styled("  select a track", theme::dim())), area);
-            return;
-        }
+    let Some(track) = nav.tracks.get(nav.track_cursor) else {
+        frame.render_widget(Paragraph::new(Span::styled("  select a track", theme::dim())), area);
+        return;
     };
-
-    let inst_label = track.instrument_type.map(|i| i.label()).unwrap_or("—");
-    let mut lines: Vec<Line> = Vec::new();
-
-    // Header
-    lines.push(Line::from(vec![
-        Span::styled(format!("  {inst_label}"), theme::amber_bright().add_modifier(Modifier::BOLD)),
-        Span::styled(" instrument config", theme::dim()),
-    ]));
-    lines.push(Line::from(""));
-
-    // Sections — placeholder structure for future parameters
-    let sections = [
-        ("LFO", &["rate", "depth", "wave", "target"][..]),
-        ("Filter", &["type", "cutoff", "reso", "env amt"]),
-        ("Envelope", &["attack", "decay", "sustain", "release"]),
-        ("Pitch", &["bend range", "portamento", "detune"]),
-    ];
-
-    let cursor = nav.clip_view.inst_config_cursor;
-    let mut param_idx = 0;
-
-    for (section_name, params) in &sections {
-        lines.push(Line::from(Span::styled(
-            format!("  {section_name}"),
-            theme::normal().add_modifier(Modifier::BOLD),
-        )));
-
-        for &param_name in *params {
-            let is_cur = focused && cursor == param_idx;
-            let indicator = if is_cur { "\u{25B6}" } else { " " };
-            let name_s = if is_cur { theme::amber_bright().add_modifier(Modifier::BOLD) } else { theme::normal() };
-            let dim_s = if is_cur { theme::amber() } else { theme::dim() };
-
-            let bar_w = (w.saturating_sub(20)).min(12);
-            let val = 0.0f32; // placeholder — will be wired to real params
-            let filled = ((val * bar_w as f32) as usize).min(bar_w);
-            let bar: String = "\u{2588}".repeat(filled)
-                + &"\u{2591}".repeat(bar_w - filled);
-
-            lines.push(Line::from(vec![
-                Span::styled(format!("   {indicator} "), name_s),
-                Span::styled(format!("{param_name:<12}"), name_s),
-                Span::styled(bar, if is_cur { theme::amber() } else { theme::muted() }),
-                Span::styled(format!(" {:.0}%", val * 100.0), dim_s),
-            ]));
-
-            param_idx += 1;
-        }
-        lines.push(Line::from(""));
+    let instrument = track.instrument_type;
+    let values = &track.synth_params;
+    let names = params::names(instrument);
+    let count = values.len().min(names.len());
+    if count == 0 {
+        frame.render_widget(
+            Paragraph::new(Span::styled("  this track has no instrument on it", theme::dim())),
+            area,
+        );
+        return;
     }
 
-    // Controls hint
-    if focused {
-        lines.push(Line::from(vec![
-            Span::styled("  jk", theme::dim()),
-            Span::styled(" select  ", theme::muted()),
-            Span::styled("hl", theme::dim()),
-            Span::styled(" adjust  ", theme::muted()),
-            Span::styled("tab", theme::dim()),
-            Span::styled(" next panel", theme::muted()),
-        ]));
+    // One control per cell, filled down each column and then across, so the
+    // panel reads in the order the instrument lists it.
+    let cell_w = INST_CELL_W.min(w);
+    let columns = (w / cell_w).max(1);
+    let rows = h.saturating_sub(1).max(1);
+    let per_page = columns * rows;
+    let cursor = nav.clip_view.synth_param_cursor.min(count.saturating_sub(1));
+    let pages = count.div_ceil(per_page);
+    let page = cursor / per_page;
+    let first = page * per_page;
+
+    let mut lines: Vec<Line> = vec![inst_header(track, instrument, count, page, pages, focused)];
+
+    for row in 0..rows {
+        let mut spans: Vec<Span> = Vec::new();
+        for column in 0..columns {
+            let index = first + column * rows + row;
+            if index >= count {
+                continue;
+            }
+            spans.extend(inst_cell(
+                instrument,
+                values,
+                index,
+                names.get(index).copied().unwrap_or("?"),
+                focused && index == cursor,
+                cell_w,
+            ));
+        }
+        if spans.is_empty() {
+            break;
+        }
+        lines.push(Line::from(spans));
     }
 
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// How wide one control's cell is: the name, its value, and a space to keep
+/// two columns of them apart.
+///
+/// Twenty-six is chosen so that the pane an eighty-column terminal leaves —
+/// fifty-five — holds two of them rather than one, and a hundred-and-twenty
+/// column one holds three. Every selector label in the project fits the
+/// fourteen columns that leaves for a value; the panel tests pin that.
+const INST_CELL_W: usize = 26;
+
+/// The line over the panel: whose controls these are, and which page of them.
+fn inst_header(
+    track: &TrackState,
+    instrument: Option<InstrumentType>,
+    count: usize,
+    page: usize,
+    pages: usize,
+    focused: bool,
+) -> Line<'static> {
+    let name = instrument.map_or("no instrument", InstrumentType::label);
+    let mut spans = vec![
+        Span::styled(
+            format!(" {name} "),
+            if focused {
+                theme::amber_bright().add_modifier(Modifier::BOLD)
+            } else {
+                theme::normal().add_modifier(Modifier::BOLD)
+            },
+        ),
+        Span::styled(
+            format!("\u{00B7} {} controls ", count),
+            theme::dim(),
+        ),
+    ];
+    if pages > 1 {
+        spans.push(Span::styled(format!("\u{00B7} page {}/{pages} ", page + 1), theme::muted()));
+    }
+    spans.push(Span::styled(
+        format!("\u{00B7} {} ", track.name.to_lowercase()),
+        theme::dim(),
+    ));
+    Line::from(spans)
+}
+
+/// One control: `▶ cutoff   ██████░░░░ 61%`, or a selector's word instead of
+/// the bar.
+fn inst_cell(
+    instrument: Option<InstrumentType>,
+    values: &[f32],
+    index: usize,
+    name: &str,
+    selected: bool,
+    cell_w: usize,
+) -> Vec<Span<'static>> {
+    let name_style = if selected {
+        theme::amber_bright().add_modifier(Modifier::BOLD)
+    } else {
+        theme::normal()
+    };
+    let value_style = if selected { theme::amber() } else { theme::dim() };
+    let indicator = if selected { "\u{25B6}" } else { " " };
+
+    // `name` is 8 wide on every instrument — the panels all pin it — leaving
+    // the rest of the cell for the value.
+    const NAME_W: usize = 8;
+    const GUTTER: usize = 3; // indicator and its spaces
+    let value_w = cell_w.saturating_sub(NAME_W + GUTTER + 1);
+
+    let mut spans = vec![
+        Span::styled(format!("{indicator} "), name_style),
+        Span::styled(format!("{name:<NAME_W$} "), name_style),
+    ];
+
+    if let Some(label) = params::discrete_label(instrument, values, index) {
+        let text: String = label.chars().take(value_w).collect();
+        spans.push(Span::styled(
+            format!("{text:<value_w$}"),
+            if selected {
+                theme::amber_bright()
+            } else {
+                theme::muted()
+            },
+        ));
+    } else {
+        let reading = params::value_text(instrument, values, index);
+        let bar_w = value_w.saturating_sub(reading.chars().count() + 1).min(12);
+        let value = values.get(index).copied().unwrap_or(0.0);
+        spans.push(Span::styled(
+            params::bar(value, bar_w),
+            if selected { theme::amber() } else { theme::muted() },
+        ));
+        let pad = value_w.saturating_sub(bar_w + reading.chars().count() + 1);
+        spans.push(Span::styled(
+            format!(" {reading}{:pad$}", "", pad = pad),
+            value_style,
+        ));
+    }
+    spans.push(Span::styled(" ", theme::bg()));
+    spans
 }
 
 pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, snap: &TransportSnapshot) {

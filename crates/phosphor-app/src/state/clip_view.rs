@@ -163,8 +163,6 @@ pub struct ClipViewState {
     pub piano_roll: PianoRollState,
     pub fx_cursor: usize,
     pub synth_param_cursor: usize,
-    /// Cursor position within the inst config panel.
-    pub inst_config_cursor: usize,
     /// Where the cursor is standing in the step grid, and whether a control
     /// is locked. Only ever cursors: what a sequencer *contains* lives in
     /// [`crate::sequencer::SequencerState`] and is edited through its ops.
@@ -184,7 +182,6 @@ impl ClipViewState {
             piano_roll: PianoRollState::new(),
             fx_cursor: 0,
             synth_param_cursor: 0,
-            inst_config_cursor: 0,
             sequencer: SequencerView::new(),
         }
     }

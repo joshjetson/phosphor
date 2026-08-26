@@ -84,8 +84,6 @@ impl Pane {
 // ── Full Nav State ──
 
 pub const MAX_VISIBLE_TRACKS: usize = 5;
-/// Total number of parameters in the inst config panel (LFO:4 + Filter:4 + Envelope:4 + Pitch:3).
-pub const INST_CONFIG_PARAM_COUNT: usize = 15;
 
 #[derive(Debug)]
 pub struct NavState {

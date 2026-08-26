@@ -57,6 +57,19 @@ impl App {
                     );
                 }
                 crate::debug_log::system(&format!("created clip: {} ticks (TUI + audio)", length_ticks));
+
+                // Say so. Drawing the first note on an empty track makes a
+                // clip out of nothing, and the only other sign of it is a
+                // block appearing in a pane the player is not looking at.
+                let bars = (length_ticks as f64 / (Transport::PPQ * 4) as f64).ceil() as i64;
+                self.status_message = Some((
+                    format!(
+                        "clip {clip_number} created \u{00B7} {bars} bar{} from bar {}",
+                        if bars == 1 { "" } else { "s" },
+                        start_tick / (Transport::PPQ * 4) + 1,
+                    ),
+                    std::time::Instant::now(),
+                ));
             }
         }
 
@@ -206,16 +219,30 @@ impl App {
     /// If a synth param was just adjusted, send the update to the audio thread.
     /// When the patch selector (index 0) changes, sends ALL params to sync preset.
     pub(crate) fn send_synth_param_update(&self) {
-        if self.nav.focused_pane != Pane::ClipView
-            || self.nav.clip_view.focus != ClipViewFocus::FxPanel
-            || self.nav.clip_view.fx_panel_tab != FxPanelTab::Synth
-        {
+        // Either view of the instrument's panel: the narrow strip on the left
+        // and the full one in the `[inst]` tab are the same controls on the
+        // same cursor, so a knob turned in either has to reach the audio
+        // thread. Guarding on the left one alone is why the tab looked like
+        // it worked and sounded like it did not.
+        let on_panel = match self.nav.clip_view.focus {
+            ClipViewFocus::FxPanel => self.nav.clip_view.fx_panel_tab == FxPanelTab::Synth,
+            ClipViewFocus::PianoRoll => self.nav.clip_view.clip_tab == ClipTab::InstConfig,
+        };
+        if self.nav.focused_pane != Pane::ClipView || !on_panel {
             return;
         }
         let idx = self.nav.clip_view.synth_param_cursor;
         if let Some(track) = self.nav.tracks.get(self.nav.track_cursor) {
             if let Some(mixer_id) = track.mixer_id {
-                if idx == 0 {
+                // A patch selector reloads the whole block, so the whole
+                // block goes. The Prophet-6 keeps its preset in two controls
+                // — a bank and a program — and moving either one reloads it,
+                // which is what `NavState::adjust_synth_param` does and what
+                // this has to match or half a patch arrives.
+                let reloaded = idx == 0
+                    || (track.instrument_type == Some(InstrumentType::Prophet6)
+                        && idx == phosphor_dsp::prophet6::P_BANK);
+                if reloaded {
                     // Patch changed — send ALL params to audio thread
                     for (i, &val) in track.synth_params.iter().enumerate() {
                         let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::SetParameter {

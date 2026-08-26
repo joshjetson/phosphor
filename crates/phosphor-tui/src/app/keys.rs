@@ -118,7 +118,9 @@ impl App {
                     self.nav.input_modal.close();
                 }
                 KeyCode::Enter => {
-                    let path = self.nav.input_modal.value().to_string();
+                    // What was typed, or the suggestion when nothing was —
+                    // never a filename the player did not choose.
+                    let path = self.nav.input_modal.resolved();
                     let kind = self.nav.input_modal.kind;
                     self.nav.input_modal.close();
                     if !path.is_empty() {
@@ -606,6 +608,31 @@ impl App {
             && self.nav.clip_view.clip_tab == ClipTab::Sequencer
         {
             self.handle_sequencer_keys(key);
+            return;
+        }
+
+        // The instrument tab is the instrument's own panel, so it takes the
+        // keys the panel takes. Without this the tab rendered controls and
+        // the keys fell through to the piano roll underneath it, which is
+        // what made it feel like a mock-up: it looked like a panel and
+        // nothing typed into it arrived anywhere.
+        if self.nav.clip_view.focus == ClipViewFocus::PianoRoll
+            && self.nav.clip_view.clip_tab == ClipTab::InstConfig
+        {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => self.nav.escape(),
+                KeyCode::Char('j') | KeyCode::Down => self.nav.move_down(),
+                KeyCode::Char('k') | KeyCode::Up => self.nav.move_up(),
+                KeyCode::Char('h') | KeyCode::Left => {
+                    self.nav.move_left();
+                    self.send_synth_param_update();
+                }
+                KeyCode::Char('l') | KeyCode::Right => {
+                    self.nav.move_right();
+                    self.send_synth_param_update();
+                }
+                _ => {}
+            }
             return;
         }
 

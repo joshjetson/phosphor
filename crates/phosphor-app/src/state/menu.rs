@@ -362,6 +362,15 @@ pub struct InputModal {
     pub kind: InputModalKind,
     pub buffer: String,
     pub cursor: usize,
+    /// The name Enter uses when nothing has been typed after the directory.
+    ///
+    /// Shown dim, after the cursor, rather than sitting in the field: a
+    /// prompt that opens with `sessions/untitled.phos` already in it and the
+    /// cursor at the end means every character typed lands *after* the
+    /// extension. A player typing the name of their song got
+    /// `sessions/untitled.phosneon_causeway`, and the file that appeared was
+    /// called untitled.
+    placeholder: String,
 }
 
 impl Default for InputModal {
@@ -370,7 +379,13 @@ impl Default for InputModal {
 
 impl InputModal {
     pub fn new() -> Self {
-        Self { open: false, kind: InputModalKind::SaveAs, buffer: String::new(), cursor: 0 }
+        Self {
+            open: false,
+            kind: InputModalKind::SaveAs,
+            buffer: String::new(),
+            cursor: 0,
+            placeholder: String::new(),
+        }
     }
 
     /// Ask for a filename to save under.
@@ -382,11 +397,16 @@ impl InputModal {
     /// started, so a shortcut, an alias or a desktop launcher would write the
     /// file successfully into a directory nobody is going to look in again.
     /// See [`crate::paths::session_prompt_dir`].
+    /// The field holds the directory and nothing else, so the first key
+    /// pressed is the first letter of the name. `default_name` is what Enter
+    /// falls back to on an untouched prompt, and is shown dim where the name
+    /// would go — a suggestion rather than text to delete.
     pub fn open_save(&mut self, default_name: &str) {
         self.open = true;
         self.kind = InputModalKind::SaveAs;
-        self.buffer = format!("{}{default_name}", crate::paths::session_prompt_dir());
-        self.cursor = self.buffer.len();
+        self.buffer = crate::paths::session_prompt_dir();
+        self.cursor = self.len_chars();
+        self.placeholder = default_name.to_string();
     }
 
     /// Ask for a file to open. Same starting directory as [`Self::open_save`];
@@ -397,7 +417,8 @@ impl InputModal {
         self.open = true;
         self.kind = InputModalKind::Open;
         self.buffer = crate::paths::session_prompt_dir();
-        self.cursor = self.buffer.len();
+        self.cursor = self.len_chars();
+        self.placeholder.clear();
     }
 
     /// Name a user preset. Starts empty rather than on a suggestion, because
@@ -408,23 +429,47 @@ impl InputModal {
         self.kind = InputModalKind::PresetName;
         self.buffer.clear();
         self.cursor = 0;
+        self.placeholder.clear();
+    }
+
+    /// How many characters are in the field.
+    ///
+    /// The cursor counts characters, not bytes. It has to: it is drawn as a
+    /// column on a screen and moved by an arrow key, both of which are
+    /// character-shaped. `String` is indexed in bytes, so every method here
+    /// converts — and the ones that did not used to panic the whole
+    /// application the first time an accented letter was typed into a
+    /// filename, which is a perfectly ordinary thing to do.
+    fn len_chars(&self) -> usize {
+        self.buffer.chars().count()
+    }
+
+    /// The byte offset of character `index`, or the end of the string.
+    fn byte_at(&self, index: usize) -> usize {
+        self.buffer
+            .char_indices()
+            .nth(index)
+            .map_or(self.buffer.len(), |(offset, _)| offset)
     }
 
     pub fn type_char(&mut self, ch: char) {
-        self.buffer.insert(self.cursor, ch);
+        let at = self.byte_at(self.cursor);
+        self.buffer.insert(at, ch);
         self.cursor += 1;
     }
 
     pub fn backspace(&mut self) {
         if self.cursor > 0 {
             self.cursor -= 1;
-            self.buffer.remove(self.cursor);
+            let at = self.byte_at(self.cursor);
+            self.buffer.remove(at);
         }
     }
 
     pub fn delete(&mut self) {
-        if self.cursor < self.buffer.len() {
-            self.buffer.remove(self.cursor);
+        if self.cursor < self.len_chars() {
+            let at = self.byte_at(self.cursor);
+            self.buffer.remove(at);
         }
     }
 
@@ -433,7 +478,7 @@ impl InputModal {
     }
 
     pub fn move_right(&mut self) {
-        if self.cursor < self.buffer.len() { self.cursor += 1; }
+        if self.cursor < self.len_chars() { self.cursor += 1; }
     }
 
     pub fn move_home(&mut self) {
@@ -441,17 +486,54 @@ impl InputModal {
     }
 
     pub fn move_end(&mut self) {
-        self.cursor = self.buffer.len();
+        self.cursor = self.len_chars();
     }
 
     pub fn close(&mut self) {
         self.open = false;
         self.buffer.clear();
         self.cursor = 0;
+        self.placeholder.clear();
     }
 
     pub fn value(&self) -> &str {
         &self.buffer
+    }
+
+    /// Whether the field names a file yet, or is still just a directory.
+    fn names_a_file(&self) -> bool {
+        !self
+            .buffer
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or("")
+            .is_empty()
+    }
+
+    /// The dim suggestion drawn where the name would go, or nothing once
+    /// there is a name there.
+    #[must_use]
+    pub fn placeholder(&self) -> &str {
+        if self.placeholder.is_empty() || self.names_a_file() {
+            ""
+        } else {
+            &self.placeholder
+        }
+    }
+
+    /// What Enter means: exactly what was typed, or the suggestion when
+    /// nothing was typed after the directory.
+    ///
+    /// The distinction matters because the two used to be the same string in
+    /// the field, and "what was typed" then included a filename the player
+    /// never chose.
+    #[must_use]
+    pub fn resolved(&self) -> String {
+        if self.names_a_file() {
+            self.buffer.clone()
+        } else {
+            format!("{}{}", self.buffer, self.placeholder)
+        }
     }
 }
 

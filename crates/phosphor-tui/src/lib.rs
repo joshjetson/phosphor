@@ -15,6 +15,8 @@ mod test_fader;
 #[cfg(test)]
 mod test_keys;
 #[cfg(test)]
+mod test_panels;
+#[cfg(test)]
 mod test_presets;
 #[cfg(test)]
 mod test_sequencer;

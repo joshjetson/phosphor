@@ -78,8 +78,10 @@ cargo run --release -- --no-midi
 2. Press `a` to add an instrument track
 3. Select an instrument and press `Enter`
 4. Play your MIDI controller — sound comes out
-5. Use `j/k` to navigate synth parameters, `h/l` to adjust values
-6. Press `Tab` to cycle between Track FX, Synth params, Inst Config, Piano Roll
+5. Use `j/k` to navigate synth parameters, `h/l` to adjust values — the
+   first one is the patch selector
+6. Press `Tab` to reach `[inst]`, the instrument's full panel, laid out in
+   columns with room for all of it; `Tab` again for the piano roll
 7. Press `Space` then `v` to change the color theme
 
 ---
@@ -530,6 +532,24 @@ in a mix.
 
 Clip operations include collision detection — clips cannot overlap. Moving, stretching, and trimming all respect adjacent clip boundaries. Note positions are automatically rescaled when stretching or trimming to preserve their absolute timeline positions. All changes sync to the audio thread in real time.
 
+### Instrument Panel (`[inst]` tab)
+
+The instrument's own controls, laid out in as many columns as the pane has
+room for — three at 120 columns, which is what makes an 84-control panel like
+the Prophet-6 readable. The first control is always the patch selector.
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Move between controls (down each column, then over) |
+| `h` / `l` | Turn the control under the cursor — a knob by a step, a selector to the next position |
+| `Tab` | Next tab (piano roll) |
+| `Esc` | Back to the tracks pane |
+
+It is the same panel as the narrow `[synth]` strip on the left and the same
+cursor, so moving in either moves in both; the tab simply has the room. A
+patch selector reloads the whole panel, and every value of it reaches the
+audio thread.
+
 ### Piano Roll — Navigation Mode
 
 | Key | Action |
@@ -538,7 +558,7 @@ Clip operations include collision detection — clips cannot overlap. Moving, st
 | `j` / `k` | Scroll up/down through notes |
 | `1-9` | Jump to column by number |
 | `Enter` | Select column (enter edit mode) |
-| `n` | Toggle note at cursor (draw or remove) |
+| `n` | Toggle note at cursor (draw or remove) — on an empty track this makes the clip, and the status bar says so |
 | `Esc` | Clear highlights or exit piano roll |
 
 ### Piano Roll — Column/Row Highlighting
@@ -802,7 +822,7 @@ phosphor/
 │   │       │   ├── mod.rs     # Layout orchestration
 │   │       │   ├── top_bar.rs # Transport display
 │   │       │   ├── tracks.rs  # Track rows, clip grid
-│   │       │   ├── clip_view.rs   # Piano roll, FX panel, inst config
+│   │       │   ├── clip_view.rs   # Piano roll, FX panel, instrument panel
 │   │       │   ├── overlays.rs    # Menus, modals, confirmations
 │   │       │   └── bottom_bar.rs  # Key hints
 │   │       ├── session.rs     # Session file format

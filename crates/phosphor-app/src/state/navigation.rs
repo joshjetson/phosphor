@@ -88,9 +88,13 @@ impl NavState {
             }
             Pane::ClipView => {
                 match self.clip_view.focus {
+                    // The instrument tab walks the instrument's own controls,
+                    // on the same cursor the narrow panel on the left uses:
+                    // two views of one panel, so moving in either is moving
+                    // in both.
                     ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::InstConfig => {
-                        if self.clip_view.inst_config_cursor > 0 {
-                            self.clip_view.inst_config_cursor -= 1;
+                        if self.clip_view.synth_param_cursor > 0 {
+                            self.clip_view.synth_param_cursor -= 1;
                         }
                     }
                     ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::Settings => {
@@ -134,8 +138,9 @@ impl NavState {
             Pane::ClipView => {
                 match self.clip_view.focus {
                     ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::InstConfig => {
-                        if self.clip_view.inst_config_cursor + 1 < INST_CONFIG_PARAM_COUNT {
-                            self.clip_view.inst_config_cursor += 1;
+                        let max = self.current_track().map_or(0, |t| t.synth_params.len());
+                        if self.clip_view.synth_param_cursor + 1 < max {
+                            self.clip_view.synth_param_cursor += 1;
                         }
                     }
                     ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::Settings => {
@@ -174,7 +179,7 @@ impl NavState {
         } else if self.focused_pane == Pane::ClipView {
             match self.clip_view.focus {
                 ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::InstConfig => {
-                    // h = placeholder for future inst config param adjustment
+                    self.adjust_synth_param(-0.05);
                 }
                 ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::Settings => {
                     // h = adjust setting left (prev grid, toggle snap, decrease velocity)
@@ -204,7 +209,7 @@ impl NavState {
         } else if self.focused_pane == Pane::ClipView {
             match self.clip_view.focus {
                 ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::InstConfig => {
-                    // l = placeholder for future inst config param adjustment
+                    self.adjust_synth_param(0.05);
                 }
                 ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::Settings => {
                     // l = adjust setting right (next grid, toggle snap, increase velocity)
@@ -354,13 +359,11 @@ impl NavState {
                     self.clip_view.sequencer.focus_band(SeqBand::Grid);
                 } else {
                     self.clip_view.clip_tab = ClipTab::InstConfig;
-                    self.clip_view.inst_config_cursor = 0;
                 }
             }
             // Step grid → inst config
             (ClipViewFocus::PianoRoll, _, ClipTab::Sequencer) => {
                 self.clip_view.clip_tab = ClipTab::InstConfig;
-                self.clip_view.inst_config_cursor = 0;
             }
             // Inst config → piano roll
             (ClipViewFocus::PianoRoll, _, ClipTab::InstConfig) => {
