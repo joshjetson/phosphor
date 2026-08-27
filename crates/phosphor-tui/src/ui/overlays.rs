@@ -3,6 +3,13 @@
 use super::*;
 
 pub(super) fn render_space_menu(frame: &mut Frame, nav: &NavState) {
+    // A topic being read replaces the menu rather than sitting beside it:
+    // there is one thing on the screen and one set of keys for it.
+    if let Some(topic) = nav.space_menu.open_help() {
+        render_help_card(frame, nav, topic);
+        return;
+    }
+
     let area = frame.area();
     // Tall enough for whichever list is showing: the help section grew a
     // topic and was the length of the box, so the last one fell off the
@@ -76,21 +83,112 @@ pub(super) fn render_space_menu(frame: &mut Frame, nav: &NavState) {
         }
         SpaceMenuSection::Help => {
             let mut lines: Vec<Line> = Vec::new();
-            for (i, (title, desc)) in HELP_TOPICS.iter().enumerate() {
+            for (i, topic) in HELP_TOPICS.iter().enumerate() {
                 let is_cur = nav.space_menu.cursor == i;
                 let indicator = if is_cur { "\u{25B6} " } else { "  " };
                 let s = if is_cur {
                     Style::default().fg(theme::highlight_val()).bg(theme::overlay_bg()).add_modifier(Modifier::BOLD)
                 } else { theme::normal() };
 
-                lines.push(Line::from(vec![
+                let mut row = vec![
                     Span::styled(indicator, s),
-                    Span::styled(format!("{:<14}", title), s),
-                    Span::styled(*desc, theme::dim()),
-                ]));
+                    Span::styled(format!("{:<20}", topic.title), s),
+                    Span::styled(topic.summary, theme::dim()),
+                ];
+                // The row under the cursor says what Enter does, because
+                // there was a version of this where Enter did nothing and
+                // nothing on the screen admitted it.
+                if is_cur {
+                    row.push(Span::styled("   enter \u{2192} read", theme::amber()));
+                }
+                lines.push(Line::from(row));
             }
             frame.render_widget(Paragraph::new(lines), list_area);
         }
+    }
+}
+
+/// One help topic, as a reference card.
+///
+/// Scrolled rather than sized to fit: the topics are as long as they need to
+/// be — the step sequencer's is forty lines — and a card that is trimmed to
+/// the terminal is a card that silently stops telling the truth on a short
+/// one.
+fn render_help_card(frame: &mut Frame, nav: &NavState, topic: &HelpTopic) {
+    let area = frame.area();
+    let height = phosphor_app::state::help_box_height(area.height, topic.body.len());
+    let width = area.width.clamp(20, 72).min(area.width);
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = area.height.saturating_sub(height + 1);
+    let card = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, card);
+    frame.render_widget(
+        Block::default()
+            .style(Style::default().bg(theme::overlay_bg()))
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_style(theme::border_style())
+            .title(Span::styled(
+                format!(" help \u{00b7} {} ", topic.title),
+                theme::amber_bright().add_modifier(Modifier::BOLD),
+            )),
+        card,
+    );
+
+    let inner = Rect::new(card.x + 2, card.y + 1, card.width.saturating_sub(4), card.height.saturating_sub(2));
+    let rows = inner.height.saturating_sub(1) as usize;
+    let scroll = nav.space_menu.scroll.min(topic.body.len().saturating_sub(rows.max(1)));
+
+    let lines: Vec<Line> = topic
+        .body
+        .iter()
+        .skip(scroll)
+        .take(rows)
+        .map(|line| help_line(*line, inner.width as usize))
+        .collect();
+    frame.render_widget(
+        Paragraph::new(lines),
+        Rect::new(inner.x, inner.y, inner.width, rows as u16),
+    );
+
+    // The footer: how to get out, and how much is left.
+    let more = topic.body.len().saturating_sub(scroll + rows);
+    let mut footer = vec![
+        Span::styled("esc", theme::amber()),
+        Span::styled(" back  ", theme::muted()),
+    ];
+    if topic.body.len() > rows {
+        footer.push(Span::styled("j/k", theme::amber()));
+        footer.push(Span::styled(" scroll  ", theme::muted()));
+        footer.push(Span::styled(
+            if more > 0 { format!("\u{2193} {more} more") } else { "\u{2193} end".to_string() },
+            theme::dim(),
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(footer)),
+        Rect::new(inner.x, inner.y + rows as u16, inner.width, 1),
+    );
+}
+
+/// One line of a card.
+fn help_line(line: HelpLine, width: usize) -> Line<'static> {
+    match line {
+        HelpLine::Heading(text) => Line::from(Span::styled(
+            text.to_string(),
+            theme::amber_bright().add_modifier(Modifier::BOLD),
+        )),
+        HelpLine::Key(keys, action) => {
+            // The keys in their own column, so a card reads as a table even
+            // though it is a list of lines.
+            let column = 16.min(width.saturating_sub(4));
+            Line::from(vec![
+                Span::styled(format!("  {keys:<column$}"), theme::normal()),
+                Span::styled(action.to_string(), theme::muted()),
+            ])
+        }
+        HelpLine::Note(text) => Line::from(Span::styled(format!("  {text}"), theme::dim())),
+        HelpLine::Gap => Line::from(""),
     }
 }
 

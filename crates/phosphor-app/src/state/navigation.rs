@@ -270,7 +270,11 @@ impl NavState {
                     return None;
                 }
                 SpaceMenuSection::Help => {
-                    // Help topics just show info — no action
+                    // Enter reads the topic. It used to resolve a row by
+                    // looking up the shortcut printed on it, and a help
+                    // topic has no shortcut, so this arm was where Enter
+                    // went to do nothing.
+                    self.space_menu.open_topic();
                     return None;
                 }
             }
@@ -304,7 +308,10 @@ impl NavState {
             return;
         }
         if self.space_menu.open {
-            self.space_menu.open = false;
+            // Out of the card first, then out of the menu.
+            if !self.space_menu.close_topic() {
+                self.space_menu.open = false;
+            }
             return;
         }
         if self.fx_menu.open {

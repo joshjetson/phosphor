@@ -330,7 +330,7 @@ program with `program`.
 | `Space` `q` | Quantize notes to grid |
 | `Space` `w` | Instrument presets — save / load / delete |
 | `Space` `v` | Cycle color theme |
-| `Space` `h` | Open help topics |
+| `Space` `h` | Open help — ten topics, `Enter` opens one as a reference card, `j`/`k` scrolls it |
 
 ### Preset Browser (Space+W, on an instrument track)
 

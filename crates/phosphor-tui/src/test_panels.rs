@@ -346,3 +346,301 @@ mod tests {
         assert!(app.live_status().is_none(), "the message repeated on every note");
     }
 }
+
+/// The help browser: a list of topics that opens a reference card.
+///
+/// It shipped as nine one-line summaries with nothing behind them and an
+/// Enter key that resolved rows by their shortcut — help topics have no
+/// shortcut, so Enter did nothing at all and the section was a menu to
+/// nowhere. There was no themes topic either, which is the one thing a
+/// player is most likely to go looking for.
+#[cfg(test)]
+mod help {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+    use phosphor_app::state::{HelpLine, HELP_TOPICS};
+    use phosphor_core::EngineConfig;
+
+    use crate::app::App;
+    use crate::state::SpaceMenuSection;
+
+    fn app() -> App {
+        let mut app = App::new(EngineConfig { buffer_size: 64, sample_rate: 44100 }, false, false);
+        // What the main loop tells it every frame.
+        app.nav.space_menu.set_terminal_rows(40);
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.handle_event(Event::Key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }));
+    }
+
+    fn screen(app: &App) -> String {
+        let backend = ratatui::backend::TestBackend::new(100, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let snapshot = app.engine.transport.snapshot();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &snapshot, &app.nav, None))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..40u16)
+            .map(|y| (0..100u16).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Open the help list with the cursor on topic `index`.
+    fn open_list(index: usize) -> App {
+        let mut app = app();
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.nav.space_menu.section, SpaceMenuSection::Help);
+        for _ in 0..index {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        assert_eq!(app.nav.space_menu.cursor, index);
+        app
+    }
+
+    /// The defect, for every topic there is: Enter opens a card with the
+    /// topic's own content on it.
+    #[test]
+    fn enter_opens_a_card_for_every_topic() {
+        for (index, topic) in HELP_TOPICS.iter().enumerate() {
+            let mut app = open_list(index);
+            press(&mut app, KeyCode::Enter);
+
+            assert_eq!(
+                app.nav.space_menu.topic,
+                Some(index),
+                "enter on {:?} opened nothing",
+                topic.title,
+            );
+            assert!(!topic.body.is_empty(), "{:?} has an empty card", topic.title);
+
+            let text = screen(&app);
+            assert!(
+                text.contains(&format!("help \u{00b7} {}", topic.title)),
+                "the card for {:?} is not on the screen:\n{text}",
+                topic.title,
+            );
+            // ...and the first thing the card says is on the screen too, so
+            // "opened" means "readable" rather than "an empty box".
+            let first = topic
+                .body
+                .iter()
+                .find_map(|line| match line {
+                    HelpLine::Heading(text) | HelpLine::Note(text) => Some(*text),
+                    HelpLine::Key(keys, _) => Some(*keys),
+                    HelpLine::Gap => None,
+                })
+                .expect("a card of nothing but blank lines");
+            assert!(
+                text.contains(first),
+                "the card for {:?} drew none of its content:\n{text}",
+                topic.title,
+            );
+        }
+    }
+
+    /// The topic list is the application as it is today. Two of the old ones
+    /// described things that were never built — "plugins: loading and
+    /// managing plugins" promised a runtime plugin loader — and the one a
+    /// player asks for first was not there at all.
+    #[test]
+    fn the_topics_are_the_ones_the_application_has() {
+        let titles: Vec<&str> = HELP_TOPICS.iter().map(|topic| topic.title).collect();
+        assert_eq!(
+            titles,
+            vec![
+                "navigation",
+                "transport",
+                "tracks",
+                "clips",
+                "piano roll",
+                "step sequencer",
+                "instruments",
+                "presets & sessions",
+                "themes",
+                "shortcuts",
+            ],
+        );
+    }
+
+    /// Themes, which is what the player went looking for and could not find.
+    #[test]
+    fn the_themes_card_says_how_to_cycle_and_where_the_choice_is_kept() {
+        let index = HELP_TOPICS.iter().position(|t| t.title == "themes").unwrap();
+        let mut app = open_list(index);
+        press(&mut app, KeyCode::Enter);
+        let text = screen(&app);
+
+        assert!(text.contains("spc+v"), "the card does not say which key:\n{text}");
+        assert!(text.contains("config.json"), "it does not say where the choice is kept");
+        assert!(text.contains(".phosphor"), "it does not say which folder");
+        for name in ["Phosphor", "Gruvbox", "Catppuccin", "SpaceVim2"] {
+            assert!(text.contains(name), "the theme {name} is not named on the card");
+        }
+        // All nine of them, by the theme module's own list.
+        for name in crate::theme::THEME_NAMES {
+            assert!(text.contains(name), "the theme {name} is missing from the card");
+        }
+    }
+
+    /// The transport card carries the stop key, which is newer than the
+    /// manual and the first thing a player looks for after play.
+    #[test]
+    fn the_transport_card_carries_stop() {
+        let index = HELP_TOPICS.iter().position(|t| t.title == "transport").unwrap();
+        let mut app = open_list(index);
+        press(&mut app, KeyCode::Enter);
+        let text = screen(&app);
+        assert!(text.contains("spc+0"), "no stop key on the transport card:\n{text}");
+        assert!(text.contains("bar 1"), "it does not say where stop goes");
+    }
+
+    /// Esc walks back out the way Enter came in: card, list, closed.
+    #[test]
+    fn escape_walks_out_of_the_card_and_then_the_menu() {
+        let mut app = open_list(2);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.nav.space_menu.topic.is_some());
+
+        press(&mut app, KeyCode::Esc);
+        assert!(app.nav.space_menu.topic.is_none(), "esc did not close the card");
+        assert!(app.nav.space_menu.open, "esc closed the menu as well as the card");
+        assert_eq!(app.nav.space_menu.cursor, 2, "the list lost its place");
+
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.nav.space_menu.open, "esc did not close the menu");
+    }
+
+    /// A card longer than its box scrolls, and stops at both ends.
+    #[test]
+    fn a_long_card_scrolls_and_stops() {
+        let index = HELP_TOPICS
+            .iter()
+            .position(|t| t.title == "step sequencer")
+            .unwrap();
+        let mut app = open_list(index);
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            app.nav.space_menu.scroll_max() > 0,
+            "this card was supposed to be longer than the box",
+        );
+
+        let top = screen(&app);
+        assert!(top.contains("more"), "a scrollable card does not say so:\n{top}");
+        for _ in 0..6 {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        let moved = screen(&app);
+        assert_ne!(top, moved, "j did not scroll the card");
+        assert_eq!(app.nav.space_menu.scroll, 6);
+
+        // ...and it stops at the bottom rather than scrolling into nothing.
+        for _ in 0..200 {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        let bottom = screen(&app);
+        assert_eq!(app.nav.space_menu.scroll, app.nav.space_menu.scroll_max());
+        let last = match HELP_TOPICS[index].body.last().unwrap() {
+            HelpLine::Key(keys, _) => *keys,
+            HelpLine::Heading(text) | HelpLine::Note(text) => *text,
+            HelpLine::Gap => " ",
+        };
+        assert!(bottom.contains(last), "the end of the card is unreachable:\n{bottom}");
+
+        for _ in 0..200 {
+            press(&mut app, KeyCode::Char('k'));
+        }
+        assert_eq!(app.nav.space_menu.scroll, 0);
+        assert_eq!(screen(&app), top, "scrolling back up did not come home");
+    }
+
+    /// A page of text is not a menu: the shortcuts underneath do not fire
+    /// while one is open, so reading about the transport cannot start it.
+    #[test]
+    fn a_card_swallows_the_shortcuts_underneath_it() {
+        let mut app = open_list(1);
+        press(&mut app, KeyCode::Enter);
+
+        press(&mut app, KeyCode::Char('p'));
+        assert!(!app.engine.transport.is_playing(), "reading about play started it");
+        assert!(app.nav.space_menu.topic.is_some(), "a stray key closed the card");
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(
+            app.nav.space_menu.section,
+            SpaceMenuSection::Help,
+            "tab switched sections from under the card",
+        );
+    }
+
+    /// Nine themes, one card. Nothing in the help browser picks a colour of
+    /// its own — the overlay is drawn from the palette like everything else.
+    #[test]
+    fn the_card_belongs_to_the_theme() {
+        let mut app = open_list(5);
+        press(&mut app, KeyCode::Enter);
+        let first = screen(&app);
+        for index in 0..crate::theme::THEME_COUNT {
+            crate::theme::set_theme(index);
+            assert_eq!(
+                screen(&app),
+                first,
+                "the help card drew different characters in theme {}",
+                crate::theme::theme_name(),
+            );
+        }
+        crate::theme::set_theme(0);
+        assert!(
+            !include_str!("ui/overlays.rs").contains("Color::Rgb"),
+            "an overlay names a colour instead of asking the theme for one",
+        );
+    }
+
+    /// Every line of every card fits the card. A reference that is clipped
+    /// at the right margin is a reference that lies by omission — and the
+    /// lines are written by hand, so nothing else stops one from growing.
+    #[test]
+    fn every_line_fits_the_card() {
+        // The card is 72 columns wide; four of them are its borders and the
+        // padding inside them, and a key column is sixteen.
+        const TEXT: usize = 72 - 4;
+        const KEYS: usize = 16;
+
+        for topic in HELP_TOPICS {
+            assert!(topic.title.chars().count() <= 20, "{:?} is a long title", topic.title);
+            assert!(
+                topic.summary.chars().count() <= 46,
+                "the summary of {:?} does not fit the list",
+                topic.title,
+            );
+            for line in topic.body {
+                let width = match line {
+                    HelpLine::Heading(text) | HelpLine::Note(text) => text.chars().count() + 2,
+                    HelpLine::Key(keys, action) => {
+                        assert!(
+                            keys.chars().count() < KEYS,
+                            "the keys {keys:?} in {:?} overflow their column",
+                            topic.title,
+                        );
+                        2 + KEYS + action.chars().count()
+                    }
+                    HelpLine::Gap => 0,
+                };
+                assert!(
+                    width <= TEXT,
+                    "a line of {:?} is {width} columns wide: {line:?}",
+                    topic.title,
+                );
+            }
+        }
+    }
+}

@@ -248,6 +248,29 @@ impl App {
 
         // Space menu open
         if self.nav.space_menu.open {
+            // A help card takes the keys while it is up: j/k read it, Esc
+            // puts it down. The shortcuts underneath do not fire — a page of
+            // text is not a menu, and `p` in the middle of one should not
+            // start the transport.
+            if self.nav.space_menu.topic.is_some() {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        self.nav.space_menu.close_topic();
+                    }
+                    KeyCode::Char(' ') => {
+                        self.nav.space_menu.close_topic();
+                        self.nav.space_menu.open = false;
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => self.nav.space_menu.scroll_body(1),
+                    KeyCode::Char('k') | KeyCode::Up => self.nav.space_menu.scroll_body(-1),
+                    KeyCode::PageDown => self.nav.space_menu.scroll_body(8),
+                    KeyCode::PageUp => self.nav.space_menu.scroll_body(-8),
+                    KeyCode::Char('g') | KeyCode::Home => self.nav.space_menu.scroll_body(-999),
+                    KeyCode::Char('G') | KeyCode::End => self.nav.space_menu.scroll_body(999),
+                    _ => {}
+                }
+                return;
+            }
             match key.code {
                 KeyCode::Char(' ') | KeyCode::Esc => {
                     dbg::user("space menu: close");

@@ -545,6 +545,17 @@ pub struct SpaceMenu {
     pub cursor: usize,
     /// Which section is active.
     pub section: SpaceMenuSection,
+    /// The help topic whose card is open, if one is.
+    ///
+    /// The list used to be the whole of it: Enter resolved a row by looking
+    /// up its shortcut key, help topics have no shortcut, and so pressing
+    /// Enter on one did nothing at all. This is what Enter opens.
+    pub topic: Option<usize>,
+    /// First line of that card on the screen.
+    pub scroll: usize,
+    /// How many of its lines fit, set from the terminal each frame so that
+    /// scrolling stops where the drawing does.
+    pub page_rows: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -561,29 +572,101 @@ impl Default for SpaceMenu {
 
 impl SpaceMenu {
     pub fn new() -> Self {
-        Self { open: false, cursor: 0, section: SpaceMenuSection::Actions }
+        Self {
+            open: false,
+            cursor: 0,
+            section: SpaceMenuSection::Actions,
+            topic: None,
+            scroll: 0,
+            page_rows: 12,
+        }
     }
 
     pub fn toggle(&mut self) {
         self.open = !self.open;
-        if self.open { self.cursor = 0; self.section = SpaceMenuSection::Actions; }
+        if self.open {
+            self.cursor = 0;
+            self.section = SpaceMenuSection::Actions;
+        }
+        self.close_topic();
     }
 
     pub fn move_up(&mut self) {
-        if self.cursor > 0 { self.cursor -= 1; }
+        if self.topic.is_some() {
+            self.scroll_body(-1);
+        } else if self.cursor > 0 {
+            self.cursor -= 1;
+        }
     }
 
     pub fn move_down(&mut self) {
+        if self.topic.is_some() {
+            self.scroll_body(1);
+            return;
+        }
         let max = self.item_count();
         if self.cursor + 1 < max { self.cursor += 1; }
     }
 
     pub fn switch_section(&mut self) {
+        if self.topic.is_some() {
+            return;
+        }
         self.section = match self.section {
             SpaceMenuSection::Actions => SpaceMenuSection::Help,
             SpaceMenuSection::Help => SpaceMenuSection::Actions,
         };
         self.cursor = 0;
+    }
+
+    // ── The help card ──
+
+    /// Open the topic under the cursor. Only the help section has any.
+    pub fn open_topic(&mut self) {
+        if self.section != SpaceMenuSection::Help {
+            return;
+        }
+        if self.cursor < HELP_TOPICS.len() {
+            self.topic = Some(self.cursor);
+            self.scroll = 0;
+        }
+    }
+
+    /// Shut the card, answering whether one was open — which is what tells
+    /// Esc whether it has closed the card or should close the menu.
+    pub fn close_topic(&mut self) -> bool {
+        self.scroll = 0;
+        self.topic.take().is_some()
+    }
+
+    /// The topic being read, if any.
+    #[must_use]
+    pub fn open_help(&self) -> Option<&'static HelpTopic> {
+        HELP_TOPICS.get(self.topic?)
+    }
+
+    /// How much of the card is off the bottom of the screen.
+    #[must_use]
+    pub fn scroll_max(&self) -> usize {
+        self.open_help()
+            .map_or(0, |topic| topic.body.len().saturating_sub(self.page_rows.max(1)))
+    }
+
+    /// Move the card under the window, stopping at both ends: a page of text
+    /// that scrolls past its own last line reads as a page that has been
+    /// lost.
+    pub fn scroll_body(&mut self, delta: i32) {
+        let max = self.scroll_max();
+        self.scroll = (self.scroll as i32 + delta).clamp(0, max as i32) as usize;
+    }
+
+    /// Told the terminal's height each frame, so that "the bottom" means the
+    /// same thing to the keys and to the drawing.
+    pub fn set_terminal_rows(&mut self, rows: u16) {
+        let body = self.open_help().map_or(0, |topic| topic.body.len());
+        self.page_rows = help_page_rows(rows, body).max(1);
+        let max = self.scroll_max();
+        self.scroll = self.scroll.min(max);
     }
 
     fn item_count(&self) -> usize {
@@ -654,15 +737,337 @@ impl QuantizeModal {
     }
 }
 
-/// Help topic entries: (title, short description).
-pub const HELP_TOPICS: &[(&str, &str)] = &[
-    ("navigation",  "moving between tracks, clips, and panes"),
-    ("transport",   "play, pause, stop, record, loop, BPM"),
-    ("tracks",      "mute, solo, arm, fx, volume, routing"),
-    ("clips",       "selecting, jumping, clip-level fx"),
-    ("piano roll",  "editing MIDI notes, velocity, quantize"),
-    ("step grid",   "n hit \u{00B7} jk row \u{00B7} enter edit \u{00B7} a accent \u{00B7} t play \u{00B7} b bounce"),
-    ("fx & mixing", "adding effects, sends, master bus"),
-    ("shortcuts",   "full keyboard shortcut reference"),
-    ("plugins",     "loading and managing plugins"),
+// ── Help ──
+
+/// One line of a help topic.
+///
+/// A reference card rather than prose: most of a topic is key-and-action
+/// pairs, and the few sentences that are worth writing are the ones a key
+/// table cannot say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpLine {
+    /// A section inside the topic.
+    Heading(&'static str),
+    /// A key, and what it does.
+    Key(&'static str, &'static str),
+    /// A sentence.
+    Note(&'static str),
+    /// A blank line.
+    Gap,
+}
+
+/// A help topic: what it is called, what it covers, and the card itself.
+#[derive(Debug, Clone, Copy)]
+pub struct HelpTopic {
+    pub title: &'static str,
+    pub summary: &'static str,
+    pub body: &'static [HelpLine],
+}
+
+use HelpLine::{Gap, Heading, Key, Note};
+
+/// The help topics, in the order the list shows them.
+///
+/// Every binding here is one that exists. They were read off the key
+/// handlers, the bottom bar's own hint tables and the manual in the README
+/// rather than remembered, because a help page that is confidently wrong
+/// costs more than no help page at all — which is what this was: nine
+/// summaries with nothing behind them and an Enter key that did nothing.
+pub const HELP_TOPICS: &[HelpTopic] = &[
+    HelpTopic {
+        title: "navigation",
+        summary: "panes, tabs, and getting back out",
+        body: &[
+            Heading("panes"),
+            Key("spc+1 / 2 / 3", "transport \u{00B7} tracks \u{00B7} clip view"),
+            Key("tab", "next pane, or next tab inside the clip view"),
+            Key("shift+tab", "previous pane"),
+            Key("esc", "back one level: release, deselect, leave the pane"),
+            Gap,
+            Heading("inside a pane"),
+            Key("j / k", "up and down: tracks, notes, parameters, rows"),
+            Key("h / l", "left and right: elements, steps, values"),
+            Key("enter", "open or lock what the cursor is on"),
+            Key("q", "quit, from the tracks and transport panes"),
+            Gap,
+            Note("The bottom bar always lists the keys that are live"),
+            Note("where the cursor is standing."),
+        ],
+    },
+    HelpTopic {
+        title: "transport",
+        summary: "play, stop, record, loop, tempo",
+        body: &[
+            Heading("from anywhere"),
+            Key("spc+p", "play / pause"),
+            Key("spc+0", "stop, and return the playhead to bar 1"),
+            Key("spc+r", "arm recording (record onto armed tracks)"),
+            Key("spc+m", "metronome on / off"),
+            Key("spc+l", "loop region editor"),
+            Key("spc+!", "panic \u{2014} kill every sounding note"),
+            Key("+ / -", "tempo, one BPM at a time"),
+            Gap,
+            Heading("transport pane (spc+1)"),
+            Key("h / l", "move between bpm, record, loop, metronome"),
+            Key("enter", "bpm: hold it \u{00b7} record and metronome: toggle"),
+            Key("esc", "release"),
+            Gap,
+            Heading("loop editor"),
+            Key("h / l", "move the loop start"),
+            Key("H / L", "move the loop end"),
+            Key("enter", "loop on / off"),
+            Key("esc", "done"),
+        ],
+    },
+    HelpTopic {
+        title: "tracks",
+        summary: "add, arm, mute, solo, fader, fx",
+        body: &[
+            Heading("the list"),
+            Key("j / k", "move between tracks"),
+            Key("enter", "select the track \u{2014} its instrument panel opens"),
+            Key("h / l", "move between fx, fader, mute, solo, arm, clips"),
+            Key("spc+a", "add an instrument track"),
+            Key("spc+d", "delete the selected track or clip"),
+            Gap,
+            Heading("switches"),
+            Key("m / s", "mute / solo"),
+            Key("r", "arm for recording"),
+            Key("R", "loop record"),
+            Gap,
+            Heading("the fader"),
+            Key("enter", "hold it (on the dB reading)"),
+            Key("h / l", "down and up, one dB a press"),
+            Key("esc", "let go"),
+            Gap,
+            Heading("track fx"),
+            Key("enter", "on the fx cell: choose an effect to add"),
+            Key("j / k", "walk the chain in the [trk fx] tab"),
+        ],
+    },
+    HelpTopic {
+        title: "clips",
+        summary: "move, stretch, trim, copy",
+        body: &[
+            Note("With a track selected, h/l walks its clips; the clip"),
+            Note("view follows whichever one the cursor is on."),
+            Gap,
+            Heading("locked to a clip (enter)"),
+            Key("h / l", "move it, one beat a press"),
+            Key("H / L", "the right edge \u{2014} shrink and stretch"),
+            Key("ctrl+h / ctrl+l", "the left edge \u{2014} trim and extend"),
+            Key("y / p", "yank \u{00b7} paste after this clip"),
+            Key("P", "paste onto another track, same position"),
+            Key("d", "duplicate it, straight after itself"),
+            Key("esc", "release"),
+            Gap,
+            Heading("elsewhere"),
+            Key("1-9", "jump to a clip by number"),
+            Key("spc+d", "delete the selected clip"),
+            Key("u / ctrl+r", "undo \u{00b7} redo"),
+            Gap,
+            Note("Clips cannot overlap: moving, stretching and trimming"),
+            Note("all stop at the neighbour. Notes keep their timeline"),
+            Note("positions when a clip is stretched."),
+        ],
+    },
+    HelpTopic {
+        title: "piano roll",
+        summary: "write notes, select, stretch, quantize",
+        body: &[
+            Heading("browsing"),
+            Key("h / l", "move between columns"),
+            Key("j / k", "move up and down the keyboard"),
+            Key("1-9", "jump to a column"),
+            Key("n", "write or erase a note at the cursor"),
+            Key("enter", "select the column under the cursor"),
+            Gap,
+            Heading("selecting"),
+            Key("H / L", "highlight columns left and right"),
+            Key("shift+j / k", "highlight rows down and up"),
+            Key("d / y / p", "delete \u{00b7} yank \u{00b7} paste the highlight"),
+            Key("enter", "lock the highlight, then h/l and H/L stretch it"),
+            Gap,
+            Heading("one column, one note"),
+            Key("h / l", "the left edge of every note in the column"),
+            Key("H / L", "the right edge"),
+            Key("j / k", "go deeper, to a single note"),
+            Gap,
+            Heading("note editing (spc+e)"),
+            Key("h j k l", "move between notes by proximity"),
+            Key("shift+dir", "select as you go"),
+            Key("enter", "select the note under the cursor"),
+            Key("h/l, j/k", "with a selection: move it"),
+            Key("shift+h/l", "stretch its right edge"),
+            Key("d", "delete \u{00b7} esc: drop the selection"),
+            Key("e / esc", "leave note editing"),
+            Gap,
+            Key("spc+q", "quantize the clip to a grid"),
+            Note("Writing the first note on an empty track makes the"),
+            Note("clip; the status bar says how long it is."),
+        ],
+    },
+    HelpTopic {
+        title: "step sequencer",
+        summary: "the step grid, band by band",
+        body: &[
+            Note("A track type that makes no sound of its own: it drives"),
+            Note("a child instrument. A new one runs from birth, so"),
+            Note("write steps and press play."),
+            Gap,
+            Heading("the grid"),
+            Key("j / k", "the rows \u{2014} a kit's sounds, a synth's voices"),
+            Key("h / l", "along the steps"),
+            Key("n", "write or erase the step under the cursor"),
+            Key("a", "accent it \u{00b7} x: clear it"),
+            Key("enter", "open the panel for what the cursor is on"),
+            Key("[ / ]", "previous / next row, from any depth"),
+            Key("1-9", "jump to a step"),
+            Gap,
+            Heading("the panels (j from the last row)"),
+            Key("h / l", "move between knobs"),
+            Key("enter", "hold the knob \u{00b7} h/l turns it, H/L strides"),
+            Key("esc", "let go, then leave the panel"),
+            Note("step: pitch, chord, voicing, gate \u{00b7} lane: sound,"),
+            Note("mute, solo \u{00b7} pattern: child, length, rate, swing,"),
+            Note("velocities, mode, key."),
+            Gap,
+            Heading("patterns"),
+            Key("h / l", "on the slots row: choose one of the eight"),
+            Key("enter", "queue it \u{2014} the header counts it down"),
+            Key("c / C", "chain the slot (again for \u{00d7}2) \u{00b7} C clears it"),
+            Key("y / p", "copy a pattern to another slot"),
+            Key("X", "clear the whole pattern"),
+            Gap,
+            Heading("playing and printing"),
+            Key("t", "run / stop this pattern, and the transport"),
+            Key("m / s", "mute / solo the row"),
+            Key("r", "step record: a played key writes and moves on"),
+            Key(". / _", "recording: a rest \u{00b7} tie the step before"),
+            Key("b", "bounce the pattern or chain to a clip"),
+        ],
+    },
+    HelpTopic {
+        title: "instruments",
+        summary: "the [inst] panel, patches, MIDI",
+        body: &[
+            Note("Selecting a track opens its instrument. The [inst]"),
+            Note("tab in the clip view is the whole panel, in columns;"),
+            Note("the narrow [synth] strip on the left is the same"),
+            Note("controls and the same cursor."),
+            Gap,
+            Heading("the panel"),
+            Key("tab", "cycle the clip view's tabs, in this order:"),
+            Note("[trk fx] [synth] \u{00b7} [inst] [piano] [settings]"),
+            Note("\u{2014} and [seq] first, on a sequencer track."),
+            Key("j / k", "move between controls, down each column"),
+            Key("h / l", "turn the one under the cursor"),
+            Key("esc", "back to the tracks pane"),
+            Gap,
+            Note("The first control is always the patch selector, and"),
+            Note("moving it reloads the whole panel. Selectors step by"),
+            Note("position; knobs move by a fraction of their travel."),
+            Gap,
+            Heading("playing it"),
+            Note("MIDI input goes to the selected track, so choosing a"),
+            Note("track is how you choose what your keyboard plays."),
+            Key("spc+!", "panic, if a note ever hangs"),
+        ],
+    },
+    HelpTopic {
+        title: "presets & sessions",
+        summary: "saving sounds and saving songs",
+        body: &[
+            Heading("instrument presets (spc+w)"),
+            Key("j / k", "walk the bank"),
+            Key("enter", "load the one under the cursor"),
+            Key("enter", "on <save new>: name and store the panel"),
+            Key("d", "delete it (it asks first)"),
+            Key("esc", "close"),
+            Gap,
+            Heading("sessions"),
+            Key("ctrl+s", "save \u{2014} straight back to the open file"),
+            Key("spc+s", "save, naming the file the first time"),
+            Key("spc+o", "open one"),
+            Gap,
+            Note("The save prompt starts on the folder with the name"),
+            Note("dimmed after it: type and it is yours, or press enter"),
+            Note("to take the suggestion."),
+            Gap,
+            Heading("where they live"),
+            Note("sessions/ in a checkout, and otherwise the"),
+            Note("application folder: ~/.phosphor on macOS and Linux,"),
+            Note("%APPDATA%\\phosphor on Windows. Presets and the theme"),
+            Note("preference live there too."),
+        ],
+    },
+    HelpTopic {
+        title: "themes",
+        summary: "nine palettes, and where the choice is kept",
+        body: &[
+            Key("spc+v", "cycle to the next theme"),
+            Gap,
+            Note("Nine palettes, in this order:"),
+            Note("Phosphor \u{00b7} SpaceVim \u{00b7} Gruvbox \u{00b7} Midnight"),
+            Note("Dracula \u{00b7} Nord \u{00b7} Jellybean \u{00b7} Catppuccin"),
+            Note("SpaceVim2"),
+            Gap,
+            Note("The name of the one you land on is shown on the"),
+            Note("bottom bar as you cycle."),
+            Gap,
+            Note("The choice is written to config.json in the"),
+            Note("application folder \u{2014} ~/.phosphor on macOS and"),
+            Note("Linux, %APPDATA%\\phosphor on Windows \u{2014} and is read"),
+            Note("back the next time Phosphor starts."),
+            Gap,
+            Note("Every colour on the screen comes from the palette,"),
+            Note("this help page included."),
+        ],
+    },
+    HelpTopic {
+        title: "shortcuts",
+        summary: "the keys that work everywhere",
+        body: &[
+            Heading("global"),
+            Key("spc", "this menu \u{00b7} spc again, or esc, closes it"),
+            Key("spc+h", "these help topics"),
+            Key("tab / shift+tab", "next / previous pane"),
+            Key("esc", "back one level, anywhere"),
+            Key("u", "undo \u{00b7} ctrl+r: redo"),
+            Key("ctrl+s", "save the session"),
+            Key("ctrl+c", "quit \u{00b7} q from the tracks pane"),
+            Key("+ / -", "tempo"),
+            Key("spc+!", "panic"),
+            Gap,
+            Heading("the space menu"),
+            Key("j / k", "move \u{00b7} enter: choose"),
+            Key("tab", "switch between actions and help"),
+            Key("<key>", "any shortcut fires straight from the menu"),
+            Gap,
+            Note("A held control \u{2014} a fader, a knob, a step grid knob"),
+            Note("\u{2014} takes every key it is given until esc lets go."),
+        ],
+    },
 ];
+
+/// How tall a help card is: as tall as the topic needs, capped by the
+/// terminal and by [`HELP_BOX_MAX`].
+///
+/// Shared by the overlay that draws it and the loop that tells the menu how
+/// much of a topic is on the screen, so scrolling and drawing cannot come to
+/// different answers about where the bottom is.
+#[must_use]
+pub fn help_box_height(rows: u16, body_len: usize) -> u16 {
+    let wanted = u16::try_from(body_len.saturating_add(3)).unwrap_or(HELP_BOX_MAX);
+    wanted.min(HELP_BOX_MAX).min(rows.saturating_sub(2)).max(4)
+}
+
+/// The lines of a topic that fit in that card: the borders and the footer
+/// are not topic.
+#[must_use]
+pub fn help_page_rows(rows: u16, body_len: usize) -> usize {
+    (help_box_height(rows, body_len) as usize).saturating_sub(3)
+}
+
+/// The tallest the help body is allowed to be, however tall the terminal is.
+const HELP_BOX_MAX: u16 = 24;

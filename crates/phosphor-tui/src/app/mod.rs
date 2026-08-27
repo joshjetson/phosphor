@@ -559,6 +559,9 @@ impl App {
             let term_size = terminal.size()?;
             let term_h = term_size.height;
             let term_w = term_size.width;
+            // How much of a help card is on the screen, so that scrolling it
+            // stops where the drawing of it does.
+            self.nav.space_menu.set_terminal_rows(term_h);
             let piano_h = term_h.saturating_sub(30).max(6) as u8;
             self.nav.clip_view.piano_roll.set_view_height(piano_h);
 
