@@ -108,6 +108,7 @@ pub enum InstrumentType {
     Sampler,
     LittlePhatty,
     Prophet6,
+    Teo5,
     /// The step sequencer. Not an instrument: it drives one.
     Sequencer,
 }
@@ -125,6 +126,7 @@ impl InstrumentType {
             Self::Sampler => "Sampler",
             Self::LittlePhatty => "Little Phatty",
             Self::Prophet6 => "Prophet-6",
+            Self::Teo5 => "TEO-5",
             Self::Sequencer => "Step Sequencer",
         }
     }
@@ -141,14 +143,17 @@ impl InstrumentType {
             Self::Sampler => "sample-based instrument",
             Self::LittlePhatty => "monophonic Moog with morphing waves",
             Self::Prophet6 => "six-voice analog poly with poly mod",
+            Self::Teo5 => "five-voice analog with the SEM filter",
             Self::Sequencer => "pattern sequencer driving any instrument",
         }
     }
 
-    /// Appended to, never reordered: a session stores an instrument by its
-    /// key rather than by position, but the menu's own order is what a player
-    /// has learned, and the preset browser walks this list.
-    pub const ALL: &[InstrumentType] = &[Self::Synth, Self::DrumRack, Self::DX7, Self::Jupiter8, Self::Odyssey, Self::Juno60, Self::Rhodes, Self::Sampler, Self::LittlePhatty, Self::Prophet6, Self::Sequencer];
+    /// Order is presentation only — safe to rearrange. Sessions and presets
+    /// store an instrument by its key (`session::instrument_key`), never by
+    /// position in this list, and every use of `ALL` in the workspace is
+    /// iteration. Instruments stay grouped together and the sequencer stays
+    /// last, because it is not an instrument: it drives one.
+    pub const ALL: &[InstrumentType] = &[Self::Synth, Self::DrumRack, Self::DX7, Self::Jupiter8, Self::Odyssey, Self::Juno60, Self::Rhodes, Self::Sampler, Self::LittlePhatty, Self::Prophet6, Self::Teo5, Self::Sequencer];
 
     /// Whether picking this from the add-track menu builds a step sequencer
     /// rather than an instrument.

@@ -1,6 +1,6 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use phosphor_dsp::oscillator::{Oscillator, Waveform};
-use phosphor_dsp::{jupiter, prophet6};
+use phosphor_dsp::{jupiter, prophet6, teo5};
 use phosphor_plugin::{MidiEvent, Plugin};
 
 fn bench_sine_64(c: &mut Criterion) {
@@ -90,9 +90,32 @@ fn bench_jupiter_chord(c: &mut Criterion) {
     });
 }
 
+
+fn bench_teo5_chord(c: &mut Criterion) {
+    let mut synth = teo5::Teo5::new();
+    synth.init(44_100.0, 512);
+    let mut left = vec![0.0f32; 512];
+    let mut right = vec![0.0f32; 512];
+    // Five notes, which is the whole instrument: the TEO-5 has five voices
+    // where the Prophet-6 has six, so the two benches are compared per voice.
+    let events: Vec<MidiEvent> = [48u8, 52, 55, 59, 62]
+        .iter()
+        .map(|&note| MidiEvent { sample_offset: 0, status: 0x90, data1: note, data2: 100 })
+        .collect();
+    let mut first = true;
+    c.bench_function("polysynth_teo5_512_samples", |b| {
+        b.iter(|| {
+            let mut outs: [&mut [f32]; 2] = [&mut left, &mut right];
+            synth.process(&[], &mut outs, if first { &events } else { &[] });
+            first = false;
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_prophet6_chord,
+    bench_teo5_chord,
     bench_jupiter_chord,
     bench_sine_64,
     bench_saw_64,

@@ -235,13 +235,15 @@ impl App {
         if let Some(track) = self.nav.tracks.get(self.nav.track_cursor) {
             if let Some(mixer_id) = track.mixer_id {
                 // A patch selector reloads the whole block, so the whole
-                // block goes. The Prophet-6 keeps its preset in two controls
-                // — a bank and a program — and moving either one reloads it,
-                // which is what `NavState::adjust_synth_param` does and what
-                // this has to match or half a patch arrives.
+                // block goes. The Prophet-6 and the TEO-5 keep their preset
+                // in two controls — a bank and a program — and moving either
+                // one reloads it, which is what `NavState::adjust_synth_param`
+                // does and what this has to match or half a patch arrives.
                 let reloaded = idx == 0
                     || (track.instrument_type == Some(InstrumentType::Prophet6)
-                        && idx == phosphor_dsp::prophet6::P_BANK);
+                        && idx == phosphor_dsp::prophet6::P_BANK)
+                    || (track.instrument_type == Some(InstrumentType::Teo5)
+                        && idx == phosphor_dsp::teo5::P_BANK);
                 if reloaded {
                     // Patch changed — send ALL params to audio thread
                     for (i, &val) in track.synth_params.iter().enumerate() {

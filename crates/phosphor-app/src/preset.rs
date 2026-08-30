@@ -178,6 +178,7 @@ pub fn param_names(instrument: InstrumentType) -> &'static [&'static str] {
         InstrumentType::Rhodes => &phosphor_dsp::rhodes::PARAM_NAMES,
         InstrumentType::LittlePhatty => &phosphor_dsp::phatty::PARAM_NAMES,
         InstrumentType::Prophet6 => &phosphor_dsp::prophet6::PARAM_NAMES,
+        InstrumentType::Teo5 => &phosphor_dsp::teo5::PARAM_NAMES,
         // Nothing to save: a sequencer track's presets are its child's, and
         // its own settings are pattern data in the session.
         InstrumentType::Sequencer => &[],
@@ -227,8 +228,9 @@ pub fn param_count(instrument: InstrumentType) -> usize {
 /// changing a sequencer's child needed the same thing, and two lists of
 /// per-instrument defaults is one list that eventually forgets an instrument.
 ///
-/// The Prophet-6 is the only bank whose defaults are decoded from a ROM
-/// rather than written out, so it answers with a call instead of a constant.
+/// The Prophet-6 and the TEO-5 are the two banks whose defaults are decoded
+/// from a ROM rather than written out, so they answer with a call instead of a
+/// constant.
 pub fn defaults(instrument: InstrumentType) -> Vec<f32> {
     match instrument {
         InstrumentType::Synth | InstrumentType::Sampler => {
@@ -242,6 +244,7 @@ pub fn defaults(instrument: InstrumentType) -> Vec<f32> {
         InstrumentType::Rhodes => phosphor_dsp::rhodes::PARAM_DEFAULTS.to_vec(),
         InstrumentType::LittlePhatty => phosphor_dsp::phatty::PARAM_DEFAULTS.to_vec(),
         InstrumentType::Prophet6 => phosphor_dsp::prophet6::param_defaults().to_vec(),
+        InstrumentType::Teo5 => phosphor_dsp::teo5::param_defaults().to_vec(),
         // The sequencer has no panel of its own: its controls are pattern
         // data, and the panel on one of its tracks belongs to the child.
         InstrumentType::Sequencer => Vec::new(),

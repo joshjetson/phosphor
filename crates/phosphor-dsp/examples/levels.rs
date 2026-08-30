@@ -15,7 +15,9 @@
 //! `tests/headroom.rs` asserts the same thing; this prints the numbers.
 
 use phosphor_dsp::level::saturation_input;
-use phosphor_dsp::{drum_rack, dx7, juno, jupiter, odyssey, phatty, prophet6, rhodes, synth};
+use phosphor_dsp::{
+    drum_rack, dx7, juno, jupiter, odyssey, phatty, prophet6, rhodes, synth, teo5,
+};
 use phosphor_plugin::{MidiEvent, Plugin};
 
 const SAMPLE_RATE: f64 = 44_100.0;
@@ -90,7 +92,7 @@ const VOICINGS: [(&str, &[u8]); 5] = [
     ("8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
 ];
 
-const INSTRUMENTS: [(&str, usize); 8] = [
+const INSTRUMENTS: [(&str, usize); 9] = [
     ("dx7", dx7::VOICE_COUNT),
     ("jupiter", jupiter::PATCH_COUNT),
     ("odyssey", odyssey::PATCH_COUNT),
@@ -99,11 +101,12 @@ const INSTRUMENTS: [(&str, usize); 8] = [
     ("phatty", phatty::PATCH_COUNT),
     ("phosphor", synth::PATCH_COUNT),
     ("prophet6", prophet6::PROGRAM_COUNT),
+    ("teo5", teo5::PROGRAM_COUNT),
 ];
 
 /// The loudest preset of each bank, measured on an eight-note chord at
 /// velocity 127. Re-derive with the `scan` mode after editing a bank.
-const LOUDEST: [(&str, usize); 8] = [
+const LOUDEST: [(&str, usize); 9] = [
     ("dx7", 147),
     ("jupiter", 40), // 61 STARTING UP, whose peak needs `BLOCKS` past 5.5 s
     ("odyssey", 1),
@@ -112,6 +115,7 @@ const LOUDEST: [(&str, usize); 8] = [
     ("phatty", 85), // Blip
     ("phosphor", 8), // SYNTH KIT
     ("prophet6", 285), // 285 Genesis 2
+    ("teo5", 123), // 123 Trancendance
 ];
 
 fn build(name: &str, patch: usize) -> Box<dyn Plugin> {
@@ -165,6 +169,13 @@ fn build(name: &str, patch: usize) -> Box<dyn Plugin> {
             s.set_parameter(prophet6::P_PROGRAM, program);
             Box::new(s)
         }
+        "teo5" => {
+            let mut s = teo5::Teo5::new();
+            let (bank, program) = teo5::program_knobs(patch);
+            s.set_parameter(teo5::P_BANK, bank);
+            s.set_parameter(teo5::P_PROGRAM, program);
+            Box::new(s)
+        }
         _ => {
             let mut s = synth::PhosphorSynth::new();
             s.set_parameter(synth::P_PATCH, synth::patch_knob(patch));
@@ -182,6 +193,7 @@ fn patch_name(name: &str, index: usize) -> &'static str {
         "rhodes" => rhodes::PATCH_NAMES[index],
         "phatty" => phatty::PATCH_NAMES[index],
         "prophet6" => prophet6::program_name(index),
+        "teo5" => teo5::program_name(index),
         "phosphor" => synth::PATCH_NAMES[index],
         _ => "-",
     }
@@ -248,16 +260,16 @@ const ORDINARY: &[u8] = &[60, 64, 67];
 /// The median preset of each bank by triad RMS — the same indices
 /// `tests/headroom.rs` uses to check the instruments are level-matched, so
 /// the RMS column here and that assertion move together.
-const MEDIAN: [(&str, usize); 8] = [
+const MEDIAN: [(&str, usize); 9] = [
     ("dx7", 8), ("jupiter", 1), ("odyssey", 0), ("juno", 3), ("rhodes", 13),
-    ("phatty", 78), ("phosphor", 0), ("prophet6", 19),
+    ("phatty", 78), ("phosphor", 0), ("prophet6", 19), ("teo5", 107),
 ];
 
 /// The worst case each bank can be driven to. Voicing included, because the
 /// duophonic Odyssey does not stack the way the polys do and its worst case
 /// is not reliably a chord — most of its bank peaks louder on a single note,
 /// and `tests/headroom.rs` sweeps it on both.
-const WORST: [(&str, usize, &str, &[u8]); 8] = [
+const WORST: [(&str, usize, &str, &[u8]); 9] = [
     ("dx7", 147, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
     // 61 STARTING UP. Its peak lands 5.5 s into a held chord, so it is the
     // one entry here that `BLOCKS` has to be long enough to see.
@@ -272,6 +284,8 @@ const WORST: [(&str, usize, &str, &[u8]); 8] = [
     // 285 Genesis 2, whose peak lands eleven seconds into a held chord: a
     // tremolo at 0.09 Hz over both filters at maximum resonance.
     ("prophet6", 285, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
+    // 123 Trancendance: six waveshapes, the sub, and an open filter.
+    ("teo5", 123, "8note", &[36, 43, 48, 55, 60, 64, 67, 72]),
 ];
 
 /// Kick, snare and closed hat on one sample — a downbeat, which is the drum

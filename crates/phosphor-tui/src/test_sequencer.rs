@@ -246,7 +246,7 @@ fn the_sequencer_is_at_the_end_of_the_menu() {
         Some(&InstrumentType::Sequencer),
         "adding it anywhere but the end moves every instrument after it"
     );
-    assert_eq!(InstrumentType::ALL.len(), 11);
+    assert_eq!(InstrumentType::ALL.len(), 12);
 }
 
 // ── The step grid: keys, and what reaches the screen ──

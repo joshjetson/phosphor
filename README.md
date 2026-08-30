@@ -9,7 +9,7 @@
 
 <p align="center">
   <strong>A terminal-native DAW built in Rust</strong><br/>
-  8 built-in synthesizers, 18 drum kits, 1,275 patches, 9 color themes, animated splash screen, session save/load, undo/redo, and a plugin system designed for extensibility.
+  9 built-in synthesizers, 18 drum kits, 1,531 patches, 9 color themes, animated splash screen, session save/load, undo/redo, and a plugin system designed for extensibility.
 </p>
 
 <p align="center">
@@ -100,6 +100,7 @@ cargo run --release -- --no-midi
 | **Juno-60** | DCO poly | 6 | **56** | All 56 factory patches, read off Roland's patch charts; complete 25-control front panel measured against the hardware |
 | **Little Phatty** | Mono Moog | 1 | **100** | Continuously morphing oscillators (triangle→saw→square→pulse, band-limited at every position in between), hard sync, 1/2/3/4-pole ladder, pre- and post-filter overload, the one-bus mod matrix with its spare destination, glide, and the three keyboard priorities |
 | **Prophet-6** | Analog poly | 6 | **500** | All 500 factory programs, decoded from Sequential's own SysEx. Morphing oscillators with a triangle sub, resonant high-pass *and* SSM2040-lineage low-pass in series, poly mod (filter envelope and oscillator 2 into oscillator 1's frequency, shape and width and into both filters, at audio rate), per-oscillator slop, unison with chord memory, aftertouch, analog distortion |
+| **TEO-5** | Analog poly | 5 | **256** | All 256 factory programs, decoded from Oberheim's own SysEx. The SEM state-variable filter, whose state control morphs continuously from low pass through notch to high pass with band pass on a switch; through-zero FM between the oscillators; three independently mixable waveshapes each, hard sync, a square sub and white or pink noise; two OB-8-curve DADSR envelopes; a global LFO and a per-voice one; a 16-slot modulation matrix of 20 sources against 65 destinations; twelve effect algorithms; unison with stored chord memory |
 
 ### Drum Rack
 
@@ -188,6 +189,16 @@ release rather than recreated, in the instrument's five banks of one hundred):
 `Wub Acid`, `Circus Triangles`, `Prophet Six String`, `Mass Effect`,
 `T8 Piano` and the rest — including the forty `P5` programs, Sequential's own
 ports of the original Prophet-5 factory bank. Pick a bank with `bank`, a
+program with `program`.
+
+**TEO-5** (all 256 factory programs, decoded from Oberheim's own SysEx release
+rather than recreated, in the instrument's sixteen banks of sixteen):
+`It's an Oberheim`, `Sync Growl`, `Weeping Wah`, `Bandpass Arp`,
+`Bouncy Min9`, `Quintuple Mono`, `OB-X  S & H`, `OB-8 SoftSweep`,
+`Ring Laboratory`, `Super Notch`, `Carillon`, `Phat Boi`, `2001 Choir`,
+`Lofi Pad`, `Fields Pad` and the rest, each filed under the category the
+instrument files it under — pad, lead, bass, poly, keys, string, pluck, bell,
+arp, brass, voice, organ, perc, tuned perc, sfx. Pick a bank with `bank`, a
 program with `program`.
 
 ---
@@ -789,6 +800,8 @@ phosphor/
 │   │       ├── phatty.rs      # Little Phatty mono Moog, morphing oscillators (100 patches)
 │   │       ├── prophet6.rs    # Prophet-6 analog poly with poly mod (500 factory programs)
 │   │       ├── p6_programs.bin # The factory programs, from Sequential's SysEx
+│   │       ├── teo5.rs        # Oberheim TEO-5, SEM morphing filter + TZFM (256 factory programs)
+│   │       ├── teo5_programs.bin # The factory programs, from Oberheim's SysEx
 │   │       ├── drum_rack/     # Drum machine (18 kits)
 │   │       │   ├── mod.rs     # Shared types, voice, plugin impl
 │   │       │   └── racks/     # Per-kit synthesis: 808, 909, 707, 606, 727, CR-78,

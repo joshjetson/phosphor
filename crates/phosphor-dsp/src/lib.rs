@@ -14,3 +14,4 @@ pub mod phatty;
 pub mod prophet6;
 pub mod rhodes;
 pub mod synth;
+pub mod teo5;

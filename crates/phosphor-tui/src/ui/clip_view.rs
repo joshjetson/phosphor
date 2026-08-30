@@ -905,6 +905,45 @@ mod tests {
         }
     }
 
+    /// The TEO-5 is the widest panel in the rack — 147 controls, 88 of them
+    /// selectors, 48 of which are the modulation matrix — and its sixty-five
+    /// destination names and 256 program names all have to fit the same
+    /// twelve columns.
+    #[test]
+    fn every_teo_five_panel_label_fits_the_fx_panel() {
+        use phosphor_dsp::teo5;
+        const LABEL_COLUMN: usize = 12;
+        let room = FX_PANEL_W as usize - LABEL_COLUMN;
+
+        for index in 0..teo5::PROGRAM_COUNT {
+            let label = teo5::program_label(index);
+            assert!(
+                label.chars().count() <= room,
+                "program {index} {label:?} needs {} of the {room} columns the panel leaves",
+                label.chars().count()
+            );
+            let name = teo5::program_name(index);
+            assert!(!name.is_empty() && name.chars().count() <= 20,
+                "program {index} name {name:?} is not a factory name");
+            assert!(name.starts_with(label),
+                "program {index} label {label:?} is not the front of its name {name:?}");
+        }
+
+        let mut params = vec![0.0f32; teo5::PARAM_COUNT];
+        for index in 0..teo5::PARAM_COUNT {
+            for position in [0.0f32, 0.3, 0.6, 1.0] {
+                params[index] = position;
+                if let Some(label) = teo5::discrete_label(&params, index) {
+                    assert!(label.chars().count() <= room,
+                        "switch label {label:?} does not fit");
+                }
+            }
+            params[index] = 0.0;
+            let name = teo5::PARAM_NAMES[index];
+            assert!(name.chars().count() <= 8, "parameter name {name:?} overflows its column");
+        }
+    }
+
     /// The Prophet-6 is the widest panel in the rack — 84 controls, 44 of
     /// them selectors — and the only one whose preset names come out of a ROM
     /// rather than being written by hand, so nothing stops one of Sequential's

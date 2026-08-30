@@ -130,6 +130,7 @@ impl NavState {
             InstrumentType::Sampler => "smplr",
             InstrumentType::LittlePhatty => "phaty",
             InstrumentType::Prophet6 => "p6",
+            InstrumentType::Teo5 => "teo5",
             InstrumentType::Sequencer => "seq",
         };
 

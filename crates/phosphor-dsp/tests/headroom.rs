@@ -34,7 +34,9 @@
 //! every other track with it.
 
 use phosphor_dsp::level::{saturation_input, SATURATION_KNEE};
-use phosphor_dsp::{drum_rack, dx7, juno, jupiter, odyssey, phatty, prophet6, rhodes, synth};
+use phosphor_dsp::{
+    drum_rack, dx7, juno, jupiter, odyssey, phatty, prophet6, rhodes, synth, teo5,
+};
 use phosphor_plugin::{MidiEvent, Plugin};
 
 const SAMPLE_RATE: f64 = 44_100.0;
@@ -184,6 +186,16 @@ fn p6_program(index: usize) -> prophet6::Prophet6 {
     synth
 }
 
+/// Point a TEO-5 at one of the 256 factory programs by number. Two
+/// selectors, a bank and a program, so a sweep index is split.
+fn teo5_program(index: usize) -> teo5::Teo5 {
+    let mut synth = teo5::Teo5::new();
+    let (bank, program) = teo5::program_knobs(index);
+    synth.set_parameter(teo5::P_BANK, bank);
+    synth.set_parameter(teo5::P_PROGRAM, program);
+    synth
+}
+
 fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
     let dx7_timpani = dx7_voice(147);
     let dx7_harp = dx7_voice(60);
@@ -208,6 +220,10 @@ fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
     // wide-open four-pole and a high-pass at maximum resonance.
     let p6_genesis = p6_program(285);
     let p6_hat = p6_program(31);
+    // The TEO-5's is 123 Trancendance, the loudest of its 256 factory
+    // programs on an eight-note chord: both oscillators on all three
+    // waveshapes with the sub underneath and the filter wide open.
+    let teo5_loudest = teo5_program(123);
 
     vec![
         ("dx7 147 TIMPANI", Box::new(dx7_timpani)),
@@ -221,6 +237,7 @@ fn loudest_patches() -> Vec<(&'static str, Box<dyn Plugin>)> {
         ("phatty Blip", Box::new(phatty_blip)),
         ("prophet6 285 Genesis 2", Box::new(p6_genesis)),
         ("prophet6 031 Hi Hat", Box::new(p6_hat)),
+        ("teo5 123 Trancendance", Box::new(teo5_loudest)),
         ("phosphor", Box::new(synth::PhosphorSynth::new())),
     ]
 }
@@ -234,6 +251,7 @@ fn defaults() -> Vec<(&'static str, Box<dyn Plugin>)> {
         ("rhodes default", Box::new(rhodes::RhodesPiano::new())),
         ("phatty default", Box::new(phatty::LittlePhatty::new())),
         ("prophet6 default", Box::new(prophet6::Prophet6::new())),
+        ("teo5 default", Box::new(teo5::Teo5::new())),
         ("phosphor default", Box::new(synth::PhosphorSynth::new())),
     ]
 }
@@ -372,6 +390,11 @@ fn no_patch_in_any_bank_exceeds_the_target() {
         let mut s = p6_program(index);
         let m = render(&mut s, TWO_HAND_EIGHT, 127, SWEEP_BLOCKS);
         check_patch(&m, "prophet6", prophet6::program_name(index), &mut worst);
+    }
+    for index in 0..teo5::PROGRAM_COUNT {
+        let mut s = teo5_program(index);
+        let m = render(&mut s, TWO_HAND_EIGHT, 127, SWEEP_BLOCKS);
+        check_patch(&m, "teo5", teo5::program_name(index), &mut worst);
     }
     for index in 0..synth::PATCH_COUNT {
         let mut s = synth::PhosphorSynth::new();
@@ -1007,6 +1030,7 @@ fn ordinary_playing_is_at_a_usable_level() {
         ("rhodes", TRIAD, Box::new(rhodes::RhodesPiano::new())),
         ("phatty", TRIAD, Box::new(phatty::LittlePhatty::new())),
         ("prophet6", TRIAD, Box::new(prophet6::Prophet6::new())),
+        ("teo5", TRIAD, Box::new(teo5::Teo5::new())),
         ("phosphor", TRIAD, Box::new(synth::PhosphorSynth::new())),
         ("drum rack", DOWNBEAT, Box::new(drum_rack::DrumRack::new())),
     ];
@@ -1143,6 +1167,9 @@ fn instruments_are_level_matched() {
     // The Prophet-6's is 019 Dynamic Phase, the median of its 500 factory
     // programs by triad RMS.
     let mut p6_mid = p6_program(19);
+    // The TEO-5's is 107 Santur, the median of its 256 factory programs by
+    // triad RMS.
+    let mut teo5_mid = teo5_program(107);
 
     let levels = [
         ("dx7", triad_rms(&mut dx7_mid)),
@@ -1152,6 +1179,7 @@ fn instruments_are_level_matched() {
         ("rhodes", triad_rms(&mut rhodes_mid)),
         ("phatty", triad_rms(&mut phatty_mid)),
         ("prophet6", triad_rms(&mut p6_mid)),
+        ("teo5", triad_rms(&mut teo5_mid)),
         ("phosphor", triad_rms(&mut synth::PhosphorSynth::new())),
     ];
 

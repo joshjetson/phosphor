@@ -52,6 +52,7 @@ pub fn is_discrete(instrument: InstrumentType, param: usize) -> bool {
         InstrumentType::Rhodes => phosphor_dsp::rhodes::is_discrete(param),
         InstrumentType::LittlePhatty => phosphor_dsp::phatty::is_discrete(param),
         InstrumentType::Prophet6 => phosphor_dsp::prophet6::is_discrete(param),
+        InstrumentType::Teo5 => phosphor_dsp::teo5::is_discrete(param),
         // The sequencer has no plugin panel at all: its controls are pattern
         // data, edited through `SeqOp`, and the panel the clip view shows on
         // one of its tracks belongs to the child instrument.
@@ -77,6 +78,7 @@ pub fn step(instrument: InstrumentType, param: usize, value: f32, up: bool) -> f
             phosphor_dsp::phatty::step_discrete(param, value, up)
         }
         InstrumentType::Prophet6 => phosphor_dsp::prophet6::step_discrete(param, value, up),
+        InstrumentType::Teo5 => phosphor_dsp::teo5::step_discrete(param, value, up),
         InstrumentType::Sequencer => value,
     }
 }
@@ -148,7 +150,9 @@ pub fn knob_at(instrument: InstrumentType, param: usize, index: usize) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phosphor_dsp::{drum_rack, dx7, jupiter, juno, odyssey, phatty, prophet6, rhodes, synth};
+    use phosphor_dsp::{
+        drum_rack, dx7, jupiter, juno, odyssey, phatty, prophet6, rhodes, synth, teo5,
+    };
 
     /// Every instrument's selectors, walked with that instrument's own
     /// stepping, come out at the counts the instrument publishes.
@@ -203,6 +207,20 @@ mod tests {
         // range a thirteen-position one.
         assert_eq!(positions(InstrumentType::Prophet6, prophet6::P_FXB_TYPE).unwrap().len(), 10);
         assert_eq!(positions(InstrumentType::Prophet6, prophet6::P_BEND_RANGE).unwrap().len(), 13);
+        // The TEO-5's two selectors are sixteen by sixteen, and its panel
+        // carries the longest selector list in the project: sixty-five
+        // modulation destinations, on each of nineteen controls.
+        assert_eq!(
+            positions(InstrumentType::Teo5, teo5::P_BANK).unwrap().len(),
+            teo5::BANK_COUNT
+        );
+        let programs = positions(InstrumentType::Teo5, teo5::P_PROGRAM).unwrap().len();
+        assert_eq!(programs, teo5::PROGRAMS_PER_BANK);
+        assert_eq!(programs * teo5::BANK_COUNT, teo5::PROGRAM_COUNT);
+        assert_eq!(positions(InstrumentType::Teo5, teo5::P_L1_DEST).unwrap().len(), 65);
+        assert_eq!(positions(InstrumentType::Teo5, teo5::P_MOD).unwrap().len(), 20);
+        assert_eq!(positions(InstrumentType::Teo5, teo5::P_MOD + 2).unwrap().len(), 65);
+        assert!(positions(InstrumentType::Teo5, teo5::P_MOD + 1).is_none());
         // The DX7's two selectors multiply out to its whole factory set.
         let patches = positions(InstrumentType::DX7, dx7::P_PATCH).unwrap().len();
         assert_eq!(patches * dx7::BANK_COUNT, dx7::VOICE_COUNT);

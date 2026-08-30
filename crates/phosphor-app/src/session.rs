@@ -111,6 +111,7 @@ pub fn instrument_key(t: InstrumentType) -> &'static str {
         InstrumentType::Sampler => "sampler",
         InstrumentType::LittlePhatty => "phatty",
         InstrumentType::Prophet6 => "prophet6",
+        InstrumentType::Teo5 => "teo5",
         InstrumentType::Sequencer => "sequencer",
     }
 }
@@ -131,6 +132,7 @@ fn string_to_instrument_type(s: &str) -> Option<InstrumentType> {
         "sampler" => Some(InstrumentType::Sampler),
         "phatty" => Some(InstrumentType::LittlePhatty),
         "prophet6" => Some(InstrumentType::Prophet6),
+        "teo5" => Some(InstrumentType::Teo5),
         "sequencer" => Some(InstrumentType::Sequencer),
         _ => None,
     }

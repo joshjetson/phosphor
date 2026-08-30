@@ -24,6 +24,7 @@ pub(super) fn names(instrument: Option<InstrumentType>) -> &'static [&'static st
         Some(InstrumentType::Rhodes) => &phosphor_dsp::rhodes::PARAM_NAMES,
         Some(InstrumentType::LittlePhatty) => &phosphor_dsp::phatty::PARAM_NAMES,
         Some(InstrumentType::Prophet6) => &phosphor_dsp::prophet6::PARAM_NAMES,
+        Some(InstrumentType::Teo5) => &phosphor_dsp::teo5::PARAM_NAMES,
         // The phosphor synth and the sampler share a panel; a track with no
         // instrument on it has none, and gets that one's names rather than an
         // empty list, since it also has no values to draw under them.
@@ -52,6 +53,7 @@ pub(super) fn discrete_label(
         Some(InstrumentType::Rhodes) => phosphor_dsp::rhodes::discrete_label(index, value),
         Some(InstrumentType::LittlePhatty) => phosphor_dsp::phatty::discrete_label(index, value),
         Some(InstrumentType::Prophet6) => phosphor_dsp::prophet6::discrete_label(params, index),
+        Some(InstrumentType::Teo5) => phosphor_dsp::teo5::discrete_label(params, index),
         _ => phosphor_dsp::synth::discrete_label(index, value),
     }
 }
@@ -72,6 +74,7 @@ pub(super) fn value_text(
     let seconds = match instrument {
         Some(InstrumentType::DX7) => None,
         Some(InstrumentType::Prophet6) => phosphor_dsp::prophet6::param_seconds(index, value),
+        Some(InstrumentType::Teo5) => phosphor_dsp::teo5::param_seconds(index, value),
         Some(InstrumentType::Juno60) => phosphor_dsp::juno::param_seconds(index, value),
         Some(InstrumentType::LittlePhatty) => phosphor_dsp::phatty::param_seconds(index, value),
         Some(InstrumentType::Rhodes) => phosphor_dsp::rhodes::param_seconds(index, value),

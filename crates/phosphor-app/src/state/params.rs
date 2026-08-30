@@ -34,7 +34,9 @@ impl NavState {
                 // moving either one has to reload the panel.
                 let is_program_selector = idx == 0
                     || (instrument == InstrumentType::Prophet6
-                        && idx == phosphor_dsp::prophet6::P_BANK);
+                        && idx == phosphor_dsp::prophet6::P_BANK)
+                    || (instrument == InstrumentType::Teo5
+                        && idx == phosphor_dsp::teo5::P_BANK);
                 // The banks no longer agree on how many parameters an
                 // instrument has, so this collects rather than matching on a
                 // fixed-size array, and writes through a zip so a track
@@ -64,6 +66,13 @@ impl NavState {
                             phosphor_dsp::prophet6::params_for_program(
                                 track.synth_params[phosphor_dsp::prophet6::P_BANK],
                                 track.synth_params[phosphor_dsp::prophet6::P_PROGRAM],
+                            )
+                            .to_vec(),
+                        ),
+                        Some(InstrumentType::Teo5) => Some(
+                            phosphor_dsp::teo5::params_for_program(
+                                track.synth_params[phosphor_dsp::teo5::P_BANK],
+                                track.synth_params[phosphor_dsp::teo5::P_PROGRAM],
                             )
                             .to_vec(),
                         ),
@@ -359,6 +368,74 @@ mod tests {
             seen.push(label(&nav));
         }
         assert_eq!(seen, [Some("PLS"), Some("NOISE"), Some("NOISE")]);
+    }
+
+    /// A nav state whose selected track is a TEO-5 at its default panel.
+    fn teo5_track() -> NavState {
+        let mut nav = NavState::new(super::super::initial_tracks());
+        let mut track = TrackState::new("teo5", 0, true, TrackKind::Instrument, vec![]);
+        track.instrument_type = Some(InstrumentType::Teo5);
+        track.synth_params = phosphor_dsp::teo5::param_defaults().to_vec();
+        nav.tracks.insert(0, track);
+        nav.track_cursor = 0;
+        nav
+    }
+
+    /// Both of the TEO-5's preset selectors reload the panel, and its banks
+    /// are sixteen of sixteen rather than five of a hundred.
+    #[test]
+    fn both_teo_five_selectors_load_the_program() {
+        use phosphor_dsp::teo5;
+
+        let mut nav = teo5_track();
+        let panel = |nav: &NavState| nav.tracks[0].synth_params.clone();
+        assert_eq!(panel(&nav), teo5::params_for_program(0.0, 0.0).to_vec());
+
+        nav.clip_view.synth_param_cursor = teo5::P_PROGRAM;
+        for step in 1..8 {
+            nav.adjust_synth_param(0.05);
+            let expected = teo5::params_for_program(
+                nav.tracks[0].synth_params[teo5::P_BANK],
+                nav.tracks[0].synth_params[teo5::P_PROGRAM],
+            );
+            assert_eq!(panel(&nav), expected.to_vec(), "program knob step {step}");
+            assert_eq!(
+                teo5::program_index(
+                    nav.tracks[0].synth_params[teo5::P_BANK],
+                    nav.tracks[0].synth_params[teo5::P_PROGRAM],
+                ),
+                step
+            );
+        }
+
+        nav.clip_view.synth_param_cursor = teo5::P_BANK;
+        for bank in 1..teo5::BANK_COUNT {
+            nav.adjust_synth_param(0.05);
+            let expected = teo5::params_for_program(
+                nav.tracks[0].synth_params[teo5::P_BANK],
+                nav.tracks[0].synth_params[teo5::P_PROGRAM],
+            );
+            assert_eq!(panel(&nav), expected.to_vec(), "bank knob step {bank}");
+            assert_eq!(
+                teo5::program_index(
+                    nav.tracks[0].synth_params[teo5::P_BANK],
+                    nav.tracks[0].synth_params[teo5::P_PROGRAM],
+                ),
+                bank * teo5::PROGRAMS_PER_BANK + 7,
+                "the bank knob lost the program knob's position"
+            );
+        }
+
+        nav.clip_view.synth_param_cursor = teo5::P_CUTOFF;
+        let before = panel(&nav);
+        nav.adjust_synth_param(0.05);
+        let after = panel(&nav);
+        for (index, (a, b)) in before.iter().zip(&after).enumerate() {
+            if index != teo5::P_CUTOFF {
+                assert_eq!(a, b, "{} moved with the cutoff", teo5::PARAM_NAMES[index]);
+            }
+        }
+        assert!(after[teo5::P_CUTOFF] > before[teo5::P_CUTOFF]);
     }
 
     /// A nav state whose selected track is a Prophet-6 at its default panel.
