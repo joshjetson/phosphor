@@ -5,14 +5,16 @@
 //! new session's send buses have to be built with one already in them. Three
 //! lists of effects is one list that eventually forgets an effect.
 //!
-//! **The EQ is registered; the other four are not yet.** Until each one
-//! exists, [`build`] answers `None` for it and the caller says so out loud
-//! rather than adding a slot that does nothing. That is the whole of what
-//! "the menu does not lie" costs.
+//! **The EQ and the reverb are registered; the other three are not yet.**
+//! Until each one exists, [`build`] answers `None` for it and the caller says
+//! so out loud rather than adding a slot that does nothing. That is the whole
+//! of what "the menu does not lie" costs.
 
 pub mod eq;
+pub mod reverb;
 
 pub use eq::Eq;
+pub use reverb::Reverb;
 /// The closed-form curve, for a UI that has an effect's parameters and needs
 /// to draw what they mean.
 ///
@@ -28,15 +30,16 @@ use crate::state::{FxInstance, FxType};
 
 /// The effect behind a menu entry, or `None` while it is still being built.
 ///
-/// The landing point for each of the five. The EQ is here; when the next one
-/// arrives it joins the same match and nothing else in the application has to
-/// change — the menu, the command path, the session format and the strip
-/// label all already work.
+/// The landing point for each of the five. The EQ and the reverb are here;
+/// when the next one arrives it joins the same match and nothing else in the
+/// application has to change — the menu, the command path, the session format
+/// and the strip label all already work.
 #[must_use]
 pub fn build(fx_type: FxType) -> Option<Box<dyn Effect>> {
     match fx_type {
         FxType::Eq => Some(Box::new(Eq::new())),
-        FxType::Compressor | FxType::Tape | FxType::Delay | FxType::Reverb => None,
+        FxType::Reverb => Some(Box::new(Reverb::new())),
+        FxType::Compressor | FxType::Tape | FxType::Delay => None,
     }
 }
 
@@ -102,25 +105,51 @@ pub fn insert_position(chain: &[FxInstance], fx_type: FxType) -> usize {
 
 /// What a new session's send buses start with.
 ///
-/// **Empty, for now.** The design is that Send A opens with a plate reverb
-/// at 100% wet and Send B with a tempo-synced delay, so that a new session is
-/// one keystroke away from an audible send rather than a routing exercise.
-/// Neither effect exists yet, and a bus pre-loaded with nothing is worse than
-/// an empty one: the strip would be labelled `rvb` and do nothing.
+/// **Send A opens with the plate reverb at 100% wet.** A new session is then
+/// one keystroke away from an audible send — turn the send up on any track —
+/// rather than a routing exercise, and the strip labels the bus `rvb` because
+/// that is what a player calls it.
 ///
-/// This is the landing point. When the reverb and the delay are built, this
-/// returns their chains and everything downstream — the strip label, the
-/// session format, the audio-thread commands — is already in place.
+/// Send B is still empty: the tempo-synced delay it is meant to hold does not
+/// exist yet, and a bus pre-loaded with nothing is worse than an empty one,
+/// because the strip would read `dly` and do nothing.
+///
+/// **The wet/dry override is the point of this function.** Every time-based
+/// effect ships with an insert default — 25% for the reverb — because that is
+/// what it should sound like when it is dropped straight onto a track. On a
+/// bus the dry path arrives by another route, so anything less than 100% wet
+/// is the send-made-it-phasey trap: the same signal, twice, a few
+/// milliseconds apart.
 #[must_use]
 pub fn bus_default_chain(slot: SendSlot) -> Vec<FxInstance> {
     let wanted = match slot {
         SendSlot::A => FxType::Reverb,
         SendSlot::B => FxType::Delay,
     };
-    if is_built(wanted) {
-        vec![FxInstance::new(wanted, default_params(wanted))]
-    } else {
-        Vec::new()
+    if !is_built(wanted) {
+        return Vec::new();
+    }
+    let mut params = default_params(wanted);
+    if let Some(index) = wet_dry_index(wanted) {
+        if let Some(mix) = params.get_mut(index) {
+            *mix = 100.0;
+        }
+    }
+    vec![FxInstance::new(wanted, params)]
+}
+
+/// Which of an effect's controls is its wet/dry, when it has one.
+///
+/// A short list rather than a convention on the trait: an effect's parameter
+/// *names* are its own business, and the alternative — searching for a
+/// control called "mix" — would silently pick up a compressor's parallel-blend
+/// knob the day one is added and set it to 100% on a bus, which is a very
+/// different instruction.
+#[must_use]
+pub fn wet_dry_index(fx_type: FxType) -> Option<usize> {
+    match fx_type {
+        FxType::Reverb => Some(phosphor_dsp::fx::reverb::PARAM_MIX),
+        FxType::Eq | FxType::Compressor | FxType::Tape | FxType::Delay => None,
     }
 }
 
@@ -143,6 +172,17 @@ pub fn bus_label(chain: &[FxInstance], slot: SendSlot) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both built effects survive being built twice, with the same controls.
+    #[test]
+    fn a_built_effect_reports_the_registrys_own_defaults() {
+        for fx_type in [FxType::Eq, FxType::Reverb] {
+            let effect = build(fx_type).expect("built");
+            assert_eq!(effect.name(), fx_type.key());
+            assert_eq!(params_of(effect.as_ref()), default_params(fx_type));
+            assert_eq!(build_by_name(fx_type.key()).map(|e| e.name()), Some(fx_type.key()));
+        }
+    }
 
     /// The menu offers five effects and no more. The gate and the limiter
     /// that used to be in it were never built.
@@ -214,18 +254,47 @@ mod tests {
         assert_eq!(after[2].fx_type, FxType::Eq);
     }
 
-    /// The buses ship empty until there is something to ship in them, and the
-    /// strip says so.
+    /// The buses are labelled by what is in them, and Send A now has
+    /// something in it.
     #[test]
     fn the_buses_are_labelled_by_what_is_in_them() {
-        assert_eq!(bus_default_chain(SendSlot::A), Vec::new());
+        let send_a = bus_default_chain(SendSlot::A);
+        assert_eq!(send_a.len(), 1);
+        assert_eq!(send_a[0].fx_type, FxType::Reverb);
+        assert_eq!(bus_label(&send_a, SendSlot::A), "rvb");
+
+        // Send B is still empty, and says so, because the delay is not built.
         assert_eq!(bus_default_chain(SendSlot::B), Vec::new());
         assert_eq!(bus_label(&[], SendSlot::A), "snd a");
         assert_eq!(bus_label(&[], SendSlot::B), "snd b");
 
-        let loaded = vec![FxInstance::new(FxType::Reverb, vec![])];
-        assert_eq!(bus_label(&loaded, SendSlot::A), "rvb");
         let loaded = vec![FxInstance::new(FxType::Delay, vec![])];
         assert_eq!(bus_label(&loaded, SendSlot::B), "dly");
+    }
+
+    /// **A send bus is 100% wet, and an insert is not.**
+    ///
+    /// The dry signal reaches the master by its own path, so a bus that
+    /// passed any of it would be sending the same signal twice a few
+    /// milliseconds apart — which is the phasey-send trap, and it is the
+    /// reason a player who tries a send once never tries it again.
+    #[test]
+    fn the_send_bus_reverb_is_fully_wet_and_the_insert_default_is_not() {
+        let mix = wet_dry_index(FxType::Reverb).expect("the reverb has a wet/dry");
+        let insert = default_params(FxType::Reverb);
+        assert_eq!(insert[mix], 25.0, "an insert reverb ships at 25% wet");
+
+        let bus = bus_default_chain(SendSlot::A);
+        assert_eq!(bus[0].params[mix], 100.0, "a bus reverb ships fully wet");
+        // ...and nothing else about it moved.
+        for (index, (a, b)) in insert.iter().zip(&bus[0].params).enumerate() {
+            if index != mix {
+                assert_eq!(a, b, "index {index} differs between insert and bus");
+            }
+        }
+        assert!(!bus[0].bypass, "the bus reverb ships in the signal path");
+
+        // An effect with no wet/dry is not given one.
+        assert_eq!(wet_dry_index(FxType::Eq), None);
     }
 }

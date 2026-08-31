@@ -19,3 +19,4 @@
 //! them lives in the mixer.
 
 pub mod eq;
+pub mod reverb;

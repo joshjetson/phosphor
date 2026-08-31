@@ -17,6 +17,8 @@ mod test_fx;
 #[cfg(test)]
 mod test_fx_eq;
 #[cfg(test)]
+mod test_fx_reverb;
+#[cfg(test)]
 mod test_keys;
 #[cfg(test)]
 mod test_panels;

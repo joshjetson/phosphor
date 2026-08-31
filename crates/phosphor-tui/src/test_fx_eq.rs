@@ -18,7 +18,7 @@
 //! a known frequency.
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Arc;
 
     use phosphor_app::fx::eq_response_db;
@@ -46,7 +46,7 @@ mod tests {
     //
     // Counted per thread, because cargo runs tests in parallel and a global
     // count would see every other test's work.
-    mod alloc_count {
+    pub(crate) mod alloc_count {
         use std::alloc::{GlobalAlloc, Layout, System};
         use std::cell::Cell;
 
@@ -87,7 +87,7 @@ mod tests {
 
         /// How many times the allocator was reached on this thread while
         /// `body` ran.
-        pub(super) fn allocations_during(body: impl FnOnce()) -> u64 {
+        pub(crate) fn allocations_during(body: impl FnOnce()) -> u64 {
             let before = ALLOCATIONS.with(Cell::get);
             body();
             ALLOCATIONS.with(Cell::get) - before
@@ -249,6 +249,18 @@ mod tests {
                 .iter()
                 .position(|t| t.kind == kind)
                 .expect("the strip exists")
+        }
+
+        /// Take the plate off Send A, on both sides.
+        ///
+        /// A new session ships with one there so that a send is audible
+        /// without any routing work — which is the right default and the
+        /// wrong thing to measure an EQ's gain through. Every level in this
+        /// file is a statement about the EQ, and a reverb on the return is a
+        /// second variable in it.
+        fn strip_the_send_bus(&mut self) {
+            let bus = self.track_index(TrackKind::SendA);
+            self.app.clear_chain(bus);
         }
 
         /// Put an EQ on a strip through the path a keypress takes, and answer
@@ -455,6 +467,7 @@ mod tests {
     fn an_eq_on_a_send_bus_colours_the_return() {
         fn rig_with_open_send() -> Rig {
             let mut rig = Rig::with_tone(PROBE_HZ);
+            rig.strip_the_send_bus();
             let track = rig.app.nav.track_cursor;
             rig.app.nav.tracks[track].set_send_db(SendSlot::A, 0.0);
             rig.app.sync_routing(track);
@@ -463,7 +476,9 @@ mod tests {
 
         /// The reference for "the send is open": the same rig with it closed.
         fn render_with_the_send_closed() -> Vec<f32> {
-            Rig::with_tone(PROBE_HZ).steady_render()
+            let mut rig = Rig::with_tone(PROBE_HZ);
+            rig.strip_the_send_bus();
+            rig.steady_render()
         }
 
         let mut plain = rig_with_open_send();
@@ -562,6 +577,7 @@ mod tests {
         let path_str = path.to_string_lossy().to_string();
 
         let mut saving = Rig::with_tone(PROBE_HZ);
+        saving.strip_the_send_bus();
         let track = saving.app.nav.track_cursor;
         saving.app.nav.tracks[track].set_send_db(SendSlot::A, 0.0);
         saving.app.sync_routing(track);

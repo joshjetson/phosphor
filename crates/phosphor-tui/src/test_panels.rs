@@ -724,6 +724,22 @@ mod fx {
         app.nav.current_track().unwrap().fx_chain[0].params.clone()
     }
 
+    /// A track with a reverb in it, the panel open on it.
+    fn reverb_app() -> App {
+        let mut app = App::new(EngineConfig { buffer_size: 64, sample_rate: 48_000 }, false, false);
+        app.create_instrument_track(InstrumentType::Juno60);
+        let outcome = app.nav.add_fx(FxType::Reverb);
+        app.apply_fx_add(outcome);
+        app.nav.focus_pane(Pane::ClipView);
+        app.nav.clip_view.focus = ClipViewFocus::FxPanel;
+        app.nav.clip_view.fx_panel_tab = FxPanelTab::TrackFx;
+        app.nav.clip_view.fx_cursor = 0;
+        let _ = app.drain_mixer_commands();
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.nav.clip_view.clip_tab, ClipTab::Fx);
+        app
+    }
+
     // ── The chain ──
 
     /// The slot list: what is in the chain, which one the cursor is on, and
@@ -831,10 +847,21 @@ mod fx {
                 .position(|t| t.name == name)
                 .unwrap_or_else(|| panic!("no {name} track"));
             app.nav.track_cursor = index;
+            // Send A already carries the plate a new session ships with, so
+            // the EQ lands ahead of it: the canonical order is tone before
+            // time, and adding an effect inserts at its place rather than
+            // appending.
+            let before = app.nav.tracks[index].fx_chain.len();
             app.nav.add_fx(FxType::Eq);
             let _ = app.drain_mixer_commands();
 
-            assert_eq!(app.nav.tracks[index].fx_chain.len(), 1, "no slot on {name}");
+            assert_eq!(
+                app.nav.tracks[index].fx_chain.len(),
+                before + 1,
+                "no slot on {name}"
+            );
+            assert_eq!(app.nav.tracks[index].fx_chain[0].fx_type, FxType::Eq);
+            app.nav.clip_view.fx_cursor = 0;
             press(&mut app, KeyCode::Char('b'));
             assert!(app.nav.tracks[index].fx_chain[0].bypass, "bypass did not reach {name}");
             assert!(
@@ -1100,15 +1127,218 @@ mod fx {
         );
     }
 
-    /// The bus row is named after what is in it. An empty bus keeps its
-    /// letter; one with an effect in it says which effect, because "the
-    /// reverb" is what a player calls that bus.
+
+    // ── The reverb panel ──
+
+    /// The panel draws what it is: the algorithm, the twelve controls, and
+    /// the readout line that always survives.
+    #[test]
+    fn the_reverb_panel_lists_its_controls() {
+        let app = reverb_app();
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("rvb"), "the panel does not name itself:\n{text}");
+        assert!(text.contains("plate"), "the algorithm is not on the panel:\n{text}");
+        for name in [
+            "alg", "predly", "decay", "size", "damp", "locut", "early", "diff", "mrate",
+            "mdepth", "width", "mix",
+        ] {
+            assert!(text.contains(name), "the {name} control is not drawn:\n{text}");
+        }
+        // The values, in the units a person reads them in.
+        assert!(text.contains("20 ms"), "the predelay does not read in milliseconds");
+        assert!(text.contains("1.8 s"), "the decay does not read in seconds");
+        assert!(text.contains("25%"), "the mix does not read as a percentage");
+        assert!(text.contains("6k Hz"), "the damping does not read in hertz:\n{text}");
+        assert!(text.contains("j/k picks"), "the hint bar is missing:\n{text}");
+    }
+
+    /// **The readout moves when the knob does.** `j`/`k` picks a control and
+    /// `h`/`l` turns it, both on the screen and in the signal path.
+    #[test]
+    fn turning_the_decay_moves_the_readout_and_the_signal_path() {
+        let mut app = reverb_app();
+        // Down two, to `decay`.
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.nav.clip_view.fx.band, 2);
+        assert!(screen(&app, 120, 40).contains("1.8 s"));
+
+        let _ = app.drain_mixer_commands();
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Char('l'));
+        }
+        let decay = app.nav.current_track().unwrap().fx_chain[0].params[2];
+        assert!(decay > 2.3 && decay < 2.6, "four fine presses gave {decay} s");
+        assert!(
+            screen(&app, 120, 40).contains("2.4 s"),
+            "the readout did not follow the knob:\n{}",
+            screen(&app, 120, 40)
+        );
+        assert!(
+            app.drain_mixer_commands()
+                .iter()
+                .any(|c| matches!(c, MixerCommand::SetFxParam { param: 2, .. })),
+            "the audio thread was never told about the decay"
+        );
+
+        // A shifted press is a bigger one, in the same direction.
+        press_shift(&mut app, KeyCode::Char('L'));
+        let coarse = app.nav.current_track().unwrap().fx_chain[0].params[2];
+        assert!(coarse > decay * 1.4, "H/L did not stride: {decay} -> {coarse}");
+    }
+
+    /// Enter holds the control and `j`/`k` stop moving; escape lets go.
+    #[test]
+    fn holding_a_reverb_control_pins_the_cursor() {
+        let mut app = reverb_app();
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.nav.clip_view.fx.band, 1);
+
+        press(&mut app, KeyCode::Enter);
+        assert!(app.nav.clip_view.fx.locked);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.nav.clip_view.fx.band, 1, "j moved the cursor while held");
+        // ...and h/l still adjusts, which is the fader's contract.
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[0].params[1], 21.0);
+
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.nav.clip_view.fx.locked, "escape did not let go");
+        assert_eq!(app.nav.clip_view.clip_tab, ClipTab::Fx, "escape closed the panel too");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.nav.clip_view.clip_tab, ClipTab::InstConfig, "escape did not close it");
+    }
+
+    /// **A control that does nothing on this algorithm is greyed, and the
+    /// keys refuse to move it.** The spring's input stage is its dispersion
+    /// chain, so there are no diffuser coefficients for `diff` to scale.
+    #[test]
+    fn a_control_the_algorithm_does_not_use_is_refused() {
+        let mut app = reverb_app();
+        // Walk the algorithm to the spring.
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Char('l'));
+        }
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[0].params[0], 3.0);
+        assert!(screen(&app, 120, 40).contains("spring"));
+
+        // Down to `diff`, and it will not move.
+        for _ in 0..7 {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        assert_eq!(app.nav.clip_view.fx.band, 7);
+        let before = app.nav.current_track().unwrap().fx_chain[0].params[7];
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(
+            app.nav.current_track().unwrap().fx_chain[0].params[7],
+            before,
+            "a control the spring does not use was moved anyway"
+        );
+        let status = app.live_status().unwrap_or_default().to_string();
+        assert!(status.contains("no diff control"), "the panel said {status:?}");
+        assert!(
+            screen(&app, 120, 40).contains("no effect on the spring"),
+            "the panel does not say the control is inert"
+        );
+    }
+
+    /// **Choosing a hall brings its early reflections with it — once.**
+    ///
+    /// A bare eight-line hall says nothing at all for 125 ms, so it needs an
+    /// early-reflection section where a plate needs none. The algorithm knob
+    /// moves the `early` control to the incoming algorithm's suggestion, on
+    /// screen, in the same keystroke — and stops doing so the moment a player
+    /// has set `early` themselves.
+    #[test]
+    fn the_algorithm_selector_brings_the_early_reflections_it_needs() {
+        let mut app = reverb_app();
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[0].params[6], 0.0);
+
+        // Plate -> room.
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[0].params[0], 1.0);
+        assert_eq!(
+            app.nav.current_track().unwrap().fx_chain[0].params[6], 50.0,
+            "the room arrived with no early reflections"
+        );
+
+        // A player who sets it themselves owns it from then on.
+        for _ in 0..6 {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        assert_eq!(app.nav.clip_view.fx.band, 6);
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[0].params[6], 51.0);
+        for _ in 0..6 {
+            press(&mut app, KeyCode::Char('k'));
+        }
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[0].params[0], 0.0);
+        assert_eq!(
+            app.nav.current_track().unwrap().fx_chain[0].params[6], 51.0,
+            "going back to the plate overwrote the level the player set"
+        );
+    }
+
+    /// The panel survives an eighty-column terminal: the columns collapse to
+    /// one and the readout and the hint bar stay.
+    #[test]
+    fn the_reverb_panel_survives_a_narrow_terminal() {
+        let app = reverb_app();
+        let text = screen(&app, 80, 24);
+        assert!(text.contains("rvb"), "the panel lost its name:\n{text}");
+        assert!(text.contains("decay"), "the panel lost its controls:\n{text}");
+        assert!(text.contains("1.8 s"), "the panel lost its numbers:\n{text}");
+    }
+
+    /// Every control can be reached and read, at every algorithm — which is
+    /// the test that a control added to the reverb cannot be invisible.
+    #[test]
+    fn every_reverb_control_can_be_seen_at_every_algorithm() {
+        for algorithm in 0..4 {
+            let mut app = reverb_app();
+            for _ in 0..algorithm {
+                press(&mut app, KeyCode::Char('l'));
+            }
+            for control in 0..phosphor_dsp::fx::reverb::PARAM_COUNT {
+                while app.nav.clip_view.fx.band < control {
+                    press(&mut app, KeyCode::Char('j'));
+                }
+                assert_eq!(app.nav.clip_view.fx.band, control);
+                let name = phosphor_dsp::fx::reverb::param_name(control);
+                let text = screen(&app, 120, 40);
+                assert!(
+                    text.contains(name),
+                    "algorithm {algorithm}: control {name} is not on the screen"
+                );
+            }
+            // ...and the cursor stops at the end rather than running off it.
+            for _ in 0..4 {
+                press(&mut app, KeyCode::Char('j'));
+            }
+            assert_eq!(
+                app.nav.clip_view.fx.band,
+                phosphor_dsp::fx::reverb::PARAM_COUNT - 1
+            );
+        }
+    }
+
+    /// The bus row is named after what is in it. Send A ships with the plate,
+    /// so it reads `rvb` before anyone touches anything; an emptied bus goes
+    /// back to its letter; and whatever ends up first in the chain is what
+    /// the strip says, because "the reverb" is what a player calls that bus.
     #[test]
     fn a_bus_is_labelled_by_its_first_effect() {
         let mut app = chain_app();
-        assert!(screen(&app, 120, 40).contains("snd a"), "an empty bus lost its label");
+        assert!(
+            screen(&app, 120, 40).contains("rvb"),
+            "Send A did not ship with the plate"
+        );
 
         let index = app.nav.tracks.iter().position(|t| t.name == "snd a").unwrap();
+        app.nav.tracks[index].fx_chain.clear();
+        assert!(screen(&app, 120, 40).contains("snd a"), "an empty bus lost its label");
+
         app.nav.track_cursor = index;
         app.nav.add_fx(FxType::Eq);
         let text = screen(&app, 120, 40);

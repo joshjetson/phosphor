@@ -29,6 +29,11 @@ use phosphor_app::state::{FxInstance, FxType, FxView};
 use phosphor_dsp::fx::eq::{
     q_to_octaves, BandType, ParametricEq, PARAM_COUNT,
 };
+use phosphor_dsp::fx::reverb::{
+    natural_param as reverb_param, Algorithm, PARAM_ALGORITHM, PARAM_COUNT as REVERB_PARAMS,
+    PARAM_DAMP_HZ, PARAM_DECAY_S, PARAM_LOW_CUT_HZ, PARAM_MOD_RATE_HZ, PARAM_PREDELAY_MS,
+    PARAM_SIZE,
+};
 
 /// The narrowest panel that gets the response curve, in columns.
 ///
@@ -135,6 +140,7 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
 
     match slot.fx_type {
         FxType::Eq => render_eq(frame, area, nav, slot, index),
+        FxType::Reverb => render_reverb(frame, area, nav, slot, index),
         other => {
             // Every panel lands here first. Saying which effect has none yet
             // is the whole of what "the menu does not lie" costs.
@@ -634,4 +640,161 @@ fn narrow_strip(
         rows.push(Line::from(line));
     }
     rows
+}
+
+// ── The reverb ──
+
+/// The reverb's twelve controls, as a column of knobs.
+///
+/// No curve. A reverb's response is a decay in *time*, and the honest picture
+/// of one is an energy-decay curve that would need an impulse response to
+/// draw and a second of audio to update — which is a meter, not a control.
+/// So the panel is the numbers, and the numbers are the ones the effect
+/// declares: name, value and unit, straight from
+/// [`phosphor_dsp::fx::reverb::natural_param`], so a range that moves cannot
+/// leave a stale copy here.
+fn render_reverb(frame: &mut Frame, area: Rect, nav: &NavState, slot: &FxInstance, index: usize) {
+    let (w, h) = (area.width as usize, area.height as usize);
+    let view = &nav.clip_view.fx;
+    let focused = nav.focused_pane == Pane::ClipView
+        && nav.clip_view.focus == ClipViewFocus::PianoRoll
+        && nav.clip_view.clip_tab == ClipTab::Fx;
+    let params = &slot.params;
+    let algorithm = reverb_algorithm(params);
+    let cursor = view.band.min(REVERB_PARAMS - 1);
+
+    let mut lines: Vec<Line> = vec![reverb_readout(params, cursor, index)];
+    if slot.bypass {
+        lines.push(Line::from(Span::styled(
+            "  bypassed \u{2014} b puts it back in the signal path",
+            theme::dim(),
+        )));
+    }
+    lines.push(Line::from(""));
+
+    // Two columns where there is room, one where there is not. The list is
+    // twelve entries either way: what changes is how many rows it costs.
+    let columns = if is_wide(w) && h >= 8 { 2 } else { 1 };
+    let rows = REVERB_PARAMS.div_ceil(columns);
+    let visible = h.saturating_sub(lines.len() + 1).max(1);
+    let first_row = if columns == 1 {
+        cursor.saturating_sub(visible.saturating_sub(1)).min(rows.saturating_sub(1))
+    } else {
+        0
+    };
+
+    for row in first_row..rows {
+        if lines.len() + 1 > h {
+            break;
+        }
+        let mut spans: Vec<Span> = Vec::new();
+        for column in 0..columns {
+            let control = column * rows + row;
+            if control >= REVERB_PARAMS {
+                continue;
+            }
+            let here = cursor == control;
+            let live = algorithm.uses(control);
+            let name = reverb_param(control).map_or("", |p| p.name);
+            spans.push(Span::styled(
+                format!("{}{name:<7}", if here { "\u{25B8}" } else { " " }),
+                if here && focused { theme::amber_bright() } else { theme::dim() },
+            ));
+            spans.push(Span::styled(
+                format!("{:<11}", reverb_value(params, control)),
+                cell_style(here, view.locked, live, focused),
+            ));
+            if column + 1 < columns {
+                spans.push(Span::styled("  ", theme::dim()));
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+
+    if lines.len() < h {
+        lines.push(Line::from(Span::styled(
+            if view.locked {
+                "  held \u{00b7} h/l adjusts \u{00b7} H/L strides \u{00b7} esc lets go"
+            } else {
+                "  j/k picks \u{00b7} h/l adjusts \u{00b7} H/L strides \u{00b7} enter holds"
+            },
+            theme::dim(),
+        )));
+    }
+
+    lines.truncate(h);
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// The algorithm a parameter vector names.
+pub(crate) fn reverb_algorithm(params: &[f32]) -> Algorithm {
+    Algorithm::from_index(
+        params.get(PARAM_ALGORITHM).copied().unwrap_or(0.0).round().max(0.0) as usize,
+    )
+}
+
+/// One control, in the unit a person reads it in.
+pub(crate) fn reverb_value(params: &[f32], control: usize) -> String {
+    let value = params.get(control).copied().unwrap_or(0.0);
+    match control {
+        PARAM_ALGORITHM => reverb_algorithm(params).label().to_string(),
+        PARAM_PREDELAY_MS => format!("{value:.0} ms"),
+        // Two decimals under a second and one above it: the difference
+        // between 0.45 and 0.50 is audible and the difference between 8.0 and
+        // 8.05 is not.
+        PARAM_DECAY_S => {
+            if value < 1.0 {
+                format!("{value:.2} s")
+            } else {
+                format!("{value:.1} s")
+            }
+        }
+        PARAM_SIZE => format!("{value:.2}"),
+        PARAM_DAMP_HZ | PARAM_LOW_CUT_HZ => format!("{} Hz", hz_label(value)),
+        PARAM_MOD_RATE_HZ => format!("{value:.2} Hz"),
+        _ => format!("{value:.0}%"),
+    }
+}
+
+/// The line that always survives: what the control under the cursor is, in
+/// full, with its travel.
+fn reverb_readout(params: &[f32], control: usize, slot_index: usize) -> Line<'static> {
+    let algorithm = reverb_algorithm(params);
+    let mut spans = vec![
+        Span::styled(" rvb ", theme::amber_bright().add_modifier(Modifier::BOLD)),
+        Span::styled(format!("slot {} ", slot_index + 1), theme::dim()),
+        Span::styled(format!("\u{00b7} {} ", algorithm.label()), theme::muted()),
+    ];
+    let Some(info) = reverb_param(control) else {
+        return Line::from(spans);
+    };
+    spans.push(Span::styled(format!("\u{00b7} {} ", info.name), theme::muted()));
+    spans.push(Span::styled(
+        reverb_value(params, control),
+        theme::normal().add_modifier(Modifier::BOLD),
+    ));
+    if algorithm.uses(control) {
+        spans.push(Span::styled(
+            format!("  ({} .. {})", trim_number(info.min), trim_number(info.max)),
+            theme::dim(),
+        ));
+    } else {
+        // Greyed on the strip and refused by the keys, said once more here in
+        // words: the spring's input stage is its dispersion chain, so there
+        // are no diffuser coefficients for this control to scale.
+        spans.push(Span::styled(
+            format!("  \u{2014} no effect on the {}", algorithm.label()),
+            theme::dim(),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// A range end, without the trailing zeros a range does not need.
+fn trim_number(value: f32) -> String {
+    if (value - value.round()).abs() < 0.005 {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.2}")
+    }
 }

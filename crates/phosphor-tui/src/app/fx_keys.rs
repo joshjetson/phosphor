@@ -15,18 +15,28 @@
 //!              wide   h/l band   j/k control
 //!              narrow j/k band   h/l control
 //!              enter holds the control · h/l adjusts · H/L strides · esc lets go
+//! reverb panel j/k picks a knob · h/l adjusts · H/L strides
+//!              enter holds it · esc lets go
 //! ```
 //!
-//! The layout decides which way `h`/`l` point because the panel is a grid and
-//! the arrow a hand reaches for is the one that moves the cursor in the
-//! direction it is pointing. Held, `h`/`l` always adjust — that is the fader's
-//! contract and it does not move.
+//! The layout decides which way `h`/`l` point because the EQ's panel is a
+//! grid and the arrow a hand reaches for is the one that moves the cursor in
+//! the direction it is pointing. The reverb's panel is a *column* of knobs,
+//! so there is nothing to the left of a control to move to and `h`/`l` adjust
+//! straight away; `enter` still holds, because holding is what stops `j`/`k`
+//! walking off the control being turned. Held, `h`/`l` always adjust — that
+//! is the fader's contract and it does not move.
 
 use super::*;
 
 use phosphor_app::state::{FxType, FxView};
 use phosphor_dsp::fx::eq::{
     iso_step_down, iso_step_up, natural_param, BandType, Slope, PARAM_COUNT,
+};
+use phosphor_dsp::fx::reverb::{
+    natural_param as reverb_param, Algorithm, PARAM_ALGORITHM, PARAM_COUNT as REVERB_PARAMS,
+    PARAM_DAMP_HZ, PARAM_DECAY_S, PARAM_EARLY, PARAM_LOW_CUT_HZ, PARAM_MOD_RATE_HZ,
+    PARAM_PREDELAY_MS, PARAM_SIZE,
 };
 
 /// How far one press moves a control, and how far a shifted one does.
@@ -88,15 +98,18 @@ impl App {
         else {
             return;
         };
-        let has_panel = fx_type == FxType::Eq;
         self.nav.clip_view.fx.open(slot);
         self.nav.clip_view.clip_tab = ClipTab::Fx;
         self.nav.clip_view.focus = ClipViewFocus::PianoRoll;
         self.status_message = Some((
-            if has_panel {
-                "h/l picks a band, j/k a control, enter holds it, esc goes back".into()
-            } else {
-                format!("{} has no panel yet", fx_type.label())
+            match fx_type {
+                FxType::Eq => {
+                    "h/l picks a band, j/k a control, enter holds it, esc goes back".into()
+                }
+                FxType::Reverb => {
+                    "j/k picks a knob, h/l adjusts, H/L strides, esc goes back".into()
+                }
+                other => format!("{} has no panel yet", other.label()),
             },
             std::time::Instant::now(),
         ));
@@ -197,6 +210,10 @@ impl App {
 
     /// One key, in an effect's panel.
     pub(crate) fn handle_fx_panel_keys(&mut self, key: crossterm::event::KeyEvent) {
+        if self.open_fx_type() == Some(FxType::Reverb) {
+            self.handle_reverb_panel_keys(key);
+            return;
+        }
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         if self.nav.clip_view.fx.locked {
             match key.code {
@@ -276,6 +293,12 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// The type of the effect whose panel is open, if one is.
+    pub(crate) fn open_fx_type(&self) -> Option<FxType> {
+        let slot = self.nav.clip_view.fx.slot?;
+        Some(self.nav.current_track()?.fx_chain.get(slot)?.fx_type)
     }
 
     /// How many controls the band under the cursor has. The trim has one.
@@ -408,6 +431,149 @@ impl App {
 
         let (track, slot) = (self.nav.track_cursor, self.nav.clip_view.fx.slot.unwrap_or(0));
         self.set_fx_param(track, slot, index, next);
+    }
+}
+
+// ── The reverb's panel ──
+
+impl App {
+    /// One key, in the reverb's panel.
+    ///
+    /// A column of twelve knobs rather than a grid, so `j`/`k` pick and
+    /// `h`/`l` turn. `enter` still holds, and holding is not decoration: it
+    /// is what stops `j`/`k` walking off the control a hand is in the middle
+    /// of turning.
+    fn handle_reverb_panel_keys(&mut self, key: crossterm::event::KeyEvent) {
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        match key.code {
+            KeyCode::Char('H') => self.adjust_reverb_control(-1, true),
+            KeyCode::Char('L') => self.adjust_reverb_control(1, true),
+            KeyCode::Char('h') | KeyCode::Left => self.adjust_reverb_control(-1, shift),
+            KeyCode::Char('l') | KeyCode::Right => self.adjust_reverb_control(1, shift),
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.nav.clip_view.fx.move_cursor(1, REVERB_PARAMS);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.nav.clip_view.fx.move_cursor(-1, REVERB_PARAMS);
+            }
+            KeyCode::Enter => {
+                if self.nav.clip_view.fx.locked {
+                    self.nav.clip_view.fx.locked = false;
+                    self.status_message = None;
+                } else {
+                    self.nav.clip_view.fx.locked = true;
+                    self.status_message = Some((
+                        "held: h/l adjusts, H/L strides, esc lets go".into(),
+                        std::time::Instant::now(),
+                    ));
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if self.nav.clip_view.fx.locked {
+                    self.nav.clip_view.fx.locked = false;
+                    self.status_message = None;
+                } else {
+                    self.nav.clip_view.fx.close();
+                    self.nav.clip_view.clip_tab = ClipTab::InstConfig;
+                    self.nav.clip_view.focus = ClipViewFocus::FxPanel;
+                }
+            }
+            KeyCode::Char('b') => {
+                let slot = self.nav.clip_view.fx.slot.unwrap_or(0);
+                self.toggle_fx_bypass(slot);
+            }
+            _ => {}
+        }
+    }
+
+    /// Turn the reverb control under the cursor.
+    ///
+    /// Every control moves in its own unit and by its own law: times move
+    /// geometrically because the ear does, frequencies walk the ISO
+    /// sixth-octave centres so the readout is a number a manual would print,
+    /// `size` moves in the 5% steps the geometry crossfade is quantised to,
+    /// and percentages move in whole points.
+    fn adjust_reverb_control(&mut self, delta: i32, coarse: bool) {
+        let control = self.nav.clip_view.fx.band.min(REVERB_PARAMS - 1);
+        let Some(params) = self.fx_params() else { return };
+        let algorithm = crate::ui::fx::reverb_algorithm(params);
+        if !algorithm.uses(control) {
+            self.status_message = Some((
+                format!("{} has no {} control", algorithm.label(), reverb_param(control).map_or("", |p| p.name)),
+                std::time::Instant::now(),
+            ));
+            return;
+        }
+        let current = params.get(control).copied().unwrap_or(0.0);
+        let step = f64::from(delta);
+
+        let next = match control {
+            PARAM_ALGORITHM => {
+                let at = (current.round() as i32 + delta)
+                    .clamp(0, Algorithm::ALL.len() as i32 - 1);
+                at as f32
+            }
+            PARAM_PREDELAY_MS => current + delta as f32 * if coarse { 10.0 } else { 1.0 },
+            // Times geometrically: a tenth of a second matters at 0.5 s and
+            // is invisible at 12.
+            PARAM_DECAY_S | PARAM_MOD_RATE_HZ => {
+                let factor = if coarse { 1.5f64 } else { 1.08 };
+                (f64::from(current) * factor.powf(step)) as f32
+            }
+            // The morph's own quantum, so one press is exactly one crossfade
+            // rather than a fraction of one that does nothing.
+            PARAM_SIZE => current + delta as f32 * if coarse { 0.25 } else { 0.05 },
+            PARAM_DAMP_HZ | PARAM_LOW_CUT_HZ => {
+                let mut hz = f64::from(current);
+                // A coarse press is six of them, which is an octave on a
+                // sixth-octave grid.
+                for _ in 0..if coarse { 6 } else { 1 } {
+                    hz = if delta > 0 { iso_step_up(hz) } else { iso_step_down(hz) };
+                }
+                hz as f32
+            }
+            _ => current + delta as f32 * if coarse { 10.0 } else { 1.0 },
+        };
+        let next = match reverb_param(control) {
+            Some(info) => next.clamp(info.min, info.max),
+            None => next,
+        };
+
+        let (track, slot) = (self.nav.track_cursor, self.nav.clip_view.fx.slot.unwrap_or(0));
+        self.set_fx_param(track, slot, control, next);
+        if control == PARAM_ALGORITHM {
+            self.follow_algorithm_with_early(track, slot, algorithm, next);
+        }
+    }
+
+    /// Move the early-reflection level to what the incoming algorithm wants —
+    /// but only if the player has not set it themselves.
+    ///
+    /// A bare eight-line hall emits nothing at all for its first 125 ms,
+    /// because that is its shortest delay line; a plate's whole identity is
+    /// having no early reflections at all. One control cannot default to both,
+    /// and a control whose *value* changed behind the algorithm selector
+    /// would be a control that lies about what it is set to. So this moves it
+    /// visibly, on screen, in the same keystroke, and only from the outgoing
+    /// algorithm's own suggestion — the moment a player touches `early`, the
+    /// algorithm knob stops touching it back.
+    fn follow_algorithm_with_early(
+        &mut self,
+        track: usize,
+        slot: usize,
+        was: Algorithm,
+        now: f32,
+    ) {
+        let wanted = Algorithm::from_index(now.round().max(0.0) as usize);
+        if wanted == was {
+            return;
+        }
+        let Some(params) = self.fx_params() else { return };
+        let early = params.get(PARAM_EARLY).copied().unwrap_or(0.0);
+        if (early - was.suggested_early()).abs() > 0.5 {
+            return;
+        }
+        self.set_fx_param(track, slot, PARAM_EARLY, wanted.suggested_early());
     }
 }
 

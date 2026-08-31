@@ -265,6 +265,18 @@ impl FxView {
         self.control = (self.control as i32 + delta).clamp(0, count as i32 - 1) as usize;
     }
 
+    /// Move along a flat list of controls, stopping at both ends.
+    ///
+    /// What a panel that is a *column of knobs* rather than a grid of bands
+    /// uses: the reverb's twelve controls are addressed by [`FxView::band`]
+    /// directly, because there is nothing inside them to be the `control` of.
+    pub fn move_cursor(&mut self, delta: i32, count: usize) {
+        if self.locked || count == 0 {
+            return;
+        }
+        self.band = (self.band as i32 + delta).clamp(0, count as i32 - 1) as usize;
+    }
+
     /// The flat parameter index the cursor addresses, in the EQ's own
     /// numbering: `band * 6 + control`, and 48 for the trim.
     #[must_use]

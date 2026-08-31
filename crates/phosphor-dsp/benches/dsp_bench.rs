@@ -1,5 +1,6 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use phosphor_dsp::oscillator::{Oscillator, Waveform};
+use phosphor_dsp::fx::reverb::{Algorithm, Reverb, PARAM_ALGORITHM, PARAM_EARLY};
 use phosphor_dsp::{jupiter, prophet6, teo5};
 use phosphor_plugin::{MidiEvent, Plugin};
 
@@ -112,8 +113,51 @@ fn bench_teo5_chord(c: &mut Criterion) {
     });
 }
 
+/// One reverb, one 512-frame block, stereo, at 48 kHz.
+///
+/// The budget is 0.5% of one core per instance, and the number to compare is
+/// `time / (512 / 48000 s)`: 512 frames is 10.667 ms of audio, so 53 µs a
+/// block is 0.5%.
+fn bench_reverb(c: &mut Criterion, algorithm: Algorithm, name: &str) {
+    let mut verb = Reverb::new(48_000.0);
+    verb.set_param_natural_immediate(PARAM_ALGORITHM, algorithm.index() as f32);
+    verb.set_param_natural_immediate(PARAM_EARLY, algorithm.suggested_early());
+    verb.snap();
+    let mut left = vec![0.0f32; 512];
+    let mut right = vec![0.0f32; 512];
+    // A running tail rather than silence: a reverb's cost is the same either
+    // way, but a benchmark on zeros is a benchmark an optimiser can cheat.
+    for (index, sample) in left.iter_mut().enumerate() {
+        *sample = ((index as f32) * 0.07).sin() * 0.25;
+    }
+    right.copy_from_slice(&left);
+    c.bench_function(name, |b| {
+        b.iter(|| verb.process(&mut left, &mut right));
+    });
+}
+
+fn bench_reverb_plate(c: &mut Criterion) {
+    bench_reverb(c, Algorithm::Plate, "reverb_plate_512_samples");
+}
+
+fn bench_reverb_room(c: &mut Criterion) {
+    bench_reverb(c, Algorithm::Room, "reverb_room_512_samples");
+}
+
+fn bench_reverb_hall(c: &mut Criterion) {
+    bench_reverb(c, Algorithm::Hall, "reverb_hall_512_samples");
+}
+
+fn bench_reverb_spring(c: &mut Criterion) {
+    bench_reverb(c, Algorithm::Spring, "reverb_spring_512_samples");
+}
+
 criterion_group!(
     benches,
+    bench_reverb_plate,
+    bench_reverb_room,
+    bench_reverb_hall,
+    bench_reverb_spring,
     bench_prophet6_chord,
     bench_teo5_chord,
     bench_jupiter_chord,

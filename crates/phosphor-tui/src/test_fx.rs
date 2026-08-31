@@ -207,9 +207,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    /// **The additive-format guarantee.** A session that uses nothing this
-    /// milestone added writes nothing this milestone added: the file has the
-    /// same shape, key for key, that it had before the insert layer existed.
+    /// **The additive-format guarantee, as it now stands.** A *track* that
+    /// uses nothing this milestone added writes nothing this milestone added.
+    ///
+    /// The one thing that does appear in every new file is the `buses` block,
+    /// and it appears because a new session is no longer empty: Send A ships
+    /// with the plate reverb at 100% wet so that turning a send up is
+    /// audible, and a player who deletes it means that and must have it
+    /// survive a save. Every session written before this change has no
+    /// `buses` key at all and still loads — its track data is byte for byte
+    /// what it was, which is what `session_digest` compares.
     ///
     /// The comparison is on the keys rather than the bytes because a
     /// save-load-save round trip has never been byte-stable — a selector is
@@ -245,10 +252,21 @@ mod tests {
             "a save-load-save round trip changed the shape of the file"
         );
         for text in [&first, &second] {
-            for absent in ["\"fx\"", "\"pan\"", "\"send_a\"", "\"key_track\"", "\"buses\""] {
+            for absent in ["\"pan\"", "\"key_track\""] {
                 assert!(
                     !text.contains(absent),
                     "a session that uses no effects wrote {absent}"
+                );
+            }
+            // The bus block is there, and it is there for one reason.
+            assert!(text.contains("\"buses\""), "the bus bootstrap was not written");
+            assert!(text.contains("\"reverb\""), "Send A lost its plate");
+            // ...and no *track* grew a chain or a send because of it.
+            let tracks = text.split("\"buses\"").next().unwrap();
+            for absent in ["\"fx\"", "\"send_a\""] {
+                assert!(
+                    !tracks.contains(absent),
+                    "a track that uses no effects wrote {absent}"
                 );
             }
         }
@@ -258,48 +276,63 @@ mod tests {
     }
 
     /// A bus chain belongs to the session that was open. Loading another one
-    /// takes it off — on both sides — rather than leaving the last session's
-    /// reverb on the send.
+    /// replaces it — on both sides — rather than leaving the last session's
+    /// effects on the send.
     #[test]
-    fn loading_a_session_clears_the_previous_ones_bus_chain() {
+    fn loading_a_session_replaces_the_previous_ones_bus_chain() {
         let path = scratch("buses");
         let mut saving = app();
         saving.create_instrument_track(InstrumentType::Synth);
         saving.do_save(&path.to_string_lossy());
 
         let mut reopened = app();
-        // A chain the UI mirror believes in, as if the previous session had
-        // one. It is dropped on load whether or not this build can make the
-        // effect, which is the property under test.
-        let bus_index = reopened
-            .nav
-            .tracks
-            .iter()
-            .position(|t| t.kind == TrackKind::SendA)
-            .unwrap();
-        reopened.nav.tracks[bus_index].fx_chain =
-            vec![FxInstance::new(FxType::Reverb, vec![])];
+        // A distinctive chain the UI mirror believes in, as if the previous
+        // session had one. The strip index is taken *after* the load, because
+        // loading adds instrument tracks ahead of the buses and the bus moves
+        // down the list.
+        let bus_of = |app: &App| {
+            app.nav
+                .tracks
+                .iter()
+                .position(|t| t.kind == TrackKind::SendA)
+                .expect("the send bus exists")
+        };
+        let before = bus_of(&reopened);
+        reopened.nav.tracks[before].fx_chain = vec![FxInstance::new(FxType::Eq, vec![])];
         let _ = reopened.drain_mixer_commands();
 
         reopened.do_load(&path.to_string_lossy());
-        assert!(
-            reopened.nav.tracks[bus_index].fx_chain.is_empty(),
-            "the previous session's bus chain survived the load"
+        let after = bus_of(&reopened);
+        let chain: Vec<FxType> =
+            reopened.nav.tracks[after].fx_chain.iter().map(|s| s.fx_type).collect();
+        assert_eq!(
+            chain,
+            vec![FxType::Reverb],
+            "the bus came back as the previous session's chain rather than the file's"
         );
+
         let commands = reopened.drain_mixer_commands();
         assert!(
             commands.iter().any(|c| matches!(
                 c,
-                MixerCommand::RemoveFx { target: FxTarget::BusA, slot: 0 }
+                MixerCommand::RemoveFx { target: FxTarget::BusA, .. }
             )),
-            "the audio thread was never told to take it off"
+            "the audio thread was never told to take the old one off"
+        );
+        assert!(
+            commands.iter().any(|c| matches!(
+                c,
+                MixerCommand::AddFx { target: FxTarget::BusA, slot: 0, .. }
+            )),
+            "the audio thread was never given the file's chain"
         );
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    /// The strip names a bus by what is in it. An empty bus keeps its letter,
-    /// which is what every bus is until the reverb and the delay are built.
+    /// The strip names a bus by what is in it. Send A ships with the plate,
+    /// so it reads `rvb` from the first frame; an emptied bus goes back to
+    /// its letter.
     #[test]
     fn a_bus_is_named_by_its_first_effect() {
         let mut app = app();
@@ -309,6 +342,11 @@ mod tests {
             .iter()
             .position(|t| t.kind == TrackKind::SendA)
             .unwrap();
+        assert_eq!(
+            phosphor_app::fx::bus_label(&app.nav.tracks[index].fx_chain, SendSlot::A),
+            "rvb"
+        );
+        app.nav.tracks[index].fx_chain.clear();
         assert_eq!(
             phosphor_app::fx::bus_label(&app.nav.tracks[index].fx_chain, SendSlot::A),
             "snd a"
