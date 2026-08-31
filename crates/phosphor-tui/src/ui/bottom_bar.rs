@@ -16,7 +16,24 @@ pub(super) fn render_bottom_bar(
     let in_grid = nav.focused_pane == Pane::ClipView
         && nav.clip_view.clip_tab == ClipTab::Sequencer
         && nav.clip_view.focus == ClipViewFocus::PianoRoll;
-    let (mt, ms) = if nav.loop_editor.active {
+    // **Key listen takes the mode tag.** It is the one switch in the box that
+    // changes what comes out of the speakers rather than what the mix does
+    // with it, and a player who has forgotten it is on will spend the next
+    // five minutes wondering why a track sounds like the kick. So it blinks,
+    // it says which track, and it says how to put it back.
+    let (mt, ms) = if nav.key_listen.is_some() {
+        (
+            "-- KEY LISTEN --",
+            if super::meters::blink_on() {
+                Style::default()
+                    .fg(theme::rec_active_val())
+                    .bg(theme::bg_val())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                theme::dim()
+            },
+        )
+    } else if nav.loop_editor.active {
         ("-- LOOP --", Style::default().fg(Color::Rgb(80, 180, 80)).bg(theme::bg_val()))
     } else if nav.focused_pane == Pane::Transport && nav.transport_ui.editing {
         ("-- EDIT --", theme::amber_bright())
@@ -52,6 +69,35 @@ pub(super) fn render_bottom_bar(
     //
     // Except while a clip number is being typed: those digits are live input
     // feedback and the message is at most a few seconds old.
+    // ...and it says the rest of it where the hints would be, because the one
+    // thing a player needs at that moment is the way out.
+    if let Some(name) = nav.key_listen_track_name() {
+        let rest = Rect::new(
+            cols[1].x,
+            area.y,
+            area.right().saturating_sub(cols[1].x),
+            area.height,
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!("{name} is playing its sidechain key"),
+                    if super::meters::blink_on() {
+                        Style::default().fg(theme::rec_active_val()).bg(theme::bg_val())
+                    } else {
+                        theme::muted()
+                    },
+                ),
+                Span::styled(
+                    "  \u{00b7} esc puts it back \u{00b7} clears on stop",
+                    theme::dim(),
+                ),
+            ])),
+            rest,
+        );
+        return;
+    }
+
     if let Some(msg) = status.filter(|_| nav.number_buf.display().is_empty()) {
         let rest = Rect::new(
             cols[1].x,
@@ -85,6 +131,14 @@ pub(super) fn render_bottom_bar(
                 && nav.clip_view.focus == ClipViewFocus::PianoRoll
                 && nav.clip_view.fx.locked =>
                 vec![("hl","adjust"),("H/L","stride"),("esc","release")],
+            // The compressor's panel is a column of knobs with two routing
+            // rows under them, so `j`/`k` picks and `h`/`l` turns — which is
+            // the opposite of what the EQ's grid wants out of the same keys.
+            Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Fx
+                && nav.clip_view.focus == ClipViewFocus::PianoRoll
+                && nav.open_fx_type() == Some(FxType::Compressor) =>
+                vec![("jk","knob"),("hl","adjust"),("H/L","stride"),
+                     ("enter","hold"),("b","byp"),("esc","back")],
             Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Fx
                 && nav.clip_view.focus == ClipViewFocus::PianoRoll =>
                 if nav.clip_view.fx.wide {

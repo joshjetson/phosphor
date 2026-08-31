@@ -269,6 +269,8 @@ impl App {
 
         let mut installed = 0usize;
         let mut missing = 0usize;
+        let mut meters: Vec<Option<std::sync::Arc<phosphor_core::fx::GrMeter>>> =
+            Vec::with_capacity(chain.len());
         for slot in &chain {
             let Some(mut effect) = phosphor_app::fx::build(slot.fx_type) else {
                 missing += 1;
@@ -277,6 +279,12 @@ impl App {
             for (index, &value) in slot.params.iter().enumerate() {
                 effect.set_parameter(index, value);
             }
+            // The mirror's meter follows the effect that is going into the
+            // slot. Without this a chain that was pasted, reloaded or
+            // reinstalled would leave the panel watching an effect that is no
+            // longer in the signal path — a gain-reduction bar that never
+            // moves, which reads as a broken compressor.
+            meters.push(effect.gr_meter());
             let tx = &self.engine.shared.mixer_command_tx;
             let _ = tx.send(MixerCommand::AddFx { target, slot: installed, effect });
             if slot.bypass {
@@ -296,6 +304,16 @@ impl App {
             if let Some(track) = self.nav.tracks.get_mut(track_index) {
                 track.fx_chain.retain(|slot| phosphor_app::fx::is_built(slot.fx_type));
             }
+        }
+
+        // The meters, in the order the slots that survived went out.
+        if let Some(track) = self.nav.tracks.get_mut(track_index) {
+            for (slot, meter) in track.fx_chain.iter_mut().zip(meters) {
+                slot.gr = meter;
+            }
+        }
+
+        if missing > 0 {
             let message = format!(
                 "{missing} effect{} in this session {} not in this build",
                 if missing == 1 { "" } else { "s" },

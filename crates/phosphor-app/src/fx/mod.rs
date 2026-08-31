@@ -5,15 +5,17 @@
 //! new session's send buses have to be built with one already in them. Three
 //! lists of effects is one list that eventually forgets an effect.
 //!
-//! **The EQ, the reverb and the delay are registered; the other two are not
-//! yet.** Until each one exists, [`build`] answers `None` for it and the
+//! **The EQ, the compressor, the reverb and the delay are registered; the
+//! tape is not yet.** Until it exists, [`build`] answers `None` for it and the
 //! caller says so out loud rather than adding a slot that does nothing. That
 //! is the whole of what "the menu does not lie" costs.
 
+pub mod compressor;
 pub mod delay;
 pub mod eq;
 pub mod reverb;
 
+pub use compressor::Compressor;
 pub use delay::Delay;
 pub use eq::Eq;
 pub use reverb::Reverb;
@@ -32,19 +34,37 @@ use crate::state::{FxInstance, FxType};
 
 /// The effect behind a menu entry, or `None` while it is still being built.
 ///
-/// The landing point for each of the five. The EQ, the reverb and the delay
-/// are here; when the next one arrives it joins the same match and nothing
-/// else in the application has to change — the menu, the command path, the
-/// session format and the strip label all already work.
+/// The landing point for each of the five. Four are here; when the last one
+/// arrives it joins the same match and nothing else in the application has to
+/// change — the menu, the command path, the session format and the strip
+/// label all already work.
 #[must_use]
 pub fn build(fx_type: FxType) -> Option<Box<dyn Effect>> {
     match fx_type {
         FxType::Eq => Some(Box::new(Eq::new())),
+        FxType::Compressor => Some(Box::new(Compressor::new())),
         FxType::Reverb => Some(Box::new(Reverb::new())),
         FxType::Delay => Some(Box::new(Delay::new())),
-        FxType::Compressor | FxType::Tape => None,
+        FxType::Tape => None,
     }
 }
+
+/// The whole parameter vector a character names, for a front end that is
+/// recalling one.
+///
+/// Re-exported through this door rather than reached for in the DSP crate
+/// directly, for the same reason the EQ's closed-form curve is: a caller
+/// builds an effect through this module and should read what it means through
+/// the same one.
+///
+/// **Recalling a character is the front end's job and not the effect's.**
+/// [`phosphor_dsp::fx::compressor::Compressor::set_param_natural`] writes one
+/// control and never eleven, so a session load cannot depend on the order the
+/// controls happen to be written in — and the front end, which has to update
+/// its own mirror anyway, writes all twelve.
+pub use phosphor_dsp::fx::compressor::{
+    character_params, matches_character, CHARACTERS, CHARACTER_COUNT,
+};
 
 /// The effect a session file names, or `None` if this build has no such
 /// effect.
@@ -182,7 +202,7 @@ mod tests {
     /// Every built effect survives being built twice, with the same controls.
     #[test]
     fn a_built_effect_reports_the_registrys_own_defaults() {
-        for fx_type in [FxType::Eq, FxType::Reverb, FxType::Delay] {
+        for fx_type in [FxType::Eq, FxType::Compressor, FxType::Reverb, FxType::Delay] {
             let effect = build(fx_type).expect("built");
             assert_eq!(effect.name(), fx_type.key());
             assert_eq!(params_of(effect.as_ref()), default_params(fx_type));

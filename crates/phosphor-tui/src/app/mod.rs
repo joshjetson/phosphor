@@ -611,6 +611,10 @@ impl App {
             // so a tempo the player changes from the top bar moves the delay's
             // readout in the same frame.
             self.nav.tempo_bpm = self.engine.transport.tempo_bpm() as f32;
+            // Key listen never outlives the panel it was armed from. One rule
+            // here rather than a clear on each of the half-dozen ways out of a
+            // panel — see `App::enforce_key_listen`.
+            self.enforce_key_listen();
             let piano_h = term_h.saturating_sub(30).max(6) as u8;
             self.nav.clip_view.piano_roll.set_view_height(piano_h);
 

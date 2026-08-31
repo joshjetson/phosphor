@@ -386,8 +386,17 @@ impl App {
                 tracing::warn!("track '{}': its sidechain key track did not load", st.name);
                 continue;
             };
+            let key_name = self
+                .nav
+                .tracks
+                .iter()
+                .find(|t| t.mixer_id == Some(key_id))
+                .map(|t| t.name.clone());
             if let Some(track) = self.nav.tracks.iter_mut().find(|t| t.mixer_id == Some(*track_id)) {
                 track.key_source = Some(key_id);
+                // Remembered so that a key whose track is deleted later in
+                // this session can still say which one it was.
+                track.key_source_name = key_name;
             }
             let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::SetKeySource {
                 track_id: *track_id,

@@ -8,6 +8,10 @@ impl App {
     pub(crate) fn stop_playback(&mut self) {
         let was_recording = self.engine.transport.is_recording();
         self.engine.transport.pause();
+        // The mixer clears its own key listen on the stop edge; this keeps the
+        // mirror in step so the panel and the status bar stop blinking in the
+        // same frame the sound comes back.
+        self.set_key_listen(None);
         if was_recording {
             self.nav.recording_grace = self.nav.tracks.iter().filter(|t| t.armed).count();
         }

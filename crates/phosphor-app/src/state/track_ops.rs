@@ -242,9 +242,15 @@ impl NavState {
         };
         let slot = crate::fx::insert_position(&track.fx_chain, fx_type);
         let params = crate::fx::params_of(effect.as_ref());
+        // The meter is taken from the effect that is about to be sent, not
+        // from a fresh one: the panel has to be watching the compressor that
+        // is in the signal path, not a twin of it.
+        let meter = effect.gr_meter();
 
         if let Some(track) = self.current_track_mut() {
-            track.fx_chain.insert(slot, FxInstance::new(fx_type, params));
+            track
+                .fx_chain
+                .insert(slot, FxInstance::new(fx_type, params).with_meter(meter));
         }
         FxAdd::Added { target, slot, fx_type, effect }
     }

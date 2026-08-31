@@ -151,6 +151,16 @@ pub enum MixerCommand {
         track_id: usize,
         source: Option<usize>,
     },
+    /// Put one track's output on the monitor path in place of its own signal
+    /// — what a compressor's sidechain is keyed off, heard on its own.
+    ///
+    /// Transient by construction. One track at a time, because it is an
+    /// `Option` and not a flag per track; never written to a session; and
+    /// cleared by the audio thread itself the moment the transport stops, so
+    /// a front end that forgets cannot leave a mix with a hole in it.
+    SetKeyListen {
+        track: Option<usize>,
+    },
 }
 
 // ── Command budget ──
@@ -201,7 +211,8 @@ fn command_cost(cmd: &MixerCommand) -> u32 {
         | MixerCommand::SetFxBypass { .. }
         | MixerCommand::SetSendLevel { .. }
         | MixerCommand::SetPan { .. }
-        | MixerCommand::SetKeySource { .. } => 1,
+        | MixerCommand::SetKeySource { .. }
+        | MixerCommand::SetKeyListen { .. } => 1,
         MixerCommand::AddTrack { .. }
         | MixerCommand::SetInstrument { .. }
         | MixerCommand::RemoveTrack { .. }
@@ -595,6 +606,16 @@ pub struct Mixer {
     /// running. One per mixer: only one slot is ever mid-fade at a time
     /// inside a single call.
     fx_scratch: FxScratch,
+    /// The track whose sidechain key is being monitored in place of its own
+    /// output, if any.
+    ///
+    /// **One, and it is the type that says so.** An `Option<usize>` cannot
+    /// hold two, so "only one key listen at a time" is not a rule anybody has
+    /// to remember — setting a second one puts the first back by itself.
+    key_listen: Option<usize>,
+    /// Whether the transport was rolling on the previous block, so that a
+    /// stop can clear the key listen without the front end having to.
+    was_playing: bool,
 }
 
 impl Mixer {
@@ -627,7 +648,15 @@ impl Mixer {
             work_l: vec![0.0; max_buffer_size],
             work_r: vec![0.0; max_buffer_size],
             fx_scratch: FxScratch::new(max_buffer_size),
+            key_listen: None,
+            was_playing: false,
         }
+    }
+
+    /// The track whose key is being monitored, if any.
+    #[must_use]
+    pub fn key_listen(&self) -> Option<usize> {
+        self.key_listen
     }
 
     /// The meter the master limiter publishes its gain reduction to.
@@ -695,6 +724,20 @@ impl Mixer {
 
         let num_frames = output.len() / 2;
         let playing = transport.is_playing();
+
+        // ── Key listen clears itself on a stop ──
+        //
+        // The audio thread's own safety net, on the edge rather than on the
+        // level: a front end that crashed, or a panel that was closed by
+        // something that forgot, cannot leave a track monitoring its
+        // sidechain for the rest of the session. Setting it while the
+        // transport is already stopped is left alone, because auditioning a
+        // key against live playing is a thing people do.
+        if self.was_playing && !playing {
+            self.key_listen = None;
+        }
+        self.was_playing = playing;
+
         let recording = transport.is_recording();
         let looping = transport.is_looping();
         let current_tick = transport.position_ticks();
@@ -884,7 +927,8 @@ impl Mixer {
             // around the track being rendered so its key can be read out of
             // one of the halves, while the work buffers and the crossfade
             // scratch come from the mixer itself.
-            let Self { tracks, bus_a, bus_b, work_l, work_r, fx_scratch, .. } = self;
+            let Self { tracks, bus_a, bus_b, work_l, work_r, fx_scratch, key_listen, .. } = self;
+            let key_listen = *key_listen;
 
             for bus in [&mut *bus_a, &mut *bus_b] {
                 if bus.buf_l.len() < num_frames {
@@ -911,9 +955,14 @@ impl Mixer {
                 // fall back to the internal key *this* block rather than
                 // reading whatever now sits where it used to. A key that
                 // names this same track is no key at all.
+                // Monitoring the key needs it resolved whether or not
+                // anything in the chain asked for one — the point of the
+                // switch is to hear what a compressor *would* be keying off,
+                // including on a track that has not got one yet.
+                let listening = key_listen == Some(track.id);
                 let key = track
                     .key_source
-                    .filter(|_| track.chain.wants_key())
+                    .filter(|_| track.chain.wants_key() || listening)
                     .and_then(|id| {
                         before
                             .iter()
@@ -939,6 +988,35 @@ impl Mixer {
                         &ctx,
                         fx_scratch,
                     );
+                }
+
+                // ── Key listen ──
+                //
+                // The key replaces this track's signal, *after* the chain has
+                // run — so the gain-reduction meter goes on moving while the
+                // key is being auditioned, which is most of what the switch
+                // is for. What is heard is the key as the sidechain tap
+                // defines it: post-instrument, pre-insert, and this track's
+                // own signal when no other track has been named.
+                //
+                // It is here and not inside the compressor deliberately. A
+                // slot cannot replace the track's output, and a version that
+                // wrote the key into the buffer from inside the chain would
+                // make what you hear depend on which effects happen to sit
+                // after it. The cost is that the detector's high-pass is not
+                // in what you hear; the compensation is that what you hear
+                // does not change when you add a delay.
+                if listening {
+                    match key {
+                        Some((left, right)) => {
+                            work_l[..num_frames].copy_from_slice(left);
+                            work_r[..num_frames].copy_from_slice(right);
+                        }
+                        None => {
+                            work_l[..num_frames].copy_from_slice(&track.buf_l[..num_frames]);
+                            work_r[..num_frames].copy_from_slice(&track.buf_r[..num_frames]);
+                        }
+                    }
                 }
 
                 // ── Fader, pan, meter ──
@@ -1115,6 +1193,7 @@ impl Mixer {
             handle.vu.set(0.0, 0.0);
         }
         self.last_window = None;
+        self.key_listen = None;
         self.metronome.reset();
         self.limiter.reset();
         self.limiter_gr.reset();
@@ -1264,6 +1343,13 @@ impl Mixer {
                 if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
                     track.pan = if pan.is_nan() { 0.0 } else { pan.clamp(-1.0, 1.0) };
                 }
+            }
+            // Setting one clears the other by construction — see the field.
+            // A track the mixer has never heard of is refused rather than
+            // stored, so the flag cannot outlive the track it names.
+            MixerCommand::SetKeyListen { track } => {
+                self.key_listen =
+                    track.filter(|id| self.tracks.iter().any(|t| t.id == *id && !is_bus(t.kind)));
             }
             MixerCommand::SetKeySource { track_id, source } => {
                 if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
@@ -3894,6 +3980,153 @@ mod tests {
         );
     }
 
+    // ── Key listen ──
+
+    /// **Key listen plays the key.**
+    ///
+    /// The track's own output is replaced, sample for sample, by the signal
+    /// its compressor would be keying off — which is what makes the sidechain
+    /// tunable by ear rather than by guesswork.
+    #[test]
+    fn key_listen_plays_the_key() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        // The source is a ramp so every sample is a different number: a key
+        // that arrived from the wrong place, or a block late, would show.
+        let handle = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
+        handle.config.set_volume(1.0);
+        handle.config.muted.store(true, std::sync::atomic::Ordering::Relaxed);
+        tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle }).unwrap();
+        tx.send(MixerCommand::SetInstrument { track_id: 0, instrument: Box::new(Ramp::new()) })
+            .unwrap();
+        let _keyed = add_fixed_track(&tx, 1, 0.25);
+        tx.send(MixerCommand::SetKeySource { track_id: 1, source: Some(0) }).unwrap();
+        apply_all(&mut mixer);
+        transport.play();
+
+        // Off: the keyed track is its own quiet self.
+        let plain = render(&mut mixer, &transport, 64, 4);
+        assert!((peak_of(&plain) - 0.25).abs() < 1.0e-6, "the rig was not what it says");
+
+        // On: the keyed track is the ramp, and the ramp is nothing like 0.25.
+        tx.send(MixerCommand::SetKeyListen { track: Some(1) }).unwrap();
+        apply_all(&mut mixer);
+        assert_eq!(mixer.key_listen(), Some(1));
+        let listened = render(&mut mixer, &transport, 64, 4);
+
+        let expected = {
+            let mut ramp = Ramp::new();
+            let mut l = vec![0.0f32; 64 * 8];
+            let mut r = vec![0.0f32; 64 * 8];
+            for block in 0..8 {
+                let range = block * 64..(block + 1) * 64;
+                let mut outs: [&mut [f32]; 2] = [&mut l[range.clone()], &mut r[range]];
+                ramp.process(&[], &mut outs, &[]);
+            }
+            l
+        };
+        // The source has already rendered four blocks for the `plain` pass,
+        // so the audible ramp starts where that left off.
+        for (i, frame) in listened.chunks_exact(2).enumerate() {
+            assert_eq!(
+                frame[0].to_bits(),
+                expected[64 * 4 + i].to_bits(),
+                "sample {i}: key listen played {} and the key was {}",
+                frame[0],
+                expected[64 * 4 + i]
+            );
+        }
+    }
+
+    /// **Only one, and the type is what says so.**
+    ///
+    /// Arming a second track disarms the first by itself, because there is
+    /// one `Option` and not a flag per track. A rule the compiler enforces is
+    /// a rule nobody can forget.
+    #[test]
+    fn only_one_key_listen_is_ever_armed() {
+        let (mut mixer, tx, _clip_rx, _transport) = setup_mixer();
+        let _a = add_fixed_track(&tx, 0, 0.25);
+        let _b = add_fixed_track(&tx, 1, 0.5);
+        tx.send(MixerCommand::SetKeyListen { track: Some(0) }).unwrap();
+        apply_all(&mut mixer);
+        assert_eq!(mixer.key_listen(), Some(0));
+
+        tx.send(MixerCommand::SetKeyListen { track: Some(1) }).unwrap();
+        apply_all(&mut mixer);
+        assert_eq!(mixer.key_listen(), Some(1), "the second arming did not take");
+
+        // A track that does not exist is refused rather than stored, so the
+        // flag cannot outlive what it names.
+        tx.send(MixerCommand::SetKeyListen { track: Some(99) }).unwrap();
+        apply_all(&mut mixer);
+        assert_eq!(mixer.key_listen(), None);
+
+        tx.send(MixerCommand::SetKeyListen { track: Some(0) }).unwrap();
+        apply_all(&mut mixer);
+        tx.send(MixerCommand::SetKeyListen { track: None }).unwrap();
+        apply_all(&mut mixer);
+        assert_eq!(mixer.key_listen(), None, "it could not be switched off");
+    }
+
+    /// **It clears itself on a stop, and on a panic.**
+    ///
+    /// Both are the audio thread's own doing rather than the front end's: a
+    /// UI that crashed, or a panel that was closed by something that forgot,
+    /// must not leave a track monitoring its sidechain for the rest of the
+    /// session.
+    #[test]
+    fn key_listen_clears_itself_on_a_stop() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let _a = add_fixed_track(&tx, 0, 0.25);
+        transport.play();
+        tx.send(MixerCommand::SetKeyListen { track: Some(0) }).unwrap();
+        apply_all(&mut mixer);
+        let _ = render(&mut mixer, &transport, 64, 1);
+        assert_eq!(mixer.key_listen(), Some(0));
+
+        transport.pause();
+        let _ = render(&mut mixer, &transport, 64, 1);
+        assert_eq!(mixer.key_listen(), None, "the stop did not clear it");
+
+        // Armed while stopped, it stays armed — auditioning a key against
+        // live playing is a thing people do.
+        tx.send(MixerCommand::SetKeyListen { track: Some(0) }).unwrap();
+        apply_all(&mut mixer);
+        let _ = render(&mut mixer, &transport, 64, 4);
+        assert_eq!(mixer.key_listen(), Some(0));
+
+        // ...and the panic path drops it with everything else.
+        mixer.reset_all();
+        assert_eq!(mixer.key_listen(), None, "a panic left it armed");
+    }
+
+    /// With no external key, listening plays the track's own pre-insert
+    /// signal — the internal key, which is what the detector would be reading.
+    #[test]
+    fn key_listen_with_no_external_key_plays_the_track_itself() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let handle = add_fixed_track(&tx, 0, 0.25);
+        tx.send(MixerCommand::AddFx {
+            target: FxTarget::Track(0),
+            slot: 0,
+            effect: Box::new(Gain::at(-20.0)),
+        })
+        .unwrap();
+        tx.send(MixerCommand::SetKeyListen { track: Some(0) }).unwrap();
+        apply_all(&mut mixer);
+        transport.play();
+        let _ = handle;
+
+        let out = render(&mut mixer, &transport, 256, 4);
+        // The insert took 20 dB off, and the key listen puts it back: what is
+        // heard is the pre-insert signal, which is the tap's own position.
+        assert!(
+            (peak_of(&out) - 0.25).abs() < 1.0e-4,
+            "listening with no key played {} rather than the track itself",
+            peak_of(&out)
+        );
+    }
+
     /// Keying a track to itself is the internal key, not a self-reference the
     /// borrow checker has to be argued out of.
     #[test]
@@ -4035,6 +4268,15 @@ mod tests {
                         bypass: true,
                     })
                     .unwrap();
+                }
+                // ...and a key listen armed and disarmed mid-run, so the
+                // block that copies a whole key over a track's output is
+                // inside the measurement too.
+                if block == 6 {
+                    tx.send(MixerCommand::SetKeyListen { track: Some(2) }).unwrap();
+                }
+                if block == 12 {
+                    tx.send(MixerCommand::SetKeyListen { track: None }).unwrap();
                 }
                 mixer.process(&mut output, &[], &transport);
                 transport.advance(max_frames as u32, 48_000);

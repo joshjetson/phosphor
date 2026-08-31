@@ -155,6 +155,15 @@ pub struct NavState {
     /// only a person asks. Refreshed every frame from the same snapshot the
     /// top bar draws its BPM from, so the two can never disagree.
     pub tempo_bpm: f32,
+    /// The track whose sidechain key is being monitored in place of its own
+    /// output, by mixer id.
+    ///
+    /// **One, and the type is what says so.** An `Option` cannot hold two, so
+    /// "only one key listen at a time" is not a rule anybody has to remember.
+    /// The audio thread keeps the same field and clears it on a transport
+    /// stop; this is the mirror the status bar and the track strip blink from.
+    /// Never written to a session — it is a monitoring switch, not a setting.
+    pub key_listen: Option<usize>,
 }
 
 impl NavState {
@@ -185,7 +194,37 @@ impl NavState {
             limiter_gr: std::sync::Arc::new(phosphor_core::fx::GrMeter::new()),
             sample_rate: 48_000,
             tempo_bpm: 120.0,
+            key_listen: None,
         }
+    }
+
+    /// The kind of effect whose panel is open, if one is.
+    ///
+    /// Here rather than only on the app so that the renderer can ask it too:
+    /// the hint bar has to say `jk knob` over a column of knobs and `hl band`
+    /// over the EQ's grid, and those are the same key doing two different
+    /// things.
+    #[must_use]
+    pub fn open_fx_type(&self) -> Option<FxType> {
+        let slot = self.clip_view.fx.slot?;
+        Some(self.current_track()?.fx_chain.get(slot)?.fx_type)
+    }
+
+    /// Whether this track is the one whose key is being monitored.
+    #[must_use]
+    pub fn is_key_listening(&self, track_index: usize) -> bool {
+        self.key_listen.is_some()
+            && self.tracks.get(track_index).and_then(|t| t.mixer_id) == self.key_listen
+    }
+
+    /// The name of the track whose key is being monitored, for the status bar.
+    #[must_use]
+    pub fn key_listen_track_name(&self) -> Option<&str> {
+        let id = self.key_listen?;
+        self.tracks
+            .iter()
+            .find(|t| t.mixer_id == Some(id))
+            .map(|t| t.name.as_str())
     }
     pub fn visible_tracks(&self) -> &[TrackState] {
         let end = (self.track_scroll + MAX_VISIBLE_TRACKS).min(self.tracks.len());

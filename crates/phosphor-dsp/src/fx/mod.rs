@@ -18,6 +18,7 @@
 //! Each effect is a plain struct with inherent methods. The chain that runs
 //! them lives in the mixer.
 
+pub mod compressor;
 pub mod delay;
 pub mod eq;
 pub mod reverb;

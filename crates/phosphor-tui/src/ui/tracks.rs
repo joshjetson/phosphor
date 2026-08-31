@@ -193,6 +193,26 @@ pub(super) fn render_header(frame: &mut Frame, area: Rect, ctx: &TrackCtx) {
     // the same part playing, which sounds like a badly tuned instrument
     // rather than like a mistake anyone made, so it is said out loud on the
     // row itself.
+    // **The track that is playing its key says so on its own row.**
+    //
+    // The mode tag in the bottom bar says a key listen is on; this says
+    // *which* strip, which is the half a player needs when the panel has
+    // scrolled away or the cursor has moved on. Blinking, on the same clock,
+    // and in the record light's colour: it is the same kind of fact.
+    if nav.is_key_listening(index) {
+        r1.push(Span::styled(
+            " K",
+            if super::meters::blink_on() {
+                Style::default()
+                    .fg(theme::rec_active_val())
+                    .bg(theme::bg_val())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                theme::dim()
+            },
+        ));
+    }
+
     if let Some(sequencer) = track.sequencer.as_deref() {
         if sequencer.is_playing() {
             let doubled = !track.clips.is_empty();

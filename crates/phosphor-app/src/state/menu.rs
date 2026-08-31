@@ -100,19 +100,54 @@ impl FxType {
 ///
 /// `params` are in the effect's own units, decibels and hertz and
 /// milliseconds, in the order the effect declares them.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct FxInstance {
     pub fx_type: FxType,
     /// Whether the slot's bypass switch is thrown. Bypassed is the exception,
     /// so the field reads the way the switch does.
     pub bypass: bool,
     pub params: Vec<f32>,
+    /// The gain-reduction meter this slot's effect publishes to, when it has
+    /// one — the compressor does, and nothing else does yet.
+    ///
+    /// A window onto the audio thread rather than state, exactly like a
+    /// track's `TrackHandle`: the effect on the far side writes two atomics
+    /// and the panel reads them. Attached when the effect is built, and
+    /// re-attached whenever the chain is reinstalled, so a slot that has been
+    /// copied, pasted or reloaded points at the effect that is actually in the
+    /// signal path rather than at the one it was cloned from.
+    pub gr: Option<std::sync::Arc<phosphor_core::fx::GrMeter>>,
+}
+
+/// Two slots are the same slot when they hold the same effect at the same
+/// settings.
+///
+/// The meter is deliberately not part of it: it is a window onto the audio
+/// thread, not state, and two chains that differ only in which running
+/// compressor they are watching are the same chain as far as a session, an
+/// undo step or a comparison is concerned.
+impl PartialEq for FxInstance {
+    fn eq(&self, other: &Self) -> bool {
+        self.fx_type == other.fx_type
+            && self.bypass == other.bypass
+            && self.params == other.params
+    }
 }
 
 impl FxInstance {
     #[must_use]
     pub fn new(fx_type: FxType, params: Vec<f32>) -> Self {
-        Self { fx_type, bypass: false, params }
+        Self { fx_type, bypass: false, params, gr: None }
+    }
+
+    /// The same slot, watching a meter.
+    #[must_use]
+    pub fn with_meter(
+        mut self,
+        meter: Option<std::sync::Arc<phosphor_core::fx::GrMeter>>,
+    ) -> Self {
+        self.gr = meter;
+        self
     }
 
     /// What the strip shows for this slot: `eq`, or `eq \u{00b7}` when it is

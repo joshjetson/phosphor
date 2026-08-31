@@ -117,6 +117,10 @@ impl App {
                 FxType::Reverb | FxType::Delay => {
                     "j/k picks a knob, h/l adjusts, H/L strides, esc goes back".into()
                 }
+                FxType::Compressor => {
+                    "j/k picks a knob, h/l adjusts \u{00b7} key and klistn are the last two rows"
+                        .into()
+                }
                 other => format!("{} has no panel yet", other.label()),
             },
             std::time::Instant::now(),
@@ -227,6 +231,10 @@ impl App {
                 self.handle_delay_panel_keys(key);
                 return;
             }
+            Some(FxType::Compressor) => {
+                self.handle_comp_panel_keys(key);
+                return;
+            }
             _ => {}
         }
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -312,8 +320,7 @@ impl App {
 
     /// The type of the effect whose panel is open, if one is.
     pub(crate) fn open_fx_type(&self) -> Option<FxType> {
-        let slot = self.nav.clip_view.fx.slot?;
-        Some(self.nav.current_track()?.fx_chain.get(slot)?.fx_type)
+        self.nav.open_fx_type()
     }
 
     /// How many controls the band under the cursor has. The trim has one.
@@ -834,4 +841,372 @@ impl App {
 /// ends.
 fn step_list(current: f32, delta: i32, len: usize) -> f32 {
     (current.round() as i32 + delta).clamp(0, len as i32 - 1) as f32
+}
+
+// ── The compressor's panel ──
+
+use phosphor_dsp::fx::compressor::{
+    auto_makeup_for, auto_release_of, character_params, ratio_to_percent,
+    natural_param as comp_param, AutoRelease, CHARACTER_COUNT, PARAM_ATTACK_MS,
+    PARAM_AUTO_MAKEUP, PARAM_AUTO_RELEASE, PARAM_CHARACTER, PARAM_KNEE_DB, PARAM_MAKEUP_DB, PARAM_MIX as COMP_MIX, PARAM_RATIO, PARAM_RELEASE_MS,
+    PARAM_SC_HPF_HZ, PARAM_SENSE, PARAM_THRESHOLD_DB, RATIO_STOPS, SC_HPF_MAX_HZ,
+    SC_HPF_MIN_HZ,
+};
+
+use crate::ui::fx::{COMP_ROWS, COMP_ROW_KEY, COMP_ROW_KEY_LISTEN};
+
+impl App {
+    /// One key, in the compressor's panel.
+    ///
+    /// The same grammar as the reverb's and the delay's, because it is the
+    /// same shape of panel: a column of knobs, `j`/`k` to pick and `h`/`l` to
+    /// turn, `enter` to hold so that `j`/`k` stop walking off the control a
+    /// hand is in the middle of turning.
+    fn handle_comp_panel_keys(&mut self, key: crossterm::event::KeyEvent) {
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        match key.code {
+            KeyCode::Char('H') => self.adjust_comp_control(-1, true),
+            KeyCode::Char('L') => self.adjust_comp_control(1, true),
+            KeyCode::Char('h') | KeyCode::Left => self.adjust_comp_control(-1, shift),
+            KeyCode::Char('l') | KeyCode::Right => self.adjust_comp_control(1, shift),
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.nav.clip_view.fx.move_cursor(1, COMP_ROWS);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.nav.clip_view.fx.move_cursor(-1, COMP_ROWS);
+            }
+            KeyCode::Enter => {
+                // On the key-listen row, `enter` is the switch rather than the
+                // hold: holding a two-position control so that `h`/`l` can
+                // turn it is a keystroke spent on nothing.
+                if self.nav.clip_view.fx.band.min(COMP_ROWS - 1) == COMP_ROW_KEY_LISTEN {
+                    self.toggle_key_listen();
+                } else if self.nav.clip_view.fx.locked {
+                    self.nav.clip_view.fx.locked = false;
+                    self.status_message = None;
+                } else {
+                    self.nav.clip_view.fx.locked = true;
+                    self.status_message = Some((
+                        "held: h/l adjusts, H/L strides, esc lets go".into(),
+                        std::time::Instant::now(),
+                    ));
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if self.nav.clip_view.fx.locked {
+                    self.nav.clip_view.fx.locked = false;
+                    self.status_message = None;
+                } else {
+                    self.nav.clip_view.fx.close();
+                    self.nav.clip_view.clip_tab = ClipTab::InstConfig;
+                    self.nav.clip_view.focus = ClipViewFocus::FxPanel;
+                    // Leaving the panel puts the monitor back. See
+                    // `App::enforce_key_listen` for the frame-by-frame version
+                    // of the same rule.
+                    self.set_key_listen(None);
+                }
+            }
+            KeyCode::Char('b') => {
+                let slot = self.nav.clip_view.fx.slot.unwrap_or(0);
+                self.toggle_fx_bypass(slot);
+            }
+            _ => {}
+        }
+    }
+
+    /// Turn the compressor control under the cursor.
+    ///
+    /// Every control moves in its own unit and by its own law: decibels in
+    /// decibels, times geometrically because the ear hears them that way, the
+    /// detector filter along the ISO sixth-octave centres, and the ratio in
+    /// *slope* — one point of dB-per-dB at a time, or from one printed ratio
+    /// to the next when the press is a stride.
+    ///
+    /// **Turning a greyed control takes it back.** The makeup and the release
+    /// grey out when an automatic owns them; reaching for either one switches
+    /// the automatic off and seeds the knob with the value it was already
+    /// producing, so the control never jumps and nothing on this panel is ever
+    /// simply dead.
+    fn adjust_comp_control(&mut self, delta: i32, coarse: bool) {
+        let control = self.nav.clip_view.fx.band.min(COMP_ROWS - 1);
+        let (track, slot) = (self.nav.track_cursor, self.nav.clip_view.fx.slot.unwrap_or(0));
+
+        if control == COMP_ROW_KEY {
+            self.step_comp_key(delta);
+            return;
+        }
+        if control == COMP_ROW_KEY_LISTEN {
+            self.set_key_listen_here(delta > 0);
+            return;
+        }
+
+        let Some(params) = self.fx_params().map(<[f32]>::to_vec) else { return };
+        let at = |index: usize| params.get(index).copied().unwrap_or(0.0);
+
+        // The two automatics hand their control back rather than refusing it.
+        if control == PARAM_MAKEUP_DB && at(PARAM_AUTO_MAKEUP) >= 0.5 {
+            let seeded = auto_makeup_for(
+                f64::from(at(PARAM_THRESHOLD_DB)),
+                f64::from(at(PARAM_RATIO)) / 100.0,
+            ) as f32;
+            self.set_fx_param(track, slot, PARAM_AUTO_MAKEUP, 0.0);
+            self.set_fx_param(track, slot, PARAM_MAKEUP_DB, seeded);
+            self.status_message = Some((
+                format!("makeup is yours: {seeded:+.1} dB, where the automatic had it"),
+                std::time::Instant::now(),
+            ));
+            return;
+        }
+        if control == PARAM_RELEASE_MS && auto_release_of(&params) != AutoRelease::Off {
+            self.set_fx_param(track, slot, PARAM_AUTO_RELEASE, 0.0);
+            self.status_message = Some((
+                format!("release is yours: {:.0} ms", at(PARAM_RELEASE_MS)),
+                std::time::Instant::now(),
+            ));
+            return;
+        }
+
+        let current = at(control);
+        let next = match control {
+            PARAM_CHARACTER => step_list(current, delta, CHARACTER_COUNT),
+            PARAM_THRESHOLD_DB | PARAM_KNEE_DB => {
+                current + delta as f32 * if coarse { 6.0 } else { 1.0 }
+            }
+            // Linear in slope, which is linear in effect. A stride jumps to
+            // the next ratio a manual would print.
+            PARAM_RATIO => {
+                if coarse {
+                    next_ratio_stop(current, delta)
+                } else {
+                    current + delta as f32
+                }
+            }
+            // Times geometrically: a tenth of a millisecond matters at 1 ms
+            // and is invisible at 100.
+            PARAM_ATTACK_MS | PARAM_RELEASE_MS => {
+                let factor = if coarse { 2.0f32 } else { 1.15 };
+                if delta > 0 { current * factor } else { current / factor }
+            }
+            PARAM_AUTO_RELEASE => step_list(current, delta, AutoRelease::ALL.len()),
+            PARAM_MAKEUP_DB => current + delta as f32 * if coarse { GAIN_COARSE } else { GAIN_FINE },
+            COMP_MIX => current + delta as f32 * if coarse { 10.0 } else { 1.0 },
+            // The two switches turn rather than toggle: right is on, which is
+            // what `h`/`l` does to every other control on the panel.
+            PARAM_AUTO_MAKEUP | PARAM_SENSE => f32::from(delta > 0),
+            PARAM_SC_HPF_HZ => step_sc_hpf(current, delta, coarse),
+            _ => current,
+        };
+        let next = match comp_param(control) {
+            Some(info) => next.clamp(info.min, info.max),
+            None => next,
+        };
+        self.set_fx_param(track, slot, control, next);
+
+        // Recalling a character writes all twelve, because a macro that only
+        // moved its own selector would be a selector that lies about what is
+        // in force. It is done here rather than inside the effect so that one
+        // `set_parameter` is always one control — which is what keeps a
+        // session load from depending on the order its controls are written.
+        if control == PARAM_CHARACTER && next != current {
+            self.recall_comp_character(track, slot, next);
+        }
+    }
+
+    /// Write a character's whole parameter set, on both sides.
+    fn recall_comp_character(&mut self, track: usize, slot: usize, index: f32) {
+        let wanted = character_params(index.round().max(0.0) as usize);
+        for (control, &value) in wanted.iter().enumerate() {
+            if control != PARAM_CHARACTER {
+                self.set_fx_param(track, slot, control, value);
+            }
+        }
+        let name = phosphor_app::fx::CHARACTERS
+            [(index.round().max(0.0) as usize).min(CHARACTER_COUNT - 1)];
+        self.status_message = Some((
+            format!("{}: {}", name.name, name.note),
+            std::time::Instant::now(),
+        ));
+    }
+
+    /// The tracks the key selector can point at, by mixer id, in strip order.
+    ///
+    /// Every instrument or audio track except this one — a track cannot key
+    /// off itself, and the mixer refuses it anyway. The list is rebuilt every
+    /// press rather than cached, because a track added or deleted while the
+    /// panel is open must not leave the selector pointing into a stale list.
+    fn comp_key_choices(&self) -> Vec<usize> {
+        let here = self.nav.current_track().and_then(|t| t.mixer_id);
+        self.nav
+            .tracks
+            .iter()
+            .filter(|t| matches!(t.kind, TrackKind::Instrument | TrackKind::Audio))
+            .filter_map(|t| t.mixer_id)
+            .filter(|id| Some(*id) != here)
+            .collect()
+    }
+
+    /// Step the key selector: `internal`, then every other track by name.
+    fn step_comp_key(&mut self, delta: i32) {
+        let choices = self.comp_key_choices();
+        let Some(track) = self.nav.tracks.get(self.nav.track_cursor) else { return };
+        if !matches!(track.kind, TrackKind::Instrument | TrackKind::Audio) {
+            self.status_message =
+                Some(("a bus has no key \u{2014} put the compressor on a track".into(),
+                      std::time::Instant::now()));
+            return;
+        }
+        let at = track
+            .key_source
+            .and_then(|id| choices.iter().position(|c| *c == id))
+            .map_or(0, |p| p + 1);
+        let next = (at as i32 + delta).clamp(0, choices.len() as i32) as usize;
+        let source = (next > 0).then(|| choices[next - 1]);
+        self.set_key_source(self.nav.track_cursor, source);
+    }
+
+    /// Point a track's sidechain at another track, on both sides.
+    pub(crate) fn set_key_source(&mut self, track_index: usize, source: Option<usize>) {
+        let name = source.and_then(|id| {
+            self.nav
+                .tracks
+                .iter()
+                .find(|t| t.mixer_id == Some(id))
+                .map(|t| t.name.clone())
+        });
+        let Some(track) = self.nav.tracks.get_mut(track_index) else { return };
+        let Some(track_id) = track.mixer_id else { return };
+        track.key_source = source;
+        // Remembered only so a key whose track is later deleted can name it.
+        if source.is_some() {
+            track.key_source_name = name.clone();
+        }
+        let _ = self
+            .engine
+            .shared
+            .mixer_command_tx
+            .send(MixerCommand::SetKeySource { track_id, source });
+        self.status_message = Some((
+            match &name {
+                Some(name) => format!("key \u{25B8} {name}"),
+                None => "key \u{25B8} internal".to_string(),
+            },
+            std::time::Instant::now(),
+        ));
+    }
+
+    // ── Key listen ──
+
+    /// Put the key on the monitor path in place of this track's output, or
+    /// take it off again.
+    ///
+    /// One at a time, and the type is what says so: `key_listen` is an
+    /// `Option`, on this side and on the audio thread's, so arming a second
+    /// one disarms the first without anybody having to remember to.
+    pub(crate) fn set_key_listen(&mut self, track_id: Option<usize>) {
+        if self.nav.key_listen == track_id {
+            return;
+        }
+        self.nav.key_listen = track_id;
+        let _ = self
+            .engine
+            .shared
+            .mixer_command_tx
+            .send(MixerCommand::SetKeyListen { track: track_id });
+    }
+
+    /// Arm or disarm the key listen on the strip under the cursor.
+    fn set_key_listen_here(&mut self, on: bool) {
+        let Some(track) = self.nav.current_track() else { return };
+        if !matches!(track.kind, TrackKind::Instrument | TrackKind::Audio) {
+            self.status_message = Some((
+                "a bus has no key to listen to".into(),
+                std::time::Instant::now(),
+            ));
+            return;
+        }
+        let Some(id) = track.mixer_id else { return };
+        let name = track.name.clone();
+        self.set_key_listen(on.then_some(id));
+        self.status_message = Some((
+            if on {
+                format!("key listen: {name} is playing its key \u{2014} esc puts it back")
+            } else {
+                "key listen off".to_string()
+            },
+            std::time::Instant::now(),
+        ));
+    }
+
+    fn toggle_key_listen(&mut self) {
+        let armed = self
+            .nav
+            .current_track()
+            .and_then(|t| t.mixer_id)
+            .is_some_and(|id| self.nav.key_listen == Some(id));
+        self.set_key_listen_here(!armed);
+    }
+
+    /// **Key listen never outlives the panel it was armed from.**
+    ///
+    /// Called every frame, so that every way out of the panel is covered by
+    /// one rule rather than by a clear on each of them: closing it, opening a
+    /// different slot, deleting the compressor, switching tracks, loading a
+    /// session. If the compressor whose panel armed it is not still open on
+    /// the track it names, the monitor goes back.
+    ///
+    /// The transport's stop is handled on the other side, by the mixer itself,
+    /// so that a front end which has stopped answering cannot leave a mix with
+    /// a hole in it either.
+    pub(crate) fn enforce_key_listen(&mut self) {
+        let Some(id) = self.nav.key_listen else { return };
+        let still_open = self.nav.clip_view.fx.slot.is_some_and(|slot| {
+            self.nav.current_track().is_some_and(|track| {
+                track.mixer_id == Some(id)
+                    && track
+                        .fx_chain
+                        .get(slot)
+                        .is_some_and(|s| s.fx_type == FxType::Compressor)
+            })
+        });
+        if !still_open {
+            self.set_key_listen(None);
+        }
+    }
+}
+
+/// The next ratio a manual would print, in the direction of travel.
+fn next_ratio_stop(percent: f32, delta: i32) -> f32 {
+    let here = f64::from(percent);
+    if delta > 0 {
+        RATIO_STOPS
+            .iter()
+            .map(|r| f64::from(ratio_to_percent(*r)))
+            .find(|stop| *stop > here + 0.01)
+            .unwrap_or(100.0) as f32
+    } else {
+        RATIO_STOPS
+            .iter()
+            .rev()
+            .map(|r| f64::from(ratio_to_percent(*r)))
+            .find(|stop| *stop < here - 0.01)
+            .unwrap_or(0.0) as f32
+    }
+}
+
+/// The detector high-pass, along the ISO sixth-octave centres, with `off` one
+/// press below the bottom of the travel.
+fn step_sc_hpf(current: f32, delta: i32, coarse: bool) -> f32 {
+    if current < SC_HPF_MIN_HZ {
+        return if delta > 0 { SC_HPF_MIN_HZ } else { 0.0 };
+    }
+    let mut hz = f64::from(current);
+    for _ in 0..if coarse { 6 } else { 1 } {
+        hz = if delta > 0 { iso_step_up(hz) } else { iso_step_down(hz) };
+    }
+    if hz < f64::from(SC_HPF_MIN_HZ) {
+        // One press below the bottom is off, which is where the control
+        // ships and where an external key usually wants it.
+        return 0.0;
+    }
+    (hz as f32).min(SC_HPF_MAX_HZ)
 }

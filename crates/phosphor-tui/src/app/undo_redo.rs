@@ -197,6 +197,17 @@ impl App {
                         dbg::system(&format!("undo: restored {} clips to audio", new_track.clips.len()));
                     }
                 }
+                // **A sidechain key that named this track finds it again.**
+                //
+                // The restored track is a *new* track as far as the mixer is
+                // concerned — a new id — so a key pointing at the old one is
+                // dangling and its panel has been reading `Kick (missing)`.
+                // Undo is exactly the moment that should stop being true.
+                //
+                // Matched on the remembered name and only where the key is
+                // already dangling: a key that still resolves is never
+                // touched, so this can only ever repair, never re-point.
+                self.reattach_dangling_keys(new_idx);
                 self.status_message = Some(("undo: track restored".into(), std::time::Instant::now()));
                 dbg::system("undo: track restored");
             }
@@ -303,6 +314,40 @@ impl App {
 
         // Push back to undo stack (without clearing redo) so it can be undone again
         self.nav.undo_stack.push_undo_only(action);
+    }
+
+    /// Point any dangling sidechain key that named this track back at it.
+    ///
+    /// A key is stored as a track *identity*, and a track that comes back
+    /// from the undo stack comes back with a new one — so the key would stay
+    /// broken for the rest of the session without this. The name is only ever
+    /// used here, only for keys that no longer resolve to anything, and only
+    /// against the name the key was set from; a key that still points at a
+    /// live track is left exactly where it is.
+    fn reattach_dangling_keys(&mut self, restored: usize) {
+        let Some((restored_id, name)) = self
+            .nav
+            .tracks
+            .get(restored)
+            .and_then(|t| Some((t.mixer_id?, t.name.clone())))
+        else {
+            return;
+        };
+        let live: Vec<usize> = self.nav.tracks.iter().filter_map(|t| t.mixer_id).collect();
+        let repaired: Vec<usize> = self
+            .nav
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                t.key_source.is_some_and(|id| !live.contains(&id))
+                    && t.key_source_name.as_deref() == Some(name.as_str())
+            })
+            .map(|(index, _)| index)
+            .collect();
+        for index in repaired {
+            self.set_key_source(index, Some(restored_id));
+        }
     }
 
     // ── Piano roll highlight delete ──

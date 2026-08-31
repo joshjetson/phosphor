@@ -338,6 +338,18 @@ pub const ISO_SIXTH_OCTAVE_HZ: [f64; 71] = [
     20000.0, 22400.0, 25000.0, 28000.0, 30000.0,
 ];
 
+/// How far off a grid point a value can be and still count as sitting on it.
+///
+/// A part per million, and it is not arbitrary: every one of these knobs
+/// stores its value as an `f32`, which carries about six parts in a hundred
+/// million, and two of the centres — 11.2 and 22.4 Hz — are not exactly
+/// representable in one. Round 22.4 through an `f32` and it comes back a
+/// hair *below* the table's own entry, so a "strictly greater" test with a
+/// tolerance of `1e-9` finds 22.4 again and the knob sticks there forever.
+/// The grid points are twelve percent apart, so a millionth cannot reach the
+/// next one.
+const ISO_ON_GRID: f64 = 1.0e-6;
+
 /// The next [`ISO_SIXTH_OCTAVE_HZ`] centre strictly above `hz`.
 ///
 /// Saturates at the top of the range. Starting off-grid — the factory
@@ -347,7 +359,7 @@ pub const ISO_SIXTH_OCTAVE_HZ: [f64; 71] = [
 #[must_use]
 pub fn iso_step_up(hz: f64) -> f64 {
     for &f in &ISO_SIXTH_OCTAVE_HZ {
-        if f > hz * (1.0 + 1e-9) {
+        if f > hz * (1.0 + ISO_ON_GRID) {
             return f;
         }
     }
@@ -358,7 +370,7 @@ pub fn iso_step_up(hz: f64) -> f64 {
 #[must_use]
 pub fn iso_step_down(hz: f64) -> f64 {
     for &f in ISO_SIXTH_OCTAVE_HZ.iter().rev() {
-        if f < hz * (1.0 - 1e-9) {
+        if f < hz * (1.0 - ISO_ON_GRID) {
             return f;
         }
     }

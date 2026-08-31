@@ -76,11 +76,23 @@ pub(super) fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap
     // The safety limiter, when it is working. Silent otherwise: a readout
     // that is always on screen showing 0.0 teaches the eye to ignore it, and
     // this one only matters on the rare block where the mix went over.
-    let (reduction, _peak) = nav.limiter_gr.get();
-    let lim = if nav.limiter_gr.is_active() {
-        Span::styled(format!("  lim {reduction:.1}"), theme::amber_bright())
+    //
+    // Drawn through the same widget the compressor's panel uses, in its
+    // compact width. The number used to be spelled out here by hand, which
+    // meant the master's reduction and a track's were two different pictures
+    // of the same quantity — and the one in the top bar had no bar at all.
+    let (reduction, lim_peak) = nav.limiter_gr.get();
+    let lim: Vec<Span> = if nav.limiter_gr.is_active() {
+        let mut spans = vec![Span::styled("  ", theme::bg())];
+        spans.extend(super::meters::gr_meter_spans(
+            "lim",
+            reduction,
+            lim_peak,
+            super::meters::GR_COMPACT_WIDTH,
+        ));
+        spans
     } else {
-        Span::styled("", theme::dim())
+        Vec::new()
     };
 
     // Seq
@@ -88,14 +100,22 @@ pub(super) fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap
     // top-bar "seq:on" that means "the transport is rolling" reads as a lie.
     let seq = if snap.playing { Span::styled("play:on", theme::normal()) } else { Span::styled("play:off", theme::dim()) };
 
+    let mut middle = vec![
+        seq,
+        Span::styled(format!("  {bpm_label}"), theme::normal()),
+        Span::styled(format!("{:.0}", snap.tempo_bpm), Style::default().fg(bpm_fg).bg(bpm_bg)),
+        Span::styled("  4/4  ", theme::normal()),
+        rec,
+        Span::styled("  ", theme::bg()),
+        lp,
+        Span::styled("  ", theme::bg()),
+        met,
+    ];
+    middle.extend(lim);
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            seq, Span::styled(format!("  {bpm_label}"), theme::normal()),
-            Span::styled(format!("{:.0}", snap.tempo_bpm), Style::default().fg(bpm_fg).bg(bpm_bg)),
-            Span::styled("  4/4  ", theme::normal()), rec,
-            Span::styled("  ", theme::bg()), lp,
-            Span::styled("  ", theme::bg()), met, lim,
-        ])).alignment(Alignment::Center), cols[1]);
+        Paragraph::new(Line::from(middle)).alignment(Alignment::Center),
+        cols[1],
+    );
 
     let pos = transport::ticks_to_position_string(snap.position_ticks, Transport::PPQ);
     let secs = snap.position_ticks as f64 * 60.0 / (snap.tempo_bpm * Transport::PPQ as f64);

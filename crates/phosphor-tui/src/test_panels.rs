@@ -1434,6 +1434,11 @@ mod fx {
 
     /// The safety limiter's reduction reaches the top bar, and stays off it
     /// while there is nothing to report.
+    ///
+    /// **Through the shared widget**, in its compact width: the master's
+    /// reduction and a track compressor's are the same quantity, and they are
+    /// now the same picture of it. The number used to be spelled out here by
+    /// hand and had no bar at all.
     #[test]
     fn the_limiter_readout_is_the_real_meter() {
         let app = chain_app();
@@ -1445,14 +1450,23 @@ mod fx {
         // actually produce.
         let mut ballistics = phosphor_core::fx::GrBallistics::new();
         ballistics.publish(&app.nav.limiter_gr, 0.676, 512, 48_000.0);
-        let shown = app.nav.limiter_gr.current_db();
+        let (shown, held) = app.nav.limiter_gr.get();
         assert!(shown < -3.0 && shown > -3.8, "the meter read {shown}");
 
         let text = screen(&app, 120, 40);
-        assert!(
-            text.contains(&format!("lim {shown:.1}")),
-            "the bar does not show what the meter says ({shown:.1}):\n{text}",
+        let width = crate::ui::meters::GR_COMPACT_WIDTH;
+        let wanted = format!(
+            "lim \u{2595}{}\u{258F} {} dB",
+            crate::ui::meters::gr_bar_text(shown, held, width),
+            crate::ui::meters::gr_readout(shown),
         );
+        assert!(
+            text.contains(&wanted),
+            "the top bar does not draw the shared meter ({wanted}):\n{text}",
+        );
+        // ...and the bar really is a bar: three and a half decibels is a
+        // quarter of the compact width lit.
+        assert_eq!(crate::ui::meters::gr_cells(shown, width), 3);
     }
 
 
@@ -1705,5 +1719,298 @@ mod fx {
                 phosphor_dsp::fx::delay::PARAM_COUNT - 1
             );
         }
+    }
+
+    // ── The compressor's panel ──
+
+    /// A track with a compressor in it, the panel open on it, and a second
+    /// track for the key selector to point at.
+    fn comp_app() -> App {
+        let mut app = App::new(EngineConfig { buffer_size: 64, sample_rate: 48_000 }, false, false);
+        app.create_instrument_track(InstrumentType::Juno60);
+        app.create_instrument_track(InstrumentType::Juno60);
+        app.nav.tracks[0].name = "Kick".to_string();
+        app.nav.track_cursor = 1;
+        let outcome = app.nav.add_fx(FxType::Compressor);
+        app.apply_fx_add(outcome);
+        app.nav.focus_pane(Pane::ClipView);
+        app.nav.clip_view.focus = ClipViewFocus::FxPanel;
+        app.nav.clip_view.fx_panel_tab = FxPanelTab::TrackFx;
+        app.nav.clip_view.fx_cursor = 0;
+        let _ = app.drain_mixer_commands();
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.nav.clip_view.clip_tab, ClipTab::Fx);
+        app
+    }
+
+    /// The cursor walked to a named row.
+    fn to_comp_row(app: &mut App, row: usize) {
+        while app.nav.clip_view.fx.band < row {
+            press(app, KeyCode::Char('j'));
+        }
+        while app.nav.clip_view.fx.band > row {
+            press(app, KeyCode::Char('k'));
+        }
+        assert_eq!(app.nav.clip_view.fx.band, row);
+    }
+
+    /// **Every row can be reached and every row can be read.**
+    #[test]
+    fn every_compressor_row_can_be_seen() {
+        use crate::ui::fx::{comp_row_name, COMP_ROWS};
+        let mut app = comp_app();
+        for row in 0..COMP_ROWS {
+            to_comp_row(&mut app, row);
+            let text = screen(&app, 140, 44);
+            assert!(
+                text.contains(comp_row_name(row)),
+                "row {} is not on the screen:\n{text}",
+                comp_row_name(row)
+            );
+        }
+        // ...and the cursor stops at the end rather than running off it.
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        assert_eq!(app.nav.clip_view.fx.band, COMP_ROWS - 1);
+    }
+
+    /// **The ratio turns in slope and strides between printed ratios.**
+    #[test]
+    fn the_ratio_turns_in_slope_and_strides_between_printed_ratios() {
+        use phosphor_dsp::fx::compressor::{percent_to_ratio, PARAM_RATIO};
+        let mut app = comp_app();
+        to_comp_row(&mut app, PARAM_RATIO);
+
+        // A stride lands on the next number a manual would print.
+        press_shift(&mut app, KeyCode::Char('L'));
+        assert!((percent_to_ratio(params(&app)[PARAM_RATIO]) - 4.0).abs() < 0.01);
+        press_shift(&mut app, KeyCode::Char('L'));
+        assert!((percent_to_ratio(params(&app)[PARAM_RATIO]) - 5.0).abs() < 0.01);
+        press_shift(&mut app, KeyCode::Char('H'));
+        assert!((percent_to_ratio(params(&app)[PARAM_RATIO]) - 4.0).abs() < 0.01);
+
+        // The two ends are exact, and reachable.
+        for _ in 0..12 {
+            press_shift(&mut app, KeyCode::Char('L'));
+        }
+        assert_eq!(params(&app)[PARAM_RATIO], 100.0, "the top of the travel is not a limiter");
+        assert!(percent_to_ratio(params(&app)[PARAM_RATIO]).is_infinite());
+        assert!(screen(&app, 140, 44).contains("\u{221e}:1"));
+        for _ in 0..12 {
+            press_shift(&mut app, KeyCode::Char('H'));
+        }
+        assert_eq!(params(&app)[PARAM_RATIO], 0.0, "the bottom of the travel is not 1:1");
+
+        // A fine press is one point of slope, which is linear in effect.
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(params(&app)[PARAM_RATIO], 1.0);
+    }
+
+    /// **Turning a greyed control takes it back.**
+    ///
+    /// The two automatics on this panel grey the knob they have taken over,
+    /// and reaching for it hands it back rather than refusing — seeded with
+    /// the value the automatic was already producing, so the level does not
+    /// jump.
+    #[test]
+    fn turning_an_automatics_knob_takes_it_back() {
+        use phosphor_dsp::fx::compressor::{
+            uses, PARAM_AUTO_MAKEUP, PARAM_AUTO_RELEASE, PARAM_MAKEUP_DB, PARAM_RELEASE_MS,
+        };
+        let mut app = comp_app();
+
+        // The makeup ships greyed, because the automatic ships on.
+        assert!(!uses(&params(&app), PARAM_MAKEUP_DB));
+        to_comp_row(&mut app, PARAM_MAKEUP_DB);
+        press(&mut app, KeyCode::Char('l'));
+        let after = params(&app);
+        assert_eq!(after[PARAM_AUTO_MAKEUP], 0.0, "the automatic did not let go");
+        // −18 dB at 3:1 is +6.0 dB, which is what the automatic was producing.
+        assert!(
+            (after[PARAM_MAKEUP_DB] - 6.0).abs() < 0.05,
+            "the knob was seeded with {} rather than what the automatic had",
+            after[PARAM_MAKEUP_DB]
+        );
+        assert!(uses(&after, PARAM_MAKEUP_DB), "the knob is still greyed");
+        // ...and now it turns.
+        press(&mut app, KeyCode::Char('l'));
+        assert!(params(&app)[PARAM_MAKEUP_DB] > after[PARAM_MAKEUP_DB]);
+
+        // The same for the release, whose automatic has to be switched on
+        // first because it ships off.
+        to_comp_row(&mut app, PARAM_AUTO_RELEASE);
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(params(&app)[PARAM_AUTO_RELEASE], 1.0);
+        assert!(!uses(&params(&app), PARAM_RELEASE_MS));
+        to_comp_row(&mut app, PARAM_RELEASE_MS);
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(params(&app)[PARAM_AUTO_RELEASE], 0.0, "the automatic release did not let go");
+        assert!(uses(&params(&app), PARAM_RELEASE_MS));
+    }
+
+    /// **The character knob writes all twelve controls**, because a macro
+    /// that only moved its own selector would be a selector that lies.
+    #[test]
+    fn the_character_knob_recalls_a_whole_parameter_set() {
+        use phosphor_dsp::fx::compressor::{
+            character_params, matches_character, PARAM_CHARACTER, PARAM_COUNT,
+        };
+        let mut app = comp_app();
+        to_comp_row(&mut app, PARAM_CHARACTER);
+        assert!(matches_character(&params(&app)), "the factory setting is not character zero");
+
+        press(&mut app, KeyCode::Char('l'));
+        let after = params(&app);
+        assert_eq!(after[PARAM_CHARACTER], 1.0);
+        assert_eq!(after.len(), PARAM_COUNT);
+        assert_eq!(after, character_params(1).to_vec(), "the whole set did not arrive");
+        assert!(matches_character(&after));
+        assert!(screen(&app, 140, 44).contains("bus glue"));
+
+        // ...and the audio thread was told about every one of them.
+        let commands = app.drain_mixer_commands();
+        let written: Vec<usize> = commands
+            .iter()
+            .filter_map(|c| match c {
+                MixerCommand::SetFxParam { param, .. } => Some(*param),
+                _ => None,
+            })
+            .collect();
+        for control in 0..PARAM_COUNT {
+            assert!(written.contains(&control), "control {control} never reached the mixer");
+        }
+
+        // Touching a control makes the selector stop claiming to be that
+        // character, which is the whole of the honesty measure.
+        to_comp_row(&mut app, phosphor_dsp::fx::compressor::PARAM_THRESHOLD_DB);
+        press(&mut app, KeyCode::Char('l'));
+        assert!(!matches_character(&params(&app)));
+        assert!(screen(&app, 140, 44).contains("edited"));
+    }
+
+    /// **The detector high-pass has an `off` one press below its travel**, and
+    /// comes back on from it.
+    #[test]
+    fn the_detector_highpass_switches_off_at_the_bottom_of_its_travel() {
+        use phosphor_dsp::fx::compressor::{PARAM_SC_HPF_HZ, SC_HPF_MAX_HZ, SC_HPF_MIN_HZ};
+        let mut app = comp_app();
+        to_comp_row(&mut app, PARAM_SC_HPF_HZ);
+        assert_eq!(params(&app)[PARAM_SC_HPF_HZ], 0.0, "the filter does not ship off");
+        assert!(screen(&app, 140, 44).contains("off"));
+
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(params(&app)[PARAM_SC_HPF_HZ], SC_HPF_MIN_HZ, "one press up is 20 Hz");
+        for _ in 0..60 {
+            press(&mut app, KeyCode::Char('l'));
+        }
+        assert_eq!(params(&app)[PARAM_SC_HPF_HZ], SC_HPF_MAX_HZ, "the top is SSL's 300 Hz");
+        for _ in 0..60 {
+            press(&mut app, KeyCode::Char('h'));
+        }
+        assert_eq!(params(&app)[PARAM_SC_HPF_HZ], 0.0, "it could not be switched off again");
+    }
+
+    /// **The key selector walks the track list**, internal first, and stores
+    /// the track's identity rather than its position.
+    #[test]
+    fn the_key_selector_walks_the_track_list() {
+        use crate::ui::fx::{comp_key_label, COMP_ROW_KEY};
+        let mut app = comp_app();
+        to_comp_row(&mut app, COMP_ROW_KEY);
+        assert_eq!(comp_key_label(&app.nav), "internal");
+
+        press(&mut app, KeyCode::Char('l'));
+        let source = app.nav.tracks[0].mixer_id;
+        assert_eq!(app.nav.current_track().unwrap().key_source, source);
+        assert_eq!(comp_key_label(&app.nav), "Kick");
+        assert!(screen(&app, 140, 44).contains("Kick"));
+
+        // The audio thread was told, by identity.
+        let commands = app.drain_mixer_commands();
+        assert!(
+            commands.iter().any(|c| matches!(
+                c,
+                MixerCommand::SetKeySource { source: Some(id), .. } if Some(*id) == source
+            )),
+            "the key never reached the audio thread"
+        );
+
+        // The end of the list is the end of the list: there is one other
+        // track, and a track cannot key off itself.
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.nav.current_track().unwrap().key_source, source);
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.nav.current_track().unwrap().key_source, None);
+        assert_eq!(comp_key_label(&app.nav), "internal");
+    }
+
+    /// **Key listen arms from the panel, and leaving the panel disarms it.**
+    ///
+    /// Three behaviours, and the third is the one that matters: there is one
+    /// rule — the compressor that armed it has to still be open — and every
+    /// way out of the panel is covered by it.
+    #[test]
+    fn key_listen_arms_from_the_panel_and_leaves_with_it() {
+        use crate::ui::fx::COMP_ROW_KEY_LISTEN;
+        let mut app = comp_app();
+        let here = app.nav.current_track().unwrap().mixer_id;
+        to_comp_row(&mut app, COMP_ROW_KEY_LISTEN);
+        assert_eq!(app.nav.key_listen, None);
+
+        // `enter` is the switch on this row rather than the hold: holding a
+        // two-position control so that h/l can turn it is a keystroke spent
+        // on nothing.
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.nav.key_listen, here);
+        assert!(!app.nav.clip_view.fx.locked, "the switch row locked instead of switching");
+        assert!(app.nav.is_key_listening(app.nav.track_cursor));
+        let text = screen(&app, 140, 44);
+        assert!(text.contains("KEY LISTEN"), "the status bar does not warn:\n{text}");
+        assert!(
+            text.contains("playing its sidechain key"),
+            "the status bar does not say which track:\n{text}"
+        );
+
+        // The audio thread was told.
+        assert!(
+            app.drain_mixer_commands()
+                .iter()
+                .any(|c| matches!(c, MixerCommand::SetKeyListen { track } if *track == here)),
+            "the key listen never reached the audio thread"
+        );
+
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.nav.key_listen, None, "the switch does not switch back");
+
+        // Armed again, then out of the panel: the rule runs every frame.
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.nav.key_listen, here);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.nav.key_listen, None, "leaving the panel left it armed");
+
+        // ...and the frame-by-frame rule catches the ways out that are not a
+        // keystroke on this panel at all.
+        app.nav.clip_view.fx.open(0);
+        app.set_key_listen(here);
+        assert_eq!(app.nav.key_listen, here);
+        app.nav.track_cursor = 0;
+        app.enforce_key_listen();
+        assert_eq!(app.nav.key_listen, None, "switching tracks left it armed");
+    }
+
+    /// **The hint bar says what this panel's keys do**, which is not what the
+    /// EQ's grid does with the same ones.
+    #[test]
+    fn the_compressor_panel_has_its_own_hints() {
+        let mut app = comp_app();
+        // The message that opening the panel put up takes the bar for a few
+        // seconds; what is under test is what is underneath it.
+        app.status_message = None;
+        let text = screen(&app, 140, 44);
+        assert!(text.contains("jk"), "no hints at all:\n{text}");
+        assert!(text.contains("knob"), "the hints are the EQ's, which say `band`:\n{text}");
+        assert!(text.contains("adjust"), "{text}");
+        assert!(!text.contains("band"), "the EQ's hints are on a compressor:\n{text}");
     }
 }

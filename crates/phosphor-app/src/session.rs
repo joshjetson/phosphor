@@ -210,6 +210,9 @@ pub fn chain_from_session(stored: &[SessionFx]) -> (Vec<FxInstance>, usize) {
             fx_type,
             bypass: slot.bypass,
             params: slot.params.clone(),
+            // Attached when the chain reaches the audio thread, which is
+            // where the effect that owns the meter is actually built.
+            gr: None,
         });
     }
     (chain, dropped)
@@ -667,8 +670,13 @@ mod tests {
     #[test]
     fn a_chain_round_trips_by_name() {
         let chain = vec![
-            FxInstance { fx_type: FxType::Eq, bypass: false, params: vec![120.0, 0.7] },
-            FxInstance { fx_type: FxType::Delay, bypass: true, params: vec![0.375, 0.3] },
+            FxInstance { fx_type: FxType::Eq, bypass: false, params: vec![120.0, 0.7], gr: None },
+            FxInstance {
+                fx_type: FxType::Delay,
+                bypass: true,
+                params: vec![0.375, 0.3],
+                gr: None,
+            },
         ];
         let stored = chain_to_session(&chain);
         assert_eq!(stored[0].kind, "eq");

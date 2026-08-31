@@ -20,6 +20,7 @@ mod overlays;
 use overlays::*;
 pub(crate) mod fx;
 pub(crate) use fx::is_wide as fx_panel_is_wide;
+pub(crate) mod meters;
 mod params;
 mod sequencer;
 use sequencer::*;

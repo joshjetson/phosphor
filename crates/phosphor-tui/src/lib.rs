@@ -15,6 +15,8 @@ mod test_fader;
 #[cfg(test)]
 mod test_fx;
 #[cfg(test)]
+mod test_fx_comp;
+#[cfg(test)]
 mod test_fx_delay;
 #[cfg(test)]
 mod test_fx_eq;

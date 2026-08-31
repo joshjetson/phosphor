@@ -4,6 +4,9 @@ use phosphor_dsp::fx::delay::{
     Delay, Mode, PARAM_FEEDBACK, PARAM_HEADS, PARAM_MODE, PARAM_MIX,
 };
 use phosphor_dsp::fx::reverb::{Algorithm, Reverb, PARAM_ALGORITHM, PARAM_EARLY};
+use phosphor_dsp::fx::compressor::{
+    Compressor, Sense, PARAM_RATIO, PARAM_SC_HPF_HZ, PARAM_SENSE, PARAM_THRESHOLD_DB,
+};
 use phosphor_dsp::{jupiter, prophet6, teo5};
 use phosphor_plugin::{MidiEvent, Plugin};
 
@@ -183,6 +186,68 @@ fn bench_delay_tape_three_heads(c: &mut Criterion) {
     bench_delay(c, Mode::Tape, 6.0, "delay_tape_three_heads_512_samples");
 }
 
+/// One compressor, one 512-frame block, stereo, at 48 kHz.
+///
+/// **The budget is four times the master limiter.** The limiter is two
+/// finiteness checks, two `abs`, a `max`, a compare, a conditional divide, a
+/// multiply-add and two clamps per frame, and no transcendentals at all; the
+/// compressor is all of that plus one `ln` and one `exp`, which are most of
+/// what it costs. Four times a stage that measures under a microsecond a block
+/// is still nothing next to the 10.667 ms a 512-frame block represents, so the
+/// number to watch is not the absolute one — it is what happens to it the day
+/// somebody adds a second transcendental to the inner loop.
+///
+/// The variants are the three shapes the inner loop takes: peak with the
+/// detector filter out, peak with it in, and the mean-square front end.
+///
+/// Measured, release, Apple silicon, per 512-frame stereo block:
+///
+/// | variant | time | share of one core |
+/// |---|---|---|
+/// | peak, filter out | 5.02 µs | 0.047% |
+/// | peak, filter in | 7.49 µs | 0.070% |
+/// | rms | 7.77 µs | 0.073% |
+///
+/// Six slots on each of thirty-two tracks would be 192 instances, which at the
+/// cheapest variant is 0.96 ms of a 10.667 ms block — under a tenth of a core.
+/// If that ever stops being comfortable, an `ln`/`exp` approximation is the
+/// first optimisation and it is contained to two lines.
+fn bench_compressor(c: &mut Criterion, sense: Sense, hpf: f32, name: &str) {
+    let mut comp = Compressor::new(48_000.0);
+    comp.set_param_natural(PARAM_THRESHOLD_DB, -24.0);
+    comp.set_param_natural(PARAM_RATIO, 75.0);
+    comp.set_param_natural(PARAM_SENSE, sense.index() as f32);
+    comp.set_param_natural(PARAM_SC_HPF_HZ, hpf);
+    comp.snap();
+    let mut left = vec![0.0f32; 512];
+    let mut right = vec![0.0f32; 512];
+    // Loud enough to be *working*, because a compressor sitting under its
+    // threshold takes the cheap branch of the gain computer and would flatter
+    // the measurement.
+    for (index, sample) in left.iter_mut().enumerate() {
+        *sample = ((index as f32) * 0.07).sin() * 0.5;
+    }
+    right.copy_from_slice(&left);
+    for _ in 0..64 {
+        comp.process(&mut left, &mut right, None);
+    }
+    c.bench_function(name, |b| {
+        b.iter(|| comp.process(&mut left, &mut right, None));
+    });
+}
+
+fn bench_compressor_peak(c: &mut Criterion) {
+    bench_compressor(c, Sense::Peak, 0.0, "compressor_peak_512_samples");
+}
+
+fn bench_compressor_peak_hpf(c: &mut Criterion) {
+    bench_compressor(c, Sense::Peak, 80.0, "compressor_peak_hpf_512_samples");
+}
+
+fn bench_compressor_rms(c: &mut Criterion) {
+    bench_compressor(c, Sense::Rms, 0.0, "compressor_rms_512_samples");
+}
+
 fn bench_reverb_plate(c: &mut Criterion) {
     bench_reverb(c, Algorithm::Plate, "reverb_plate_512_samples");
 }
@@ -209,6 +274,9 @@ criterion_group!(
     bench_reverb_room,
     bench_reverb_hall,
     bench_reverb_spring,
+    bench_compressor_peak,
+    bench_compressor_peak_hpf,
+    bench_compressor_rms,
     bench_prophet6_chord,
     bench_teo5_chord,
     bench_jupiter_chord,

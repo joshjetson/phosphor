@@ -115,6 +115,14 @@ pub struct TrackState {
     /// rather than a position, so adding or deleting a track above it does
     /// not silently re-point the key at something else.
     pub key_source: Option<usize>,
+    /// What that track was called when the key was set.
+    ///
+    /// Kept only so that a key whose track has been deleted can say *which*
+    /// track — `Kick (missing)` rather than a bare `(missing)`, which tells
+    /// the player nothing they can act on. Not persisted and not authoritative:
+    /// the id is the key, this is a label, and a track that has been renamed
+    /// re-labels itself the moment it is found.
+    pub key_source_name: Option<String>,
     /// Fader position as a linear gain, mirroring the audio thread's
     /// `TrackConfig::volume`. Travel is
     /// [`TrackConfig::MIN_VOLUME`]..=[`TrackConfig::MAX_VOLUME`]; the audio
@@ -191,6 +199,7 @@ impl TrackState {
             pan: Self::CENTRE_PAN,
             sends: [0.0; 2],
             key_source: None,
+            key_source_name: None,
             volume: TrackConfig::DEFAULT_VOLUME,
             mixer_id: None,
             handle: None,

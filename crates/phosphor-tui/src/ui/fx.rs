@@ -40,6 +40,16 @@ use phosphor_dsp::fx::reverb::{
     PARAM_DAMP_HZ, PARAM_DECAY_S, PARAM_LOW_CUT_HZ, PARAM_MOD_RATE_HZ, PARAM_PREDELAY_MS,
     PARAM_SIZE,
 };
+use phosphor_dsp::fx::compressor::{
+    auto_makeup_for, auto_release_of, character_name, matches_character,
+    natural_param as comp_param, ratio_label, sense_of, uses as comp_param_uses, AutoRelease,
+    PARAM_ATTACK_MS, PARAM_AUTO_MAKEUP, PARAM_AUTO_RELEASE, PARAM_CHARACTER,
+    PARAM_COUNT as COMP_PARAMS, PARAM_KNEE_DB, PARAM_MAKEUP_DB, PARAM_MIX as COMP_MIX,
+    PARAM_RATIO, PARAM_RELEASE_MS, PARAM_SC_HPF_HZ, PARAM_SENSE, PARAM_THRESHOLD_DB,
+    SC_HPF_MIN_HZ,
+};
+
+use super::meters::{gr_meter_spans, GR_PANEL_WIDTH};
 
 /// The narrowest panel that gets the response curve, in columns.
 ///
@@ -146,6 +156,7 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
 
     match slot.fx_type {
         FxType::Eq => render_eq(frame, area, nav, slot, index),
+        FxType::Compressor => render_comp(frame, area, nav, slot, index),
         FxType::Reverb => render_reverb(frame, area, nav, slot, index),
         FxType::Delay => render_delay(frame, area, nav, slot, index),
         other => {
@@ -1018,4 +1029,314 @@ pub(crate) fn delay_why_not(params: &[f32], control: usize) -> String {
         PARAM_HEADS => format!("only the tape has three heads, not the {}", mode.label()),
         _ => format!("only the bbd has a clock to drift, not the {}", mode.label()),
     }
+}
+
+// ── The compressor ──
+
+/// The two rows on the compressor's panel that are not controls on the
+/// effect: which track feeds the detector, and whether that signal is being
+/// monitored in place of the track's own output.
+///
+/// They are drawn here because this is where a player looks for them, and
+/// they are not parameters because neither one is the compressor's business:
+/// the key is routing that the mixer resolves from a stored track identity
+/// every block, and monitoring the key replaces the whole track's output,
+/// which a slot cannot do.
+pub(crate) const COMP_ROW_KEY: usize = COMP_PARAMS;
+pub(crate) const COMP_ROW_KEY_LISTEN: usize = COMP_PARAMS + 1;
+
+/// How many rows the panel has: the twelve controls plus those two.
+pub(crate) const COMP_ROWS: usize = COMP_PARAMS + 2;
+
+/// What a row is called.
+#[must_use]
+pub(crate) fn comp_row_name(row: usize) -> &'static str {
+    match row {
+        COMP_ROW_KEY => "key",
+        COMP_ROW_KEY_LISTEN => "klistn",
+        _ => comp_param(row).map_or("", |p| p.name),
+    }
+}
+
+/// Whether a row does anything at these settings.
+///
+/// Three of them are conditional, and all three grey out rather than
+/// disappearing — a control that vanished when a switch moved would make the
+/// list jump under the cursor.
+///
+/// * `makeup` while `mkauto` is on, and `releas` while the automatic release
+///   is running: an automatic has taken the control over. **Turning a greyed
+///   control takes it back** — the key handler switches the automatic off and
+///   seeds the knob with the value it was already producing, so the control
+///   never jumps and nothing on this panel is ever simply dead.
+/// * `key` and `klistn` on a bus or on the master: those strips are not
+///   tracks, they have no place in the track list, and there is nothing for a
+///   key to name.
+#[must_use]
+pub(crate) fn comp_row_live(nav: &NavState, params: &[f32], row: usize) -> bool {
+    match row {
+        COMP_ROW_KEY | COMP_ROW_KEY_LISTEN => nav
+            .current_track()
+            .is_some_and(|t| t.kind == TrackKind::Instrument || t.kind == TrackKind::Audio),
+        _ => comp_param_uses(params, row),
+    }
+}
+
+/// Why a greyed row is greyed, in the words a player would use.
+#[must_use]
+pub(crate) fn comp_why_not(row: usize) -> &'static str {
+    match row {
+        PARAM_MAKEUP_DB => "the automatic makeup has it \u{2014} turn it to take it back",
+        PARAM_RELEASE_MS => "the automatic release has it \u{2014} turn it to take it back",
+        _ => "a bus has no key",
+    }
+}
+
+/// The key this strip is running, as a phrase.
+///
+/// A deleted key track reads `Kick (missing)` rather than a bare `(missing)`:
+/// the mixer has already fallen back to the internal key for this block, and
+/// the player needs to know *which* track went so they can put it back or
+/// point the key somewhere else.
+#[must_use]
+pub(crate) fn comp_key_label(nav: &NavState) -> String {
+    let Some(track) = nav.current_track() else {
+        return "internal".to_string();
+    };
+    if !matches!(track.kind, TrackKind::Instrument | TrackKind::Audio) {
+        return "internal".to_string();
+    }
+    let Some(id) = track.key_source else {
+        return "internal".to_string();
+    };
+    match nav.tracks.iter().find(|t| t.mixer_id == Some(id)) {
+        Some(source) => source.name.clone(),
+        None => match &track.key_source_name {
+            Some(name) => format!("{name} (missing)"),
+            None => "(missing)".to_string(),
+        },
+    }
+}
+
+/// One row, in the unit a person reads it in.
+#[must_use]
+pub(crate) fn comp_value(nav: &NavState, params: &[f32], row: usize) -> String {
+    let at = |index: usize| params.get(index).copied().unwrap_or(0.0);
+    match row {
+        PARAM_CHARACTER => {
+            // The selector names a character; the moment a control moves off
+            // it, it says so. A selector that keeps naming a preset after the
+            // preset has been dialled away from is a selector that lies.
+            if matches_character(params) {
+                character_name(params).to_string()
+            } else {
+                format!("{} \u{00b7}edited", character_name(params))
+            }
+        }
+        PARAM_THRESHOLD_DB => format!("{:.1} dB", at(row)),
+        PARAM_RATIO => ratio_label(at(row)),
+        PARAM_KNEE_DB => {
+            if at(row) <= 0.0 {
+                "0 dB  hard".to_string()
+            } else {
+                format!("{:.0} dB  soft", at(row))
+            }
+        }
+        PARAM_ATTACK_MS => {
+            let ms = at(row);
+            if ms < 1.0 {
+                format!("{ms:.2} ms")
+            } else {
+                format!("{ms:.1} ms")
+            }
+        }
+        PARAM_RELEASE_MS => {
+            if auto_release_of(params) == AutoRelease::Off {
+                let ms = at(row);
+                if ms >= 1000.0 {
+                    format!("{:.2} s", f64::from(ms) / 1000.0)
+                } else {
+                    format!("{ms:.0} ms")
+                }
+            } else {
+                // The automatic owns it. Saying which two time constants are
+                // in force is worth more than showing a number that is not.
+                "\u{2014} automatic".to_string()
+            }
+        }
+        PARAM_AUTO_RELEASE => match auto_release_of(params) {
+            AutoRelease::Off => "off".to_string(),
+            AutoRelease::Auto => "auto  100ms/12s".to_string(),
+            AutoRelease::Auto2 => "auto 2  50ms/6s".to_string(),
+        },
+        PARAM_MAKEUP_DB => {
+            if at(PARAM_AUTO_MAKEUP) >= 0.5 {
+                let db = auto_makeup_for(
+                    f64::from(at(PARAM_THRESHOLD_DB)),
+                    f64::from(at(PARAM_RATIO)) / 100.0,
+                );
+                format!("{db:+.1} dB  auto")
+            } else {
+                format!("{:+.1} dB", at(row))
+            }
+        }
+        PARAM_AUTO_MAKEUP => if at(row) >= 0.5 { "on" } else { "off" }.to_string(),
+        COMP_MIX => {
+            let mix = at(row);
+            if mix >= 99.95 {
+                "100%".to_string()
+            } else {
+                format!("{mix:.0}%  parallel")
+            }
+        }
+        PARAM_SENSE => sense_of(params).label().to_string(),
+        PARAM_SC_HPF_HZ => {
+            if at(row) < SC_HPF_MIN_HZ {
+                "off".to_string()
+            } else {
+                format!("{} Hz", hz_label(at(row)))
+            }
+        }
+        COMP_ROW_KEY => comp_key_label(nav),
+        COMP_ROW_KEY_LISTEN => {
+            let listening = nav
+                .current_track()
+                .and_then(|t| t.mixer_id)
+                .is_some_and(|id| nav.key_listen == Some(id));
+            if listening { "LISTENING".to_string() } else { "off".to_string() }
+        }
+        _ => format!("{:.2}", at(row)),
+    }
+}
+
+/// The line that always survives: what the row under the cursor is, in full,
+/// with its travel — and what the compressor is doing overall.
+fn comp_readout(nav: &NavState, params: &[f32], row: usize, slot_index: usize) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled(" cmp ", theme::amber_bright().add_modifier(Modifier::BOLD)),
+        Span::styled(format!("slot {} ", slot_index + 1), theme::dim()),
+        Span::styled(
+            format!(
+                "\u{00b7} {} {} \u{00b7} latency 0 ",
+                ratio_label(params.get(PARAM_RATIO).copied().unwrap_or(0.0)),
+                sense_of(params).label(),
+            ),
+            theme::muted(),
+        ),
+    ];
+    spans.push(Span::styled(
+        format!("\u{00b7} {} ", comp_row_name(row)),
+        theme::muted(),
+    ));
+    spans.push(Span::styled(
+        comp_value(nav, params, row),
+        theme::normal().add_modifier(Modifier::BOLD),
+    ));
+    if !comp_row_live(nav, params, row) {
+        spans.push(Span::styled(format!("  \u{2014} {}", comp_why_not(row)), theme::dim()));
+    } else if let Some(info) = comp_param(row) {
+        // The ratio's travel is a percentage of full limiting, and nobody
+        // wants to read that: the two ends of the knob are what it means.
+        let travel = if row == PARAM_RATIO {
+            "  (1.0:1 .. \u{221e}:1)".to_string()
+        } else {
+            format!("  ({} .. {})", trim_number(info.min), trim_number(info.max))
+        };
+        spans.push(Span::styled(travel, theme::dim()));
+    }
+    Line::from(spans)
+}
+
+/// The compressor's panel: fourteen rows and a gain-reduction meter that is
+/// the whole point of looking at it.
+///
+/// No picture of the static curve. A compressor's curve is two straight lines
+/// and a parabola between them, and drawing it costs the rows that say what
+/// the ballistics are doing — which is the half of a compressor a curve cannot
+/// show at all. The meter is the picture.
+fn render_comp(frame: &mut Frame, area: Rect, nav: &NavState, slot: &FxInstance, index: usize) {
+    let (w, h) = (area.width as usize, area.height as usize);
+    let view = &nav.clip_view.fx;
+    let focused = nav.focused_pane == Pane::ClipView
+        && nav.clip_view.focus == ClipViewFocus::PianoRoll
+        && nav.clip_view.clip_tab == ClipTab::Fx;
+    let params = &slot.params;
+    let cursor = view.band.min(COMP_ROWS - 1);
+
+    let mut lines: Vec<Line> = vec![comp_readout(nav, params, cursor, index)];
+
+    // The meter, live off the audio thread's two atomics.
+    let (current, peak) = slot.gr.as_ref().map_or((0.0, 0.0), |m| m.get());
+    let mut meter = vec![Span::styled("  ", theme::bg())];
+    meter.extend(gr_meter_spans("gr", current, peak, GR_PANEL_WIDTH));
+    if slot.bypass {
+        meter.push(Span::styled("   bypassed \u{2014} b puts it back", theme::dim()));
+    }
+    lines.push(Line::from(meter));
+    lines.push(Line::from(""));
+
+    // Two columns where there is room, one where there is not. Fourteen rows
+    // either way; what changes is how many lines they cost.
+    let columns = if is_wide(w) && h >= 10 { 2 } else { 1 };
+    let rows = COMP_ROWS.div_ceil(columns);
+    let visible = h.saturating_sub(lines.len() + 1).max(1);
+    let first_row = if columns == 1 {
+        cursor.saturating_sub(visible.saturating_sub(1)).min(rows.saturating_sub(1))
+    } else {
+        0
+    };
+
+    for row in first_row..rows {
+        if lines.len() + 1 > h {
+            break;
+        }
+        let mut spans: Vec<Span> = Vec::new();
+        for column in 0..columns {
+            let control = column * rows + row;
+            if control >= COMP_ROWS {
+                continue;
+            }
+            let here = cursor == control;
+            let live = comp_row_live(nav, params, control);
+            spans.push(Span::styled(
+                format!("{}{:<7}", if here { "\u{25B8}" } else { " " }, comp_row_name(control)),
+                if here && focused { theme::amber_bright() } else { theme::dim() },
+            ));
+            let listening = control == COMP_ROW_KEY_LISTEN
+                && nav
+                    .current_track()
+                    .and_then(|t| t.mixer_id)
+                    .is_some_and(|id| nav.key_listen == Some(id));
+            spans.push(Span::styled(
+                format!("{:<17}", comp_value(nav, params, control)),
+                if listening {
+                    // The one control on this panel that changes what comes
+                    // out of the speakers rather than what the compressor
+                    // does with it. It is drawn in the warning colour for the
+                    // same reason the record light is.
+                    alarm_style()
+                } else {
+                    cell_style(here, view.locked, live, focused)
+                },
+            ));
+            if column + 1 < columns {
+                spans.push(Span::styled("  ", theme::dim()));
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+
+    if lines.len() < h {
+        lines.push(Line::from(Span::styled(
+            if view.locked {
+                "  held \u{00b7} h/l adjusts \u{00b7} H/L strides \u{00b7} esc lets go"
+            } else {
+                "  j/k picks \u{00b7} h/l adjusts \u{00b7} H/L strides \u{00b7} enter holds"
+            },
+            theme::dim(),
+        )));
+    }
+
+    lines.truncate(h);
+    frame.render_widget(Paragraph::new(lines), area);
 }

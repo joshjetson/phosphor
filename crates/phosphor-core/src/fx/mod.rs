@@ -19,6 +19,8 @@
 //!   a range that changes later cannot silently re-point it, which is the
 //!   defect the instruments' `discrete` table exists to work around.
 
+use std::sync::Arc;
+
 mod gain;
 mod meter;
 
@@ -251,6 +253,19 @@ pub trait Effect: Send {
     /// lookup, so the mixer only does it for chains that say yes.
     fn wants_key(&self) -> bool {
         false
+    }
+
+    /// The meter this effect publishes its gain reduction to, if it reduces
+    /// gain at all.
+    ///
+    /// A method on the trait rather than a downcast, because gain reduction
+    /// is a first-class thing in this layer: the master limiter already
+    /// publishes one, the UI already draws one, and an effect that takes
+    /// level off should be able to say so without the front end knowing which
+    /// effect it is holding. The `Arc` is cloned once when the effect is
+    /// built, never while audio is running.
+    fn gr_meter(&self) -> Option<Arc<GrMeter>> {
+        None
     }
 
     /// Samples of delay this effect adds. Zero for everything built so far,
@@ -492,6 +507,12 @@ impl FxChain {
     #[must_use]
     pub fn wants_key(&self) -> bool {
         self.slots.iter().any(|s| s.effect.wants_key())
+    }
+
+    /// The gain-reduction meter of the effect in a slot, if it has one.
+    #[must_use]
+    pub fn gr_meter(&self, index: usize) -> Option<Arc<GrMeter>> {
+        self.slots.get(index).and_then(|s| s.effect.gr_meter())
     }
 
     /// Total latency of the chain. Zero today; the place a delay compensator
