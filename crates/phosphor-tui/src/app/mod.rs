@@ -15,6 +15,7 @@ use ratatui::Terminal;
 use phosphor_core::clip::ClipSnapshot;
 use phosphor_core::cpal_backend::{CpalBackend, StreamFormat};
 use phosphor_core::engine::{Engine, EngineAudio};
+use phosphor_core::fx::GrMeter;
 use phosphor_core::mixer::{Mixer, MixerCommand, clip_snapshot_channel, mixer_command_channel};
 use phosphor_core::transport::Transport;
 use phosphor_core::project::{TrackHandle, TrackKind};
@@ -26,6 +27,8 @@ use crate::state::{self, ClipTab, ClipViewFocus, ConfirmKind, FxPanelTab, InputM
 mod delete;
 mod edit_mode;
 mod keys;
+mod fx_keys;
+pub(crate) use fx_keys::pan_label;
 mod sequencer_bounce;
 pub(crate) mod sequencer_keys;
 mod sequencer_record;
@@ -215,6 +218,7 @@ impl App {
 
         let engine = Arc::new(Engine::with_command_tx(config, mixer_tx.clone()));
         let transport = engine.transport.clone();
+        let limiter_gr = Arc::new(GrMeter::new());
 
         let midi_status = Arc::new(MidiStatus::new());
         let (midi_tx, midi_rx) = midi_ring_buffer();
@@ -243,13 +247,14 @@ impl App {
             // Create the mixer. Sized for the largest block the device says it
             // may deliver, not for the block we asked for: growing a buffer
             // inside `Mixer::process` is a heap allocation on the audio thread.
-            let mixer = Mixer::new(
+            let mut mixer = Mixer::new(
                 mixer_rx,
                 vu_levels.clone(),
                 clip_tx,
                 config.sample_rate,
                 max_buffer_frames,
             );
+            mixer.set_limiter_gr_meter(limiter_gr.clone());
 
             let mut engine_audio = EngineAudio::with_mixer(
                 &config,
@@ -269,9 +274,24 @@ impl App {
             }
         }
 
-        Self {
+        let mut nav = NavState::new(state::initial_tracks());
+        // The UI reads the limiter's gain reduction the same way it reads a
+        // track's meter: through a handle onto audio-thread state.
+        nav.limiter_gr = limiter_gr.clone();
+        nav.sample_rate = config.sample_rate;
+        // The two send buses and the master are strips in the mixer, not
+        // tracks: the command carries their kind, and the mixer files each
+        // one where it belongs. Without this the buses have no meters, no
+        // return level and nowhere to put an effect.
+        for track in &nav.tracks {
+            if let (true, Some(handle)) = (track.is_bus(), track.handle.clone()) {
+                let _ = mixer_tx.send(MixerCommand::AddTrack { kind: track.kind, handle });
+            }
+        }
+
+        let mut app = Self {
             engine,
-            nav: NavState::new(state::initial_tracks()),
+            nav,
             running: true,
             _audio_backend: backend,
             _midi_status: midi_status,
@@ -291,7 +311,18 @@ impl App {
             recorded_notes: Vec::new(),
             #[cfg(test)]
             mixer_rx: mixer_rx_test,
+        };
+
+        // What a new session's buses start with. Empty today — see
+        // `phosphor_app::fx::bus_default_chain`, which is where the plate
+        // reverb and the synced delay land when they exist. The wiring is
+        // here so that adding them is a change to that one function.
+        for index in 0..app.nav.tracks.len() {
+            if app.nav.tracks[index].is_bus() && !app.nav.tracks[index].fx_chain.is_empty() {
+                app.install_chain(index);
+            }
         }
+        app
     }
 
     /// How long a status message stays on the bottom bar.
@@ -417,7 +448,13 @@ impl App {
                 self.nav.move_right();
                 self.send_synth_param_update();
             }
-            Action::Select => { self.nav.enter(); }
+            Action::Select => {
+                if self.nav.fx_menu.open {
+                    self.fx_menu_choose();
+                } else {
+                    self.nav.enter();
+                }
+            }
             Action::Back => { self.nav.escape(); }
 
             // Track controls
@@ -562,6 +599,13 @@ impl App {
             // How much of a help card is on the screen, so that scrolling it
             // stops where the drawing of it does.
             self.nav.space_menu.set_terminal_rows(term_h);
+            // Which way the effect panel's cursor keys point. The panel puts
+            // bands in columns when there is room and in rows when there is
+            // not, and `h` has to move the cursor the way `h` points either
+            // way — so the layout is decided once, here, from the same width
+            // the renderer is about to use.
+            self.nav.clip_view.fx.wide =
+                crate::ui::fx_panel_is_wide((term_w as usize).saturating_sub(25));
             let piano_h = term_h.saturating_sub(30).max(6) as u8;
             self.nav.clip_view.piano_roll.set_view_height(piano_h);
 

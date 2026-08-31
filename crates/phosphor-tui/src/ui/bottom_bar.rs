@@ -22,6 +22,11 @@ pub(super) fn render_bottom_bar(
         ("-- EDIT --", theme::amber_bright())
     } else if nav.focused_pane == Pane::Transport {
         ("-- TRANSPORT --", theme::amber_bright())
+    } else if nav.focused_pane == Pane::ClipView
+        && nav.clip_view.clip_tab == ClipTab::Fx
+        && nav.clip_view.focus == ClipViewFocus::PianoRoll
+    {
+        if nav.clip_view.fx.locked { ("-- HOLD --", theme::amber_bright()) } else { ("-- FX --", theme::amber_bright()) }
     } else if in_grid {
         // The step grid is a mode of its own: saying SELECT over a drum
         // machine describes the track list underneath it, not the thing the
@@ -71,6 +76,25 @@ pub(super) fn render_bottom_bar(
             Pane::Transport => vec![("hl","nav"),("enter","sel"),("+/-","bpm"),("tab","pane")],
             Pane::Tracks if nav.track_selected => vec![("hl","clip"),("m","mute"),("s","solo"),("r","arm"),("R","rec"),("esc","back")],
             Pane::Tracks => vec![("jk","track"),("enter","sel"),("m","mute"),("s","solo"),("r","arm"),("R","rec")],
+            // The effect chain, and the panel behind a slot.
+            Pane::ClipView if nav.clip_view.focus == ClipViewFocus::FxPanel
+                && nav.clip_view.fx_panel_tab == FxPanelTab::TrackFx =>
+                vec![("jk","slot"),("enter","open"),("b","byp"),("[]","order"),
+                     ("d","remove"),("a","add")],
+            Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Fx
+                && nav.clip_view.focus == ClipViewFocus::PianoRoll
+                && nav.clip_view.fx.locked =>
+                vec![("hl","adjust"),("H/L","stride"),("esc","release")],
+            Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Fx
+                && nav.clip_view.focus == ClipViewFocus::PianoRoll =>
+                if nav.clip_view.fx.wide {
+                    vec![("hl","band"),("jk","control"),("enter","hold"),
+                         ("n","on/off"),("1-8","band"),("esc","back")]
+                } else {
+                    vec![("jk","band"),("hl","control"),("enter","hold"),
+                         ("n","on/off"),("1-8","band"),("esc","back")]
+                },
+
             // The step grid, band by band. A locked knob says only what it
             // can do, because it is the only thing that can be done.
             Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Sequencer

@@ -2,66 +2,124 @@
 
 // ── FX System ──
 
+/// The effects a player can put in an insert slot.
+///
+/// Five, and only the five that exist. The list used to carry a gate and a
+/// limiter that were never built; a menu entry for a thing that does nothing
+/// is worse than no entry, because the player spends the next minute
+/// wondering what they did wrong. The safety limiter on the master is not in
+/// here either: it is not a slot, it cannot be moved, and framing it as an
+/// effect invites someone to try to delete it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FxType {
-    Reverb,
-    Delay,
-    Gate,
     Eq,
-    Limiter,
     Compressor,
+    Tape,
+    Delay,
+    Reverb,
 }
 
 impl FxType {
+    /// What the menu calls it.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Reverb => "reverb",
-            Self::Delay => "delay",
-            Self::Gate => "gate",
             Self::Eq => "eq",
-            Self::Limiter => "limiter",
             Self::Compressor => "comp",
+            Self::Tape => "tape",
+            Self::Delay => "delay",
+            Self::Reverb => "reverb",
+        }
+    }
+
+    /// Three characters, for a track strip that has no room for more — a bus
+    /// carrying a reverb reads `rvb` rather than `snd a`.
+    pub fn short(self) -> &'static str {
+        match self {
+            Self::Eq => "eq",
+            Self::Compressor => "cmp",
+            Self::Tape => "tap",
+            Self::Delay => "dly",
+            Self::Reverb => "rvb",
+        }
+    }
+
+    /// The stable name this effect is stored under in a session file.
+    ///
+    /// An identifier rather than a label: renaming a label is a cosmetic
+    /// change, renaming this orphans every saved chain that contains one.
+    /// It is the same string the audio-thread effect answers to
+    /// [`phosphor_core::fx::Effect::name`] with.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Eq => "eq",
+            Self::Compressor => "comp",
+            Self::Tape => "tape",
+            Self::Delay => "delay",
+            Self::Reverb => "reverb",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|t| t.key() == key)
+    }
+
+    /// Where this effect belongs in a chain, low numbers first.
+    ///
+    /// The canonical order an engineer would build by hand: tone-shaping
+    /// before dynamics before saturation before time. Adding an effect drops
+    /// it at its canonical position among the slots that are already there —
+    /// but nothing already in the chain is ever moved by it, because a chain
+    /// the player arranged is a decision and not a mistake to be corrected.
+    pub fn canonical_rank(self) -> u8 {
+        match self {
+            Self::Eq => 1,
+            Self::Compressor => 2,
+            Self::Tape => 3,
+            Self::Delay => 4,
+            Self::Reverb => 5,
         }
     }
 
     pub const ALL: &[FxType] = &[
-        Self::Reverb, Self::Delay, Self::Gate, Self::Eq, Self::Limiter, Self::Compressor,
+        Self::Eq,
+        Self::Compressor,
+        Self::Tape,
+        Self::Delay,
+        Self::Reverb,
     ];
 }
 
-/// An FX instance on a track.
-#[derive(Debug, Clone)]
+/// The UI's copy of one effect in a chain.
+///
+/// A mirror, not the effect. The effect itself lives on the audio thread
+/// inside an [`phosphor_core::fx::FxChain`]; this is what the screen is drawn
+/// from and what a session is written from, and every edit to it goes to the
+/// audio thread as a command. Two copies of the same state is a thing to be
+/// suspicious of, and the alternative — reading the audio thread's chain to
+/// draw a frame — is a lock in the callback.
+///
+/// `params` are in the effect's own units, decibels and hertz and
+/// milliseconds, in the order the effect declares them.
+#[derive(Debug, Clone, PartialEq)]
 pub struct FxInstance {
     pub fx_type: FxType,
-    pub enabled: bool,
-    /// Placeholder parameter values (0.0..1.0).
-    pub params: Vec<(String, f32)>,
+    /// Whether the slot's bypass switch is thrown. Bypassed is the exception,
+    /// so the field reads the way the switch does.
+    pub bypass: bool,
+    pub params: Vec<f32>,
 }
 
 impl FxInstance {
-    pub fn new(fx_type: FxType) -> Self {
-        let params = match fx_type {
-            FxType::Reverb => vec![
-                ("mix".into(), 0.3), ("decay".into(), 0.5), ("size".into(), 0.6),
-            ],
-            FxType::Delay => vec![
-                ("time".into(), 0.4), ("feedback".into(), 0.3), ("mix".into(), 0.25),
-            ],
-            FxType::Gate => vec![
-                ("thresh".into(), 0.5), ("attack".into(), 0.1), ("release".into(), 0.3),
-            ],
-            FxType::Eq => vec![
-                ("low".into(), 0.5), ("mid".into(), 0.5), ("high".into(), 0.5),
-            ],
-            FxType::Limiter => vec![
-                ("thresh".into(), 0.8), ("release".into(), 0.2),
-            ],
-            FxType::Compressor => vec![
-                ("thresh".into(), 0.6), ("ratio".into(), 0.4), ("attack".into(), 0.1),
-                ("release".into(), 0.3),
-            ],
-        };
-        Self { fx_type, enabled: true, params }
+    #[must_use]
+    pub fn new(fx_type: FxType, params: Vec<f32>) -> Self {
+        Self { fx_type, bypass: false, params }
+    }
+
+    /// What the strip shows for this slot: `eq`, or `eq \u{00b7}` when it is
+    /// bypassed.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        !self.bypass
     }
 }
 
@@ -319,6 +377,9 @@ pub enum ConfirmKind {
     DeleteTrack,
     DeleteClip,
     DeletePreset,
+    /// Taking an effect out of a chain. Asked about because a chain is work
+    /// and there is no undo for it yet.
+    DeleteFx,
     /// Saving over a preset name the bank already holds.
     OverwritePreset,
 }
@@ -950,6 +1011,46 @@ pub const HELP_TOPICS: &[HelpTopic] = &[
             Key("r", "step record: a played key writes and moves on"),
             Key(". / _", "recording: a rest \u{00b7} tie the step before"),
             Key("b", "bounce the pattern or chain to a clip"),
+        ],
+    },
+    HelpTopic {
+        title: "effects",
+        summary: "chains, the EQ panel, pan and sends",
+        body: &[
+            Note("Six insert slots on every track, every bus and the"),
+            Note("master. The chain is the [trk fx] tab; Enter on a slot"),
+            Note("opens its panel beside it."),
+            Gap,
+            Heading("the chain"),
+            Key("j / k", "move between slots"),
+            Key("a", "add an effect \u{00b7} d: take one out"),
+            Key("enter", "open its panel"),
+            Key("b", "bypass \u{2014} the slot stays, the effect steps aside"),
+            Key("[ / ]", "move the slot earlier / later in the chain"),
+            Note("Order is the sound: an EQ before a compressor is not"),
+            Note("the same as one after it, so nothing is ever sorted"),
+            Note("for you."),
+            Gap,
+            Heading("the eq"),
+            Key("h / l", "the eight bands (rows on a narrow terminal)"),
+            Key("j / k", "the band's controls: type, freq, gain, q, slope"),
+            Key("1-8", "jump to a band \u{00b7} n: switch it on or off"),
+            Key("enter", "hold a control \u{00b7} h/l turns it, H/L strides"),
+            Key("esc", "let go, then leave the panel"),
+            Note("Frequencies walk the ISO centres, so a band reads"),
+            Note("2.5k rather than 2487. Gain moves half a decibel at a"),
+            Note("time and three with a stride."),
+            Note("A control the band type does not use is greyed and"),
+            Note("will not move \u{2014} a bell has no slope, a shelf no Q."),
+            Note("The curve over the bands is drawn from the filter's"),
+            Note("own response, at the rate the engine is running."),
+            Gap,
+            Heading("pan and sends"),
+            Key("h / l", "on the track row: pan, send A, send B"),
+            Key("enter", "hold one \u{00b7} h/l moves it, esc lets go"),
+            Note("Sends are post-fader and open from silence. The top"),
+            Note("bar shows the safety limiter's reduction when the"),
+            Note("mix is loud enough to need it."),
         ],
     },
     HelpTopic {

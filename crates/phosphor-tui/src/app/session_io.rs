@@ -44,6 +44,58 @@ impl App {
     }
 
 
+    /// Put the send buses and the master back the way the session left them.
+    ///
+    /// A session that never touched them says nothing about them, and then
+    /// the buses are whatever a new session starts with — which is the
+    /// point of `phosphor_app::fx::bus_default_chain`.
+    fn restore_buses(&mut self, buses: Option<&crate::session::SessionBuses>) {
+        use phosphor_core::fx::SendSlot;
+        use phosphor_core::project::TrackKind;
+
+        for (kind, slot) in [
+            (TrackKind::SendA, Some(SendSlot::A)),
+            (TrackKind::SendB, Some(SendSlot::B)),
+            (TrackKind::Master, None),
+        ] {
+            let Some(index) = self.nav.tracks.iter().position(|t| t.kind == kind) else {
+                continue;
+            };
+            let (stored, level) = match (buses, slot) {
+                // The file has a bus section: it is the whole truth about
+                // these strips, empty chains included.
+                (Some(buses), Some(slot)) => {
+                    (buses.send(slot).to_vec(), Some(buses.return_level(slot)))
+                }
+                (Some(buses), None) => (buses.master.clone(), None),
+                // No bus section — a session from before the insert layer.
+                // The buses go back to what a new session starts with, so
+                // that opening an old file does not leave the previous
+                // session's reverb sitting on the send.
+                (None, Some(slot)) => (
+                    crate::session::chain_to_session(&phosphor_app::fx::bus_default_chain(slot)),
+                    Some(1.0),
+                ),
+                (None, None) => (Vec::new(), None),
+            };
+
+            let (chain, dropped) = crate::session::chain_from_session(&stored);
+            if dropped > 0 {
+                tracing::warn!("{dropped} bus effect(s) in the session are not in this build");
+            }
+            if let Some(track) = self.nav.tracks.get_mut(index) {
+                track.fx_chain = chain;
+                if let Some(level) = level {
+                    track.volume = level;
+                    if let Some(handle) = &track.handle {
+                        handle.config.set_volume(level);
+                    }
+                }
+            }
+            self.install_chain(index);
+        }
+    }
+
     pub(crate) fn do_load(&mut self, path_str: &str) {
         // A relative path is tried against the working directory first, which
         // is where it has always resolved, and then against the application
@@ -123,6 +175,14 @@ impl App {
                 }
             }
         }
+        // The bus strips survive a session load — they are fixtures, not
+        // tracks — but what is *in* them belongs to the session that was
+        // open, so their chains come off with the tracks.
+        for index in 0..self.nav.tracks.len() {
+            if self.nav.tracks[index].is_bus() {
+                self.clear_chain(index);
+            }
+        }
         // Now clear instrument tracks from TUI state
         self.nav.tracks.retain(|t| t.instrument_type.is_none());
         self.nav.track_cursor = 0;
@@ -173,18 +233,27 @@ impl App {
         // quietly. See `crate::session::FORMAT_VERSION`.
         let legacy_selectors = session.version < crate::session::FORMAT_VERSION;
         let mut clamped_selectors = 0usize;
+        // The mixer id each saved track ended up with, in the file's own
+        // order and with a hole where a track was skipped. Sidechain keys are
+        // stored as a position in that list, so this is what turns them back
+        // into the identity the audio thread addresses.
+        let mut created_ids: Vec<Option<usize>> = Vec::with_capacity(session.tracks.len());
 
         // Recreate tracks from session
         for st in &session.tracks {
             let instrument = match crate::session::parse_instrument_type(&st.instrument_type) {
                 Some(i) => i,
-                None => continue, // skip unknown instruments
+                None => {
+                    created_ids.push(None);
+                    continue; // skip unknown instruments
+                }
             };
 
             self.create_instrument_track(instrument);
 
             // Restore track state
             let track_idx = self.nav.track_cursor;
+            created_ids.push(self.nav.tracks.get(track_idx).and_then(|t| t.mixer_id));
             if let Some(track) = self.nav.tracks.get_mut(track_idx) {
                 track.name = st.name.clone();
                 track.muted = st.muted;
@@ -269,8 +338,27 @@ impl App {
                     }
                 }
 
+                // ── Routing and inserts ──
+                //
+                // Pan and the sends are plain values; the chain is a list of
+                // effects to build. Both are absent from a session written
+                // before the insert layer existed, and absent means the
+                // defaults, which is what the track already has.
+                track.pan = st.pan;
+                track.sends = [st.send_a, st.send_b];
+                let (chain, dropped) = crate::session::chain_from_session(&st.fx);
+                track.fx_chain = chain;
+                if dropped > 0 {
+                    tracing::warn!(
+                        "track '{}': {dropped} effect(s) in the session are not in this build",
+                        st.name
+                    );
+                }
+
                 track.sync_to_audio();
             }
+            self.install_chain(track_idx);
+            self.sync_routing(track_idx);
 
             // The sequencer last, so that it is attached to a track whose
             // child instrument and panel are already in place.
@@ -280,6 +368,35 @@ impl App {
                 }
             }
         }
+
+        // ── Sidechain keys ──
+        //
+        // Last, and in a pass of their own: a key names another track, and
+        // until every track exists there is nothing to name.
+        for (position, st) in session.tracks.iter().enumerate() {
+            let (Some(Some(track_id)), Some(key_position)) =
+                (created_ids.get(position), st.key_track)
+            else {
+                continue;
+            };
+            let Some(Some(key_id)) = created_ids.get(key_position).copied() else {
+                // The track it keyed off is not in this build's idea of the
+                // session — an unknown instrument, most likely. The key falls
+                // back to internal rather than pointing at the wrong track.
+                tracing::warn!("track '{}': its sidechain key track did not load", st.name);
+                continue;
+            };
+            if let Some(track) = self.nav.tracks.iter_mut().find(|t| t.mixer_id == Some(*track_id)) {
+                track.key_source = Some(key_id);
+            }
+            let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::SetKeySource {
+                track_id: *track_id,
+                source: Some(key_id),
+            });
+        }
+
+        // ── The buses ──
+        self.restore_buses(session.buses.as_ref());
 
         // Clean up any phantom/duplicate clips
         self.sync_dedup_to_audio();

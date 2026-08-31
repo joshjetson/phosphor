@@ -207,11 +207,45 @@ pub(super) fn render_header(frame: &mut Frame, area: Rect, ctx: &TrackCtx) {
         }
     }
 
-    // Row 2: divider line across header
-    let r2 = Line::from(vec![
-        Span::styled(ac, ac_s),
-        Span::styled("\u{2500}".repeat(HEADER_W as usize - 1), theme::border_style()),
-    ]);
+    // Row 2: where the track is going. Pan, send A, send B — three cells
+    // that used to be eleven characters of divider.
+    //
+    // They are here rather than on a page of their own because a send nobody
+    // can see is a send nobody opens: the whole point of shipping the buses
+    // pre-loaded is that the routing is one keystroke away, and a keystroke
+    // away is not far enough if the number it moves is invisible until it
+    // moves.
+    let r2 = if is_special {
+        Line::from(vec![
+            Span::styled(ac, ac_s),
+            Span::styled("\u{2500}".repeat(HEADER_W as usize - 1), theme::border_style()),
+        ])
+    } else {
+        let pan_f = sel && nav.track_element == TrackElement::Pan;
+        let a_f = sel && nav.track_element == TrackElement::SendA;
+        let b_f = sel && nav.track_element == TrackElement::SendB;
+        let send_cell = |db: Option<f32>| match db {
+            Some(db) => format!("{:>3}", db.round() as i32),
+            None => "  \u{00b7}".to_string(),
+        };
+        Line::from(vec![
+            Span::styled(ac, ac_s),
+            Span::styled(
+                format!("{:>3}", crate::app::pan_label(track.pan)),
+                theme::btn_style(track.pan.abs() > 0.001, pan_f, tc),
+            ),
+            Span::styled(" ", theme::bg()),
+            Span::styled(
+                send_cell(track.send_db(phosphor_core::fx::SendSlot::A)),
+                theme::btn_style(track.send(phosphor_core::fx::SendSlot::A) > 0.0, a_f, tc),
+            ),
+            Span::styled(" ", theme::bg()),
+            Span::styled(
+                send_cell(track.send_db(phosphor_core::fx::SendSlot::B)),
+                theme::btn_style(track.send(phosphor_core::fx::SendSlot::B) > 0.0, b_f, tc),
+            ),
+        ])
+    };
 
     let lines = vec![
         Line::from(r0),
@@ -319,8 +353,15 @@ pub(super) fn render_clips(frame: &mut Frame, area: Rect, ctx: &TrackCtx, snap: 
         grid[last_row][x] = ('\u{2500}', div_s);
     }
 
-    // Track name in first bar — lowercase, no bold, subtler presence
-    let name = track.name.to_lowercase();
+    // Track name in first bar — lowercase, no bold, subtler presence.
+    //
+    // A send bus is named by what is in it: `rvb` reads as the thing the
+    // player is sending to, where `snd a` reads as a routing matrix. An
+    // empty bus keeps its letter — see `phosphor_app::fx::bus_label`.
+    let name = match track.send_slot() {
+        Some(slot) => phosphor_app::fx::bus_label(&track.fx_chain, slot).to_string(),
+        None => track.name.to_lowercase(),
+    };
     let name_s = Style::default()
         .fg(if dim { theme::dim_color(tc, 30) } else { theme::dim_color(tc, 65) })
         .bg(theme::bg_val());

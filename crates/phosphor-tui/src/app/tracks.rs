@@ -216,6 +216,181 @@ impl App {
         }
     }
 
+    // ── Inserts ──
+
+    /// Take whatever the FX menu's cursor is on and put it in the chain.
+    ///
+    /// The UI's mirror and the audio thread's chain move together or not at
+    /// all: the effect is built here, on this thread, and handed over as a
+    /// command — the same shape `SetInstrument` has, and for the same reason.
+    /// Nothing is ever built on the audio thread.
+    pub(crate) fn fx_menu_choose(&mut self) {
+        let outcome = self.nav.fx_menu_select();
+        self.apply_fx_add(outcome);
+    }
+
+    /// Send an added effect to the audio thread, or say why there is none.
+    pub(crate) fn apply_fx_add(&mut self, outcome: phosphor_app::state::FxAdd) {
+        use phosphor_app::state::FxAdd;
+        let message = match outcome {
+            FxAdd::Added { target, slot, fx_type, effect } => {
+                let _ = self
+                    .engine
+                    .shared
+                    .mixer_command_tx
+                    .send(MixerCommand::AddFx { target, slot, effect });
+                // Where it landed is worth saying: an effect is inserted at
+                // its canonical place in the chain rather than appended, so
+                // "added reverb" alone would leave the player looking for it
+                // at the bottom.
+                format!("{} added at slot {}", fx_type.label(), slot + 1)
+            }
+            FxAdd::ChainFull => format!(
+                "chain is full ({} slots) \u{b7} remove one first",
+                phosphor_core::fx::MAX_FX_SLOTS
+            ),
+            FxAdd::NotBuilt(fx_type) => format!("{} is not built yet", fx_type.label()),
+            FxAdd::Nothing => return,
+        };
+        crate::debug_log::log("FX", &message);
+        self.status_message = Some((message, std::time::Instant::now()));
+    }
+
+    /// Put a whole chain on a strip, on both sides.
+    ///
+    /// Used by the session loader: the mirror is already in place, and this
+    /// sends the audio thread the effects to match it. A slot whose effect
+    /// this build cannot make is dropped from the mirror too, so the two
+    /// never disagree about which slot is which.
+    pub(crate) fn install_chain(&mut self, track_index: usize) {
+        let Some(track) = self.nav.tracks.get(track_index) else { return };
+        let Some(target) = track.fx_target() else { return };
+        let chain = track.fx_chain.clone();
+
+        let mut installed = 0usize;
+        let mut missing = 0usize;
+        for slot in &chain {
+            let Some(mut effect) = phosphor_app::fx::build(slot.fx_type) else {
+                missing += 1;
+                continue;
+            };
+            for (index, &value) in slot.params.iter().enumerate() {
+                effect.set_parameter(index, value);
+            }
+            let tx = &self.engine.shared.mixer_command_tx;
+            let _ = tx.send(MixerCommand::AddFx { target, slot: installed, effect });
+            if slot.bypass {
+                let _ = tx.send(MixerCommand::SetFxBypass {
+                    target,
+                    slot: installed,
+                    bypass: true,
+                });
+            }
+            installed += 1;
+        }
+
+        if missing > 0 {
+            // The mirror keeps only what actually reached the audio thread.
+            // A slot drawn on screen that is not in the signal path is worse
+            // than a missing slot, because it looks like it is working.
+            if let Some(track) = self.nav.tracks.get_mut(track_index) {
+                track.fx_chain.retain(|slot| phosphor_app::fx::is_built(slot.fx_type));
+            }
+            let message = format!(
+                "{missing} effect{} in this session {} not in this build",
+                if missing == 1 { "" } else { "s" },
+                if missing == 1 { "is" } else { "are" },
+            );
+            crate::debug_log::log("FX", &message);
+            self.status_message = Some((message, std::time::Instant::now()));
+        }
+    }
+
+    /// Take every effect off a strip, on both sides.
+    ///
+    /// Slots are removed from the end so that the indices of the ones still
+    /// to go do not move underneath the commands already queued.
+    pub(crate) fn clear_chain(&mut self, track_index: usize) {
+        let Some(track) = self.nav.tracks.get_mut(track_index) else { return };
+        let Some(target) = track.fx_target() else { return };
+        let count = track.fx_chain.len();
+        track.fx_chain.clear();
+        for slot in (0..count).rev() {
+            let _ = self
+                .engine
+                .shared
+                .mixer_command_tx
+                .send(MixerCommand::RemoveFx { target, slot });
+        }
+    }
+
+    /// Move one control on one effect, on both sides.
+    ///
+    /// In the control's own unit — decibels, hertz, milliseconds — because
+    /// that is what the insert layer's parameters are and what the mirror
+    /// stores. The mirror is written first and the command sent from what it
+    /// then holds, so the two cannot disagree about what was set even if the
+    /// caller hands over something out of range: whatever the effect clamps
+    /// it to is the effect's business, and both sides asked for the same
+    /// thing.
+    ///
+    /// Silently does nothing for a slot that is not there. A panel drawing a
+    /// chain it has just edited is one frame behind the edit often enough
+    /// that a panic here would be a crash rather than a bug report.
+    ///
+    /// No keystroke reaches this yet: the panel that will turn a knob is the
+    /// The panel's keys are the only caller with a keyboard behind them —
+    /// see `app::fx_keys` — and the integration tests drive the same route.
+    pub(crate) fn set_fx_param(&mut self, track_index: usize, slot: usize, param: usize, value: f32) {
+        let Some(track) = self.nav.tracks.get_mut(track_index) else { return };
+        let Some(target) = track.fx_target() else { return };
+        let Some(instance) = track.fx_chain.get_mut(slot) else { return };
+        if let Some(stored) = instance.params.get_mut(param) {
+            *stored = value;
+        }
+        let _ = self
+            .engine
+            .shared
+            .mixer_command_tx
+            .send(MixerCommand::SetFxParam { target, slot, param, value });
+    }
+
+    /// Throw a slot's bypass switch, on both sides. The audio thread
+    /// crossfades it; the mirror is what the strip and the session read.
+    ///
+    /// Thrown from the chain list and from the panel, through the same door
+    /// as [`Self::set_fx_param`].
+    pub(crate) fn set_fx_bypass(&mut self, track_index: usize, slot: usize, bypass: bool) {
+        let Some(track) = self.nav.tracks.get_mut(track_index) else { return };
+        let Some(target) = track.fx_target() else { return };
+        let Some(instance) = track.fx_chain.get_mut(slot) else { return };
+        instance.bypass = bypass;
+        let _ = self
+            .engine
+            .shared
+            .mixer_command_tx
+            .send(MixerCommand::SetFxBypass { target, slot, bypass });
+    }
+
+    /// Push a strip's pan, sends and sidechain key to the audio thread.
+    pub(crate) fn sync_routing(&self, track_index: usize) {
+        let Some(track) = self.nav.tracks.get(track_index) else { return };
+        let Some(track_id) = track.mixer_id else { return };
+        let tx = &self.engine.shared.mixer_command_tx;
+        let _ = tx.send(MixerCommand::SetPan { track_id, pan: track.pan });
+        for slot in phosphor_core::fx::SendSlot::ALL {
+            let _ = tx.send(MixerCommand::SetSendLevel {
+                track_id,
+                send: slot,
+                gain: track.send(slot),
+            });
+        }
+        let _ = tx.send(MixerCommand::SetKeySource {
+            track_id,
+            source: track.key_source,
+        });
+    }
+
     // ── Delete ──
 
 }

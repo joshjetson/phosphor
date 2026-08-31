@@ -465,6 +465,7 @@ mod help {
                 "clips",
                 "piano roll",
                 "step sequencer",
+                "effects",
                 "instruments",
                 "presets & sessions",
                 "themes",
@@ -643,5 +644,557 @@ mod help {
                 );
             }
         }
+    }
+}
+
+/// The effect layer's face: the chain, and the eight-band parametric behind
+/// a slot of it.
+///
+/// Everything here drives `handle_event` and reads the rendered buffer,
+/// because the two questions that matter about an effect panel are whether a
+/// key reaches the audio thread and whether the number on the screen is the
+/// one the filter is running.
+#[cfg(test)]
+mod fx {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+    use phosphor_core::fx::SendSlot;
+    use phosphor_core::mixer::MixerCommand;
+    use phosphor_core::EngineConfig;
+
+    use crate::app::App;
+    use crate::state::{ClipTab, ClipViewFocus, FxPanelTab, FxType, FxView, InstrumentType, Pane, TrackElement};
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.handle_event(Event::Key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }));
+    }
+
+    fn press_shift(app: &mut App, code: KeyCode) {
+        app.handle_event(Event::Key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::SHIFT,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }));
+    }
+
+    fn screen(app: &App, width: u16, height: u16) -> String {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let snapshot = app.engine.transport.snapshot();
+        let status = app.live_status();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &snapshot, &app.nav, status))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A track with an EQ in it, the chain list focused.
+    fn chain_app() -> App {
+        let mut app = App::new(EngineConfig { buffer_size: 64, sample_rate: 48_000 }, false, false);
+        app.create_instrument_track(InstrumentType::Juno60);
+        app.nav.add_fx(FxType::Eq);
+        app.nav.focus_pane(Pane::ClipView);
+        app.nav.clip_view.focus = ClipViewFocus::FxPanel;
+        app.nav.clip_view.fx_panel_tab = FxPanelTab::TrackFx;
+        app.nav.clip_view.fx_cursor = 0;
+        let _ = app.drain_mixer_commands();
+        app
+    }
+
+    /// The panel open on the EQ, in whichever layout the width implies.
+    fn eq_app(wide: bool) -> App {
+        let mut app = chain_app();
+        app.nav.clip_view.fx.wide = wide;
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.nav.clip_view.clip_tab, ClipTab::Fx);
+        app
+    }
+
+    fn params(app: &App) -> Vec<f32> {
+        app.nav.current_track().unwrap().fx_chain[0].params.clone()
+    }
+
+    // ── The chain ──
+
+    /// The slot list: what is in the chain, which one the cursor is on, and
+    /// whether each one is in the signal path.
+    #[test]
+    fn the_chain_lists_its_slots() {
+        let app = chain_app();
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("eq"), "the slot is not listed:\n{text}");
+        assert!(text.contains('\u{25CF}'), "no active mark on an active slot");
+        assert!(text.contains("enter open"), "the list does not say what enter does");
+    }
+
+    /// Bypass, from the list, on both sides: the glyph changes and the audio
+    /// thread is told.
+    #[test]
+    fn bypass_toggles_the_slot_glyph_and_the_signal_path() {
+        // The slot's own row, not the hint line under the list.
+        let slot_row = |app: &App| {
+            screen(app, 120, 40)
+                .lines()
+                .find(|line| line.contains("eq"))
+                .unwrap_or_default()
+                .to_string()
+        };
+        let mut app = chain_app();
+        assert!(slot_row(&app).contains('\u{25CF}'), "an active slot is not marked active");
+        assert!(!slot_row(&app).contains("byp"));
+
+        press(&mut app, KeyCode::Char('b'));
+        assert!(app.nav.current_track().unwrap().fx_chain[0].bypass);
+        let row = slot_row(&app);
+        assert!(row.contains("byp"), "the row does not say it is bypassed: {row:?}");
+        assert!(row.contains('\u{25CB}'), "the switch glyph did not change: {row:?}");
+        assert!(
+            app.drain_mixer_commands().iter().any(|c| matches!(
+                c,
+                MixerCommand::SetFxBypass { bypass: true, slot: 0, .. }
+            )),
+            "the audio thread was not told",
+        );
+
+        press(&mut app, KeyCode::Char('b'));
+        assert!(!app.nav.current_track().unwrap().fx_chain[0].bypass);
+    }
+
+    /// Reorder round-trips: the mirror moves, the audio thread is told, and
+    /// moving it back puts the chain where it started.
+    #[test]
+    fn reordering_round_trips() {
+        let mut app = chain_app();
+        app.nav.add_fx(FxType::Eq);
+        let _ = app.drain_mixer_commands();
+        assert_eq!(app.nav.current_track().unwrap().fx_chain.len(), 2);
+
+        // Mark the two apart, so a move is visible in the mirror.
+        app.set_fx_param(app.nav.track_cursor, 1, 2, 6.0);
+        let _ = app.drain_mixer_commands();
+
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.nav.clip_view.fx_cursor, 1);
+        press(&mut app, KeyCode::Char('['));
+        assert_eq!(app.nav.clip_view.fx_cursor, 0, "the cursor did not follow the slot");
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[0].params[2], 6.0);
+        assert!(
+            app.drain_mixer_commands()
+                .iter()
+                .any(|c| matches!(c, MixerCommand::MoveFx { from: 1, to: 0, .. })),
+            "the audio thread was not told to move it",
+        );
+
+        press(&mut app, KeyCode::Char(']'));
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[1].params[2], 6.0);
+        assert_eq!(app.nav.clip_view.fx_cursor, 1);
+    }
+
+    /// Removing asks first, and then removes on both sides.
+    #[test]
+    fn removing_an_effect_asks_and_then_removes_it() {
+        let mut app = chain_app();
+        press(&mut app, KeyCode::Char('d'));
+        assert!(app.nav.confirm_modal.open, "it removed without asking");
+        assert!(!app.nav.current_track().unwrap().fx_chain.is_empty());
+
+        press(&mut app, KeyCode::Char('y'));
+        assert!(app.nav.current_track().unwrap().fx_chain.is_empty());
+        assert!(
+            app.drain_mixer_commands()
+                .iter()
+                .any(|c| matches!(c, MixerCommand::RemoveFx { slot: 0, .. })),
+            "the audio thread kept the effect",
+        );
+    }
+
+    /// The chain is the same feature on a bus and on the master: same list,
+    /// same keys, same commands, addressed at the strip the cursor is on.
+    #[test]
+    fn the_chain_works_on_a_bus_and_on_the_master() {
+        for name in ["snd a", "mstr"] {
+            let mut app = chain_app();
+            let index = app
+                .nav
+                .tracks
+                .iter()
+                .position(|t| t.name == name)
+                .unwrap_or_else(|| panic!("no {name} track"));
+            app.nav.track_cursor = index;
+            app.nav.add_fx(FxType::Eq);
+            let _ = app.drain_mixer_commands();
+
+            assert_eq!(app.nav.tracks[index].fx_chain.len(), 1, "no slot on {name}");
+            press(&mut app, KeyCode::Char('b'));
+            assert!(app.nav.tracks[index].fx_chain[0].bypass, "bypass did not reach {name}");
+            assert!(
+                app.drain_mixer_commands()
+                    .iter()
+                    .any(|c| matches!(c, MixerCommand::SetFxBypass { .. })),
+                "the audio thread was not told about {name}",
+            );
+        }
+    }
+
+    // ── The EQ panel ──
+
+    /// The curve is drawn where there is room for it and dropped where there
+    /// is not — and the gain column survives either way, because a player can
+    /// mix off numbers and cannot mix off a picture.
+    #[test]
+    fn the_curve_is_wide_only_and_the_numbers_are_not() {
+        let wide = screen(&eq_app(true), 120, 40);
+        assert!(
+            wide.contains('\u{2800}') || wide.chars().any(|c| ('\u{2801}'..='\u{28FF}').contains(&c)),
+            "no curve at 120 columns:\n{wide}",
+        );
+        assert!(wide.contains("+12") && wide.contains("-12"), "no gridlines:\n{wide}");
+        assert!(wide.contains("100") && wide.contains("10k"), "no decade ticks:\n{wide}");
+        assert!(wide.contains("gain"), "no gain column at 120");
+
+        let narrow = screen(&eq_app(false), 80, 24);
+        assert!(
+            !narrow.chars().any(|c| ('\u{2801}'..='\u{28FF}').contains(&c)),
+            "the curve was drawn at 80 columns:\n{narrow}",
+        );
+        assert!(narrow.contains("gain"), "the gain column went:\n{narrow}");
+        assert!(narrow.contains("2.5k"), "the frequencies went:\n{narrow}");
+    }
+
+    /// A gain edit moves the number and the curve together. The curve is
+    /// drawn from the EQ's own response, so if they ever disagree it is the
+    /// drawing that is wrong.
+    #[test]
+    fn a_gain_edit_moves_the_number_and_the_curve() {
+        let mut app = eq_app(true);
+        // Band 5 — the 2.5 kHz bell — and its gain.
+        press(&mut app, KeyCode::Char('5'));
+        press(&mut app, KeyCode::Char('j')); // the frequency, then the gain
+        assert_eq!(app.nav.clip_view.fx.control, 2, "not on the gain");
+
+        let before = screen(&app, 120, 40);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.nav.clip_view.fx.locked);
+        // Four coarse presses: +12 dB.
+        for _ in 0..4 {
+            press_shift(&mut app, KeyCode::Char('L'));
+        }
+
+        assert_eq!(params(&app)[4 * FxView::CONTROLS + 2], 12.0, "the gain did not land on +12");
+        let after = screen(&app, 120, 40);
+        assert!(after.contains("+12.0"), "the number is not on the screen:\n{after}");
+        assert_ne!(before, after, "nothing moved");
+        // ...and the curve itself changed, not only the number.
+        let braille = |text: &str| {
+            text.chars().filter(|c| ('\u{2801}'..='\u{28FF}').contains(c)).count()
+        };
+        assert!(braille(&after) > 0);
+        let curve_before: String = before.lines().filter(|l| l.contains('\u{2800}') || braille(l) > 0).collect();
+        let curve_after: String = after.lines().filter(|l| l.contains('\u{2800}') || braille(l) > 0).collect();
+        assert_ne!(curve_before, curve_after, "the curve did not move with the number");
+
+        // ...and the audio thread got the same value.
+        assert!(
+            app.drain_mixer_commands().iter().any(|c| matches!(
+                c,
+                MixerCommand::SetFxParam { param, value, .. }
+                    if *param == 4 * FxView::CONTROLS + 2 && (*value - 12.0).abs() < 1e-6
+            )),
+            "the filter was never told",
+        );
+    }
+
+    /// A control the band type does not use is greyed, and refuses to move.
+    /// The two are the same fact: the panel greys what the key handler
+    /// refuses, both from the band type's own answer.
+    #[test]
+    fn a_control_the_band_does_not_use_refuses_to_move() {
+        let mut app = eq_app(true);
+        // Band 1 is the high-pass: no gain.
+        press(&mut app, KeyCode::Char('1'));
+        // The panel opens on the frequency; one row down is the gain.
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.nav.clip_view.fx.control, 2);
+
+        let before = params(&app);
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.nav.clip_view.fx.locked, "it held a control that does nothing");
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(params(&app), before, "a greyed control moved");
+        assert!(
+            app.drain_mixer_commands().is_empty(),
+            "a greyed control reached the audio thread",
+        );
+        assert!(
+            screen(&app, 120, 40).contains('\u{2014}'),
+            "a control that does nothing is not drawn as such",
+        );
+    }
+
+    /// Frequencies walk the ISO centres, so the readout is always a number an
+    /// EQ says out loud.
+    #[test]
+    fn frequencies_walk_the_iso_centres() {
+        let mut app = eq_app(true);
+        press(&mut app, KeyCode::Char('5'));
+        assert_eq!(app.nav.clip_view.fx.control, 1, "the panel does not open on the frequency");
+        assert_eq!(params(&app)[4 * FxView::CONTROLS + 1], 2500.0);
+
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(params(&app)[4 * FxView::CONTROLS + 1], 2800.0, "not an ISO centre");
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(params(&app)[4 * FxView::CONTROLS + 1], 2500.0);
+
+        // A stride is an octave of them.
+        press_shift(&mut app, KeyCode::Char('L'));
+        assert_eq!(params(&app)[4 * FxView::CONTROLS + 1], 5000.0);
+        assert!(screen(&app, 120, 40).contains("5k"), "the readout is not in kilohertz");
+    }
+
+    /// The cursor moves the way the screen looks: bands are columns when
+    /// there is room and rows when there is not, and `h` moves the cursor the
+    /// way `h` points either way.
+    #[test]
+    fn the_cursor_follows_the_layout() {
+        let mut app = eq_app(true);
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.nav.clip_view.fx.band, 1, "l did not move a column");
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.nav.clip_view.fx.control, 2, "j did not move a row");
+
+        let mut app = eq_app(false);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.nav.clip_view.fx.band, 1, "j did not move a row of bands");
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.nav.clip_view.fx.control, 2, "l did not move a column");
+    }
+
+    /// Esc walks back out: release the control, then leave the panel for the
+    /// chain it was opened from.
+    #[test]
+    fn escape_releases_then_leaves() {
+        let mut app = eq_app(true);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.nav.clip_view.fx.locked);
+
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.nav.clip_view.fx.locked);
+        assert_eq!(app.nav.clip_view.clip_tab, ClipTab::Fx, "esc left the panel too");
+
+        press(&mut app, KeyCode::Esc);
+        assert!(app.nav.clip_view.fx.slot.is_none());
+        assert_eq!(app.nav.clip_view.focus, ClipViewFocus::FxPanel, "not back on the chain");
+    }
+
+    /// A held control takes the keys that would otherwise leave.
+    #[test]
+    fn a_held_control_swallows_tab_and_undo() {
+        let mut app = eq_app(true);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.nav.clip_view.clip_tab, ClipTab::Fx, "tab left a held control");
+        press(&mut app, KeyCode::Char('u'));
+        assert!(app.nav.clip_view.fx.locked, "undo ran from inside a held control");
+    }
+
+    /// The band on switch, and the trim at the end of the strip.
+    #[test]
+    fn the_band_switch_and_the_trim_are_reachable() {
+        let mut app = eq_app(true);
+        press(&mut app, KeyCode::Char('2'));
+        assert_eq!(params(&app)[FxView::CONTROLS + 5], 1.0);
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(params(&app)[FxView::CONTROLS + 5], 0.0, "n did not switch the band off");
+
+        // Off the end of the eight bands is the output trim.
+        for _ in 0..8 {
+            press(&mut app, KeyCode::Char('l'));
+        }
+        assert_eq!(app.nav.clip_view.fx.band, FxView::TRIM);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('l'));
+        assert!(params(&app)[phosphor_dsp::fx::eq::PARAM_COUNT - 1] > 0.0, "the trim did not move");
+        assert!(screen(&app, 120, 40).contains("trim"));
+    }
+
+    /// The selected band's own contribution is drawn on top of the
+    /// composite, so a player can see which hump is the one they are turning.
+    ///
+    /// Read as "the trace is not all one colour" rather than against a named
+    /// colour: the palette can be cycled by another test in the same binary
+    /// between the render and the read, and what is being asserted is that
+    /// the highlight exists, not which amber it is.
+    #[test]
+    fn the_selected_bands_trace_is_highlighted() {
+        let mut app = eq_app(true);
+        press(&mut app, KeyCode::Char('5'));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Enter);
+        for _ in 0..4 {
+            press_shift(&mut app, KeyCode::Char('L'));
+        }
+        press(&mut app, KeyCode::Esc);
+
+        // The highlight is a style, not a character, so this reads colours.
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let snapshot = app.engine.transport.snapshot();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &snapshot, &app.nav, None))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let mut colours: Vec<String> = Vec::new();
+        for y in 0..40u16 {
+            for x in 0..120u16 {
+                let cell = &buffer[(x, y)];
+                let braille = cell
+                    .symbol()
+                    .chars()
+                    .next()
+                    .is_some_and(|c| ('\u{2801}'..='\u{28FF}').contains(&c));
+                if braille {
+                    colours.push(format!("{:?}", cell.fg));
+                }
+            }
+        }
+        assert!(!colours.is_empty(), "no curve was drawn at all");
+        colours.sort();
+        colours.dedup();
+        assert!(
+            colours.len() > 1,
+            "the whole curve is one colour \u{2014} the band being turned has no trace of its own",
+        );
+    }
+
+    /// Nine themes, one panel. The curve, the gridlines and the greyed
+    /// controls all come from the palette.
+    #[test]
+    fn the_panel_belongs_to_the_theme() {
+        let app = eq_app(true);
+        let first = screen(&app, 120, 40);
+        for index in 0..crate::theme::THEME_COUNT {
+            crate::theme::set_theme(index);
+            assert_eq!(
+                screen(&app, 120, 40),
+                first,
+                "the eq panel drew different characters in theme {}",
+                crate::theme::theme_name(),
+            );
+        }
+        crate::theme::set_theme(0);
+        assert!(
+            !include_str!("ui/fx.rs").contains("Color::Rgb"),
+            "the effect panel names a colour instead of asking the theme for one",
+        );
+    }
+
+    /// The bus row is named after what is in it. An empty bus keeps its
+    /// letter; one with an effect in it says which effect, because "the
+    /// reverb" is what a player calls that bus.
+    #[test]
+    fn a_bus_is_labelled_by_its_first_effect() {
+        let mut app = chain_app();
+        assert!(screen(&app, 120, 40).contains("snd a"), "an empty bus lost its label");
+
+        let index = app.nav.tracks.iter().position(|t| t.name == "snd a").unwrap();
+        app.nav.track_cursor = index;
+        app.nav.add_fx(FxType::Eq);
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("eq"), "the bus is not named after its effect:\n{text}");
+    }
+
+    /// The panel is a tab while it is open, and stops being one when it is
+    /// not: a tab for a panel with no effect behind it shows nothing.
+    #[test]
+    fn the_panel_is_a_tab_only_while_it_is_open() {
+        let app = chain_app();
+        assert!(!screen(&app, 120, 40).contains("[fx]"), "a tab with nothing behind it");
+
+        let mut app = eq_app(true);
+        assert!(screen(&app, 120, 40).contains("[fx]"), "the open panel is not a tab");
+        press(&mut app, KeyCode::Esc);
+        assert!(!screen(&app, 120, 40).contains("[fx]"), "the tab outlived the panel");
+    }
+
+    // ── The strip ──
+
+    /// Pan and the two sends are cells on the track row, they lock like the
+    /// fader, and they reach the audio thread.
+    #[test]
+    fn pan_and_sends_are_reachable_from_the_strip() {
+        let mut app = chain_app();
+        app.nav.focus_pane(Pane::Tracks);
+        app.nav.track_selected = true;
+        app.nav.track_element = TrackElement::Pan;
+        let _ = app.drain_mixer_commands();
+
+        press(&mut app, KeyCode::Enter);
+        assert!(app.nav.element_locked, "pan did not lock");
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Char('l'));
+        }
+        assert!(app.nav.current_track().unwrap().pan > 0.0);
+        assert!(app.live_status().unwrap_or_default().starts_with("pan: R"));
+        assert!(
+            app.drain_mixer_commands()
+                .iter()
+                .any(|c| matches!(c, MixerCommand::SetPan { .. })),
+            "the mixer was not told about the pan",
+        );
+
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('l')); // → send A
+        assert_eq!(app.nav.track_element, TrackElement::SendA);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('l'));
+        assert!(
+            app.nav.current_track().unwrap().send(SendSlot::A) > 0.0,
+            "the send did not open",
+        );
+        assert!(
+            app.drain_mixer_commands()
+                .iter()
+                .any(|c| matches!(c, MixerCommand::SetSendLevel { send: SendSlot::A, .. })),
+            "the mixer was not told about the send",
+        );
+
+        // ...and all three read on the row.
+        let text = screen(&app, 120, 40);
+        assert!(text.contains('R'), "the pan does not read on the strip:\n{text}");
+    }
+
+    /// The safety limiter's reduction reaches the top bar, and stays off it
+    /// while there is nothing to report.
+    #[test]
+    fn the_limiter_readout_is_the_real_meter() {
+        let app = chain_app();
+        assert!(!screen(&app, 120, 40).contains("lim"), "an idle limiter is on the screen");
+
+        // What the audio thread publishes is what the bar shows. Published
+        // through the ballistics the audio thread runs, rather than poked in
+        // behind them, so the number on the bar is one the mixer could
+        // actually produce.
+        let mut ballistics = phosphor_core::fx::GrBallistics::new();
+        ballistics.publish(&app.nav.limiter_gr, 0.676, 512, 48_000.0);
+        let shown = app.nav.limiter_gr.current_db();
+        assert!(shown < -3.0 && shown > -3.8, "the meter read {shown}");
+
+        let text = screen(&app, 120, 40);
+        assert!(
+            text.contains(&format!("lim {shown:.1}")),
+            "the bar does not show what the meter says ({shown:.1}):\n{text}",
+        );
     }
 }

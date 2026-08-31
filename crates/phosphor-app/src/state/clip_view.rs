@@ -40,6 +40,10 @@ pub enum ClipTab {
     /// [`ClipTab::next`] steps over it everywhere else, and the tab strip
     /// leaves it out.
     Sequencer,
+    /// One effect's panel. Reachable by opening a slot from the chain list,
+    /// and left out of the strip until there is a slot open — a tab for a
+    /// panel that has no effect behind it is a tab that shows nothing.
+    Fx,
 }
 
 impl ClipTab {
@@ -49,6 +53,7 @@ impl ClipTab {
             Self::PianoRoll => "piano",
             Self::Settings => "settings",
             Self::Sequencer => "seq",
+            Self::Fx => "fx",
         }
     }
 
@@ -57,7 +62,7 @@ impl ClipTab {
             Self::InstConfig => Self::PianoRoll,
             Self::PianoRoll => Self::Settings,
             Self::Settings => Self::InstConfig,
-            Self::Sequencer => Self::InstConfig,
+            Self::Sequencer | Self::Fx => Self::InstConfig,
         }
     }
 
@@ -167,6 +172,8 @@ pub struct ClipViewState {
     /// is locked. Only ever cursors: what a sequencer *contains* lives in
     /// [`crate::sequencer::SequencerState`] and is edited through its ops.
     pub sequencer: SequencerView,
+    /// Which effect's panel is open, and where the cursor is in it.
+    pub fx: FxView,
 }
 
 impl Default for ClipViewState {
@@ -183,6 +190,89 @@ impl ClipViewState {
             fx_cursor: 0,
             synth_param_cursor: 0,
             sequencer: SequencerView::new(),
+            fx: FxView::new(),
+        }
+    }
+}
+
+// ── The effect panel ──
+
+/// Which effect's panel is open, and where the cursor is inside it.
+///
+/// Cursors only. What an effect *is* lives in its slot's parameter vector and
+/// is edited through the one path that also tells the audio thread — see
+/// `App::set_fx_param`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FxView {
+    /// The slot whose panel is open, if one is.
+    pub slot: Option<usize>,
+    /// The band under the cursor, `0..8`; [`FxView::TRIM`] is the output trim.
+    pub band: usize,
+    /// The control under the cursor inside that band, in the EQ's own order:
+    /// type, freq, gain, q, slope, on.
+    pub control: usize,
+    /// Enter was pressed on it: `h`/`l` now adjust it and nothing else gets
+    /// a look. The fader's contract, applied to an EQ band.
+    pub locked: bool,
+    /// Whether the panel has room for the wide layout — bands as columns,
+    /// with the response curve over them. Set from the terminal each frame,
+    /// because it decides which way `h`/`l` and `j`/`k` point: the cursor
+    /// moves the way the screen looks.
+    pub wide: bool,
+}
+
+impl FxView {
+    /// The band index that addresses the output trim rather than a band.
+    pub const TRIM: usize = 8;
+    /// How many controls a band has.
+    pub const CONTROLS: usize = 6;
+
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Open a slot's panel, with the cursor on the first band's frequency —
+    /// the control a player reaches for first, and never on the type, which
+    /// would make the first stray keypress rewrite the band.
+    pub fn open(&mut self, slot: usize) {
+        self.slot = Some(slot);
+        self.band = 0;
+        self.control = 1;
+        self.locked = false;
+    }
+
+    /// Shut the panel, answering whether one was open.
+    pub fn close(&mut self) -> bool {
+        self.locked = false;
+        self.slot.take().is_some()
+    }
+
+    /// Move between bands, the trim included, stopping at both ends.
+    pub fn move_band(&mut self, delta: i32) {
+        if self.locked {
+            return;
+        }
+        self.band = (self.band as i32 + delta).clamp(0, Self::TRIM as i32) as usize;
+    }
+
+    /// Move between the controls of a band. The trim has one control, so the
+    /// cursor stays on it.
+    pub fn move_control(&mut self, delta: i32, count: usize) {
+        if self.locked || count == 0 {
+            return;
+        }
+        self.control = (self.control as i32 + delta).clamp(0, count as i32 - 1) as usize;
+    }
+
+    /// The flat parameter index the cursor addresses, in the EQ's own
+    /// numbering: `band * 6 + control`, and 48 for the trim.
+    #[must_use]
+    pub fn param_index(&self) -> usize {
+        if self.band >= Self::TRIM {
+            Self::TRIM * Self::CONTROLS
+        } else {
+            self.band * Self::CONTROLS + self.control.min(Self::CONTROLS - 1)
         }
     }
 }

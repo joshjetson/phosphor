@@ -12,6 +12,9 @@ use phosphor_plugin::{MidiEvent, Plugin};
 
 use crate::clip::{ClipEvent, ClipSnapshot, MidiClip, RecordBuffer};
 use crate::engine::VuLevels;
+use crate::fx::{
+    pan_gains, Effect, FxChain, FxContext, FxScratch, FxTarget, GrBallistics, GrMeter, SendSlot,
+};
 use crate::metronome::Metronome;
 use crate::pattern::{EventSink, PatternBlock, PatternEvent, PatternPlayer, PlaybackWindow};
 use crate::project::{TrackHandle, TrackKind};
@@ -80,6 +83,74 @@ pub enum MixerCommand {
         slot: u8,
         block: PatternBlock,
     },
+
+    // ── Inserts ──
+    //
+    // Every one of these addresses a chain by [`FxTarget`] rather than by
+    // track id, because three of the four chains are not on tracks: the two
+    // send buses and the master are strips of their own, and a `usize` that
+    // sometimes means a track and sometimes means the master is an addressing
+    // bug waiting for its first bus effect.
+    /// Put an effect into a slot, sliding the ones after it along.
+    ///
+    /// The box travels like `SetInstrument`'s does, and for the same reason:
+    /// the effect has to be built somewhere, the UI thread is the only place
+    /// that can allocate, and the audio thread's cost is a pointer move plus
+    /// the `init` this command charges [`HEAVY_COMMAND`] for. A chain that is
+    /// already full drops the effect rather than growing — the cap is
+    /// enforced where the memory is.
+    AddFx {
+        target: FxTarget,
+        slot: usize,
+        effect: Box<dyn Effect>,
+    },
+    /// Take the effect out of a slot. Frees on the audio thread, as
+    /// `RemoveTrack` and `UpdateClip` already do.
+    RemoveFx {
+        target: FxTarget,
+        slot: usize,
+    },
+    /// Reorder one slot. Chain order is the chain's meaning, so this is an
+    /// explicit move rather than anything that could be mistaken for a sort.
+    MoveFx {
+        target: FxTarget,
+        from: usize,
+        to: usize,
+    },
+    /// One control on one effect, in the control's own unit.
+    SetFxParam {
+        target: FxTarget,
+        slot: usize,
+        param: usize,
+        value: f32,
+    },
+    /// Throw a slot's bypass switch. The audio thread crossfades it.
+    SetFxBypass {
+        target: FxTarget,
+        slot: usize,
+        bypass: bool,
+    },
+
+    // ── Sends and pan ──
+    /// How much of this track goes to a send bus, as a linear gain. Zero is
+    /// off, which is where every send starts.
+    SetSendLevel {
+        track_id: usize,
+        send: SendSlot,
+        gain: f32,
+    },
+    /// Where this track sits in the image, −1 hard left to +1 hard right.
+    SetPan {
+        track_id: usize,
+        pan: f32,
+    },
+    /// Which track's signal this track's chain keys off, by track identity —
+    /// not by position, which changes whenever a track is added or removed.
+    /// `None` is the internal key.
+    SetKeySource {
+        track_id: usize,
+        source: Option<usize>,
+    },
 }
 
 // ── Command budget ──
@@ -121,13 +192,28 @@ const HEAVY_COMMAND: u32 = 16;
 /// would be half a millisecond of it.
 fn command_cost(cmd: &MixerCommand) -> u32 {
     match cmd {
-        MixerCommand::SetParameter { .. } | MixerCommand::UpdateClipPosition { .. } => 1,
+        MixerCommand::SetParameter { .. }
+        | MixerCommand::UpdateClipPosition { .. }
+        // The insert layer's cheap half: a parameter is a store inside an
+        // effect, a bypass is a bool, and a send level, a pan position and a
+        // key source are one field each on a track that already exists.
+        | MixerCommand::SetFxParam { .. }
+        | MixerCommand::SetFxBypass { .. }
+        | MixerCommand::SetSendLevel { .. }
+        | MixerCommand::SetPan { .. }
+        | MixerCommand::SetKeySource { .. } => 1,
         MixerCommand::AddTrack { .. }
         | MixerCommand::SetInstrument { .. }
         | MixerCommand::RemoveTrack { .. }
         | MixerCommand::CreateClip { .. }
         | MixerCommand::UpdateClip { .. }
         | MixerCommand::RemoveClip { .. }
+        // `AddFx` calls `Effect::init`, which builds delay lines; `RemoveFx`
+        // frees one; `MoveFx` shifts the slot list. All three are the
+        // allocator's business.
+        | MixerCommand::AddFx { .. }
+        | MixerCommand::RemoveFx { .. }
+        | MixerCommand::MoveFx { .. }
         // Only the first pattern a track receives allocates — it builds the
         // player — and the cost is charged before the command is opened, so
         // it cannot be told apart from the ones that only copy. Charging all
@@ -211,6 +297,10 @@ struct MasterLimiter {
     gain: f32,
     /// One-pole coefficient for the release ramp.
     release_coeff: f32,
+    /// The lowest gain reached anywhere in the block just processed — what
+    /// the meter is drawn from. The worst moment rather than the average,
+    /// because a limiter's whole job is the worst moment.
+    block_min_gain: f32,
 }
 
 impl MasterLimiter {
@@ -219,11 +309,13 @@ impl MasterLimiter {
         Self {
             gain: 1.0,
             release_coeff: 1.0 - (-1.0 / (LIMITER_RELEASE_SECONDS * sr)).exp(),
+            block_min_gain: 1.0,
         }
     }
 
     fn reset(&mut self) {
         self.gain = 1.0;
+        self.block_min_gain = 1.0;
     }
 
     /// Limit an interleaved stereo buffer in place.
@@ -231,6 +323,7 @@ impl MasterLimiter {
     /// On return every sample is finite and within ±1.0. Any frame that was
     /// not finite on the way in leaves as silence.
     fn process(&mut self, output: &mut [f32]) {
+        self.block_min_gain = 1.0;
         let mut frames = output.chunks_exact_mut(2);
         for frame in frames.by_ref() {
             // A NaN or infinity reaching the device is a full-scale noise
@@ -256,6 +349,9 @@ impl MasterLimiter {
                 self.gain = target;
             } else {
                 self.gain += (target - self.gain) * self.release_coeff;
+            }
+            if self.gain < self.block_min_gain {
+                self.block_min_gain = self.gain;
             }
 
             // Belt and braces. `gain <= CEILING / peak` holds by
@@ -296,6 +392,17 @@ pub struct AudioTrack {
     pub kind: TrackKind,
     pub handle: Arc<TrackHandle>,
     pub instrument: Option<Box<dyn Plugin>>,
+    /// The six insert slots, run between the instrument and the fader.
+    pub chain: FxChain,
+    /// Where the track sits in the image, −1..=1. See [`pan_gains`].
+    pan: f32,
+    /// Post-fader send levels, as linear gains. Zero — off — is where both
+    /// start, so a session that has never opened a send mixes exactly as it
+    /// did before sends existed.
+    send: [f32; 2],
+    /// Which track's pre-insert signal this track's chain keys off, by track
+    /// id. Resolved to a position once per block; `None` is the internal key.
+    key_source: Option<usize>,
     /// Recorded clips on this track's timeline.
     pub clips: Vec<MidiClip>,
     /// The step sequencer on this track, when it has one.
@@ -316,12 +423,16 @@ pub struct AudioTrack {
 }
 
 impl AudioTrack {
-    pub fn new(handle: Arc<TrackHandle>, max_buffer_size: usize) -> Self {
+    pub fn new(handle: Arc<TrackHandle>, sample_rate: u32, max_buffer_size: usize) -> Self {
         Self {
             id: handle.id,
             kind: handle.kind,
             handle,
             instrument: None,
+            chain: FxChain::new(sample_rate),
+            pan: 0.0,
+            send: [0.0; 2],
+            key_source: None,
             clips: Vec::new(),
             pattern: None,
             record_buf: RecordBuffer::new(),
@@ -385,6 +496,58 @@ fn sort_events_by_offset(events: &mut [MidiEvent]) {
     }
 }
 
+// ── Send buses ──
+
+/// One of the two send buses: what the tracks feed, what it runs, and what it
+/// returns to the master.
+///
+/// Not an [`AudioTrack`]. A bus has no instrument, no clips, no pattern, no
+/// recording and no sends of its own — modelling it as a track would mean six
+/// fields that are permanently `None` on two of the three strips in every
+/// session, and an `audible` rule that has to remember to exempt it from
+/// solo. Being a different type means the solo exemption is structural: the
+/// bus is not in the list solo is computed over.
+struct BusStrip {
+    /// The UI's handle: mute, return level and the bus meter. `None` until
+    /// the front end attaches one, which is what an `AddTrack` carrying a bus
+    /// kind does.
+    handle: Option<Arc<TrackHandle>>,
+    /// The bus's own six inserts — the reverb, the delay.
+    chain: FxChain,
+    buf_l: Vec<f32>,
+    buf_r: Vec<f32>,
+    /// Whether any track sent to the bus this block. A bus with nothing in it
+    /// and nothing fed to it is skipped entirely, which is what keeps a
+    /// session with no sends bit-identical to one from before they existed.
+    fed: bool,
+}
+
+impl BusStrip {
+    fn new(sample_rate: u32, max_buffer_size: usize) -> Self {
+        Self {
+            handle: None,
+            chain: FxChain::new(sample_rate),
+            buf_l: vec![0.0; max_buffer_size],
+            buf_r: vec![0.0; max_buffer_size],
+            fed: false,
+        }
+    }
+
+    /// The bus's return level into the master, and whether it is muted.
+    ///
+    /// Both come from the same [`TrackHandle`] a track's fader does, so the
+    /// return is the strip's fader rather than a control of its own. A bus
+    /// with no handle attached returns at unity: the audio has to go
+    /// somewhere, and silence would be a worse default than loud.
+    fn return_gain(&self) -> f32 {
+        match &self.handle {
+            Some(h) if h.config.is_muted() => 0.0,
+            Some(h) => h.config.get_volume(),
+            None => 1.0,
+        }
+    }
+}
+
 // ── Mixer ──
 
 pub struct Mixer {
@@ -410,6 +573,28 @@ pub struct Mixer {
     last_window: Option<PlaybackWindow>,
     /// Final stage before the audio device — see [`MasterLimiter`].
     limiter: MasterLimiter,
+    /// The limiter's gain reduction, as the UI reads it. The ballistics are
+    /// here rather than in the UI because only this side sees every sample:
+    /// see [`crate::fx::GrBallistics`].
+    limiter_gr: GrBallistics,
+    limiter_gr_meter: Arc<GrMeter>,
+    /// The two send buses, A and B.
+    bus_a: BusStrip,
+    bus_b: BusStrip,
+    /// The master's own six inserts, between the mix and the limiter.
+    master_chain: FxChain,
+    /// The master row's handle, for its meter. See the `AddTrack` arm.
+    master_handle: Option<Arc<TrackHandle>>,
+    /// Where a track's signal is worked on in pass two, so that its own
+    /// buffers stay as the instrument left them — which is what makes every
+    /// sidechain key a same-block, order-independent read. See
+    /// [`Mixer::process`].
+    work_l: Vec<f32>,
+    work_r: Vec<f32>,
+    /// The dry copy a bypass crossfade needs, borrowed by whichever chain is
+    /// running. One per mixer: only one slot is ever mid-fade at a time
+    /// inside a single call.
+    fx_scratch: FxScratch,
 }
 
 impl Mixer {
@@ -433,10 +618,76 @@ impl Mixer {
             live_events: Vec::with_capacity(256),
             last_window: None,
             limiter: MasterLimiter::new(sample_rate),
+            limiter_gr: GrBallistics::new(),
+            limiter_gr_meter: Arc::new(GrMeter::new()),
+            bus_a: BusStrip::new(sample_rate, max_buffer_size),
+            bus_b: BusStrip::new(sample_rate, max_buffer_size),
+            master_chain: FxChain::new(sample_rate),
+            master_handle: None,
+            work_l: vec![0.0; max_buffer_size],
+            work_r: vec![0.0; max_buffer_size],
+            fx_scratch: FxScratch::new(max_buffer_size),
+        }
+    }
+
+    /// The meter the master limiter publishes its gain reduction to.
+    ///
+    /// Handed out before the mixer moves to the audio thread; the UI holds
+    /// the other end of the `Arc` and reads two atomics to draw it.
+    #[must_use]
+    pub fn limiter_gr_meter(&self) -> Arc<GrMeter> {
+        self.limiter_gr_meter.clone()
+    }
+
+    /// Point the master limiter's meter at one the front end already holds.
+    ///
+    /// Called once, before the mixer reaches the audio thread. The engine
+    /// creates the meter early — before it knows whether there is a device to
+    /// build a mixer for at all — so this is how the two are joined.
+    pub fn set_limiter_gr_meter(&mut self, meter: Arc<GrMeter>) {
+        self.limiter_gr_meter = meter;
+    }
+
+    /// The insert chain a command is addressed to, if it exists.
+    fn chain_mut(&mut self, target: FxTarget) -> Option<&mut FxChain> {
+        match target {
+            FxTarget::Track(id) => self
+                .tracks
+                .iter_mut()
+                .find(|t| t.id == id)
+                .map(|t| &mut t.chain),
+            FxTarget::BusA => Some(&mut self.bus_a.chain),
+            FxTarget::BusB => Some(&mut self.bus_b.chain),
+            FxTarget::Master => Some(&mut self.master_chain),
         }
     }
 
     /// Process one buffer cycle.
+    ///
+    /// # Two passes
+    ///
+    /// ```text
+    /// pass 1  every track: MIDI → instrument → buf_l/buf_r    ← the key tap
+    /// pass 2  every track: buf → inserts → fader → pan → meter
+    ///                                            ├→ send A ─┐
+    ///                                            └→ send B ─┤
+    /// buses   send sum → inserts → return → bus meter ───────┤
+    /// master  mix ─────────────────────────────────────────→ inserts
+    ///                                → metronome → limiter → out
+    /// ```
+    ///
+    /// The split into two passes is what makes sidechaining honest. A single
+    /// pass would let a compressor on track 3 key off track 1's *current*
+    /// block and track 5's *previous* one, because track 5 has not rendered
+    /// yet — a one-block error that depends on the order tracks happen to sit
+    /// in and moves when the user reorders them. With every instrument
+    /// rendered before any insert runs, every key is the same block, whatever
+    /// the order.
+    ///
+    /// It also means pass 2 must not write over what pass 1 produced: a
+    /// track's own buffers *are* the key tap, so the inserts run on a
+    /// scratch pair (`work_l`/`work_r`) instead of in place. That is one
+    /// memcpy per track per block, and it is what buys order-independence.
     pub fn process(&mut self, output: &mut [f32], midi_messages: &[MidiMessage], transport: &Transport) {
         // Bounded: whatever does not fit in this callback's budget is applied
         // by the next one, in order. See `drain_commands`.
@@ -475,27 +726,14 @@ impl Mixer {
             }
         }
 
-        let any_solo = self.tracks.iter().any(|t| t.handle.config.is_soloed());
-
-        // Reuse pre-allocated scratch buffers for master mix.
-        // Swap out of self to avoid borrow conflicts in the track loop.
-        let mut master_l = std::mem::take(&mut self.scratch_l);
-        let mut master_r = std::mem::take(&mut self.scratch_r);
         let live_events = std::mem::take(&mut self.live_events);
-        // Dead code in practice, and deliberately kept. `max_buffer_size` is
-        // the largest block the device said it could deliver, so a block that
-        // does not fit means a driver exceeded its own stated maximum. One
-        // allocation is a glitch; the alternative here is wrong output or a
-        // panic on the audio thread.
-        if master_l.len() < num_frames {
-            master_l.resize(num_frames, 0.0);
-            master_r.resize(num_frames, 0.0);
-        }
-        master_l[..num_frames].fill(0.0);
-        master_r[..num_frames].fill(0.0);
-
         let clip_tx = &self.clip_tx;
 
+        // ── Pass 1: every instrument into its own buffers ──
+        //
+        // Nothing downstream of the instrument happens here. What each track
+        // leaves behind is the sidechain key tap: post-instrument,
+        // pre-insert, and still there when pass 2 reads it.
         for track in &mut self.tracks {
             if track.buf_l.len() < num_frames {
                 track.buf_l.resize(num_frames, 0.0);
@@ -604,33 +842,193 @@ impl Mixer {
                 let mut out_slices: [&mut [f32]; 2] = [out_l, out_r];
                 instrument.process(&[], &mut out_slices, &track.plugin_events);
             }
+        }
+        self.live_events = live_events;
 
-            // ── VU + Mix ──
-            let muted = track.handle.config.is_muted();
-            let soloed = track.handle.config.is_soloed();
-            let audible = !muted && (!any_solo || soloed);
-            let volume = track.handle.config.get_volume();
+        // ── Pass 2: inserts, fader, pan, meters, sends ──
 
-            let mut peak_l = 0.0f32;
-            let mut peak_r = 0.0f32;
-            for i in 0..num_frames {
-                peak_l = peak_l.max(track.buf_l[i].abs());
-                peak_r = peak_r.max(track.buf_r[i].abs());
+        // Buses and the master are exempt from solo. Without that, soloing
+        // one track takes the reverb return with it and the mix goes dry —
+        // and since the buses are not in the track list at all, the exemption
+        // is structural rather than a rule someone has to remember.
+        let any_solo = self
+            .tracks
+            .iter()
+            .any(|t| !is_bus(t.kind) && t.handle.config.is_soloed());
+
+        // Reuse pre-allocated scratch buffers for master mix.
+        // Swap out of self to avoid borrow conflicts in the track loop.
+        let mut master_l = std::mem::take(&mut self.scratch_l);
+        let mut master_r = std::mem::take(&mut self.scratch_r);
+        // Dead code in practice, and deliberately kept. `max_buffer_size` is
+        // the largest block the device said it could deliver, so a block that
+        // does not fit means a driver exceeded its own stated maximum. One
+        // allocation is a glitch; the alternative here is wrong output or a
+        // panic on the audio thread.
+        if master_l.len() < num_frames {
+            master_l.resize(num_frames, 0.0);
+            master_r.resize(num_frames, 0.0);
+        }
+        master_l[..num_frames].fill(0.0);
+        master_r[..num_frames].fill(0.0);
+
+        let context = FxContext {
+            sample_rate: self.sample_rate as f32,
+            tempo_bpm: bpm as f32,
+            playing,
+            key: None,
+        };
+
+        {
+            // Disjoint fields, borrowed at once: the track list is split
+            // around the track being rendered so its key can be read out of
+            // one of the halves, while the work buffers and the crossfade
+            // scratch come from the mixer itself.
+            let Self { tracks, bus_a, bus_b, work_l, work_r, fx_scratch, .. } = self;
+
+            for bus in [&mut *bus_a, &mut *bus_b] {
+                if bus.buf_l.len() < num_frames {
+                    bus.buf_l.resize(num_frames, 0.0);
+                    bus.buf_r.resize(num_frames, 0.0);
+                }
+                bus.buf_l[..num_frames].fill(0.0);
+                bus.buf_r[..num_frames].fill(0.0);
+                bus.fed = false;
+            }
+            if work_l.len() < num_frames {
+                work_l.resize(num_frames, 0.0);
+                work_r.resize(num_frames, 0.0);
             }
 
-            let (old_l, old_r) = track.handle.vu.get();
-            let decay = 0.85f32;
-            track.handle.vu.set(
-                if peak_l > old_l { peak_l } else { old_l * decay },
-                if peak_r > old_r { peak_r } else { old_r * decay },
-            );
+            for index in 0..tracks.len() {
+                let (before, from_here) = tracks.split_at_mut(index);
+                let Some((track, after)) = from_here.split_first_mut() else { break };
 
-            if audible {
+                // ── The sidechain key ──
+                //
+                // Resolved from the stored identity to a position every
+                // block, never cached: a track that has been deleted must
+                // fall back to the internal key *this* block rather than
+                // reading whatever now sits where it used to. A key that
+                // names this same track is no key at all.
+                let key = track
+                    .key_source
+                    .filter(|_| track.chain.wants_key())
+                    .and_then(|id| {
+                        before
+                            .iter()
+                            .find(|t| t.id == id)
+                            .or_else(|| after.iter().find(|t| t.id == id))
+                    })
+                    .map(|source| {
+                        (
+                            &source.buf_l[..num_frames],
+                            &source.buf_r[..num_frames],
+                        )
+                    });
+
+                // The inserts run on a copy so that `buf_l`/`buf_r` stay as
+                // the instrument left them — see this function's doc.
+                work_l[..num_frames].copy_from_slice(&track.buf_l[..num_frames]);
+                work_r[..num_frames].copy_from_slice(&track.buf_r[..num_frames]);
+                if !track.chain.is_empty() {
+                    let ctx = FxContext { key, ..context };
+                    track.chain.process(
+                        &mut work_l[..num_frames],
+                        &mut work_r[..num_frames],
+                        &ctx,
+                        fx_scratch,
+                    );
+                }
+
+                // ── Fader, pan, meter ──
+                //
+                // Mute and solo are applied here, at the fader, which is what
+                // makes them kill the sends as well: everything downstream
+                // reads the post-fader signal.
+                let muted = track.handle.config.is_muted();
+                let soloed = track.handle.config.is_soloed();
+                let volume = if is_audible(track.kind, muted, soloed, any_solo) {
+                    track.handle.config.get_volume()
+                } else {
+                    0.0
+                };
+                let (pan_l, pan_r) = pan_gains(track.pan);
+                let gain_l = volume * pan_l;
+                let gain_r = volume * pan_r;
+
+                // A silent strip is skipped rather than multiplied by zero.
+                // Not for the cycles: `NaN * 0.0` is `NaN`, so a muted track
+                // whose instrument has diverged would otherwise take the
+                // whole mix with it — the limiter would render the *master*
+                // as silence rather than the one track the user muted.
+                if volume == 0.0 {
+                    publish_vu(&track.handle.vu, 0.0, 0.0);
+                    continue;
+                }
+
+                let mut peak_l = 0.0f32;
+                let mut peak_r = 0.0f32;
                 for i in 0..num_frames {
-                    master_l[i] += track.buf_l[i] * volume;
-                    master_r[i] += track.buf_r[i] * volume;
+                    let l = work_l[i] * gain_l;
+                    let r = work_r[i] * gain_r;
+                    work_l[i] = l;
+                    work_r[i] = r;
+                    peak_l = peak_l.max(l.abs());
+                    peak_r = peak_r.max(r.abs());
+                    master_l[i] += l;
+                    master_r[i] += r;
+                }
+
+                // The channel meter reads here — after the inserts, the fader
+                // and the pan — so that pulling the fader down moves it. It
+                // used to read the instrument's raw output, which meant the
+                // meter showed what the track *would* have been.
+                publish_vu(&track.handle.vu, peak_l, peak_r);
+
+                // ── Sends ──
+                //
+                // Post-fader and post-pan, so a track that is muted, soloed
+                // out or faded down goes quiet in the reverb too.
+                for (level, bus) in [
+                    (track.send[0], &mut *bus_a),
+                    (track.send[1], &mut *bus_b),
+                ] {
+                    if level <= 0.0 {
+                        continue;
+                    }
+                    bus.fed = true;
+                    for i in 0..num_frames {
+                        bus.buf_l[i] += work_l[i] * level;
+                        bus.buf_r[i] += work_r[i] * level;
+                    }
                 }
             }
+
+            // ── The buses ──
+            for bus in [&mut *bus_a, &mut *bus_b] {
+                render_bus(
+                    bus,
+                    &mut master_l[..num_frames],
+                    &mut master_r[..num_frames],
+                    &context,
+                    fx_scratch,
+                );
+            }
+        }
+
+        // ── The master's inserts ──
+        //
+        // Ahead of the metronome and the limiter: the click is a monitoring
+        // aid rather than part of the mix, and the limiter is a safety device
+        // rather than a slot.
+        if !self.master_chain.is_empty() {
+            self.master_chain.process(
+                &mut master_l[..num_frames],
+                &mut master_r[..num_frames],
+                &context,
+                &mut self.fx_scratch,
+            );
         }
 
         // Write tracks to interleaved output
@@ -642,7 +1040,6 @@ impl Mixer {
         // Return scratch buffers to self (no allocation, just moves)
         self.scratch_l = master_l;
         self.scratch_r = master_r;
-        self.live_events = live_events;
 
         // Mix metronome click into output (after tracks, so it's always audible)
         self.metronome.process(output, transport);
@@ -653,6 +1050,16 @@ impl Mixer {
         // limiting before it would leave a gap in the guarantee.
         self.limiter.process(output);
 
+        // What it took off, as a number a meter can draw. Computed here
+        // rather than in the UI because only this side sees every sample —
+        // see `fx::GrBallistics`.
+        self.limiter_gr.publish(
+            &self.limiter_gr_meter,
+            self.limiter.block_min_gain,
+            num_frames,
+            self.sample_rate as f32,
+        );
+
         // Master VU (includes metronome), read after limiting so the meter
         // shows what actually left rather than what would have.
         let mut mp_l = 0.0f32;
@@ -662,12 +1069,10 @@ impl Mixer {
             mp_r = mp_r.max(output[i * 2 + 1].abs());
         }
 
-        let (old_l, old_r) = self.master_vu.get();
-        let decay = 0.85f32;
-        self.master_vu.set(
-            if mp_l > old_l { mp_l } else { old_l * decay },
-            if mp_r > old_r { mp_r } else { old_r * decay },
-        );
+        publish_vu(&self.master_vu, mp_l, mp_r);
+        if let Some(handle) = &self.master_handle {
+            publish_vu(&handle.vu, mp_l, mp_r);
+        }
     }
 
     pub fn reset_all(&mut self) {
@@ -676,6 +1081,10 @@ impl Mixer {
             if let Some(ref mut inst) = track.instrument {
                 inst.reset();
             }
+            // A panic kills the tails too. A reverb still ringing after the
+            // instruments have been silenced is exactly the sound the panic
+            // key exists to stop.
+            track.chain.reset();
             track.handle.vu.set(0.0, 0.0);
             // Commit any active recording before resetting (don't lose overdubs)
             if track.record_buf.is_active() && track.was_recording {
@@ -693,9 +1102,23 @@ impl Mixer {
                 player.silence();
             }
         }
+        for bus in [&mut self.bus_a, &mut self.bus_b] {
+            bus.chain.reset();
+            bus.buf_l.fill(0.0);
+            bus.buf_r.fill(0.0);
+            if let Some(handle) = &bus.handle {
+                handle.vu.set(0.0, 0.0);
+            }
+        }
+        self.master_chain.reset();
+        if let Some(handle) = &self.master_handle {
+            handle.vu.set(0.0, 0.0);
+        }
         self.last_window = None;
         self.metronome.reset();
         self.limiter.reset();
+        self.limiter_gr.reset();
+        self.limiter_gr_meter.reset();
     }
 
     /// Apply queued commands until the callback's budget is spent.
@@ -720,10 +1143,25 @@ impl Mixer {
 
     fn apply_command(&mut self, cmd: MixerCommand) {
         match cmd {
-            MixerCommand::AddTrack { kind: _, handle } => {
-                let track = AudioTrack::new(handle, self.max_buffer_size);
-                self.tracks.push(track);
-            }
+            // The `kind` finally decides something: a bus handle attaches to
+            // the strip it names instead of becoming a track. The two send
+            // buses and the master are single, permanent strips — a second
+            // `AddTrack` for one of them replaces the handle rather than
+            // making a second bus.
+            MixerCommand::AddTrack { kind, handle } => match kind {
+                TrackKind::SendA => self.bus_a.handle = Some(handle),
+                TrackKind::SendB => self.bus_b.handle = Some(handle),
+                // The master's level already goes to the engine-wide
+                // `master_vu`; the handle is so the master's own row on the
+                // track strip can draw the same meter. Its fader is not read:
+                // the only gain between the mix and the device is the
+                // limiter, which is a safety device and not a control.
+                TrackKind::Master => self.master_handle = Some(handle),
+                TrackKind::Instrument | TrackKind::Audio => {
+                    let track = AudioTrack::new(handle, self.sample_rate, self.max_buffer_size);
+                    self.tracks.push(track);
+                }
+            },
             MixerCommand::SetInstrument { track_id, mut instrument } => {
                 if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
                     instrument.init(self.sample_rate as f64, self.max_buffer_size);
@@ -774,7 +1212,156 @@ impl Mixer {
                     player.apply(slot, block);
                 }
             }
+
+            // ── Inserts ──
+            MixerCommand::AddFx { target, slot, mut effect } => {
+                let (sample_rate, max_buffer_size) = (self.sample_rate, self.max_buffer_size);
+                if let Some(chain) = self.chain_mut(target) {
+                    effect.init(f64::from(sample_rate), max_buffer_size);
+                    // A full chain hands the effect back, and it is dropped
+                    // here. The UI is expected to have refused already — this
+                    // is the audio thread declining to grow a `Vec` for a
+                    // seventh effect it was told it would never be sent.
+                    drop(chain.insert(slot, effect));
+                }
+            }
+            MixerCommand::RemoveFx { target, slot } => {
+                if let Some(chain) = self.chain_mut(target) {
+                    drop(chain.remove(slot));
+                }
+            }
+            MixerCommand::MoveFx { target, from, to } => {
+                if let Some(chain) = self.chain_mut(target) {
+                    chain.move_slot(from, to);
+                }
+            }
+            MixerCommand::SetFxParam { target, slot, param, value } => {
+                if let Some(chain) = self.chain_mut(target) {
+                    chain.set_parameter(slot, param, value);
+                }
+            }
+            MixerCommand::SetFxBypass { target, slot, bypass } => {
+                if let Some(chain) = self.chain_mut(target) {
+                    chain.set_bypass(slot, bypass);
+                }
+            }
+
+            // ── Sends, pan, key ──
+            MixerCommand::SetSendLevel { track_id, send, gain } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    // Clamped here rather than at the call site, for the same
+                    // reason `TrackConfig::set_volume` is: this multiplies
+                    // every sample of a bus feed, and a UI arithmetic slip
+                    // would otherwise be a full-scale burst.
+                    let gain = if gain.is_nan() { 0.0 } else { gain.clamp(0.0, 1.0) };
+                    track.send[match send {
+                        SendSlot::A => 0,
+                        SendSlot::B => 1,
+                    }] = gain;
+                }
+            }
+            MixerCommand::SetPan { track_id, pan } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    track.pan = if pan.is_nan() { 0.0 } else { pan.clamp(-1.0, 1.0) };
+                }
+            }
+            MixerCommand::SetKeySource { track_id, source } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    // A track keyed to itself is keyed to nothing: the tap it
+                    // would read is its own pre-insert signal, which is the
+                    // internal key by another name.
+                    track.key_source = source.filter(|id| *id != track_id);
+                }
+            }
         }
+    }
+}
+
+/// Whether a track kind is one of the strips the mix returns *into*, rather
+/// than one that feeds it.
+fn is_bus(kind: TrackKind) -> bool {
+    matches!(kind, TrackKind::SendA | TrackKind::SendB | TrackKind::Master)
+}
+
+/// Whether a strip's fader passes signal this block.
+///
+/// Solo is a statement about the tracks, not about the mix bus: a soloed
+/// track still wants its reverb, and a master that solo could silence would
+/// make the whole feature a mute button. So the buses and the master answer
+/// to mute alone.
+fn is_audible(kind: TrackKind, muted: bool, soloed: bool, any_solo: bool) -> bool {
+    if muted {
+        return false;
+    }
+    is_bus(kind) || !any_solo || soloed
+}
+
+/// One VU update: fast attack, slow decay. The decay is per callback rather
+/// than per second — it always has been — so a meter falls at a rate that
+/// depends on the block size. Left as it was; changing it would move every
+/// meter in the application in a milestone about routing.
+///
+/// The comparison is `>=` rather than `>`, and that one character is a fix.
+/// A steady signal produces the same peak every block; with a strict `>` the
+/// meter took the decay branch on every one of them, so it alternated
+/// between the true peak and 85% of it forever — a needle that flickers on a
+/// tone that is not moving. Holding on equality cannot make a meter read
+/// high: it only ever holds a level the signal is still producing.
+fn publish_vu(vu: &VuLevels, peak_l: f32, peak_r: f32) {
+    let (old_l, old_r) = vu.get();
+    let decay = 0.85f32;
+    vu.set(
+        if peak_l >= old_l { peak_l } else { old_l * decay },
+        if peak_r >= old_r { peak_r } else { old_r * decay },
+    );
+}
+
+/// Run a send bus: its inserts, its return level, its meter, and into the
+/// master.
+///
+/// Skipped whole when nothing was sent to it and it has no effects in it. An
+/// empty bus that still ran would add `+0.0` to every sample of the master —
+/// harmless arithmetically, but it is the difference between "a session with
+/// no sends renders exactly as it did before sends existed" being a
+/// guarantee and being a claim about floating-point zero.
+fn render_bus(
+    bus: &mut BusStrip,
+    master_l: &mut [f32],
+    master_r: &mut [f32],
+    context: &FxContext<'_>,
+    scratch: &mut FxScratch,
+) {
+    if !bus.fed && bus.chain.is_empty() {
+        if let Some(handle) = &bus.handle {
+            publish_vu(&handle.vu, 0.0, 0.0);
+        }
+        return;
+    }
+
+    let frames = master_l.len();
+    bus.chain.process(
+        &mut bus.buf_l[..frames],
+        &mut bus.buf_r[..frames],
+        context,
+        scratch,
+    );
+
+    let gain = bus.return_gain();
+    let mut peak_l = 0.0f32;
+    let mut peak_r = 0.0f32;
+    for i in 0..frames {
+        let l = bus.buf_l[i] * gain;
+        let r = bus.buf_r[i] * gain;
+        peak_l = peak_l.max(l.abs());
+        peak_r = peak_r.max(r.abs());
+        master_l[i] += l;
+        master_r[i] += r;
+    }
+
+    // The bus meter reads after its own chain and its return level, which is
+    // the level it actually contributes to the mix.
+    if let Some(handle) = &bus.handle {
+        publish_vu(&handle.vu, peak_l, peak_r);
     }
 }
 
@@ -2630,5 +3217,959 @@ mod tests {
             }
         });
         assert_eq!(allocations, 0, "Mixer::process reached the allocator");
+    }
+
+    // ── The insert layer ──
+
+    use crate::fx::{db_to_gain, FxParamInfo, Gain, MAX_FX_SLOTS};
+
+    /// Attach a handle to one of the bus strips, the way the front end does
+    /// at start-up: an `AddTrack` carrying a bus kind.
+    fn attach_bus(tx: &Sender<MixerCommand>, kind: TrackKind) -> Arc<TrackHandle> {
+        let handle = Arc::new(TrackHandle::new(usize::MAX, kind));
+        handle.config.set_volume(1.0);
+        tx.send(MixerCommand::AddTrack { kind, handle: handle.clone() }).unwrap();
+        handle
+    }
+
+    /// Render `blocks` callbacks and keep every sample.
+    fn render(mixer: &mut Mixer, transport: &Transport, frames: usize, blocks: usize) -> Vec<f32> {
+        let mut out = vec![0.0f32; frames * 2];
+        let mut all = Vec::with_capacity(frames * 2 * blocks);
+        for _ in 0..blocks {
+            out.fill(0.0);
+            mixer.process(&mut out, &[], transport);
+            all.extend_from_slice(&out);
+            transport.advance(frames as u32, 44_100);
+        }
+        all
+    }
+
+    /// Run the mixer until a meter has settled on the level it is being fed,
+    /// and read it.
+    ///
+    /// A meter falls back to a lower level over several blocks — fast attack,
+    /// slow decay — so a bare read taken while it is still falling is not the
+    /// level being fed. The maximum across two consecutive blocks is.
+    ///
+    /// It used to be wrong for a second reason as well: the decay fired on
+    /// equality, so a steady signal alternated between the true peak and 85%
+    /// of it. `publish_vu` holds on equality now, and this still takes the
+    /// maximum because settling is the thing it is really waiting for.
+    fn settled_vu(
+        mixer: &mut Mixer,
+        transport: &Transport,
+        frames: usize,
+        handle: &TrackHandle,
+    ) -> (f32, f32) {
+        let _ = render(mixer, transport, frames, 40);
+        let first = handle.vu.get();
+        let _ = render(mixer, transport, frames, 1);
+        let second = handle.vu.get();
+        (first.0.max(second.0), first.1.max(second.1))
+    }
+
+    fn peak_of(samples: &[f32]) -> f32 {
+        samples.iter().map(|s| s.abs()).fold(0.0, f32::max)
+    }
+
+    /// The peaks of the two channels of an interleaved buffer.
+    fn peaks(samples: &[f32]) -> (f32, f32) {
+        let mut l = 0.0f32;
+        let mut r = 0.0f32;
+        for frame in samples.chunks_exact(2) {
+            l = l.max(frame[0].abs());
+            r = r.max(frame[1].abs());
+        }
+        (l, r)
+    }
+
+    /// **The null test.** Six unity trims in a track's inserts have to leave
+    /// the render exactly where an empty chain left it — every sample, every
+    /// bit. It is the whole insert layer's licence to exist in the signal
+    /// path: chains that are not doing anything must not be doing anything.
+    ///
+    /// The out-of-tree half of this — the same session rendered by v0.3.38 —
+    /// is `examples/render_digest.rs`.
+    #[test]
+    fn a_chain_of_unity_trims_is_bit_identical_to_no_chain() {
+        fn take(with_chain: bool) -> Vec<f32> {
+            let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+            let handle = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
+            handle.config.midi_active.store(true, std::sync::atomic::Ordering::Relaxed);
+            handle.config.set_volume(0.9);
+            tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle }).unwrap();
+            tx.send(MixerCommand::SetInstrument {
+                track_id: 0,
+                instrument: Box::new(PhosphorSynth::new()),
+            })
+            .unwrap();
+            if with_chain {
+                for slot in 0..MAX_FX_SLOTS {
+                    tx.send(MixerCommand::AddFx {
+                        target: FxTarget::Track(0),
+                        slot,
+                        effect: Box::new(Gain::new()),
+                    })
+                    .unwrap();
+                }
+            }
+            apply_all(&mut mixer);
+            transport.play();
+
+            let mut out = vec![0.0f32; 256 * 2];
+            mixer.process(&mut out, &[make_note_on(60, 100)], &transport);
+            transport.advance(256, 44_100);
+            let mut all = out.clone();
+            all.extend_from_slice(&render(&mut mixer, &transport, 256, 40));
+            all
+        }
+
+        let bare = take(false);
+        let chained = take(true);
+        assert!(peak_of(&bare) > 0.001, "the reference render was silent");
+        assert_eq!(bare.len(), chained.len());
+        for (i, (a, b)) in bare.iter().zip(&chained).enumerate() {
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "sample {i}: an empty chain changed {a} into {b}"
+            );
+        }
+    }
+
+    /// A bypassed effect, once its crossfade has landed, is not in the signal
+    /// path at all — not "inaudible", not in it.
+    #[test]
+    fn a_settled_bypass_is_bit_identical_through_the_mixer() {
+        fn take(with_effect: bool) -> Vec<f32> {
+            let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+            let _handle = add_fixed_track(&tx, 0, 0.4);
+            if with_effect {
+                tx.send(MixerCommand::AddFx {
+                    target: FxTarget::Track(0),
+                    slot: 0,
+                    // Loud enough that a fade that never finished would be
+                    // obvious in the first sample of the comparison, quiet
+                    // enough that the master limiter never engages — a
+                    // limiter riding on one of the two runs would make this
+                    // test about the limiter's release instead.
+                    effect: Box::new(Gain::at(-12.0)),
+                })
+                .unwrap();
+                tx.send(MixerCommand::SetFxBypass {
+                    target: FxTarget::Track(0),
+                    slot: 0,
+                    bypass: true,
+                })
+                .unwrap();
+            }
+            apply_all(&mut mixer);
+            transport.play();
+            // Two blocks of 512 at 44.1 kHz is 23 ms: the 8 ms crossfade is
+            // long over.
+            let _settling = render(&mut mixer, &transport, 512, 2);
+            render(&mut mixer, &transport, 512, 4)
+        }
+
+        let bare = take(false);
+        let bypassed = take(true);
+        assert!(peak_of(&bare) > 0.1);
+        for (i, (a, b)) in bare.iter().zip(&bypassed).enumerate() {
+            assert_eq!(a.to_bits(), b.to_bits(), "bypassed effect altered sample {i}");
+        }
+    }
+
+    /// An effect in a slot is in the signal path, and its parameter reaches
+    /// it. The chain's proof of life.
+    #[test]
+    fn an_effect_in_a_slot_processes_the_track() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let _handle = add_fixed_track(&tx, 0, 0.25);
+        tx.send(MixerCommand::AddFx {
+            target: FxTarget::Track(0),
+            slot: 0,
+            effect: Box::new(Gain::at(-6.0)),
+        })
+        .unwrap();
+        apply_all(&mut mixer);
+        transport.play();
+
+        let peak = peak_of(&render(&mut mixer, &transport, 256, 1));
+        assert!((peak - 0.125_297).abs() < 1.0e-4, "-6 dB trim gave {peak}");
+
+        tx.send(MixerCommand::SetFxParam {
+            target: FxTarget::Track(0),
+            slot: 0,
+            param: 0,
+            value: 0.0,
+        })
+        .unwrap();
+        apply_all(&mut mixer);
+        let peak = peak_of(&render(&mut mixer, &transport, 256, 1));
+        assert!((peak - 0.25).abs() < 1.0e-6, "the parameter did not arrive: {peak}");
+    }
+
+    /// The cap is six, and it holds at the audio thread rather than only in
+    /// the UI that is supposed to enforce it.
+    #[test]
+    fn a_seventh_effect_never_reaches_a_chain() {
+        let (mut mixer, tx, _clip_rx, _transport) = setup_mixer();
+        let _handle = add_fixed_track(&tx, 0, 0.1);
+        for slot in 0..MAX_FX_SLOTS + 3 {
+            tx.send(MixerCommand::AddFx {
+                target: FxTarget::Track(0),
+                slot,
+                effect: Box::new(Gain::new()),
+            })
+            .unwrap();
+        }
+        apply_all(&mut mixer);
+        assert_eq!(mixer.tracks[0].chain.len(), MAX_FX_SLOTS);
+    }
+
+    // ── Pan ──
+
+    /// The pan law, measured: equal power across the sweep, one channel and
+    /// silence at the ends, and the ends 3.01 dB above the centre.
+    ///
+    /// The reference point is the deviation to know about. FX.md's wording
+    /// puts the centre at −3 dB and the extremes at 0 dB; this puts the
+    /// centre at unity and the extremes at +3. The shape — which is what a
+    /// pan law *is* — is identical; the difference is whether adding this
+    /// feature makes every existing session 3 dB quieter. See `fx::pan_gains`.
+    #[test]
+    fn pan_sweeps_at_equal_power_with_unity_at_the_centre() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let _handle = add_fixed_track(&tx, 0, 0.5);
+        apply_all(&mut mixer);
+        transport.play();
+
+        // A hard-panned track is at full travel in its own channel: half a
+        // full-scale signal times √2.
+        let end = std::f32::consts::FRAC_1_SQRT_2;
+        let mut power = Vec::new();
+        for (pan, expect) in [
+            (-1.0f32, (end, 0.0)),
+            (0.0, (0.5, 0.5)),
+            (1.0, (0.0, end)),
+        ] {
+            tx.send(MixerCommand::SetPan { track_id: 0, pan }).unwrap();
+            apply_all(&mut mixer);
+            let (l, r) = peaks(&render(&mut mixer, &transport, 256, 1));
+            assert!(
+                (l - expect.0).abs() < 1.0e-3 && (r - expect.1).abs() < 1.0e-3,
+                "pan {pan} gave ({l:.4}, {r:.4}), expected ({:.4}, {:.4})",
+                expect.0,
+                expect.1
+            );
+            power.push(l * l + r * r);
+        }
+        for p in &power {
+            assert!(
+                (p - power[0]).abs() < 1.0e-4,
+                "the sweep changed power: {power:?}"
+            );
+        }
+        let ends_over_centre = 20.0 * (end / 0.5).log10();
+        assert!((ends_over_centre - 3.0103).abs() < 0.01);
+    }
+
+    /// The centre is exactly where the mixer was before pan existed: the same
+    /// multiply by the fader and nothing else. Every session written before
+    /// this milestone renders bit for bit as it did.
+    #[test]
+    fn the_pan_centre_changes_no_existing_render() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let handle = add_fixed_track(&tx, 0, 0.25);
+        for volume in [0.0f32, 0.5, 0.75, 1.0, 2.0] {
+            handle.config.set_volume(volume);
+            apply_all(&mut mixer);
+            let peak = peak_of(&render(&mut mixer, &transport, 128, 1));
+            let expected = 0.25 * volume;
+            assert_eq!(
+                peak.to_bits(),
+                expected.to_bits(),
+                "fader {volume} gave {peak}, not {expected}"
+            );
+        }
+    }
+
+    // ── Sends ──
+
+    /// A send at −6 dB puts the track into the bus 6 dB down. Measured at the
+    /// bus meter, which reads after the bus's own chain and return level.
+    #[test]
+    fn a_send_reaches_the_bus_at_the_level_it_was_given() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let bus = attach_bus(&tx, TrackKind::SendA);
+        let _track = add_fixed_track(&tx, 0, 0.25);
+        apply_all(&mut mixer);
+        transport.play();
+
+        for send_db in [0.0f32, -6.0, -12.0, -20.0] {
+            tx.send(MixerCommand::SetSendLevel {
+                track_id: 0,
+                send: SendSlot::A,
+                gain: db_to_gain(send_db),
+            })
+            .unwrap();
+            apply_all(&mut mixer);
+            let (bus_peak, _) = settled_vu(&mut mixer, &transport, 256, &bus);
+            let measured = 20.0 * (bus_peak / 0.25).log10();
+            assert!(
+                (measured - send_db).abs() < 0.05,
+                "a {send_db} dB send arrived at {measured:.2} dB (bus peak {bus_peak:.4})"
+            );
+        }
+    }
+
+    /// Mute is at the fader and the sends are after it, so muting a track
+    /// takes it out of the reverb as well as out of the mix. A send that
+    /// survived the mute is the classic "why can I still hear it" bug.
+    #[test]
+    fn muting_a_track_kills_its_sends() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let bus = attach_bus(&tx, TrackKind::SendA);
+        let handle = add_fixed_track(&tx, 0, 0.25);
+        tx.send(MixerCommand::SetSendLevel { track_id: 0, send: SendSlot::A, gain: 1.0 })
+            .unwrap();
+        apply_all(&mut mixer);
+        transport.play();
+
+        let out = render(&mut mixer, &transport, 256, 1);
+        assert!((peak_of(&out) - 0.5).abs() < 1.0e-3, "track plus its send should be double");
+        assert!(bus.vu.get().0 > 0.2);
+
+        handle.config.muted.store(true, std::sync::atomic::Ordering::Relaxed);
+        let out = render(&mut mixer, &transport, 256, 1);
+        assert_eq!(peak_of(&out), 0.0, "a muted track was still audible");
+        // The meter decays rather than snapping, so run it out.
+        let _ = render(&mut mixer, &transport, 256, 60);
+        assert!(bus.vu.get().0 < 1.0e-3, "the send survived the mute");
+    }
+
+    /// Solo is about the tracks. A soloed track still has its reverb, so the
+    /// buses are exempt — without the exemption every solo goes bone dry.
+    #[test]
+    fn a_solo_leaves_the_buses_audible() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let bus = attach_bus(&tx, TrackKind::SendA);
+        let handle = add_fixed_track(&tx, 0, 0.25);
+        let _other = add_fixed_track(&tx, 1, 0.25);
+        tx.send(MixerCommand::SetSendLevel { track_id: 0, send: SendSlot::A, gain: 1.0 })
+            .unwrap();
+        apply_all(&mut mixer);
+        transport.play();
+
+        handle.config.soloed.store(true, std::sync::atomic::Ordering::Relaxed);
+        let out = render(&mut mixer, &transport, 256, 1);
+        assert!(bus.vu.get().0 > 0.2, "the send bus went silent under solo");
+        assert!(
+            (peak_of(&out) - 0.5).abs() < 1.0e-3,
+            "the soloed track lost its send: peak {}",
+            peak_of(&out)
+        );
+    }
+
+    /// A send is post-pan as well as post-fader, so a hard-panned track
+    /// arrives in the bus panned.
+    #[test]
+    fn a_send_is_tapped_after_the_pan() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let bus = attach_bus(&tx, TrackKind::SendA);
+        let _track = add_fixed_track(&tx, 0, 0.25);
+        tx.send(MixerCommand::SetSendLevel { track_id: 0, send: SendSlot::A, gain: 1.0 })
+            .unwrap();
+        tx.send(MixerCommand::SetPan { track_id: 0, pan: -1.0 }).unwrap();
+        apply_all(&mut mixer);
+        transport.play();
+
+        let _ = render(&mut mixer, &transport, 256, 1);
+        let (l, r) = bus.vu.get();
+        // Hard left is the full travel: the track's level times √2.
+        let expected = 0.25 * std::f32::consts::SQRT_2;
+        assert!((l - expected).abs() < 1.0e-3, "bus left is {l}, expected {expected}");
+        assert!(r < 1.0e-6, "a hard-left send leaked {r} into the bus's right");
+    }
+
+    /// An effect on the bus is in the return path, and the bus meter reads
+    /// after it.
+    #[test]
+    fn the_bus_meter_reads_after_the_bus_chain() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let bus = attach_bus(&tx, TrackKind::SendA);
+        let _track = add_fixed_track(&tx, 0, 0.5);
+        tx.send(MixerCommand::SetSendLevel { track_id: 0, send: SendSlot::A, gain: 1.0 })
+            .unwrap();
+        tx.send(MixerCommand::AddFx {
+            target: FxTarget::BusA,
+            slot: 0,
+            effect: Box::new(Gain::at(-6.0)),
+        })
+        .unwrap();
+        apply_all(&mut mixer);
+        transport.play();
+
+        let _ = render(&mut mixer, &transport, 256, 1);
+        let (l, _) = bus.vu.get();
+        assert!((l - 0.2506).abs() < 1.0e-3, "bus meter reads {l}, not the post-chain level");
+    }
+
+    /// The bus's return level is its fader, and muting the bus takes the
+    /// return out without touching the tracks feeding it.
+    #[test]
+    fn the_bus_return_level_is_its_fader() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let bus = attach_bus(&tx, TrackKind::SendA);
+        let _track = add_fixed_track(&tx, 0, 0.25);
+        tx.send(MixerCommand::SetSendLevel { track_id: 0, send: SendSlot::A, gain: 1.0 })
+            .unwrap();
+        apply_all(&mut mixer);
+        transport.play();
+
+        bus.config.set_volume(0.5);
+        let out = render(&mut mixer, &transport, 256, 1);
+        assert!(
+            (peak_of(&out) - 0.375).abs() < 1.0e-4,
+            "track 0.25 plus a half-return send should be 0.375, got {}",
+            peak_of(&out)
+        );
+
+        bus.config.muted.store(true, std::sync::atomic::Ordering::Relaxed);
+        let out = render(&mut mixer, &transport, 256, 1);
+        assert!(
+            (peak_of(&out) - 0.25).abs() < 1.0e-6,
+            "muting the bus left {} in the mix",
+            peak_of(&out)
+        );
+    }
+
+    // ── Meters ──
+
+    /// The defect this milestone fixes: the channel meter read the
+    /// instrument's raw output, so pulling the fader down did nothing to it.
+    /// A meter that does not follow the fader is not a meter.
+    #[test]
+    fn the_channel_meter_follows_the_fader() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let handle = add_fixed_track(&tx, 0, 0.5);
+        apply_all(&mut mixer);
+        transport.play();
+
+        let _ = render(&mut mixer, &transport, 256, 1);
+        let (unity, _) = handle.vu.get();
+        assert!((unity - 0.5).abs() < 1.0e-6, "at unity the meter reads {unity}");
+
+        handle.config.set_volume(db_to_gain(-12.0));
+        let (reduced, _) = settled_vu(&mut mixer, &transport, 256, &handle);
+        let moved = 20.0 * (reduced / unity).log10();
+        assert!(
+            (moved - (-12.0)).abs() < 0.05,
+            "a 12 dB cut moved the meter by {moved:.2} dB"
+        );
+    }
+
+    /// ...and it reads after the inserts too, so an effect that changes the
+    /// level shows on the meter.
+    #[test]
+    fn the_channel_meter_reads_after_the_inserts() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let handle = add_fixed_track(&tx, 0, 0.5);
+        tx.send(MixerCommand::AddFx {
+            target: FxTarget::Track(0),
+            slot: 0,
+            effect: Box::new(Gain::at(-6.0)),
+        })
+        .unwrap();
+        apply_all(&mut mixer);
+        transport.play();
+
+        let _ = render(&mut mixer, &transport, 256, 1);
+        let (peak, _) = handle.vu.get();
+        assert!((peak - 0.2506).abs() < 1.0e-3, "the meter reads {peak}, before the insert");
+    }
+
+    /// The master limiter's gain reduction becomes a number the UI can draw,
+    /// computed on this side because only this side sees every sample.
+    #[test]
+    fn the_limiter_publishes_its_gain_reduction() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let meter = mixer.limiter_gr_meter();
+        assert_eq!(meter.get(), (0.0, 0.0));
+
+        for id in 0..6 {
+            add_fixed_track(&tx, id, 0.75);
+        }
+        apply_all(&mut mixer);
+        transport.play();
+
+        let _ = render(&mut mixer, &transport, 256, 4);
+        let (current, peak) = meter.get();
+        assert!(current < -6.0, "a 4.5x mix published {current:.2} dB of reduction");
+        assert!(peak <= current, "the peak cell is above the bar");
+
+        // And it comes back: the tracks are gone, so the reduction releases.
+        for id in 0..6 {
+            tx.send(MixerCommand::RemoveTrack { track_id: id }).unwrap();
+        }
+        apply_all(&mut mixer);
+        let _ = render(&mut mixer, &transport, 256, 600);
+        assert_eq!(meter.current_db(), 0.0, "the meter never released");
+    }
+
+    /// The master's own inserts are in the path, ahead of the limiter — so an
+    /// effect that pushes the mix over the ceiling is caught by it rather
+    /// than reaching the device.
+    #[test]
+    fn the_master_chain_runs_before_the_limiter() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let _track = add_fixed_track(&tx, 0, 0.25);
+        tx.send(MixerCommand::AddFx {
+            target: FxTarget::Master,
+            slot: 0,
+            effect: Box::new(Gain::at(24.0)),
+        })
+        .unwrap();
+        apply_all(&mut mixer);
+        transport.play();
+
+        let out = render(&mut mixer, &transport, 256, 2);
+        let peak = peak_of(&out);
+        assert!(peak > 0.8, "the master trim did nothing: peak {peak}");
+        assert!(peak <= LIMITER_CEILING, "the master chain got past the limiter: {peak}");
+        assert!(mixer.limiter_gr_meter().current_db() < -6.0);
+    }
+
+    // ── The sidechain key ──
+
+    /// An effect that replaces its input with the key it was given, so a test
+    /// can see exactly which block of which track reached it.
+    struct KeyCopy;
+
+    impl Effect for KeyCopy {
+        fn name(&self) -> &'static str {
+            "keycopy"
+        }
+        fn init(&mut self, _sample_rate: f64, _max_buffer_size: usize) {}
+        fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &FxContext<'_>) {
+            // With no key this effect leaves the signal alone, which is the
+            // internal fallback the mixer promises.
+            if let Some((key_l, key_r)) = ctx.key {
+                left.copy_from_slice(&key_l[..left.len()]);
+                right.copy_from_slice(&key_r[..right.len()]);
+            }
+        }
+        fn reset(&mut self) {}
+        fn parameter_count(&self) -> usize {
+            0
+        }
+        fn parameter_info(&self, _index: usize) -> Option<FxParamInfo> {
+            None
+        }
+        fn get_parameter(&self, _index: usize) -> f32 {
+            0.0
+        }
+        fn set_parameter(&mut self, _index: usize, _value: f32) {}
+        fn wants_key(&self) -> bool {
+            true
+        }
+    }
+
+    /// **The key tap.** A track keyed to another one gets that track's
+    /// signal from *this* block, whichever order the two sit in. The two
+    /// passes are what buy that: a single pass would hand the key a stale
+    /// block whenever the source happens to come later in the list.
+    ///
+    /// The source is muted, so anything reaching the output arrived through
+    /// the key. That also states the tap's position out loud: it is
+    /// post-instrument and pre-insert, which is ahead of the fader — a muted
+    /// track still keys.
+    #[test]
+    fn a_key_is_the_same_block_whatever_the_order() {
+        fn take(source_first: bool) -> Vec<f32> {
+            let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+            let (source_id, keyed_id) = if source_first { (0, 1) } else { (1, 0) };
+
+            let make = |id: usize, source: bool| {
+                let handle = Arc::new(TrackHandle::new(id, TrackKind::Instrument));
+                handle.config.set_volume(1.0);
+                if source {
+                    handle.config.muted.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                tx.send(MixerCommand::AddTrack {
+                    kind: TrackKind::Instrument,
+                    handle,
+                })
+                .unwrap();
+                if source {
+                    tx.send(MixerCommand::SetInstrument {
+                        track_id: id,
+                        instrument: Box::new(Ramp::new()),
+                    })
+                    .unwrap();
+                }
+            };
+
+            // Added in the order the ids say, so the two runs really do put
+            // the source on opposite sides of the keyed track.
+            for id in 0..2 {
+                make(id, id == source_id);
+            }
+            tx.send(MixerCommand::AddFx {
+                target: FxTarget::Track(keyed_id),
+                slot: 0,
+                effect: Box::new(KeyCopy),
+            })
+            .unwrap();
+            tx.send(MixerCommand::SetKeySource {
+                track_id: keyed_id,
+                source: Some(source_id),
+            })
+            .unwrap();
+            apply_all(&mut mixer);
+            transport.play();
+            render(&mut mixer, &transport, 64, 8)
+        }
+
+        let source_before = take(true);
+        let source_after = take(false);
+        assert!(peak_of(&source_before) > 0.1, "nothing came through the key");
+        for (i, (a, b)) in source_before.iter().zip(&source_after).enumerate() {
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "sample {i} depends on which order the tracks are in: {a} vs {b}"
+            );
+        }
+
+        // And what came through is the source's own signal, sample for
+        // sample — the same block, not the one before it.
+        let expected = {
+            let mut ramp = Ramp::new();
+            let mut l = vec![0.0f32; 64 * 8];
+            let mut r = vec![0.0f32; 64 * 8];
+            for block in 0..8 {
+                let range = block * 64..(block + 1) * 64;
+                let mut outs: [&mut [f32]; 2] =
+                    [&mut l[range.clone()], &mut r[range]];
+                ramp.process(&[], &mut outs, &[]);
+            }
+            l
+        };
+        for (i, (a, b)) in expected.iter().zip(source_before.chunks_exact(2)).enumerate() {
+            assert_eq!(a.to_bits(), b[0].to_bits(), "key sample {i}");
+        }
+    }
+
+    /// A key that names a track which no longer exists falls back to the
+    /// internal key **this block**. Never a stale buffer, never silence, and
+    /// never whatever track happens to have moved into that position.
+    #[test]
+    fn a_deleted_key_track_falls_back_to_internal() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let _source = add_fixed_track(&tx, 7, 0.25);
+        let _keyed = add_fixed_track(&tx, 1, 0.0625);
+        tx.send(MixerCommand::AddFx {
+            target: FxTarget::Track(1),
+            slot: 0,
+            effect: Box::new(KeyCopy),
+        })
+        .unwrap();
+        tx.send(MixerCommand::SetKeySource { track_id: 1, source: Some(7) }).unwrap();
+        apply_all(&mut mixer);
+        transport.play();
+
+        // The keyed track copies the source, so the mix is the source
+        // twice over rather than the source plus its own quiet output.
+        let peak = peak_of(&render(&mut mixer, &transport, 128, 1));
+        assert!((peak - 0.5).abs() < 1.0e-4, "the key never arrived: {peak}");
+
+        tx.send(MixerCommand::RemoveTrack { track_id: 7 }).unwrap();
+        apply_all(&mut mixer);
+        let peak = peak_of(&render(&mut mixer, &transport, 128, 1));
+        assert!(
+            (peak - 0.0625).abs() < 1.0e-6,
+            "a deleted key track left {peak} — the keyed track kept reading something"
+        );
+    }
+
+    /// Keying a track to itself is the internal key, not a self-reference the
+    /// borrow checker has to be argued out of.
+    #[test]
+    fn a_track_cannot_key_off_itself() {
+        let (mut mixer, tx, _clip_rx, _transport) = setup_mixer();
+        let _track = add_fixed_track(&tx, 3, 0.5);
+        tx.send(MixerCommand::SetKeySource { track_id: 3, source: Some(3) }).unwrap();
+        apply_all(&mut mixer);
+        assert_eq!(mixer.tracks[0].key_source, None);
+    }
+
+    /// A ramp, so that every sample of a block is a different number and a
+    /// key that arrived a block late would be visibly wrong.
+    struct Ramp {
+        phase: f32,
+    }
+
+    impl Ramp {
+        fn new() -> Self {
+            Self { phase: 0.0 }
+        }
+    }
+
+    impl Plugin for Ramp {
+        fn info(&self) -> phosphor_plugin::PluginInfo {
+            phosphor_plugin::PluginInfo {
+                name: "Ramp".into(),
+                version: "0".into(),
+                author: "test".into(),
+                category: phosphor_plugin::PluginCategory::Instrument,
+            }
+        }
+        fn init(&mut self, _sample_rate: f64, _max_buffer_size: usize) {}
+        fn process(&mut self, _i: &[&[f32]], outputs: &mut [&mut [f32]], _m: &[MidiEvent]) {
+            for frame in 0..outputs[0].len() {
+                self.phase += 0.01;
+                if self.phase > 0.5 {
+                    self.phase = -0.5;
+                }
+                outputs[0][frame] = self.phase;
+                outputs[1][frame] = self.phase * 0.5;
+            }
+        }
+        fn parameter_count(&self) -> usize {
+            0
+        }
+        fn parameter_info(&self, _: usize) -> Option<phosphor_plugin::ParameterInfo> {
+            None
+        }
+        fn get_parameter(&self, _: usize) -> f32 {
+            0.0
+        }
+        fn set_parameter(&mut self, _: usize, _: f32) {}
+        fn reset(&mut self) {}
+    }
+
+    // ── The rule the audio thread lives by ──
+
+    /// Four tracks with six effects each, both buses loaded, the master
+    /// loaded, sends open, a bypass crossfading and a key resolving — and not
+    /// one call to the allocator.
+    #[test]
+    fn a_full_insert_layer_does_not_allocate() {
+        let max_frames = 512usize;
+        let (tx, rx) = mixer_command_channel();
+        let (clip_tx, _clip_rx) = clip_snapshot_channel();
+        let mut mixer = Mixer::new(rx, Arc::new(VuLevels::new()), clip_tx, 48_000, max_frames);
+        let transport = Arc::new(Transport::new(120.0));
+        attach_bus(&tx, TrackKind::SendA);
+        attach_bus(&tx, TrackKind::SendB);
+        attach_bus(&tx, TrackKind::Master);
+
+        for id in 0..4 {
+            let handle = Arc::new(TrackHandle::new(id, TrackKind::Instrument));
+            handle.config.midi_active.store(true, std::sync::atomic::Ordering::Relaxed);
+            tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle }).unwrap();
+            tx.send(MixerCommand::SetInstrument {
+                track_id: id,
+                instrument: Box::new(PhosphorSynth::new()),
+            })
+            .unwrap();
+            for slot in 0..MAX_FX_SLOTS {
+                tx.send(MixerCommand::AddFx {
+                    target: FxTarget::Track(id),
+                    slot,
+                    effect: Box::new(Gain::at(-0.5)),
+                })
+                .unwrap();
+            }
+            tx.send(MixerCommand::SetPan { track_id: id, pan: (id as f32 - 1.5) / 1.5 })
+                .unwrap();
+            tx.send(MixerCommand::SetSendLevel {
+                track_id: id,
+                send: SendSlot::A,
+                gain: 0.5,
+            })
+            .unwrap();
+            tx.send(MixerCommand::SetSendLevel {
+                track_id: id,
+                send: SendSlot::B,
+                gain: 0.25,
+            })
+            .unwrap();
+        }
+        // A key that resolves, on a chain that asks for one.
+        tx.send(MixerCommand::AddFx {
+            target: FxTarget::Track(0),
+            slot: 0,
+            effect: Box::new(KeyCopy),
+        })
+        .unwrap();
+        tx.send(MixerCommand::SetKeySource { track_id: 0, source: Some(3) }).unwrap();
+        for target in [FxTarget::BusA, FxTarget::BusB, FxTarget::Master] {
+            for slot in 0..MAX_FX_SLOTS {
+                tx.send(MixerCommand::AddFx {
+                    target,
+                    slot,
+                    effect: Box::new(Gain::at(-0.25)),
+                })
+                .unwrap();
+            }
+        }
+        apply_all(&mut mixer);
+        transport.play();
+
+        let mut output = vec![0.0f32; max_frames * 2];
+        // Warm-up: the wavetable bank behind its `OnceLock` is built here.
+        mixer.process(&mut output, &[make_note_on(60, 100)], &transport);
+
+        let allocations = crate::alloc_count::allocations_during(|| {
+            for block in 0..16 {
+                // A bypass thrown mid-run, so the crossfade path — the one
+                // that copies the dry signal aside — is inside the
+                // measurement too.
+                if block == 4 {
+                    tx.send(MixerCommand::SetFxBypass {
+                        target: FxTarget::Track(1),
+                        slot: 2,
+                        bypass: true,
+                    })
+                    .unwrap();
+                }
+                mixer.process(&mut output, &[], &transport);
+                transport.advance(max_frames as u32, 48_000);
+            }
+        });
+        assert_eq!(allocations, 0, "the insert layer reached the allocator");
+    }
+
+    /// A short block, with the same load: the crossfade scratch is sized for
+    /// the device's maximum and must not be re-sized for a smaller one.
+    #[test]
+    fn a_short_block_through_a_full_chain_does_not_allocate() {
+        let (tx, rx) = mixer_command_channel();
+        let (clip_tx, _clip_rx) = clip_snapshot_channel();
+        let mut mixer = Mixer::new(rx, Arc::new(VuLevels::new()), clip_tx, 48_000, 512);
+        let transport = Arc::new(Transport::new(120.0));
+        let _handle = add_fixed_track(&tx, 0, 0.25);
+        for slot in 0..MAX_FX_SLOTS {
+            tx.send(MixerCommand::AddFx {
+                target: FxTarget::Track(0),
+                slot,
+                effect: Box::new(Gain::at(-1.0)),
+            })
+            .unwrap();
+        }
+        tx.send(MixerCommand::SetFxBypass {
+            target: FxTarget::Track(0),
+            slot: 0,
+            bypass: true,
+        })
+        .unwrap();
+        apply_all(&mut mixer);
+        transport.play();
+
+        let mut output = vec![0.0f32; 32 * 2];
+        mixer.process(&mut output, &[], &transport);
+        let allocations = crate::alloc_count::allocations_during(|| {
+            for _ in 0..8 {
+                mixer.process(&mut output, &[], &transport);
+            }
+        });
+        assert_eq!(allocations, 0, "a short block reached the allocator");
+    }
+
+    /// The panic key drops the tails as well as the notes. A reverb still
+    /// ringing after everything has been silenced is what the key is for.
+    #[test]
+    fn a_panic_drops_the_insert_tails() {
+        let (mut mixer, tx, _clip_rx, _transport) = setup_mixer();
+        attach_bus(&tx, TrackKind::SendA);
+        let _track = add_fixed_track(&tx, 0, 0.5);
+        tx.send(MixerCommand::AddFx {
+            target: FxTarget::Track(0),
+            slot: 0,
+            effect: Box::new(Tail::default()),
+        })
+        .unwrap();
+        tx.send(MixerCommand::AddFx {
+            target: FxTarget::BusA,
+            slot: 0,
+            effect: Box::new(Tail::default()),
+        })
+        .unwrap();
+        apply_all(&mut mixer);
+
+        let mut output = vec![0.0f32; 128];
+        mixer.process(&mut output, &[], &_transport);
+        mixer.reset_all();
+        // Both chains were reset, and the bus buffer with them.
+        let peak = peak_of(&output);
+        assert!(peak > 0.0, "nothing was rendered, so this proves nothing");
+        mixer.process(&mut output, &[], &_transport);
+        assert!(
+            mixer.bus_a.buf_l.iter().all(|s| *s == 0.0),
+            "the bus kept a tail through the panic"
+        );
+    }
+
+    /// An effect that would ring forever if it were never reset.
+    #[derive(Default)]
+    struct Tail {
+        held: f32,
+    }
+
+    impl Effect for Tail {
+        fn name(&self) -> &'static str {
+            "tail"
+        }
+        fn init(&mut self, _sample_rate: f64, _max_buffer_size: usize) {}
+        fn process(&mut self, left: &mut [f32], right: &mut [f32], _ctx: &FxContext<'_>) {
+            for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                self.held = self.held.max(l.abs());
+                *l += self.held;
+                *r += self.held;
+            }
+        }
+        fn reset(&mut self) {
+            self.held = 0.0;
+        }
+        fn parameter_count(&self) -> usize {
+            0
+        }
+        fn parameter_info(&self, _index: usize) -> Option<FxParamInfo> {
+            None
+        }
+        fn get_parameter(&self, _index: usize) -> f32 {
+            0.0
+        }
+        fn set_parameter(&mut self, _index: usize, _value: f32) {}
+    }
+
+    /// The flicker: a steady signal produced the same peak every block, and a
+    /// meter that decayed on equality alternated between that peak and 85% of
+    /// it forever. It holds now, and still falls when the signal does.
+    #[test]
+    fn a_steady_signal_holds_the_meter_still() {
+        let vu = VuLevels::new();
+        for _ in 0..8 {
+            publish_vu(&vu, 0.5, 0.25);
+        }
+        assert_eq!(vu.get(), (0.5, 0.25));
+        // Ten more blocks of exactly the same level do not move it.
+        for _ in 0..10 {
+            publish_vu(&vu, 0.5, 0.25);
+            assert_eq!(vu.get(), (0.5, 0.25), "a level that is not moving moved the meter");
+        }
+
+        // ...and a signal that stops still falls.
+        publish_vu(&vu, 0.0, 0.0);
+        let (l, r) = vu.get();
+        assert!(l < 0.5 && l > 0.0, "the meter did not decay: {l}");
+        assert!(r < 0.25 && r > 0.0);
+
+        // ...and a louder block is taken at once.
+        publish_vu(&vu, 0.9, 0.9);
+        assert_eq!(vu.get(), (0.9, 0.9));
     }
 }

@@ -59,7 +59,7 @@ impl App {
             && !self.nav.instrument_modal.open && !self.nav.fx_menu.open
             && !self.nav.preset_modal.open
             && !self.nav.element_locked && !self.nav.clip_view.piano_roll.edit_mode
-            && !self.nav.clip_view.sequencer.locked
+            && !self.nav.clip_view.sequencer.locked && !self.nav.clip_view.fx.locked
         {
             if key.code == KeyCode::Char('u') && !key.modifiers.contains(KeyModifiers::SHIFT) {
                 dbg::user("u → performing undo");
@@ -311,8 +311,10 @@ impl App {
         match key.code {
             KeyCode::Tab | KeyCode::BackTab
                 if self.nav.focused_pane == Pane::ClipView
-                    && self.nav.clip_view.clip_tab == ClipTab::Sequencer
-                    && self.nav.clip_view.sequencer.locked =>
+                    && ((self.nav.clip_view.clip_tab == ClipTab::Sequencer
+                        && self.nav.clip_view.sequencer.locked)
+                        || (self.nav.clip_view.clip_tab == ClipTab::Fx
+                            && self.nav.clip_view.fx.locked)) =>
             {
                 return;
             }
@@ -452,6 +454,26 @@ impl App {
         //       left edge, y/p/d/P = yank/paste/duplicate, Esc = unlock
         // Volume: h/l = fader down/up, Esc or Enter = release
         if self.nav.element_locked {
+            // Pan and the sends: the fader's contract on the routing cells.
+            // The readout goes to the status bar because the header cell has
+            // three characters and a send that reads `-12` is not the same
+            // information as "send A, twelve decibels down".
+            if matches!(
+                self.nav.track_element,
+                crate::state::TrackElement::Pan
+                    | crate::state::TrackElement::SendA
+                    | crate::state::TrackElement::SendB
+            ) {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Enter => self.nav.escape(),
+                    KeyCode::Char('h') | KeyCode::Left => self.step_routing(-1),
+                    KeyCode::Char('l') | KeyCode::Right => self.step_routing(1),
+                    KeyCode::Char('H') => self.step_routing(-5),
+                    KeyCode::Char('L') => self.step_routing(5),
+                    _ => {}
+                }
+                return;
+            }
             if self.nav.track_element == crate::state::TrackElement::Volume {
                 match key.code {
                     KeyCode::Esc | KeyCode::Enter => {
@@ -557,6 +579,10 @@ impl App {
             }
             KeyCode::Char('h') | KeyCode::Left => self.nav.move_left(),
             KeyCode::Char('l') | KeyCode::Right => self.nav.move_right(),
+            KeyCode::Enter if self.nav.fx_menu.open => {
+                dbg::user("Enter → choose fx");
+                self.fx_menu_choose();
+            }
             KeyCode::Enter => {
                 dbg::user(&format!("Enter → select (track_selected={})", self.nav.track_selected));
                 self.nav.enter();
@@ -604,6 +630,19 @@ impl App {
             return;
         }
 
+        // The chain list takes its own keys: `b`, `[`, `]`, `d` and `a` mean
+        // nothing to a parameter strip and everything to a slot list, and
+        // Enter opens a panel rather than adjusting anything.
+        // The menu-open case stays INSIDE the handler: skipping the handler
+        // while the menu was up sent Enter to the generic panel branch below,
+        // and the chosen effect was never added.
+        if self.nav.clip_view.focus == ClipViewFocus::FxPanel
+            && self.nav.clip_view.fx_panel_tab == FxPanelTab::TrackFx
+            && self.handle_fx_chain_keys(key)
+        {
+            return;
+        }
+
         // If we're in the FX panel side, use the old synth/fx controls
         if self.nav.clip_view.focus == ClipViewFocus::FxPanel {
             match key.code {
@@ -620,6 +659,16 @@ impl App {
                 }
                 _ => {}
             }
+            return;
+        }
+
+        // An effect's panel takes its own keys, for the same reason the step
+        // grid does: every one of h, j, k, l, Enter and the digits means
+        // something different on a grid of bands.
+        if self.nav.clip_view.focus == ClipViewFocus::PianoRoll
+            && self.nav.clip_view.clip_tab == ClipTab::Fx
+        {
+            self.handle_fx_panel_keys(key);
             return;
         }
 

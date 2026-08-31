@@ -7,7 +7,8 @@ use std::path::Path;
 use serde::{Serialize, Deserialize};
 use anyhow::Result;
 
-use crate::state::{NavState, InstrumentType};
+use crate::state::{FxInstance, FxType, InstrumentType, NavState, TrackState};
+use phosphor_core::fx::SendSlot;
 use phosphor_core::transport::Transport;
 
 // ── Session file format ──
@@ -29,6 +30,14 @@ pub struct SessionFile {
     pub version: u32,
     pub transport: SessionTransport,
     pub tracks: Vec<SessionTrack>,
+    /// The send buses and the master: their insert chains and return levels.
+    ///
+    /// Absent — not null — whenever all three are empty and both returns sit
+    /// at unity, which is every session written before the insert layer
+    /// existed and every session that has not used one since. That is what
+    /// makes this addition invisible to `session_digest`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buses: Option<SessionBuses>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -62,6 +71,148 @@ pub struct SessionTrack {
     /// existed. That is what `session_digest` is run against.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sequencer: Option<crate::sequencer::SessionSequencer>,
+    /// This track's insert chain, in order. Each effect by name, so that a
+    /// build which reorders its menu — or gains an effect between it and the
+    /// one that wrote the file — still loads the right thing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fx: Vec<SessionFx>,
+    /// Pan position, −1..=1. Absent at centre, which is where every track
+    /// written before pan existed sits.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pan: f32,
+    /// Send levels as linear gains. Absent when closed, which is the default.
+    ///
+    /// Linear rather than decibels because a closed send is −inf dB and JSON
+    /// has no infinity: `serde_json` writes it as `null`, and a level that
+    /// round-trips into a different type is a bug waiting for the first
+    /// player who closes a send and saves.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub send_a: f32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub send_b: f32,
+    /// Which track this one's sidechain keys off, as a position in this
+    /// file's own track list.
+    ///
+    /// Identity, not a runtime id: the mixer's ids are handed out as tracks
+    /// are created and mean nothing between one session and the next, whereas
+    /// a position in the file is exactly as stable as the file is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_track: Option<usize>,
+}
+
+/// One effect in a saved chain.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct SessionFx {
+    /// The effect's stable name — see [`FxType::key`]. A name this build does
+    /// not know is a slot that is dropped with a warning rather than a
+    /// session that will not open.
+    pub kind: String,
+    /// Absent unless the slot is bypassed, which is the exception.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bypass: bool,
+    /// The effect's controls in its own units, in the order it declares them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<f32>,
+}
+
+/// The send buses and the master.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+pub struct SessionBuses {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub send_a: Vec<SessionFx>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub send_b: Vec<SessionFx>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub master: Vec<SessionFx>,
+    /// Return level of each bus into the master, as a linear gain.
+    #[serde(default = "unity", skip_serializing_if = "is_unity")]
+    pub return_a: f32,
+    #[serde(default = "unity", skip_serializing_if = "is_unity")]
+    pub return_b: f32,
+}
+
+impl SessionBuses {
+    /// Whether there is anything here worth writing down.
+    fn is_default(&self) -> bool {
+        self.send_a.is_empty()
+            && self.send_b.is_empty()
+            && self.master.is_empty()
+            && is_unity(&self.return_a)
+            && is_unity(&self.return_b)
+    }
+
+    /// The chain for one of the two sends.
+    #[must_use]
+    pub fn send(&self, slot: SendSlot) -> &[SessionFx] {
+        match slot {
+            SendSlot::A => &self.send_a,
+            SendSlot::B => &self.send_b,
+        }
+    }
+
+    /// The return level for one of the two sends.
+    #[must_use]
+    pub fn return_level(&self, slot: SendSlot) -> f32 {
+        match slot {
+            SendSlot::A => self.return_a,
+            SendSlot::B => self.return_b,
+        }
+    }
+}
+
+fn unity() -> f32 {
+    1.0
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` shape
+fn is_unity(v: &f32) -> bool {
+    *v == 1.0
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
+/// A chain as it is written to disk.
+#[must_use]
+pub fn chain_to_session(chain: &[FxInstance]) -> Vec<SessionFx> {
+    chain
+        .iter()
+        .map(|slot| SessionFx {
+            kind: slot.fx_type.key().to_string(),
+            bypass: slot.bypass,
+            params: slot.params.clone(),
+        })
+        .collect()
+}
+
+/// A chain as it comes back.
+///
+/// Slots naming an effect this build does not have are dropped — the rest of
+/// the chain loads, and the caller is told how many went missing so it can
+/// say so rather than leaving the player to notice the reverb is gone.
+#[must_use]
+pub fn chain_from_session(stored: &[SessionFx]) -> (Vec<FxInstance>, usize) {
+    let mut chain = Vec::new();
+    let mut dropped = 0;
+    for slot in stored {
+        let Some(fx_type) = FxType::from_key(&slot.kind) else {
+            dropped += 1;
+            continue;
+        };
+        chain.push(FxInstance {
+            fx_type,
+            bypass: slot.bypass,
+            params: slot.params.clone(),
+        });
+    }
+    (chain, dropped)
 }
 
 /// One discrete control, stored by what it selects.
@@ -163,6 +314,20 @@ pub fn save(path: &Path, nav: &NavState, transport: &Transport) -> Result<()> {
 fn extract_session(nav: &NavState, transport: &Transport) -> SessionFile {
     let mut tracks = Vec::new();
 
+    // A sidechain key names a track by the mixer id it has *this run*, and
+    // the file has to name it by something that survives being closed. The
+    // saved tracks are numbered in the order they are written, so that is the
+    // identity: this maps one to the other.
+    let mut position: Vec<(usize, usize)> = Vec::new();
+    for track in nav.tracks.iter().filter(|t| t.instrument_type.is_some()) {
+        if let Some(mixer_id) = track.mixer_id {
+            position.push((mixer_id, position.len()));
+        }
+    }
+    let position_of = |mixer_id: usize| -> Option<usize> {
+        position.iter().find(|(id, _)| *id == mixer_id).map(|(_, at)| *at)
+    };
+
     for track in &nav.tracks {
         // Only save instrument tracks (not bus tracks)
         if track.instrument_type.is_none() {
@@ -204,8 +369,15 @@ fn extract_session(nav: &NavState, transport: &Transport) -> SessionFile {
                     &track.synth_params,
                 )
             }),
+            fx: chain_to_session(&track.fx_chain),
+            pan: track.pan,
+            send_a: track.send(SendSlot::A),
+            send_b: track.send(SendSlot::B),
+            key_track: track.key_source.and_then(position_of),
         });
     }
+
+    let buses = extract_buses(nav);
 
     SessionFile {
         version: FORMAT_VERSION,
@@ -217,6 +389,26 @@ fn extract_session(nav: &NavState, transport: &Transport) -> SessionFile {
             metronome: transport.is_metronome_on(),
         },
         tracks,
+        buses: (!buses.is_default()).then_some(buses),
+    }
+}
+
+/// The bus strips as they are written down.
+fn extract_buses(nav: &NavState) -> SessionBuses {
+    let strip = |kind: phosphor_core::project::TrackKind| -> Option<&TrackState> {
+        nav.tracks.iter().find(|t| t.kind == kind)
+    };
+    use phosphor_core::project::TrackKind;
+    let send_a = strip(TrackKind::SendA);
+    let send_b = strip(TrackKind::SendB);
+    SessionBuses {
+        send_a: send_a.map(|t| chain_to_session(&t.fx_chain)).unwrap_or_default(),
+        send_b: send_b.map(|t| chain_to_session(&t.fx_chain)).unwrap_or_default(),
+        master: strip(TrackKind::Master)
+            .map(|t| chain_to_session(&t.fx_chain))
+            .unwrap_or_default(),
+        return_a: send_a.map_or(1.0, |t| t.volume),
+        return_b: send_b.map_or(1.0, |t| t.volume),
     }
 }
 
@@ -309,6 +501,17 @@ mod tests {
                 loop_end_bar: 5,
                 metronome: true,
             },
+            buses: Some(SessionBuses {
+                send_a: vec![SessionFx {
+                    kind: "reverb".into(),
+                    bypass: false,
+                    params: vec![20.0, 1.8],
+                }],
+                send_b: Vec::new(),
+                master: vec![SessionFx { kind: "eq".into(), bypass: true, params: vec![0.0] }],
+                return_a: 0.8,
+                return_b: 1.0,
+            }),
             tracks: vec![
                 SessionTrack {
                     name: "synth".into(),
@@ -321,6 +524,14 @@ mod tests {
                     volume: 0.75,
                     color_index: 2,
                     sequencer: None,
+                    fx: vec![
+                        SessionFx { kind: "eq".into(), bypass: false, params: vec![120.0, 3.0] },
+                        SessionFx { kind: "comp".into(), bypass: true, params: vec![-18.0] },
+                    ],
+                    pan: -0.5,
+                    send_a: 0.5,
+                    send_b: 0.0,
+                    key_track: Some(1),
                     clips: vec![
                         SessionClip {
                             start_tick: 0,
@@ -352,6 +563,135 @@ mod tests {
         assert_eq!(loaded.tracks[0].clips.len(), 1);
         assert_eq!(loaded.tracks[0].clips[0].notes.len(), 2);
         assert_eq!(loaded.tracks[0].clips[0].notes[0].note, 60);
+
+        // The insert layer: chains by name, pan, sends and the key identity.
+        assert_eq!(loaded.tracks[0].fx.len(), 2);
+        assert_eq!(loaded.tracks[0].fx[0].kind, "eq");
+        assert_eq!(loaded.tracks[0].fx[0].params, vec![120.0, 3.0]);
+        assert!(loaded.tracks[0].fx[1].bypass);
+        assert_eq!(loaded.tracks[0].pan, -0.5);
+        assert_eq!(loaded.tracks[0].send_a, 0.5);
+        assert_eq!(loaded.tracks[0].send_b, 0.0);
+        assert_eq!(loaded.tracks[0].key_track, Some(1));
+
+        let buses = loaded.buses.expect("the buses were written");
+        assert_eq!(buses.send(SendSlot::A)[0].kind, "reverb");
+        assert!(buses.send(SendSlot::B).is_empty());
+        assert_eq!(buses.master[0].kind, "eq");
+        assert_eq!(buses.return_level(SendSlot::A), 0.8);
+        assert_eq!(buses.return_level(SendSlot::B), 1.0);
+    }
+
+    /// A session with nothing in the insert layer is the file it was before
+    /// the insert layer existed — byte for byte. Every field added here is
+    /// absent at its default, which is what lets an old session load and
+    /// re-save without moving.
+    #[test]
+    fn a_session_that_uses_no_effects_writes_no_effect_fields() {
+        let session = SessionFile {
+            version: FORMAT_VERSION,
+            transport: SessionTransport {
+                tempo_bpm: 120.0,
+                loop_enabled: false,
+                loop_start_bar: 1,
+                loop_end_bar: 2,
+                metronome: false,
+            },
+            buses: None,
+            tracks: vec![SessionTrack {
+                name: "synth".into(),
+                instrument_type: "synth".into(),
+                synth_params: vec![0.5],
+                discrete: Vec::new(),
+                muted: false,
+                soloed: false,
+                armed: false,
+                volume: 0.75,
+                color_index: 0,
+                clips: Vec::new(),
+                sequencer: None,
+                fx: Vec::new(),
+                pan: 0.0,
+                send_a: 0.0,
+                send_b: 0.0,
+                key_track: None,
+            }],
+        };
+        let json = serde_json::to_string_pretty(&session).unwrap();
+        for absent in ["\"fx\"", "\"pan\"", "\"send_a\"", "\"send_b\"", "\"key_track\"", "\"buses\""] {
+            assert!(
+                !json.contains(absent),
+                "an unused {absent} was written into the file:\n{json}"
+            );
+        }
+    }
+
+    /// A file written before any of this existed still opens, with every new
+    /// field at the value that means "not used".
+    #[test]
+    fn a_session_from_before_the_insert_layer_loads() {
+        let json = r#"{
+            "version": 2,
+            "transport": {
+                "tempo_bpm": 128.0,
+                "loop_enabled": false,
+                "loop_start_bar": 1,
+                "loop_end_bar": 3,
+                "metronome": false
+            },
+            "tracks": [{
+                "name": "juno",
+                "instrument_type": "juno60",
+                "synth_params": [0.1, 0.2],
+                "muted": false,
+                "soloed": false,
+                "armed": true,
+                "volume": 0.75,
+                "color_index": 1,
+                "clips": []
+            }]
+        }"#;
+        let loaded: SessionFile = serde_json::from_str(json).expect("an old session must load");
+        assert_eq!(loaded.tracks.len(), 1);
+        assert!(loaded.buses.is_none());
+        assert!(loaded.tracks[0].fx.is_empty());
+        assert_eq!(loaded.tracks[0].pan, 0.0);
+        assert_eq!(loaded.tracks[0].send_a, 0.0);
+        assert_eq!(loaded.tracks[0].send_b, 0.0);
+        assert_eq!(loaded.tracks[0].key_track, None);
+    }
+
+    /// Chains are stored by name, so a build whose menu has grown or been
+    /// reordered still loads the effect that was saved rather than the one
+    /// that happens to sit in that position now.
+    #[test]
+    fn a_chain_round_trips_by_name() {
+        let chain = vec![
+            FxInstance { fx_type: FxType::Eq, bypass: false, params: vec![120.0, 0.7] },
+            FxInstance { fx_type: FxType::Delay, bypass: true, params: vec![0.375, 0.3] },
+        ];
+        let stored = chain_to_session(&chain);
+        assert_eq!(stored[0].kind, "eq");
+        assert_eq!(stored[1].kind, "delay");
+        let (back, dropped) = chain_from_session(&stored);
+        assert_eq!(dropped, 0);
+        assert_eq!(back, chain);
+    }
+
+    /// An effect this build has never heard of costs its own slot and
+    /// nothing else. The rest of the chain, and its order, survive.
+    #[test]
+    fn an_unknown_effect_costs_one_slot() {
+        let stored = vec![
+            SessionFx { kind: "eq".into(), bypass: false, params: vec![] },
+            SessionFx { kind: "quantum-flanger".into(), bypass: false, params: vec![] },
+            SessionFx { kind: "reverb".into(), bypass: false, params: vec![] },
+        ];
+        let (chain, dropped) = chain_from_session(&stored);
+        assert_eq!(dropped, 1);
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].fx_type, FxType::Eq);
+        assert_eq!(chain[1].fx_type, FxType::Reverb);
     }
 
     #[test]

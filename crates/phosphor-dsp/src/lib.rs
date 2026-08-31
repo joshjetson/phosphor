@@ -5,6 +5,7 @@
 
 pub mod drum_rack;
 pub mod dx7;
+pub mod fx;
 pub mod juno;
 pub mod jupiter;
 pub mod level;

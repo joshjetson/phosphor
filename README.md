@@ -543,6 +543,44 @@ in a mix.
 
 Clip operations include collision detection — clips cannot overlap. Moving, stretching, and trimming all respect adjacent clip boundaries. Note positions are automatically rescaled when stretching or trimming to preserve their absolute timeline positions. All changes sync to the audio thread in real time.
 
+### Effects (`[trk fx]` tab and the panel behind a slot)
+
+Six insert slots on every track, every bus and the master. The `[trk fx]` tab
+is the chain; `Enter` on a slot opens that effect's panel in the wide pane
+beside it. Adding an effect drops it at its canonical place in the chain
+(`EQ → comp → tape → delay → reverb`) and never moves what is already there.
+
+| Key | Where | Action |
+|-----|-------|--------|
+| `j` / `k` | chain | Move between slots |
+| `a` | chain | Add an effect · `d` removes one (it asks) |
+| `Enter` | chain | Open the slot's panel |
+| `b` | chain, panel | Bypass — the slot stays, the effect steps aside |
+| `[` / `]` | chain | Move the slot earlier / later |
+
+**The EQ panel.** Eight bands and an output trim. At 120 columns the bands are
+columns with the response curve drawn over them, from the filter's own
+closed-form response at the engine's sample rate; at 80 the bands become rows
+and the curve is dropped — the numbers are what you mix with.
+
+| Key | Action |
+|-----|--------|
+| `h` / `l` | The bands (the band's controls, when they are rows) |
+| `j` / `k` | The band's controls: type, freq, gain, Q, slope, on |
+| `1`–`8` | Jump to a band · `n` switches it on or off |
+| `Enter` | Hold the control · `h`/`l` turns it, `H`/`L` in strides |
+| `Esc` | Let go, then leave the panel for the chain |
+
+Frequencies walk the ISO sixth-octave centres, so a band reads `2.5k` and never
+`2487`; a stride is an octave of them. Gain moves 0.5 dB a press and 3 dB with
+a stride. A control the band type does not use — a bell has no slope, a matched
+shelf no Q — is greyed and will not move.
+
+**Pan and sends** are cells on the track row, after the record-arm switch:
+`h`/`l` reaches them, `Enter` holds one, `h`/`l` moves it. Sends are post-fader
+and open from silence. The top bar shows the safety limiter's gain reduction
+whenever the mix is loud enough to need it, and nothing when it is not.
+
 ### Instrument Panel (`[inst]` tab)
 
 The instrument's own controls, laid out in as many columns as the pane has

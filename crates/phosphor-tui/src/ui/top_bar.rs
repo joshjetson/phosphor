@@ -73,6 +73,16 @@ pub(super) fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap
         .fg(if snap.metronome { theme::amber_val() } else { theme::dim_val() })
         .bg(if met_sel { hi } else { theme::bg_val() }));
 
+    // The safety limiter, when it is working. Silent otherwise: a readout
+    // that is always on screen showing 0.0 teaches the eye to ignore it, and
+    // this one only matters on the rare block where the mix went over.
+    let (reduction, _peak) = nav.limiter_gr.get();
+    let lim = if nav.limiter_gr.is_active() {
+        Span::styled(format!("  lim {reduction:.1}"), theme::amber_bright())
+    } else {
+        Span::styled("", theme::dim())
+    };
+
     // Seq
     // "seq" predates the step sequencer; with a real sequencer in the rack a
     // top-bar "seq:on" that means "the transport is rolling" reads as a lie.
@@ -84,7 +94,7 @@ pub(super) fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap
             Span::styled(format!("{:.0}", snap.tempo_bpm), Style::default().fg(bpm_fg).bg(bpm_bg)),
             Span::styled("  4/4  ", theme::normal()), rec,
             Span::styled("  ", theme::bg()), lp,
-            Span::styled("  ", theme::bg()), met,
+            Span::styled("  ", theme::bg()), met, lim,
         ])).alignment(Alignment::Center), cols[1]);
 
     let pos = transport::ticks_to_position_string(snap.position_ticks, Transport::PPQ);

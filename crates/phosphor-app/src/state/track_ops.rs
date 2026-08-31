@@ -2,6 +2,30 @@
 
 use super::*;
 
+use phosphor_core::fx::{Effect, FxTarget, SendSlot};
+
+/// What came of asking for an effect.
+///
+/// The two refusals are values rather than silence on purpose. A chain that
+/// is full and an effect that does not exist yet look identical from the
+/// player's side — nothing happened — and the status bar is the only place
+/// they can be told apart.
+pub enum FxAdd {
+    /// It went in. The caller sends the effect to the audio thread.
+    Added {
+        target: FxTarget,
+        slot: usize,
+        fx_type: FxType,
+        effect: Box<dyn Effect>,
+    },
+    /// Six slots is six slots.
+    ChainFull,
+    /// This build cannot make one of these yet.
+    NotBuilt(FxType),
+    /// No strip under the cursor, or one the mixer has never been told about.
+    Nothing,
+}
+
 impl NavState {
 
     pub fn toggle_mute(&mut self) {
@@ -86,6 +110,14 @@ impl NavState {
                 // as a clip and as the transport's BPM field. Only on tracks
                 // that have a fader: a bus track's header does not draw one,
                 // and locking a control that is not on screen is a dead end.
+                if self.current_track().is_some_and(super::TrackState::is_live) {
+                    self.element_locked = true;
+                }
+            }
+            // Pan and the two sends lock the same way the fader does. They
+            // are on every track that has a signal to route: a bus has no
+            // sends of its own, and the master has neither.
+            TrackElement::Pan | TrackElement::SendA | TrackElement::SendB => {
                 if self.current_track().is_some_and(super::TrackState::is_live) {
                     self.element_locked = true;
                 }
@@ -177,15 +209,44 @@ impl NavState {
     /// For instrument tracks: opens clip view with Synth tab, activates MIDI input.
     /// For bus tracks: no clip view, deactivates MIDI.
 
-    pub fn fx_menu_select(&mut self) {
-        // Add FX
-        if let Some(fx_type) = FxType::ALL.get(self.fx_menu.cursor) {
-            let inst = FxInstance::new(*fx_type);
-            if let Some(t) = self.current_track_mut() {
-                t.fx_chain.push(inst);
-            }
-        }
+    /// Take the effect under the menu cursor and put it in the current
+    /// strip's chain.
+    ///
+    /// Returns what the caller has to do about it: the audio thread's copy of
+    /// the chain is the one that makes the sound, and this only updates the
+    /// UI's mirror. Everything that can go wrong comes back as a value rather
+    /// than as a silently missing slot — a chain that is already full, an
+    /// effect this build cannot make yet, a strip the mixer has never heard
+    /// of.
+    pub fn fx_menu_select(&mut self) -> FxAdd {
         self.fx_menu.open = false;
+        let Some(&fx_type) = FxType::ALL.get(self.fx_menu.cursor) else {
+            return FxAdd::Nothing;
+        };
+        self.add_fx(fx_type)
+    }
+
+    /// Put an effect in the current strip's chain at its canonical position.
+    pub fn add_fx(&mut self, fx_type: FxType) -> FxAdd {
+        let Some(track) = self.current_track() else {
+            return FxAdd::Nothing;
+        };
+        if track.fx_chain.len() >= phosphor_core::fx::MAX_FX_SLOTS {
+            return FxAdd::ChainFull;
+        }
+        let Some(effect) = crate::fx::build(fx_type) else {
+            return FxAdd::NotBuilt(fx_type);
+        };
+        let Some(target) = track.fx_target() else {
+            return FxAdd::Nothing;
+        };
+        let slot = crate::fx::insert_position(&track.fx_chain, fx_type);
+        let params = crate::fx::params_of(effect.as_ref());
+
+        if let Some(track) = self.current_track_mut() {
+            track.fx_chain.insert(slot, FxInstance::new(fx_type, params));
+        }
+        FxAdd::Added { target, slot, fx_type, effect }
     }
 
 
@@ -416,11 +477,45 @@ impl NavState {
 
 // ── Initial Data ──
 
-/// Initial tracks: just the bus tracks. Instruments are added by the user via Space+A.
+/// The mixer addresses the buses by kind, so their ids are only ever seen in
+/// a log line. They are taken from the top of the range so that they cannot
+/// collide with an instrument track's, which are handed out from zero.
+const BUS_IDS: [usize; 3] = [usize::MAX, usize::MAX - 1, usize::MAX - 2];
+
+/// Initial tracks: just the bus strips. Instruments are added by the user via
+/// Space+A.
+///
+/// Each carries an audio-thread handle, which is what its meter and — on the
+/// two sends — its return level are read through. They are not "live" in the
+/// sense the rest of the application uses the word: see
+/// [`TrackState::is_live`].
 pub fn initial_tracks() -> Vec<TrackState> {
-    vec![
-        TrackState::new("snd a", 5, false, TrackKind::SendA, vec![]),
-        TrackState::new("snd b", 6, false, TrackKind::SendB, vec![]),
-        TrackState::new("mstr", 7, false, TrackKind::Master, vec![]),
-    ]
+    let strips = [
+        ("snd a", 5, TrackKind::SendA),
+        ("snd b", 6, TrackKind::SendB),
+        ("mstr", 7, TrackKind::Master),
+    ];
+    strips
+        .into_iter()
+        .zip(BUS_IDS)
+        .map(|((name, colour, kind), id)| {
+            let mut track = TrackState::new(name, colour, false, kind, vec![]);
+            let handle = std::sync::Arc::new(
+                phosphor_core::project::TrackHandle::new(id, kind),
+            );
+            // A send returns at unity unless the player moves it. The default
+            // fader position — a couple of decibels down, so that adding
+            // tracks does not immediately need the limiter — is a rule about
+            // sources, and a return is not one.
+            handle.config.set_volume(1.0);
+            track.volume = 1.0;
+            track.fx_chain = match kind {
+                TrackKind::SendA => crate::fx::bus_default_chain(SendSlot::A),
+                TrackKind::SendB => crate::fx::bus_default_chain(SendSlot::B),
+                _ => Vec::new(),
+            };
+            track.handle = Some(handle);
+            track
+        })
+        .collect()
 }

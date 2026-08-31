@@ -25,7 +25,7 @@ pub use transport_ui::*;
 mod navigation;
 mod params;
 mod track_ops;
-pub use track_ops::initial_tracks;
+pub use track_ops::{initial_tracks, FxAdd};
 
 use phosphor_core::project::TrackKind;
 
@@ -127,6 +127,25 @@ pub struct NavState {
     /// Decremented as each valid snapshot is accepted. Prevents stale snapshots
     /// while allowing final recording commits from all tracks to come through.
     pub recording_grace: usize,
+    /// What the master limiter is taking off, ready to draw.
+    ///
+    /// The audio thread's end of this is in `Mixer`; the ballistics have
+    /// already been applied there, because only the audio thread sees every
+    /// sample — see `phosphor_core::fx::GrBallistics`. Held here rather than
+    /// passed to the renderer because it is exactly the same kind of thing as
+    /// a track's `TrackHandle`: a window onto the audio thread that the UI
+    /// reads whenever it happens to draw.
+    ///
+    /// A `NavState` with no mixer behind it — every headless test — reads
+    /// zero, which is the truth for a mixer that is not running.
+    pub limiter_gr: std::sync::Arc<phosphor_core::fx::GrMeter>,
+    /// The rate the engine is running at.
+    ///
+    /// Here because a panel that draws a filter's response has to design it
+    /// at the rate the audio thread designed it at: the same EQ drawn at
+    /// 44.1 and rendered at 48 is a different curve, most visibly in the top
+    /// octave where every matched design bends. Set once, from the device.
+    pub sample_rate: u32,
 }
 
 impl NavState {
@@ -154,6 +173,8 @@ impl NavState {
             preset_modal: PresetModal::new(),
             element_locked: false,
             recording_grace: 0,
+            limiter_gr: std::sync::Arc::new(phosphor_core::fx::GrMeter::new()),
+            sample_rate: 48_000,
         }
     }
     pub fn visible_tracks(&self) -> &[TrackState] {
@@ -212,13 +233,23 @@ mod tests {
         assert_eq!(TrackElement::Volume.move_right(3), TrackElement::Mute);
         assert_eq!(TrackElement::Mute.move_right(3), TrackElement::Solo);
         assert_eq!(TrackElement::Solo.move_right(3), TrackElement::RecordArm);
-        assert_eq!(TrackElement::RecordArm.move_right(3), TrackElement::Clip(0));
+        // The routing cells come between the switches and the clips.
+        assert_eq!(TrackElement::RecordArm.move_right(3), TrackElement::Pan);
+        assert_eq!(TrackElement::Pan.move_right(3), TrackElement::SendA);
+        assert_eq!(TrackElement::SendA.move_right(3), TrackElement::SendB);
+        assert_eq!(TrackElement::SendB.move_right(3), TrackElement::Clip(0));
         assert_eq!(TrackElement::Clip(2).move_right(3), TrackElement::Clip(2));
+        // ...and a track with no clips stops on the last send rather than
+        // walking off the end of the strip.
+        assert_eq!(TrackElement::SendB.move_right(0), TrackElement::SendB);
     }
 
     #[test]
     fn track_element_left_full() {
-        assert_eq!(TrackElement::Clip(0).move_left(), TrackElement::RecordArm);
+        assert_eq!(TrackElement::Clip(0).move_left(), TrackElement::SendB);
+        assert_eq!(TrackElement::SendB.move_left(), TrackElement::SendA);
+        assert_eq!(TrackElement::SendA.move_left(), TrackElement::Pan);
+        assert_eq!(TrackElement::Pan.move_left(), TrackElement::RecordArm);
         assert_eq!(TrackElement::RecordArm.move_left(), TrackElement::Solo);
         assert_eq!(TrackElement::Solo.move_left(), TrackElement::Mute);
         assert_eq!(TrackElement::Mute.move_left(), TrackElement::Volume);
@@ -259,17 +290,49 @@ mod tests {
         assert!(!nav.fx_menu.open);
     }
 
+    /// The menu used to add a placeholder: an entry in the chain with three
+    /// made-up parameters and nothing behind it. Now it either produces a
+    /// real effect or says why it did not — a slot that does nothing is worse
+    /// than no slot, because the player spends the next minute wondering what
+    /// they did wrong.
     #[test]
-    fn fx_menu_add_effect() {
+    fn fx_menu_refuses_an_effect_this_build_cannot_make() {
         let mut nav = NavState::new(initial_tracks());
         let initial_count = nav.tracks[0].fx_chain.len();
         nav.enter();
         nav.move_right(); // -> Fx
         nav.enter(); // open menu
-        nav.enter(); // select first item (Reverb)
+        let outcome = nav.fx_menu_select(); // first item
         assert!(!nav.fx_menu.open);
-        assert_eq!(nav.tracks[0].fx_chain.len(), initial_count + 1);
-        assert_eq!(nav.tracks[0].fx_chain.last().unwrap().fx_type, FxType::Reverb);
+        match outcome {
+            crate::state::FxAdd::NotBuilt(fx_type) => {
+                assert_eq!(fx_type, FxType::ALL[0]);
+            }
+            crate::state::FxAdd::Added { fx_type, slot, .. } => {
+                // Once the effect exists this is the branch that runs, and
+                // the mirror has to have it in the slot it announced.
+                assert_eq!(nav.tracks[0].fx_chain.len(), initial_count + 1);
+                assert_eq!(nav.tracks[0].fx_chain[slot].fx_type, fx_type);
+                return;
+            }
+            _ => panic!("the menu neither added an effect nor said why not"),
+        }
+        assert_eq!(
+            nav.tracks[0].fx_chain.len(),
+            initial_count,
+            "a refused effect still took a slot"
+        );
+    }
+
+    /// Six slots, and the cap is reported rather than enforced by silence.
+    #[test]
+    fn fx_menu_reports_a_full_chain() {
+        let mut nav = NavState::new(initial_tracks());
+        nav.tracks[0].fx_chain = (0..phosphor_core::fx::MAX_FX_SLOTS)
+            .map(|_| FxInstance::new(FxType::Eq, vec![]))
+            .collect();
+        assert!(matches!(nav.add_fx(FxType::Reverb), crate::state::FxAdd::ChainFull));
+        assert_eq!(nav.tracks[0].fx_chain.len(), phosphor_core::fx::MAX_FX_SLOTS);
     }
 
     #[test]

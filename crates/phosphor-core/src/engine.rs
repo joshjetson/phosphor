@@ -279,11 +279,15 @@ impl EngineAudio {
             }
         }
 
-        // Smooth VU: fast attack, slow decay
+        // Smooth VU: fast attack, slow decay. `>=` holds the level on a
+        // steady signal; a strict `>` decayed on equality too, so a tone that
+        // was not moving made the meter alternate between its peak and 85% of
+        // it every callback. See `mixer::publish_vu`, which had the same
+        // character wrong.
         let (old_l, old_r) = self.vu_levels.get();
         let decay = 0.85f32; // ~60ms decay at 44.1k/64
-        let new_l = if peak_l > old_l { peak_l } else { old_l * decay };
-        let new_r = if peak_r > old_r { peak_r } else { old_r * decay };
+        let new_l = if peak_l >= old_l { peak_l } else { old_l * decay };
+        let new_r = if peak_r >= old_r { peak_r } else { old_r * decay };
         self.vu_levels.set(new_l, new_r);
 
         // Advance transport

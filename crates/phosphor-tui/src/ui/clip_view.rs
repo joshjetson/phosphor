@@ -30,6 +30,11 @@ pub(super) fn render_clip_view_tabs(frame: &mut Frame, area: Rect, nav: &NavStat
     if has_sequencer {
         tabs.push(ClipTab::Sequencer);
     }
+    // An effect's panel is a tab only while a slot is open in it: a tab for a
+    // panel with no effect behind it is a tab that shows nothing.
+    if nav.clip_view.fx.slot.is_some() {
+        tabs.push(ClipTab::Fx);
+    }
     tabs.extend(ClipTab::ALL.iter().copied());
 
     for tab in &tabs {
@@ -104,6 +109,7 @@ pub(super) fn render_clip_view(frame: &mut Frame, area: Rect, nav: &NavState, sn
         ClipTab::Settings => render_settings(frame, cols[2], nav),
         ClipTab::PianoRoll => render_piano_roll(frame, cols[2], nav, snap),
         ClipTab::Sequencer => render_sequencer(frame, cols[2], nav, snap),
+        ClipTab::Fx => fx::render_fx_panel(frame, cols[2], nav),
     }
 }
 
@@ -176,43 +182,14 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
             }
         }
     } else {
-        // TrackFx tab: show FX chain
-        let fx_chain: &[FxInstance] = nav.active_clip_track()
-            .map(|t| t.fx_chain.as_slice())
-            .unwrap_or(&[]);
-
-        if fx_chain.is_empty() {
-            lines.push(Line::from(Span::styled("  (no fx)", theme::dim())));
-            lines.push(Line::from(Span::styled("  enter on [fx]", theme::dim())));
-            lines.push(Line::from(Span::styled("  to add", theme::dim())));
-        } else {
-            for (i, fx) in fx_chain.iter().enumerate() {
-                let is_cur = focused && nav.clip_view.fx_cursor == i;
-                let s = if is_cur { theme::amber_bright().add_modifier(Modifier::BOLD) }
-                    else if fx.enabled { theme::normal() }
-                    else { theme::dim() };
-
-                let indicator = if is_cur { "\u{25B6}" } else { " " };
-                let enabled = if fx.enabled { "\u{25CF}" } else { "\u{25CB}" };
-                lines.push(Line::from(vec![
-                    Span::styled(format!(" {indicator} {enabled} "), s),
-                    Span::styled(fx.fx_type.label(), s),
-                ]));
-
-                if is_cur {
-                    for (name, val) in &fx.params {
-                        let bar_w = 8;
-                        let filled = ((val * bar_w as f32) as usize).min(bar_w);
-                        let bar: String = "\u{2588}".repeat(filled) + &"\u{2591}".repeat(bar_w - filled);
-                        lines.push(Line::from(vec![
-                            Span::styled(format!("     {name:<6}"), theme::dim()),
-                            Span::styled(bar, theme::muted()),
-                            Span::styled(format!(" {:.0}%", val * 100.0), theme::dim()),
-                        ]));
-                    }
-                }
-            }
+        // TrackFx tab: the chain. Its own module, because a slot list and
+        // the panels behind the slots are one feature and belong together.
+        lines.truncate(h);
+        if !lines.is_empty() {
+            frame.render_widget(Paragraph::new(lines), area);
         }
+        fx::render_fx_chain(frame, area, nav, focused);
+        return;
     }
 
     lines.truncate(h);

@@ -279,9 +279,12 @@ impl NavState {
                 }
             }
         }
-        // FX menu open → select item
+        // The FX menu is the front end's to answer: choosing an effect
+        // builds one and hands it to the audio thread, and that is a command
+        // to send rather than a field to set. See `NavState::fx_menu_select`,
+        // whose result the caller has to do something with — which is why
+        // this cannot quietly call it and throw the answer away.
         if self.fx_menu.open {
-            self.fx_menu_select();
             return None;
         }
 
@@ -367,6 +370,14 @@ impl NavState {
                 } else {
                     self.clip_view.clip_tab = ClipTab::InstConfig;
                 }
+            }
+            // An effect panel → back to the chain it came from, because
+            // that is where its Esc goes too and Tab should not be a
+            // different way out of the same room.
+            (ClipViewFocus::PianoRoll, _, ClipTab::Fx) => {
+                self.clip_view.fx.close();
+                self.clip_view.focus = ClipViewFocus::FxPanel;
+                self.clip_view.fx_panel_tab = FxPanelTab::TrackFx;
             }
             // Step grid → inst config
             (ClipViewFocus::PianoRoll, _, ClipTab::Sequencer) => {

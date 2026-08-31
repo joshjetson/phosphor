@@ -18,6 +18,8 @@ mod clip_view;
 use clip_view::*;
 mod overlays;
 use overlays::*;
+mod fx;
+pub(crate) use fx::is_wide as fx_panel_is_wide;
 mod params;
 mod sequencer;
 use sequencer::*;
