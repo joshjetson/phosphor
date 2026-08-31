@@ -606,6 +606,11 @@ impl App {
             // the renderer is about to use.
             self.nav.clip_view.fx.wide =
                 crate::ui::fx_panel_is_wide((term_w as usize).saturating_sub(25));
+            // The tempo, for the panels that have to say what a synced setting
+            // means in milliseconds. Read here rather than stored on an edit,
+            // so a tempo the player changes from the top bar moves the delay's
+            // readout in the same frame.
+            self.nav.tempo_bpm = self.engine.transport.tempo_bpm() as f32;
             let piano_h = term_h.saturating_sub(30).max(6) as u8;
             self.nav.clip_view.piano_roll.set_view_height(piano_h);
 

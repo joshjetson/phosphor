@@ -5,14 +5,16 @@
 //! new session's send buses have to be built with one already in them. Three
 //! lists of effects is one list that eventually forgets an effect.
 //!
-//! **The EQ and the reverb are registered; the other three are not yet.**
-//! Until each one exists, [`build`] answers `None` for it and the caller says
-//! so out loud rather than adding a slot that does nothing. That is the whole
-//! of what "the menu does not lie" costs.
+//! **The EQ, the reverb and the delay are registered; the other two are not
+//! yet.** Until each one exists, [`build`] answers `None` for it and the
+//! caller says so out loud rather than adding a slot that does nothing. That
+//! is the whole of what "the menu does not lie" costs.
 
+pub mod delay;
 pub mod eq;
 pub mod reverb;
 
+pub use delay::Delay;
 pub use eq::Eq;
 pub use reverb::Reverb;
 /// The closed-form curve, for a UI that has an effect's parameters and needs
@@ -30,16 +32,17 @@ use crate::state::{FxInstance, FxType};
 
 /// The effect behind a menu entry, or `None` while it is still being built.
 ///
-/// The landing point for each of the five. The EQ and the reverb are here;
-/// when the next one arrives it joins the same match and nothing else in the
-/// application has to change — the menu, the command path, the session format
-/// and the strip label all already work.
+/// The landing point for each of the five. The EQ, the reverb and the delay
+/// are here; when the next one arrives it joins the same match and nothing
+/// else in the application has to change — the menu, the command path, the
+/// session format and the strip label all already work.
 #[must_use]
 pub fn build(fx_type: FxType) -> Option<Box<dyn Effect>> {
     match fx_type {
         FxType::Eq => Some(Box::new(Eq::new())),
         FxType::Reverb => Some(Box::new(Reverb::new())),
-        FxType::Compressor | FxType::Tape | FxType::Delay => None,
+        FxType::Delay => Some(Box::new(Delay::new())),
+        FxType::Compressor | FxType::Tape => None,
     }
 }
 
@@ -105,21 +108,23 @@ pub fn insert_position(chain: &[FxInstance], fx_type: FxType) -> usize {
 
 /// What a new session's send buses start with.
 ///
-/// **Send A opens with the plate reverb at 100% wet.** A new session is then
-/// one keystroke away from an audible send — turn the send up on any track —
-/// rather than a routing exercise, and the strip labels the bus `rvb` because
-/// that is what a player calls it.
+/// **Send A opens with the plate reverb and Send B with the synced delay,
+/// both at 100% wet.** A new session is then one keystroke away from two
+/// audible sends — turn either one up on any track — rather than a routing
+/// exercise, and the strips label the buses `rvb` and `dly` because that is
+/// what a player calls them.
 ///
-/// Send B is still empty: the tempo-synced delay it is meant to hold does not
-/// exist yet, and a bus pre-loaded with nothing is worse than an empty one,
-/// because the strip would read `dly` and do nothing.
+/// The delay arrives as it ships: synced on, a dotted eighth, 30% feedback,
+/// loop filters at 200 Hz and 6 kHz. Those are the settings that make a send
+/// delay sit *behind* the source rather than beside it, and they are the
+/// difference between the send being used and being turned off again.
 ///
 /// **The wet/dry override is the point of this function.** Every time-based
-/// effect ships with an insert default — 25% for the reverb — because that is
-/// what it should sound like when it is dropped straight onto a track. On a
-/// bus the dry path arrives by another route, so anything less than 100% wet
-/// is the send-made-it-phasey trap: the same signal, twice, a few
-/// milliseconds apart.
+/// effect ships with an insert default — 25% for the reverb, 22% for the
+/// delay — because that is what it should sound like when it is dropped
+/// straight onto a track. On a bus the dry path arrives by another route, so
+/// anything less than 100% wet is the send-made-it-phasey trap: the same
+/// signal, twice, a few milliseconds apart.
 #[must_use]
 pub fn bus_default_chain(slot: SendSlot) -> Vec<FxInstance> {
     let wanted = match slot {
@@ -149,7 +154,8 @@ pub fn bus_default_chain(slot: SendSlot) -> Vec<FxInstance> {
 pub fn wet_dry_index(fx_type: FxType) -> Option<usize> {
     match fx_type {
         FxType::Reverb => Some(phosphor_dsp::fx::reverb::PARAM_MIX),
-        FxType::Eq | FxType::Compressor | FxType::Tape | FxType::Delay => None,
+        FxType::Delay => Some(phosphor_dsp::fx::delay::PARAM_MIX),
+        FxType::Eq | FxType::Compressor | FxType::Tape => None,
     }
 }
 
@@ -173,10 +179,10 @@ pub fn bus_label(chain: &[FxInstance], slot: SendSlot) -> &'static str {
 mod tests {
     use super::*;
 
-    /// Both built effects survive being built twice, with the same controls.
+    /// Every built effect survives being built twice, with the same controls.
     #[test]
     fn a_built_effect_reports_the_registrys_own_defaults() {
-        for fx_type in [FxType::Eq, FxType::Reverb] {
+        for fx_type in [FxType::Eq, FxType::Reverb, FxType::Delay] {
             let effect = build(fx_type).expect("built");
             assert_eq!(effect.name(), fx_type.key());
             assert_eq!(params_of(effect.as_ref()), default_params(fx_type));
@@ -254,8 +260,8 @@ mod tests {
         assert_eq!(after[2].fx_type, FxType::Eq);
     }
 
-    /// The buses are labelled by what is in them, and Send A now has
-    /// something in it.
+    /// The buses are labelled by what is in them, and both of them now have
+    /// something in them.
     #[test]
     fn the_buses_are_labelled_by_what_is_in_them() {
         let send_a = bus_default_chain(SendSlot::A);
@@ -263,13 +269,49 @@ mod tests {
         assert_eq!(send_a[0].fx_type, FxType::Reverb);
         assert_eq!(bus_label(&send_a, SendSlot::A), "rvb");
 
-        // Send B is still empty, and says so, because the delay is not built.
-        assert_eq!(bus_default_chain(SendSlot::B), Vec::new());
+        let send_b = bus_default_chain(SendSlot::B);
+        assert_eq!(send_b.len(), 1);
+        assert_eq!(send_b[0].fx_type, FxType::Delay);
+        assert_eq!(bus_label(&send_b, SendSlot::B), "dly");
+
+        // An emptied bus goes back to its letter.
         assert_eq!(bus_label(&[], SendSlot::A), "snd a");
         assert_eq!(bus_label(&[], SendSlot::B), "snd b");
+    }
 
-        let loaded = vec![FxInstance::new(FxType::Delay, vec![])];
-        assert_eq!(bus_label(&loaded, SendSlot::B), "dly");
+    /// **Send B opens with the delay, synced, fully wet.**
+    ///
+    /// The bootstrap the strip reads `dly` from, checked control by control
+    /// against the delay's own factory settings so that a default which moves
+    /// cannot leave a stale copy in the bus.
+    #[test]
+    fn the_send_b_delay_is_synced_and_fully_wet() {
+        use phosphor_dsp::fx::delay::{
+            SYNC_DEFAULT, SYNC_LABELS, PARAM_DIVISION, PARAM_FEEDBACK, PARAM_HIGH_CUT_HZ,
+            PARAM_LOW_CUT_HZ, PARAM_MIX, PARAM_ROUTING, PARAM_SYNC,
+        };
+
+        let bus = bus_default_chain(SendSlot::B);
+        let params = &bus[0].params;
+        assert_eq!(params.len(), phosphor_dsp::fx::delay::PARAM_COUNT);
+        assert!(!bus[0].bypass, "the shipped delay arrived bypassed");
+        assert_eq!(params[PARAM_MIX], 100.0, "a send bus must be fully wet");
+        assert_eq!(params[PARAM_SYNC], 1.0, "the send delay is not synced");
+        assert_eq!(params[PARAM_DIVISION], SYNC_DEFAULT as f32);
+        assert_eq!(SYNC_LABELS[SYNC_DEFAULT], "1/8D");
+        assert_eq!(params[PARAM_FEEDBACK], 30.0);
+        assert_eq!(params[PARAM_LOW_CUT_HZ], 200.0, "the loop filters ship on");
+        assert_eq!(params[PARAM_HIGH_CUT_HZ], 6_000.0);
+        assert_eq!(params[PARAM_ROUTING], 0.0, "ping-pong ships off");
+
+        // ...and nothing else about it moved off the insert default.
+        let insert = default_params(FxType::Delay);
+        assert_eq!(insert[PARAM_MIX], 22.0, "an insert delay ships at 22% wet");
+        for (index, (a, b)) in insert.iter().zip(params).enumerate() {
+            if index != PARAM_MIX {
+                assert_eq!(a, b, "index {index} differs between insert and bus");
+            }
+        }
     }
 
     /// **A send bus is 100% wet, and an insert is not.**

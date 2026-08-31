@@ -29,6 +29,12 @@ use phosphor_app::state::{FxInstance, FxType, FxView};
 use phosphor_dsp::fx::eq::{
     q_to_octaves, BandType, ParametricEq, PARAM_COUNT,
 };
+use phosphor_dsp::fx::delay::{
+    natural_param as delay_param, synced_seconds, uses as delay_uses, HEAD_LABELS, SYNC_LABELS,
+    PARAM_COUNT as DELAY_PARAMS, PARAM_DIVISION, PARAM_FEEDBACK, PARAM_FREEZE, PARAM_HEADS,
+    PARAM_HIGH_CUT_HZ as DELAY_HIGH_CUT, PARAM_LOW_CUT_HZ as DELAY_LOW_CUT, PARAM_MODE,
+    PARAM_OFFSET, PARAM_ROUTING, PARAM_SYNC, PARAM_TIME_MODE, PARAM_TIME_MS,
+};
 use phosphor_dsp::fx::reverb::{
     natural_param as reverb_param, Algorithm, PARAM_ALGORITHM, PARAM_COUNT as REVERB_PARAMS,
     PARAM_DAMP_HZ, PARAM_DECAY_S, PARAM_LOW_CUT_HZ, PARAM_MOD_RATE_HZ, PARAM_PREDELAY_MS,
@@ -141,6 +147,7 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
     match slot.fx_type {
         FxType::Eq => render_eq(frame, area, nav, slot, index),
         FxType::Reverb => render_reverb(frame, area, nav, slot, index),
+        FxType::Delay => render_delay(frame, area, nav, slot, index),
         other => {
             // Every panel lands here first. Saying which effect has none yet
             // is the whole of what "the menu does not lie" costs.
@@ -796,5 +803,219 @@ fn trim_number(value: f32) -> String {
         format!("{value:.0}")
     } else {
         format!("{value:.2}")
+    }
+}
+
+// ── The delay ──
+
+/// The colour a control that is doing something alarming is drawn in: a
+/// feedback setting past unity, or a synced division the line had to fold in
+/// half to hold. Asked of the theme rather than named here, so it follows the
+/// palette like everything else does.
+fn alarm_style() -> Style {
+    Style::default().fg(theme::rec_active_val()).bg(theme::bg_val())
+}
+
+/// The delay's sixteen controls, as a column of knobs.
+///
+/// No picture. A delay's response is a comb whose teeth are half a hertz apart
+/// at a musical setting, and the honest drawing of one is a hundred thousand
+/// points wide — so the panel is the numbers, and the numbers are the ones the
+/// effect declares.
+///
+/// Three of them are conditional and all three grey out rather than
+/// disappearing: `div` and `time` are the two halves of one clock and only one
+/// is live, `heads` belongs to the tape transport, `wander` to the bucket
+/// brigade's clock. A control that vanished when a mode changed would make the
+/// list jump under the cursor; a control that greys stays where it was.
+fn render_delay(frame: &mut Frame, area: Rect, nav: &NavState, slot: &FxInstance, index: usize) {
+    let (w, h) = (area.width as usize, area.height as usize);
+    let view = &nav.clip_view.fx;
+    let focused = nav.focused_pane == Pane::ClipView
+        && nav.clip_view.focus == ClipViewFocus::PianoRoll
+        && nav.clip_view.clip_tab == ClipTab::Fx;
+    let params = &slot.params;
+    let bpm = f64::from(nav.tempo_bpm);
+    let cursor = view.band.min(DELAY_PARAMS - 1);
+
+    let mut lines: Vec<Line> = vec![delay_readout(params, cursor, index, bpm)];
+    if slot.bypass {
+        lines.push(Line::from(Span::styled(
+            "  bypassed \u{2014} b puts it back in the signal path",
+            theme::dim(),
+        )));
+    }
+    lines.push(Line::from(""));
+
+    // Two columns where there is room, one where there is not. Sixteen entries
+    // either way; what changes is how many rows they cost.
+    let columns = if is_wide(w) && h >= 10 { 2 } else { 1 };
+    let rows = DELAY_PARAMS.div_ceil(columns);
+    let visible = h.saturating_sub(lines.len() + 1).max(1);
+    let first_row = if columns == 1 {
+        cursor.saturating_sub(visible.saturating_sub(1)).min(rows.saturating_sub(1))
+    } else {
+        0
+    };
+
+    for row in first_row..rows {
+        if lines.len() + 1 > h {
+            break;
+        }
+        let mut spans: Vec<Span> = Vec::new();
+        for column in 0..columns {
+            let control = column * rows + row;
+            if control >= DELAY_PARAMS {
+                continue;
+            }
+            let here = cursor == control;
+            let live = delay_uses(params, control);
+            let name = delay_param(control).map_or("", |p| p.name);
+            spans.push(Span::styled(
+                format!("{}{name:<7}", if here { "\u{25B8}" } else { " " }),
+                if here && focused { theme::amber_bright() } else { theme::dim() },
+            ));
+            spans.push(Span::styled(
+                format!("{:<15}", delay_value(params, control, bpm)),
+                // Feedback past unity is drawn in the warning colour: the loop
+                // is bounded there by construction, but it is also singing,
+                // and a knob that is singing should look like one.
+                if control == PARAM_FEEDBACK && params.get(control).copied().unwrap_or(0.0) > 100.0
+                {
+                    alarm_style()
+                } else {
+                    cell_style(here, view.locked, live, focused)
+                },
+            ));
+            if column + 1 < columns {
+                spans.push(Span::styled("  ", theme::dim()));
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+
+    if lines.len() < h {
+        lines.push(Line::from(Span::styled(
+            if view.locked {
+                "  held \u{00b7} h/l adjusts \u{00b7} H/L strides \u{00b7} esc lets go"
+            } else {
+                "  j/k picks \u{00b7} h/l adjusts \u{00b7} H/L strides \u{00b7} enter holds"
+            },
+            theme::dim(),
+        )));
+    }
+
+    lines.truncate(h);
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// The delay time in force, in seconds, and whether the sync law had to fold
+/// it to fit the line.
+pub(crate) fn delay_resolved(params: &[f32], bpm: f64) -> (f64, u32) {
+    if params.get(PARAM_SYNC).copied().unwrap_or(1.0) >= 0.5 {
+        let division = params.get(PARAM_DIVISION).copied().unwrap_or(0.0).round().max(0.0) as usize;
+        synced_seconds(division, bpm)
+    } else {
+        (f64::from(params.get(PARAM_TIME_MS).copied().unwrap_or(0.0)) / 1000.0, 0)
+    }
+}
+
+/// A delay time, in the unit that reads best at that length.
+fn ms_label(seconds: f64) -> String {
+    let ms = seconds * 1000.0;
+    if ms >= 1000.0 {
+        format!("{:.2} s", seconds)
+    } else if ms >= 100.0 {
+        format!("{ms:.0} ms")
+    } else {
+        format!("{ms:.1} ms")
+    }
+}
+
+/// One control, in the unit a person reads it in.
+pub(crate) fn delay_value(params: &[f32], control: usize, bpm: f64) -> String {
+    let value = params.get(control).copied().unwrap_or(0.0);
+    let index = value.round().max(0.0) as usize;
+    match control {
+        PARAM_MODE => phosphor_dsp::fx::delay::Mode::from_index(index).label().to_string(),
+        PARAM_ROUTING => phosphor_dsp::fx::delay::Routing::from_index(index).label().to_string(),
+        PARAM_SYNC | PARAM_FREEZE => if value >= 0.5 { "on" } else { "off" }.to_string(),
+        // **The clamp is announced.** A whole note at 40 BPM is six seconds
+        // and the line is five, so it ships as three — and a player who is not
+        // told hears the grid break for no reason they can see.
+        PARAM_DIVISION => {
+            let label = SYNC_LABELS[index.min(SYNC_LABELS.len() - 1)];
+            let (seconds, halvings) = synced_seconds(index, bpm);
+            if halvings > 0 {
+                format!("{label} \u{2192} {} clamped", ms_label(seconds))
+            } else {
+                format!("{label}  {}", ms_label(seconds))
+            }
+        }
+        PARAM_TIME_MS => ms_label(f64::from(value) / 1000.0),
+        PARAM_TIME_MODE => {
+            phosphor_dsp::fx::delay::TimeMode::from_index(index).label().to_string()
+        }
+        // The derived repeat count is worth more on a panel than any taper
+        // cleverness. Past unity there is no count, and the word for that is
+        // the honest one.
+        PARAM_FEEDBACK => match phosphor_dsp::fx::delay::repeats_to_silence(value) {
+            Some(repeats) => format!("{value:.0}%  ~{repeats:.0} rpts"),
+            None if value <= 0.0 => "0%  no repeat".to_string(),
+            None => format!("{value:.0}%  sings"),
+        },
+        DELAY_LOW_CUT | DELAY_HIGH_CUT => format!("{} Hz", hz_label(value)),
+        PARAM_OFFSET => format!("{value:+.0}%"),
+        PARAM_HEADS => HEAD_LABELS[index.min(HEAD_LABELS.len() - 1)].to_string(),
+        _ => format!("{value:.0}%"),
+    }
+}
+
+/// The line that always survives: what the control under the cursor is, in
+/// full, with its travel — and what the delay is doing overall.
+fn delay_readout(params: &[f32], control: usize, slot_index: usize, bpm: f64) -> Line<'static> {
+    let mode = phosphor_dsp::fx::delay::mode_of(params);
+    let routing = phosphor_dsp::fx::delay::routing_of(params);
+    let (seconds, halvings) = delay_resolved(params, bpm);
+    let mut spans = vec![
+        Span::styled(" dly ", theme::amber_bright().add_modifier(Modifier::BOLD)),
+        Span::styled(format!("slot {} ", slot_index + 1), theme::dim()),
+        Span::styled(
+            format!("\u{00b7} {} {} \u{00b7} {} ", mode.label(), routing.label(), ms_label(seconds)),
+            theme::muted(),
+        ),
+    ];
+    if halvings > 0 {
+        spans.push(Span::styled("(clamped) ", alarm_style()));
+    }
+    let Some(info) = delay_param(control) else {
+        return Line::from(spans);
+    };
+    spans.push(Span::styled(format!("\u{00b7} {} ", info.name), theme::muted()));
+    spans.push(Span::styled(
+        delay_value(params, control, bpm),
+        theme::normal().add_modifier(Modifier::BOLD),
+    ));
+    if delay_uses(params, control) {
+        spans.push(Span::styled(
+            format!("  ({} .. {})", trim_number(info.min), trim_number(info.max)),
+            theme::dim(),
+        ));
+    } else {
+        // Greyed on the list and refused by the keys, said once more here in
+        // words rather than left as a cell that will not move.
+        spans.push(Span::styled(format!("  \u{2014} {}", delay_why_not(params, control)), theme::dim()));
+    }
+    Line::from(spans)
+}
+
+/// Why a greyed control is greyed, in the words a player would use.
+pub(crate) fn delay_why_not(params: &[f32], control: usize) -> String {
+    let mode = phosphor_dsp::fx::delay::mode_of(params);
+    match control {
+        PARAM_DIVISION => "the clock is free-running".to_string(),
+        PARAM_TIME_MS => "the clock is following the tempo".to_string(),
+        PARAM_HEADS => format!("only the tape has three heads, not the {}", mode.label()),
+        _ => format!("only the bbd has a clock to drift, not the {}", mode.label()),
     }
 }

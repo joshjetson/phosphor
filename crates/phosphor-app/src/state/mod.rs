@@ -146,6 +146,15 @@ pub struct NavState {
     /// 44.1 and rendered at 48 is a different curve, most visibly in the top
     /// octave where every matched design bends. Set once, from the device.
     pub sample_rate: u32,
+    /// The transport's tempo, mirrored for the panels that have to *say* what
+    /// a setting means rather than only send it.
+    ///
+    /// The audio thread reads the tempo out of the transport itself, once a
+    /// block, and never from here — this is the copy the delay's panel uses to
+    /// answer "a dotted eighth is how many milliseconds?", which is a question
+    /// only a person asks. Refreshed every frame from the same snapshot the
+    /// top bar draws its BPM from, so the two can never disagree.
+    pub tempo_bpm: f32,
 }
 
 impl NavState {
@@ -175,6 +184,7 @@ impl NavState {
             recording_grace: 0,
             limiter_gr: std::sync::Arc::new(phosphor_core::fx::GrMeter::new()),
             sample_rate: 48_000,
+            tempo_bpm: 120.0,
         }
     }
     pub fn visible_tracks(&self) -> &[TrackState] {

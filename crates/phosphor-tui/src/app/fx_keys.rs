@@ -17,6 +17,7 @@
 //!              enter holds the control · h/l adjusts · H/L strides · esc lets go
 //! reverb panel j/k picks a knob · h/l adjusts · H/L strides
 //!              enter holds it · esc lets go
+//! delay panel  the same column of knobs as the reverb's
 //! ```
 //!
 //! The layout decides which way `h`/`l` point because the EQ's panel is a
@@ -32,6 +33,13 @@ use super::*;
 use phosphor_app::state::{FxType, FxView};
 use phosphor_dsp::fx::eq::{
     iso_step_down, iso_step_up, natural_param, BandType, Slope, PARAM_COUNT,
+};
+use phosphor_dsp::fx::delay::{
+    nearest_division, synced_seconds, uses as delay_uses, HEAD_SETS, SYNC_COUNT,
+    natural_param as delay_param, Mode as DelayMode, Routing, TimeMode,
+    PARAM_COUNT as DELAY_PARAMS, PARAM_DIVISION, PARAM_FREEZE, PARAM_HEADS,
+    PARAM_HIGH_CUT_HZ as DELAY_HIGH_CUT, PARAM_LOW_CUT_HZ as DELAY_LOW_CUT,
+    PARAM_MODE as DELAY_MODE, PARAM_ROUTING, PARAM_SYNC, PARAM_TIME_MODE, PARAM_TIME_MS,
 };
 use phosphor_dsp::fx::reverb::{
     natural_param as reverb_param, Algorithm, PARAM_ALGORITHM, PARAM_COUNT as REVERB_PARAMS,
@@ -106,7 +114,7 @@ impl App {
                 FxType::Eq => {
                     "h/l picks a band, j/k a control, enter holds it, esc goes back".into()
                 }
-                FxType::Reverb => {
+                FxType::Reverb | FxType::Delay => {
                     "j/k picks a knob, h/l adjusts, H/L strides, esc goes back".into()
                 }
                 other => format!("{} has no panel yet", other.label()),
@@ -210,9 +218,16 @@ impl App {
 
     /// One key, in an effect's panel.
     pub(crate) fn handle_fx_panel_keys(&mut self, key: crossterm::event::KeyEvent) {
-        if self.open_fx_type() == Some(FxType::Reverb) {
-            self.handle_reverb_panel_keys(key);
-            return;
+        match self.open_fx_type() {
+            Some(FxType::Reverb) => {
+                self.handle_reverb_panel_keys(key);
+                return;
+            }
+            Some(FxType::Delay) => {
+                self.handle_delay_panel_keys(key);
+                return;
+            }
+            _ => {}
         }
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         if self.nav.clip_view.fx.locked {
@@ -655,4 +670,168 @@ pub(crate) fn pan_label(pan: f32) -> String {
     } else {
         format!("R{amount}")
     }
+}
+
+// ── The delay's panel ──
+
+/// How far one press moves the free-running time, and how far a shifted one
+/// does — as a *ratio*, so the step is a musically equal one at both ends of a
+/// range that spans five thousand to one.
+const TIME_FINE: f32 = 1.015;
+const TIME_COARSE: f32 = 1.15;
+
+impl App {
+    /// One key, in the delay's panel.
+    ///
+    /// The same grammar as the reverb's, because it is the same shape of
+    /// panel: a column of knobs, `j`/`k` to pick and `h`/`l` to turn, `enter`
+    /// to hold so that `j`/`k` stop walking off the control a hand is in the
+    /// middle of turning.
+    fn handle_delay_panel_keys(&mut self, key: crossterm::event::KeyEvent) {
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        match key.code {
+            KeyCode::Char('H') => self.adjust_delay_control(-1, true),
+            KeyCode::Char('L') => self.adjust_delay_control(1, true),
+            KeyCode::Char('h') | KeyCode::Left => self.adjust_delay_control(-1, shift),
+            KeyCode::Char('l') | KeyCode::Right => self.adjust_delay_control(1, shift),
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.nav.clip_view.fx.move_cursor(1, DELAY_PARAMS);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.nav.clip_view.fx.move_cursor(-1, DELAY_PARAMS);
+            }
+            KeyCode::Enter => {
+                if self.nav.clip_view.fx.locked {
+                    self.nav.clip_view.fx.locked = false;
+                    self.status_message = None;
+                } else {
+                    self.nav.clip_view.fx.locked = true;
+                    self.status_message = Some((
+                        "held: h/l adjusts, H/L strides, esc lets go".into(),
+                        std::time::Instant::now(),
+                    ));
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if self.nav.clip_view.fx.locked {
+                    self.nav.clip_view.fx.locked = false;
+                    self.status_message = None;
+                } else {
+                    self.nav.clip_view.fx.close();
+                    self.nav.clip_view.clip_tab = ClipTab::InstConfig;
+                    self.nav.clip_view.focus = ClipViewFocus::FxPanel;
+                }
+            }
+            KeyCode::Char('b') => {
+                let slot = self.nav.clip_view.fx.slot.unwrap_or(0);
+                self.toggle_fx_bypass(slot);
+            }
+            _ => {}
+        }
+    }
+
+    /// Turn the delay control under the cursor.
+    ///
+    /// Every control moves in its own unit and by its own law: the counted
+    /// ones step through their own lists, the free time moves by a *ratio* so
+    /// that a press is worth the same musically at 2 ms as at 2 s, frequencies
+    /// walk the ISO sixth-octave centres, and percentages move in whole
+    /// points.
+    fn adjust_delay_control(&mut self, delta: i32, coarse: bool) {
+        let control = self.nav.clip_view.fx.band.min(DELAY_PARAMS - 1);
+        let Some(params) = self.fx_params() else { return };
+        if !delay_uses(params, control) {
+            let why = crate::ui::fx::delay_why_not(params, control);
+            self.status_message = Some((why, std::time::Instant::now()));
+            return;
+        }
+        let params = params.to_vec();
+        let current = params.get(control).copied().unwrap_or(0.0);
+
+        let next = match control {
+            DELAY_MODE => step_list(current, delta, DelayMode::ALL.len()),
+            PARAM_ROUTING => step_list(current, delta, Routing::ALL.len()),
+            PARAM_TIME_MODE => step_list(current, delta, TimeMode::ALL.len()),
+            PARAM_HEADS => step_list(current, delta, HEAD_SETS.len()),
+            PARAM_DIVISION => step_list(current, delta, SYNC_COUNT),
+            // The two switches turn rather than toggle: right is on, which is
+            // the same thing `h`/`l` does to every other control on the panel.
+            PARAM_SYNC | PARAM_FREEZE => f32::from(delta > 0),
+            PARAM_TIME_MS => {
+                let factor = if coarse { TIME_COARSE } else { TIME_FINE };
+                if delta > 0 { current * factor } else { current / factor }
+            }
+            DELAY_LOW_CUT | DELAY_HIGH_CUT => {
+                let mut hz = f64::from(current);
+                // A coarse press is six of them, which is an octave on a
+                // sixth-octave grid.
+                for _ in 0..if coarse { 6 } else { 1 } {
+                    hz = if delta > 0 { iso_step_up(hz) } else { iso_step_down(hz) };
+                }
+                hz as f32
+            }
+            _ => current + delta as f32 * if coarse { 10.0 } else { 1.0 },
+        };
+        let next = match delay_param(control) {
+            Some(info) => next.clamp(info.min, info.max),
+            None => next,
+        };
+
+        let (track, slot) = (self.nav.track_cursor, self.nav.clip_view.fx.slot.unwrap_or(0));
+        self.set_fx_param(track, slot, control, next);
+        if control == PARAM_SYNC {
+            self.carry_the_delay_time_over(track, slot, &params, next >= 0.5);
+        }
+    }
+
+    /// **Switching the clock carries the current time over.**
+    ///
+    /// Most plugins keep two hidden values and jump between them, which is a
+    /// mouse affordance — you can see both at once. In a terminal you cannot,
+    /// so the switch writes whichever half was not being used to match the one
+    /// that was. It also enables the workflow the switch is actually for:
+    /// dial the delay in by ear, then lock it to the grid.
+    fn carry_the_delay_time_over(
+        &mut self,
+        track: usize,
+        slot: usize,
+        before: &[f32],
+        now_synced: bool,
+    ) {
+        let bpm = f64::from(self.nav.tempo_bpm);
+        if now_synced {
+            // Free-running to synced: land on the division nearest the time
+            // that was dialled in.
+            let seconds = f64::from(before.get(PARAM_TIME_MS).copied().unwrap_or(0.0)) / 1000.0;
+            let division = nearest_division(seconds, bpm);
+            self.set_fx_param(track, slot, PARAM_DIVISION, division as f32);
+            let (landed, _) = synced_seconds(division, bpm);
+            self.status_message = Some((
+                format!(
+                    "synced: {:.0} ms \u{2192} {} ({:.0} ms)",
+                    seconds * 1000.0,
+                    phosphor_dsp::fx::delay::SYNC_LABELS[division],
+                    landed * 1000.0
+                ),
+                std::time::Instant::now(),
+            ));
+        } else {
+            // Synced to free-running: keep the milliseconds it was at.
+            let division =
+                before.get(PARAM_DIVISION).copied().unwrap_or(0.0).round().max(0.0) as usize;
+            let (seconds, _) = synced_seconds(division, bpm);
+            let ms = (seconds * 1000.0) as f32;
+            self.set_fx_param(track, slot, PARAM_TIME_MS, ms);
+            self.status_message = Some((
+                format!("free: {ms:.0} ms, carried over from {}", phosphor_dsp::fx::delay::SYNC_LABELS[division]),
+                std::time::Instant::now(),
+            ));
+        }
+    }
+}
+
+/// A counted control moved one place along its own list, stopping at both
+/// ends.
+fn step_list(current: f32, delta: i32, len: usize) -> f32 {
+    (current.round() as i32 + delta).clamp(0, len as i32 - 1) as f32
 }

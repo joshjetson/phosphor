@@ -212,11 +212,12 @@ mod tests {
     ///
     /// The one thing that does appear in every new file is the `buses` block,
     /// and it appears because a new session is no longer empty: Send A ships
-    /// with the plate reverb at 100% wet so that turning a send up is
-    /// audible, and a player who deletes it means that and must have it
-    /// survive a save. Every session written before this change has no
-    /// `buses` key at all and still loads — its track data is byte for byte
-    /// what it was, which is what `session_digest` compares.
+    /// with the plate reverb and Send B with the synced delay, both at 100%
+    /// wet, so that turning a send up is audible — and a player who deletes
+    /// one means that and must have it survive a save. Every session written
+    /// before this change has no `buses` key at all and still loads — its
+    /// track data is byte for byte what it was, which is what
+    /// `session_digest` compares.
     ///
     /// The comparison is on the keys rather than the bytes because a
     /// save-load-save round trip has never been byte-stable — a selector is

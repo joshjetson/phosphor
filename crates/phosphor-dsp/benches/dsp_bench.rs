@@ -1,5 +1,8 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use phosphor_dsp::oscillator::{Oscillator, Waveform};
+use phosphor_dsp::fx::delay::{
+    Delay, Mode, PARAM_FEEDBACK, PARAM_HEADS, PARAM_MODE, PARAM_MIX,
+};
 use phosphor_dsp::fx::reverb::{Algorithm, Reverb, PARAM_ALGORITHM, PARAM_EARLY};
 use phosphor_dsp::{jupiter, prophet6, teo5};
 use phosphor_plugin::{MidiEvent, Plugin};
@@ -136,6 +139,50 @@ fn bench_reverb(c: &mut Criterion, algorithm: Algorithm, name: &str) {
     });
 }
 
+/// One delay, one 512-frame block, stereo, at 48 kHz.
+///
+/// The brief's budgets are 0.31% of a core for the digital mode, 0.44% for the
+/// bucket brigade and 0.48% for the tape — so 512 frames, which is 10.667 ms
+/// of audio, must land in 33, 47 and 51 µs respectively.
+fn bench_delay(c: &mut Criterion, mode: Mode, heads: f32, name: &str) {
+    let mut delay = Delay::new(48_000.0);
+    delay.set_param_natural(PARAM_MODE, mode.index() as f32);
+    delay.set_param_natural(PARAM_HEADS, heads);
+    delay.set_param_natural(PARAM_FEEDBACK, 70.0);
+    delay.set_param_natural(PARAM_MIX, 100.0);
+    delay.snap();
+    let mut left = vec![0.0f32; 512];
+    let mut right = vec![0.0f32; 512];
+    // A running tail rather than silence: the cost is the same either way, but
+    // a benchmark on zeros is a benchmark an optimiser can cheat.
+    for (index, sample) in left.iter_mut().enumerate() {
+        *sample = ((index as f32) * 0.07).sin() * 0.25;
+    }
+    right.copy_from_slice(&left);
+    for _ in 0..64 {
+        delay.process(&mut left, &mut right, 120.0);
+    }
+    c.bench_function(name, |b| {
+        b.iter(|| delay.process(&mut left, &mut right, 120.0));
+    });
+}
+
+fn bench_delay_digital(c: &mut Criterion) {
+    bench_delay(c, Mode::Digital, 0.0, "delay_digital_512_samples");
+}
+
+fn bench_delay_bbd(c: &mut Criterion) {
+    bench_delay(c, Mode::Bbd, 0.0, "delay_bbd_512_samples");
+}
+
+fn bench_delay_tape(c: &mut Criterion) {
+    bench_delay(c, Mode::Tape, 0.0, "delay_tape_512_samples");
+}
+
+fn bench_delay_tape_three_heads(c: &mut Criterion) {
+    bench_delay(c, Mode::Tape, 6.0, "delay_tape_three_heads_512_samples");
+}
+
 fn bench_reverb_plate(c: &mut Criterion) {
     bench_reverb(c, Algorithm::Plate, "reverb_plate_512_samples");
 }
@@ -154,6 +201,10 @@ fn bench_reverb_spring(c: &mut Criterion) {
 
 criterion_group!(
     benches,
+    bench_delay_digital,
+    bench_delay_bbd,
+    bench_delay_tape,
+    bench_delay_tape_three_heads,
     bench_reverb_plate,
     bench_reverb_room,
     bench_reverb_hall,

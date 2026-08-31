@@ -576,6 +576,36 @@ Frequencies walk the ISO sixth-octave centres, so a band reads `2.5k` and never
 a stride. A control the band type does not use — a bell has no slope, a matched
 shelf no Q — is greyed and will not move.
 
+**The reverb and delay panels** are columns of knobs rather than grids, so
+`j`/`k` picks one and `h`/`l` turns it straight away; `Enter` still holds, and
+holding is what stops `j`/`k` walking off the control being turned.
+
+**The delay** keeps two axes apart that most delays conflate. `mode` is what
+the repeats sound like — `digital`, `bbd`, `tape` — and `route` is where they
+go — `stereo`, `ping-pong`, `mono`. Any combination: a tape ping-pong is a
+real setting here.
+
+| Control | What it does |
+|---------|--------------|
+| `sync` / `div` / `time` | Follow the tempo on a musical division, or run free in milliseconds. Switching between them **carries the current time over** rather than jumping to a hidden value, and a division too long for the five-second line is halved until it fits and says `clamped` |
+| `tmode` | `auto` resolves per mode — a digital delay crossfades, a bucket brigade and a tape repitch, because their clock rate *is* their delay time. `repitch`, `fade` and `jump` override it |
+| `fb` | 0–200%. Past 100% the loop sings rather than running away: the in-loop saturator bounds it at `|in| + fb/g` by arithmetic rather than by a clamp. The readout shows the repeat count while there is one, and `sings` when there is not |
+| `locut` / `hicut` | Two one-poles **inside the loop**, on at 200 Hz and 6 kHz, so each repeat darkens a little more than the last and the echoes recede rather than repeating a static copy |
+| `freeze` | Input off, loop gain exactly one, filters and saturator out of the path — the buffer cycles unchanged rather than darkening away |
+| `duck` | One knob, no threshold. The dry input keys an envelope follower that pulls the wet down, to 24 dB at the top of the knob, and never touches the feedback — so the repeat count does not vary with the performance |
+| `heads` | Three tape heads at 1 : 2 : 3, seven combinations. Tape mode only; greyed elsewhere |
+| `wander` | How far the bucket brigade's clock drifts. BBD only |
+
+In `bbd` the loop's low-pass corner follows the clock — `4096 / 2τ`, a third of
+the way up — so a longer delay is a darker one and it compounds: 5 kHz falls
+2.4 dB a repeat at 120 ms and 11 dB a repeat at 600 ms. In `tape` the wow is
+*multiplied* into the delay time the way a real echo's capstan does, so a long
+setting warbles harder than a short one; the flutter and the scrape are added,
+because a head's stick-slip does not stretch the tape between two heads.
+
+**Send B ships with the delay** on a new session, synced to a dotted eighth at
+100% wet, and the track strip calls that bus `dly`.
+
 **Pan and sends** are cells on the track row, after the record-arm switch:
 `h`/`l` reaches them, `Enter` holds one, `h`/`l` moves it. Sends are post-fader
 and open from silence. The top bar shows the safety limiter's gain reduction

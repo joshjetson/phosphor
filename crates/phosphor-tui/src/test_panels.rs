@@ -724,6 +724,33 @@ mod fx {
         app.nav.current_track().unwrap().fx_chain[0].params.clone()
     }
 
+    /// A track with a delay in it, the panel open on it.
+    fn delay_app() -> App {
+        let mut app = App::new(EngineConfig { buffer_size: 64, sample_rate: 48_000 }, false, false);
+        app.create_instrument_track(InstrumentType::Juno60);
+        let outcome = app.nav.add_fx(FxType::Delay);
+        app.apply_fx_add(outcome);
+        app.nav.focus_pane(Pane::ClipView);
+        app.nav.clip_view.focus = ClipViewFocus::FxPanel;
+        app.nav.clip_view.fx_panel_tab = FxPanelTab::TrackFx;
+        app.nav.clip_view.fx_cursor = 0;
+        let _ = app.drain_mixer_commands();
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.nav.clip_view.clip_tab, ClipTab::Fx);
+        app
+    }
+
+    /// The cursor walked down to a named control.
+    fn to_delay_control(app: &mut App, control: usize) {
+        while app.nav.clip_view.fx.band < control {
+            press(app, KeyCode::Char('j'));
+        }
+        while app.nav.clip_view.fx.band > control {
+            press(app, KeyCode::Char('k'));
+        }
+        assert_eq!(app.nav.clip_view.fx.band, control);
+    }
+
     /// A track with a reverb in it, the panel open on it.
     fn reverb_app() -> App {
         let mut app = App::new(EngineConfig { buffer_size: 64, sample_rate: 48_000 }, false, false);
@@ -1426,5 +1453,257 @@ mod fx {
             text.contains(&format!("lim {shown:.1}")),
             "the bar does not show what the meter says ({shown:.1}):\n{text}",
         );
+    }
+
+
+    // ── The delay panel ──
+
+    /// The panel draws what it is: the mode, the routing, the sixteen
+    /// controls, and the readout line that always survives.
+    #[test]
+    fn the_delay_panel_lists_its_controls() {
+        let app = delay_app();
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("dly"), "the panel does not name itself:\n{text}");
+        assert!(text.contains("digital"), "the mode is not on the panel:\n{text}");
+        assert!(text.contains("stereo"), "the routing is not on the panel:\n{text}");
+        for name in [
+            "mode", "route", "sync", "div", "time", "offset", "tmode", "fb", "freeze", "locut",
+            "hicut", "duck", "width", "heads", "wander", "mix",
+        ] {
+            assert!(text.contains(name), "the {name} control is not drawn:\n{text}");
+        }
+        // The house defaults, in the units a person reads them in.
+        assert!(text.contains("1/8D"), "the division does not read as a division:\n{text}");
+        assert!(text.contains("200 Hz"), "the loop low cut is not shown:\n{text}");
+        assert!(text.contains("6k Hz"), "the loop high cut is not shown:\n{text}");
+        assert!(text.contains("22%"), "the insert wet/dry is not 22%:\n{text}");
+        assert!(text.contains("j/k picks"), "the hint bar is missing:\n{text}");
+        // At 120 bpm a dotted eighth is 375 ms, and the panel says so rather
+        // than making the player do the arithmetic.
+        assert!(text.contains("375"), "the panel does not say what the division is worth:\n{text}");
+        // The derived repeat count sits next to the feedback.
+        assert!(text.contains("rpts"), "the repeat count is not shown:\n{text}");
+    }
+
+    /// **The readout moves when the knob does**, on the screen and in the
+    /// signal path.
+    #[test]
+    fn turning_the_delay_division_moves_the_readout_and_the_signal_path() {
+        let mut app = delay_app();
+        to_delay_control(&mut app, 3);
+        assert!(screen(&app, 120, 40).contains("1/8D"));
+
+        let _ = app.drain_mixer_commands();
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[0].params[3], 8.0);
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("1/4T"), "the readout did not follow the knob:\n{text}");
+        assert!(
+            app.drain_mixer_commands()
+                .iter()
+                .any(|c| matches!(c, MixerCommand::SetFxParam { param: 3, .. })),
+            "the audio thread was never told about the division"
+        );
+
+        // Feedback past unity is drawn as what it is.
+        to_delay_control(&mut app, 7);
+        for _ in 0..8 {
+            press_shift(&mut app, KeyCode::Char('L'));
+        }
+        let fb = app.nav.current_track().unwrap().fx_chain[0].params[7];
+        assert!(fb > 100.0, "eight strides did not get past unity: {fb}");
+        assert!(
+            screen(&app, 120, 40).contains("sings"),
+            "a self-oscillating feedback setting does not say so"
+        );
+    }
+
+    /// **A control the mode does not use is greyed, and the keys refuse to
+    /// move it.** The heads belong to the tape and the wander to the bucket
+    /// brigade, and neither belongs to a digital delay.
+    #[test]
+    fn a_delay_control_the_mode_does_not_use_is_refused() {
+        let mut app = delay_app();
+        // `heads`, in digital mode.
+        to_delay_control(&mut app, 13);
+        let before = app.nav.current_track().unwrap().fx_chain[0].params[13];
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(
+            app.nav.current_track().unwrap().fx_chain[0].params[13], before,
+            "the heads moved on a digital delay"
+        );
+        let status = app.live_status().unwrap_or_default().to_string();
+        assert!(status.contains("only the tape"), "the panel said {status:?}");
+        assert!(
+            screen(&app, 120, 40).contains("only the tape"),
+            "the panel does not say the control is inert"
+        );
+
+        // In tape mode it moves.
+        to_delay_control(&mut app, 0);
+        press(&mut app, KeyCode::Char('l'));
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[0].params[0], 2.0);
+        assert!(screen(&app, 120, 40).contains("tape"));
+        to_delay_control(&mut app, 13);
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[0].params[13], 1.0);
+
+        // ...and `wander` is the other way round: live on the bbd only.
+        to_delay_control(&mut app, 14);
+        let before = app.nav.current_track().unwrap().fx_chain[0].params[14];
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(
+            app.nav.current_track().unwrap().fx_chain[0].params[14], before,
+            "the wander moved on a tape delay"
+        );
+        assert!(app.live_status().unwrap_or_default().contains("only the bbd"));
+        to_delay_control(&mut app, 0);
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[0].params[0], 1.0);
+        to_delay_control(&mut app, 14);
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[0].params[14], before - 1.0);
+    }
+
+    /// **The two halves of the clock grey each other out**, and switching
+    /// between them carries the time over rather than jumping to a hidden
+    /// value the player cannot see.
+    #[test]
+    fn the_sync_switch_greys_the_other_clock_and_carries_the_time_over() {
+        let mut app = delay_app();
+        // Synced: the free time will not move.
+        to_delay_control(&mut app, 4);
+        let before = app.nav.current_track().unwrap().fx_chain[0].params[4];
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[0].params[4], before);
+        assert!(app.live_status().unwrap_or_default().contains("following the tempo"));
+
+        // Turn sync off: the time carries over from the division that was in
+        // force — a dotted eighth at 120 bpm, which is 375 ms.
+        to_delay_control(&mut app, 2);
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[0].params[2], 0.0);
+        let carried = app.nav.current_track().unwrap().fx_chain[0].params[4];
+        assert!((carried - 375.0).abs() < 1.0, "the time did not carry over: {carried} ms");
+        let status = app.live_status().unwrap_or_default().to_string();
+        assert!(status.contains("carried over"), "the switch said {status:?}");
+
+        // Now the free time moves and the division does not.
+        to_delay_control(&mut app, 4);
+        press_shift(&mut app, KeyCode::Char('L'));
+        let longer = app.nav.current_track().unwrap().fx_chain[0].params[4];
+        assert!(longer > carried * 1.1, "a stride did not lengthen the time: {longer}");
+        to_delay_control(&mut app, 3);
+        let division = app.nav.current_track().unwrap().fx_chain[0].params[3];
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[0].params[3], division);
+        assert!(app.live_status().unwrap_or_default().contains("free-running"));
+
+        // And back: the division nearest what was dialled in.
+        to_delay_control(&mut app, 2);
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[0].params[2], 1.0);
+        let landed = app.nav.current_track().unwrap().fx_chain[0].params[3] as usize;
+        let (seconds, _) = phosphor_dsp::fx::delay::synced_seconds(landed, 120.0);
+        assert!(
+            (seconds * 1000.0 / f64::from(longer)).ln().abs() < 0.2,
+            "{} ms landed on {} ({:.0} ms)",
+            longer,
+            phosphor_dsp::fx::delay::SYNC_LABELS[landed],
+            seconds * 1000.0
+        );
+        assert!(app.live_status().unwrap_or_default().contains("synced"));
+    }
+
+    /// **The clamp is announced.** A whole note at 40 BPM is six seconds, the
+    /// line is five, and the panel says which half of it is playing.
+    #[test]
+    fn a_clamped_division_says_so_on_the_panel() {
+        let mut app = delay_app();
+        app.nav.tempo_bpm = 40.0;
+        to_delay_control(&mut app, 3);
+        // Walk to the whole note, the last entry in the list.
+        for _ in 0..16 {
+            press(&mut app, KeyCode::Char('l'));
+        }
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[0].params[3], 15.0);
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("clamped"), "a folded division does not say so:\n{text}");
+        assert!(text.contains("3.00 s"), "the panel does not say what it folded to:\n{text}");
+
+        // At a tempo where it fits, it says nothing of the kind.
+        app.nav.tempo_bpm = 120.0;
+        let text = screen(&app, 120, 40);
+        assert!(!text.contains("clamped"), "a division that fits was called clamped:\n{text}");
+        assert!(text.contains("2.00 s"), "the whole note does not read as two seconds:\n{text}");
+    }
+
+    /// Enter holds the control and `j`/`k` stop moving; escape lets go, then
+    /// closes.
+    #[test]
+    fn holding_a_delay_control_pins_the_cursor() {
+        let mut app = delay_app();
+        to_delay_control(&mut app, 7);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.nav.clip_view.fx.locked);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.nav.clip_view.fx.band, 7, "j moved the cursor while held");
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.nav.current_track().unwrap().fx_chain[0].params[7], 31.0);
+
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.nav.clip_view.fx.locked, "escape did not let go");
+        assert_eq!(app.nav.clip_view.clip_tab, ClipTab::Fx, "escape closed the panel too");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.nav.clip_view.clip_tab, ClipTab::InstConfig, "escape did not close it");
+    }
+
+    /// The panel survives an eighty-column terminal: the columns collapse to
+    /// one, the list scrolls under the cursor, and the readout and the hint
+    /// bar stay.
+    #[test]
+    fn the_delay_panel_survives_a_narrow_terminal() {
+        let mut app = delay_app();
+        let text = screen(&app, 80, 24);
+        assert!(text.contains("dly"), "the panel lost its name:\n{text}");
+        assert!(text.contains("mode"), "the panel lost its controls:\n{text}");
+        assert!(text.contains("1/8D"), "the panel lost its numbers:\n{text}");
+        assert!(text.contains("j/k picks"), "the panel lost its hint bar:\n{text}");
+
+        // A control past the bottom of a short list is reached by walking to
+        // it: the rows scroll under the cursor rather than being cut off.
+        to_delay_control(&mut app, 7);
+        let text = screen(&app, 80, 24);
+        assert!(text.contains("fb"), "the cursor walked off the drawn list:\n{text}");
+        assert!(text.contains("30%"), "the feedback does not read as a percentage:\n{text}");
+    }
+
+    /// Every control can be reached and read, in every mode — which is the
+    /// test that a control added to the delay cannot be invisible.
+    #[test]
+    fn every_delay_control_can_be_seen_in_every_mode() {
+        for mode in 0..3 {
+            let mut app = delay_app();
+            to_delay_control(&mut app, 0);
+            for _ in 0..mode {
+                press(&mut app, KeyCode::Char('l'));
+            }
+            for control in 0..phosphor_dsp::fx::delay::PARAM_COUNT {
+                to_delay_control(&mut app, control);
+                let name = phosphor_dsp::fx::delay::param_name(control);
+                let text = screen(&app, 120, 40);
+                assert!(text.contains(name), "mode {mode}: control {name} is not on the screen");
+            }
+            // ...and the cursor stops at the end rather than running off it.
+            for _ in 0..4 {
+                press(&mut app, KeyCode::Char('j'));
+            }
+            assert_eq!(
+                app.nav.clip_view.fx.band,
+                phosphor_dsp::fx::delay::PARAM_COUNT - 1
+            );
+        }
     }
 }
