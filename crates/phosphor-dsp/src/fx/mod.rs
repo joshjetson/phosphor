@@ -22,3 +22,4 @@ pub mod compressor;
 pub mod delay;
 pub mod eq;
 pub mod reverb;
+pub mod tape;

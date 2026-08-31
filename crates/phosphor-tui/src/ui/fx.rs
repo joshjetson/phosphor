@@ -35,6 +35,14 @@ use phosphor_dsp::fx::delay::{
     PARAM_HIGH_CUT_HZ as DELAY_HIGH_CUT, PARAM_LOW_CUT_HZ as DELAY_LOW_CUT, PARAM_MODE,
     PARAM_OFFSET, PARAM_ROUTING, PARAM_SYNC, PARAM_TIME_MODE, PARAM_TIME_MS,
 };
+use phosphor_dsp::fx::tape::{
+    auto_makeup_db, azimuth_hz, bump_hz, flutter_percent, hiss_dbfs, loss_hz,
+    natural_param as tape_param, uses as tape_uses, wow_percent,
+    PARAM_AUTO_MAKEUP as TAPE_AUTO_MAKEUP, PARAM_AZIMUTH_DEG as TAPE_AZIMUTH,
+    PARAM_BUMP_DB as TAPE_BUMP_DB, PARAM_COUNT as TAPE_PARAMS, PARAM_FLUTTER as TAPE_FLUTTER,
+    PARAM_HISS as TAPE_HISS, PARAM_SPEED as TAPE_SPEED, PARAM_TRIM_DB as TAPE_TRIM,
+    PARAM_WOW as TAPE_WOW,
+};
 use phosphor_dsp::fx::reverb::{
     natural_param as reverb_param, Algorithm, PARAM_ALGORITHM, PARAM_COUNT as REVERB_PARAMS,
     PARAM_DAMP_HZ, PARAM_DECAY_S, PARAM_LOW_CUT_HZ, PARAM_MOD_RATE_HZ, PARAM_PREDELAY_MS,
@@ -154,29 +162,16 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
     };
     let Some(slot) = track.fx_chain.get(index) else { return };
 
+    // **Exhaustive, and it is the point.** There is no catch-all arm any
+    // more: the day a sixth effect joins the menu this match stops compiling
+    // until it has a panel, which is a better guarantee than a fallback that
+    // apologises at run time.
     match slot.fx_type {
         FxType::Eq => render_eq(frame, area, nav, slot, index),
         FxType::Compressor => render_comp(frame, area, nav, slot, index),
         FxType::Reverb => render_reverb(frame, area, nav, slot, index),
         FxType::Delay => render_delay(frame, area, nav, slot, index),
-        other => {
-            // Every panel lands here first. Saying which effect has none yet
-            // is the whole of what "the menu does not lie" costs.
-            frame.render_widget(
-                Paragraph::new(vec![
-                    Line::from(Span::styled(
-                        format!("  {} \u{2014} slot {}", other.label(), index + 1),
-                        theme::normal().add_modifier(Modifier::BOLD),
-                    )),
-                    Line::from(""),
-                    Line::from(Span::styled(
-                        "  this effect has no panel yet",
-                        theme::dim(),
-                    )),
-                ]),
-                area,
-            );
-        }
+        FxType::Tape => render_tape(frame, area, nav, slot, index),
     }
 }
 
@@ -1028,6 +1023,205 @@ pub(crate) fn delay_why_not(params: &[f32], control: usize) -> String {
         PARAM_TIME_MS => "the clock is following the tempo".to_string(),
         PARAM_HEADS => format!("only the tape has three heads, not the {}", mode.label()),
         _ => format!("only the bbd has a clock to drift, not the {}", mode.label()),
+    }
+}
+
+// ── The tape ──
+
+/// The tape's twelve controls, as a column of knobs.
+///
+/// No picture. What a tape machine does to a signal is a *transfer curve*
+/// whose interesting part is a hysteresis loop — two-valued, so it is not a
+/// function of the input and cannot be drawn as one on a line — plus a
+/// wobble that is a tenth of a percent deep. The panel is therefore the
+/// numbers, and the numbers are the ones the effect derives rather than the
+/// ones the knobs hold: `wow` reads the deviation it is asking for, `bump`
+/// reads the frequency the speed puts it at, `azimth` reads the corner it is
+/// taking the top off at, and `mkauto` reads the gain it has decided on.
+///
+/// One control greys: the output trim is the automatic makeup's manual
+/// alternative and is inert while the automatic is on. Turning it anyway
+/// takes the makeup back rather than refusing the key, which is the
+/// compressor's idiom and the same control.
+fn render_tape(frame: &mut Frame, area: Rect, nav: &NavState, slot: &FxInstance, index: usize) {
+    let (w, h) = (area.width as usize, area.height as usize);
+    let view = &nav.clip_view.fx;
+    let focused = nav.focused_pane == Pane::ClipView
+        && nav.clip_view.focus == ClipViewFocus::PianoRoll
+        && nav.clip_view.clip_tab == ClipTab::Fx;
+    let params = &slot.params;
+    let cursor = view.band.min(TAPE_PARAMS - 1);
+
+    let mut lines: Vec<Line> = vec![tape_readout(params, cursor, index)];
+    if slot.bypass {
+        lines.push(Line::from(Span::styled(
+            "  bypassed \u{2014} b puts it back in the signal path",
+            theme::dim(),
+        )));
+    }
+    lines.push(Line::from(""));
+
+    let columns = if is_wide(w) && h >= 9 { 2 } else { 1 };
+    let rows = TAPE_PARAMS.div_ceil(columns);
+    let visible = h.saturating_sub(lines.len() + 1).max(1);
+    let first_row = if columns == 1 {
+        cursor.saturating_sub(visible.saturating_sub(1)).min(rows.saturating_sub(1))
+    } else {
+        0
+    };
+
+    for row in first_row..rows {
+        if lines.len() + 1 > h {
+            break;
+        }
+        let mut spans: Vec<Span> = Vec::new();
+        for column in 0..columns {
+            let control = column * rows + row;
+            if control >= TAPE_PARAMS {
+                continue;
+            }
+            let here = cursor == control;
+            let live = tape_uses(params, control);
+            let name = tape_param(control).map_or("", |p| p.name);
+            spans.push(Span::styled(
+                format!("{}{name:<7}", if here { "\u{25B8}" } else { " " }),
+                if here && focused { theme::amber_bright() } else { theme::dim() },
+            ));
+            spans.push(Span::styled(
+                format!("{:<17}", tape_value(params, control)),
+                cell_style(here, view.locked, live, focused),
+            ));
+            if column + 1 < columns {
+                spans.push(Span::styled("  ", theme::dim()));
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+
+    if lines.len() < h {
+        lines.push(Line::from(Span::styled(
+            if view.locked {
+                "  held \u{00b7} h/l adjusts \u{00b7} H/L strides \u{00b7} esc lets go"
+            } else {
+                "  j/k picks \u{00b7} h/l adjusts \u{00b7} H/L strides \u{00b7} enter holds"
+            },
+            theme::dim(),
+        )));
+    }
+
+    lines.truncate(h);
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// A speed deviation, in the decimals it needs and no more: 0.10% reads as
+/// two, 0.013% as three.
+fn deviation_label(percent: f64) -> String {
+    if percent >= 0.1 {
+        format!("{percent:.2}%")
+    } else {
+        format!("{percent:.3}%")
+    }
+}
+
+/// One control, in the unit a person reads it in — and, where there is one,
+/// the number it *means* next to the number it holds.
+pub(crate) fn tape_value(params: &[f32], control: usize) -> String {
+    let value = params.get(control).copied().unwrap_or(0.0);
+    let speed = phosphor_dsp::fx::tape::speed_of(params);
+    match control {
+        TAPE_SPEED => speed.label().to_string(),
+        // The deviation, because "wow 50%" means nothing and "0.10%" is the
+        // number every specification sheet in the field is written in.
+        TAPE_WOW => format!("{value:.0}%  {}", deviation_label(wow_percent(value))),
+        TAPE_FLUTTER => format!("{value:.0}%  {}", deviation_label(flutter_percent(value))),
+        // The centre comes from the speed, so the row says where the bump is
+        // rather than making a player derive it.
+        TAPE_BUMP_DB => {
+            if value <= 0.0 {
+                "off".to_string()
+            } else {
+                format!("{value:+.1} dB {} Hz", hz_label(bump_hz(speed) as f32))
+            }
+        }
+        TAPE_AZIMUTH => {
+            if value <= 0.0 {
+                "true".to_string()
+            } else {
+                format!("{value:.2}\u{b0} {} Hz", hz_label(azimuth_hz(value, speed) as f32))
+            }
+        }
+        TAPE_HISS => match hiss_dbfs(value) {
+            None => "off".to_string(),
+            Some(db) => format!("{value:.0}%  {db:.0} dBFS"),
+        },
+        TAPE_TRIM => format!("{value:+.1} dB"),
+        // The gain it has settled on, because a switch that says "on" is a
+        // switch that has not told you what it did.
+        TAPE_AUTO_MAKEUP => {
+            if value >= 0.5 {
+                format!("auto {:+.1} dB", auto_makeup_db(params))
+            } else {
+                "manual".to_string()
+            }
+        }
+        _ => format!("{value:.0}%"),
+    }
+}
+
+/// The line that always survives: what the machine is doing overall, and what
+/// the control under the cursor is, in full, with its travel.
+fn tape_readout(params: &[f32], control: usize, slot_index: usize) -> Line<'static> {
+    let speed = phosphor_dsp::fx::tape::speed_of(params);
+    let mut spans = vec![
+        Span::styled(" tap ", theme::amber_bright().add_modifier(Modifier::BOLD)),
+        Span::styled(format!("slot {} ", slot_index + 1), theme::dim()),
+        Span::styled(
+            format!(
+                "\u{00b7} {} \u{00b7} bump {} Hz \u{00b7} top {} Hz ",
+                speed.label(),
+                hz_label(bump_hz(speed) as f32),
+                hz_label(loss_hz(speed) as f32)
+            ),
+            theme::muted(),
+        ),
+    ];
+    let Some(info) = tape_param(control) else {
+        return Line::from(spans);
+    };
+    spans.push(Span::styled(format!("\u{00b7} {} ", info.name), theme::muted()));
+    spans.push(Span::styled(
+        tape_value(params, control),
+        theme::normal().add_modifier(Modifier::BOLD),
+    ));
+    if control == TAPE_AUTO_MAKEUP {
+        // **What "level-matched" means, said where a player will read it.**
+        // The makeup is the reciprocal of the medium's small-signal gain
+        // with a lineup constant on top, and the constant is measured on
+        // programme material: a tone at the same peak has a third of the
+        // crest factor, drives the medium far harder, and comes back
+        // quieter. Music matches; a sine does not, and that is not a fault.
+        spans.push(Span::styled(
+            "  \u{2014} matched on programme, not on a tone",
+            theme::dim(),
+        ));
+    } else if tape_uses(params, control) {
+        spans.push(Span::styled(
+            format!("  ({} .. {})", trim_number(info.min), trim_number(info.max)),
+            theme::dim(),
+        ));
+    } else {
+        // Greyed on the list and said once more here in words. Turning it
+        // anyway is not refused — it takes the makeup back.
+        spans.push(Span::styled(format!("  \u{2014} {}", tape_why_not(control)), theme::dim()));
+    }
+    Line::from(spans)
+}
+
+/// Why a greyed control is greyed, in the words a player would use.
+pub(crate) fn tape_why_not(control: usize) -> String {
+    match control {
+        TAPE_TRIM => "the makeup is automatic \u{00b7} turning this takes it back".to_string(),
+        _ => "not on this machine".to_string(),
     }
 }
 

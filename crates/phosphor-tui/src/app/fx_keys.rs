@@ -18,6 +18,7 @@
 //! reverb panel j/k picks a knob · h/l adjusts · H/L strides
 //!              enter holds it · esc lets go
 //! delay panel  the same column of knobs as the reverb's
+//! tape panel   and so is the tape's
 //! ```
 //!
 //! The layout decides which way `h`/`l` point because the EQ's panel is a
@@ -117,11 +118,14 @@ impl App {
                 FxType::Reverb | FxType::Delay => {
                     "j/k picks a knob, h/l adjusts, H/L strides, esc goes back".into()
                 }
+                FxType::Tape => {
+                    "j/k picks a knob, h/l adjusts \u{00b7} speed moves the bump and the top"
+                        .into()
+                }
                 FxType::Compressor => {
                     "j/k picks a knob, h/l adjusts \u{00b7} key and klistn are the last two rows"
                         .into()
                 }
-                other => format!("{} has no panel yet", other.label()),
             },
             std::time::Instant::now(),
         ));
@@ -233,6 +237,10 @@ impl App {
             }
             Some(FxType::Compressor) => {
                 self.handle_comp_panel_keys(key);
+                return;
+            }
+            Some(FxType::Tape) => {
+                self.handle_tape_panel_keys(key);
                 return;
             }
             _ => {}
@@ -841,6 +849,135 @@ impl App {
 /// ends.
 fn step_list(current: f32, delta: i32, len: usize) -> f32 {
     (current.round() as i32 + delta).clamp(0, len as i32 - 1) as f32
+}
+
+// ── The tape's panel ──
+
+use phosphor_dsp::fx::tape::{
+    auto_makeup_db as tape_auto_makeup_db, natural_param as tape_param, uses as tape_uses, Speed,
+    PARAM_AUTO_MAKEUP as TAPE_AUTO_MAKEUP, PARAM_AZIMUTH_DEG as TAPE_AZIMUTH,
+    PARAM_BUMP_DB as TAPE_BUMP_DB, PARAM_COUNT as TAPE_PARAMS, PARAM_SPEED as TAPE_SPEED,
+    PARAM_TRIM_DB as TAPE_TRIM,
+};
+
+/// How far one press moves the head bump and the azimuth, and how far a
+/// shifted one does. Both are small ranges where the whole travel matters, so
+/// they step in tenths rather than in percentage points.
+const BUMP_FINE: f32 = 0.1;
+const BUMP_COARSE: f32 = 0.5;
+const AZIMUTH_FINE: f32 = 0.05;
+const AZIMUTH_COARSE: f32 = 0.25;
+
+impl App {
+    /// One key, in the tape's panel.
+    ///
+    /// The same grammar as the reverb's, the delay's and the compressor's,
+    /// because it is the same shape of panel: a column of knobs, `j`/`k` to
+    /// pick and `h`/`l` to turn, `enter` to hold so that `j`/`k` stop walking
+    /// off the control a hand is in the middle of turning.
+    fn handle_tape_panel_keys(&mut self, key: crossterm::event::KeyEvent) {
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        match key.code {
+            KeyCode::Char('H') => self.adjust_tape_control(-1, true),
+            KeyCode::Char('L') => self.adjust_tape_control(1, true),
+            KeyCode::Char('h') | KeyCode::Left => self.adjust_tape_control(-1, shift),
+            KeyCode::Char('l') | KeyCode::Right => self.adjust_tape_control(1, shift),
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.nav.clip_view.fx.move_cursor(1, TAPE_PARAMS);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.nav.clip_view.fx.move_cursor(-1, TAPE_PARAMS);
+            }
+            KeyCode::Enter => {
+                if self.nav.clip_view.fx.locked {
+                    self.nav.clip_view.fx.locked = false;
+                    self.status_message = None;
+                } else {
+                    self.nav.clip_view.fx.locked = true;
+                    self.status_message = Some((
+                        "held: h/l adjusts, H/L strides, esc lets go".into(),
+                        std::time::Instant::now(),
+                    ));
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if self.nav.clip_view.fx.locked {
+                    self.nav.clip_view.fx.locked = false;
+                    self.status_message = None;
+                } else {
+                    self.nav.clip_view.fx.close();
+                    self.nav.clip_view.clip_tab = ClipTab::InstConfig;
+                    self.nav.clip_view.focus = ClipViewFocus::FxPanel;
+                }
+            }
+            KeyCode::Char('b') => {
+                let slot = self.nav.clip_view.fx.slot.unwrap_or(0);
+                self.toggle_fx_bypass(slot);
+            }
+            _ => {}
+        }
+    }
+
+    /// Turn the tape control under the cursor.
+    ///
+    /// Every control moves in its own unit and by its own law: the speed
+    /// steps through its three positions, the head bump and the azimuth move
+    /// in tenths because their whole travel is three decibels and one degree,
+    /// the trim moves in the EQ's own half-decibel steps, and the percentages
+    /// move in whole points.
+    fn adjust_tape_control(&mut self, delta: i32, coarse: bool) {
+        let control = self.nav.clip_view.fx.band.min(TAPE_PARAMS - 1);
+        let (track, slot) = (self.nav.track_cursor, self.nav.clip_view.fx.slot.unwrap_or(0));
+        let Some(params) = self.fx_params().map(<[f32]>::to_vec) else { return };
+        let current = params.get(control).copied().unwrap_or(0.0);
+
+        // **The automatic hands the trim back rather than refusing the key**,
+        // and it hands it back *where it had it*, so taking control never
+        // moves the level. The compressor's makeup does exactly this, and it
+        // is exactly this control.
+        if control == TAPE_TRIM && !tape_uses(&params, control) {
+            let seeded = tape_auto_makeup_db(&params) as f32;
+            self.set_fx_param(track, slot, TAPE_AUTO_MAKEUP, 0.0);
+            self.set_fx_param(track, slot, TAPE_TRIM, seeded);
+            self.status_message = Some((
+                format!("output is yours: {seeded:+.1} dB, where the automatic had it"),
+                std::time::Instant::now(),
+            ));
+            return;
+        }
+
+        let next = match control {
+            TAPE_SPEED => step_list(current, delta, Speed::ALL.len()),
+            // The switch turns rather than toggles: right is on, which is the
+            // same thing `h`/`l` does to every other control on the panel.
+            TAPE_AUTO_MAKEUP => f32::from(delta > 0),
+            TAPE_BUMP_DB => {
+                current + delta as f32 * if coarse { BUMP_COARSE } else { BUMP_FINE }
+            }
+            TAPE_AZIMUTH => {
+                current + delta as f32 * if coarse { AZIMUTH_COARSE } else { AZIMUTH_FINE }
+            }
+            TAPE_TRIM => current + delta as f32 * if coarse { GAIN_COARSE } else { GAIN_FINE },
+            _ => current + delta as f32 * if coarse { 10.0 } else { 1.0 },
+        };
+        let next = match tape_param(control) {
+            Some(info) => next.clamp(info.min, info.max),
+            None => next,
+        };
+        self.set_fx_param(track, slot, control, next);
+
+        // Switching the makeup back to automatic says what it decided, for
+        // the same reason the manual seeding does: a gain that changes
+        // without a number is a gain a player cannot check.
+        if control == TAPE_AUTO_MAKEUP && next >= 0.5 {
+            let mut after = params;
+            after[TAPE_AUTO_MAKEUP] = 1.0;
+            self.status_message = Some((
+                format!("output is automatic again: {:+.1} dB", tape_auto_makeup_db(&after)),
+                std::time::Instant::now(),
+            ));
+        }
+    }
 }
 
 // ── The compressor's panel ──

@@ -5,20 +5,23 @@
 //! new session's send buses have to be built with one already in them. Three
 //! lists of effects is one list that eventually forgets an effect.
 //!
-//! **The EQ, the compressor, the reverb and the delay are registered; the
-//! tape is not yet.** Until it exists, [`build`] answers `None` for it and the
-//! caller says so out loud rather than adding a slot that does nothing. That
-//! is the whole of what "the menu does not lie" costs.
+//! **All five are registered**, and the rule that got them here stays:
+//! [`build`] answers `None` for anything this build cannot actually make, and
+//! the caller says so out loud rather than adding a slot that does nothing.
+//! That is the whole of what "the menu does not lie" costs, and the day a
+//! sixth effect is added it is what will keep the menu honest again.
 
 pub mod compressor;
 pub mod delay;
 pub mod eq;
 pub mod reverb;
+pub mod tape;
 
 pub use compressor::Compressor;
 pub use delay::Delay;
 pub use eq::Eq;
 pub use reverb::Reverb;
+pub use tape::Tape;
 /// The closed-form curve, for a UI that has an effect's parameters and needs
 /// to draw what they mean.
 ///
@@ -32,12 +35,13 @@ use phosphor_core::fx::{Effect, Gain, SendSlot};
 
 use crate::state::{FxInstance, FxType};
 
-/// The effect behind a menu entry, or `None` while it is still being built.
+/// The effect behind a menu entry, or `None` if this build cannot make one.
 ///
-/// The landing point for each of the five. Four are here; when the last one
-/// arrives it joins the same match and nothing else in the application has to
-/// change — the menu, the command path, the session format and the strip
-/// label all already work.
+/// The landing point for each of the five, and all five are here. The
+/// `Option` stays because it is what the menu, the session loader and the bus
+/// bootstrap all check before they promise a player something: an effect that
+/// is registered here works everywhere, and one that is not is refused
+/// everywhere rather than half-added.
 #[must_use]
 pub fn build(fx_type: FxType) -> Option<Box<dyn Effect>> {
     match fx_type {
@@ -45,7 +49,7 @@ pub fn build(fx_type: FxType) -> Option<Box<dyn Effect>> {
         FxType::Compressor => Some(Box::new(Compressor::new())),
         FxType::Reverb => Some(Box::new(Reverb::new())),
         FxType::Delay => Some(Box::new(Delay::new())),
-        FxType::Tape => None,
+        FxType::Tape => Some(Box::new(Tape::new())),
     }
 }
 
@@ -175,7 +179,8 @@ pub fn wet_dry_index(fx_type: FxType) -> Option<usize> {
     match fx_type {
         FxType::Reverb => Some(phosphor_dsp::fx::reverb::PARAM_MIX),
         FxType::Delay => Some(phosphor_dsp::fx::delay::PARAM_MIX),
-        FxType::Eq | FxType::Compressor | FxType::Tape => None,
+        FxType::Tape => Some(phosphor_dsp::fx::tape::PARAM_MIX),
+        FxType::Eq | FxType::Compressor => None,
     }
 }
 
@@ -202,7 +207,7 @@ mod tests {
     /// Every built effect survives being built twice, with the same controls.
     #[test]
     fn a_built_effect_reports_the_registrys_own_defaults() {
-        for fx_type in [FxType::Eq, FxType::Compressor, FxType::Reverb, FxType::Delay] {
+        for &fx_type in FxType::ALL {
             let effect = build(fx_type).expect("built");
             assert_eq!(effect.name(), fx_type.key());
             assert_eq!(params_of(effect.as_ref()), default_params(fx_type));
