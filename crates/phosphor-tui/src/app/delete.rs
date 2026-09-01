@@ -68,29 +68,14 @@ impl App {
                 if let Some(track) = self.nav.tracks.get(idx) {
                     if track.instrument_type.is_none() { return; }
 
-                    let mixer_id = track.mixer_id.unwrap_or(0);
-
-                    // Push undo BEFORE removing
-                    let track_clone = self.nav.tracks[idx].clone();
-                    self.nav.undo_stack.push(UndoAction::DeleteTrack {
-                        track_idx: idx, track: track_clone, mixer_id,
-                    });
-
-                    if let Some(mid) = self.nav.tracks[idx].mixer_id {
-                        let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::RemoveTrack {
-                            track_id: mid,
-                        });
-                        dbg::system(&format!("deleted track: mixer_id={}", mid));
-                    }
-
-                    self.nav.tracks.remove(idx);
-                    if self.nav.track_cursor >= self.nav.tracks.len() && self.nav.track_cursor > 0 {
-                        self.nav.track_cursor -= 1;
-                    }
-                    self.nav.track_selected = false;
-                    self.nav.clip_view_visible = false;
-                    self.nav.clip_view_target = None;
-                    self.engine.panic();
+                    let saved = Box::new(track.clone());
+                    self.remove_instrument_track(idx);
+                    self.nav.push_undo_step(
+                        crate::state::undo::StateSlice::Track { track_idx: idx, track: Some(saved) },
+                        crate::state::undo::StateSlice::Track { track_idx: idx, track: None },
+                        "delete track",
+                    );
+                    dbg::system(&format!("deleted track at index {}", idx));
 
                     self.status_message = Some(("track deleted (u to undo)".into(), std::time::Instant::now()));
                 }
@@ -101,6 +86,9 @@ impl App {
                     let mut deleted_mixer_id = None;
                     let mut remaining = 0usize;
 
+                    let undo_before = self.nav.undo_checkpoint(
+                        crate::state::undo::UndoScope::TrackClips { track_idx },
+                    );
                     if let Some(track) = self.nav.tracks.get_mut(track_idx) {
                         if clip_idx < track.clips.len() {
                             // Remove from audio thread
@@ -112,14 +100,12 @@ impl App {
                                 deleted_mixer_id = Some(mixer_id);
                             }
 
-                            let removed_clip = track.clips.remove(clip_idx);
-                            self.nav.undo_stack.push(UndoAction::DeleteClip {
-                                track_idx, clip_idx, clip: removed_clip,
-                            });
+                            track.clips.remove(clip_idx);
                             dbg::system(&format!("deleted clip {} on track {}", clip_idx, track_idx));
                             remaining = track.clips.len();
                         }
                     }
+                    self.nav.commit_undo(undo_before, "delete clip");
 
                     // Only proceed if we actually deleted something
                     if deleted_mixer_id.is_some() || remaining > 0 || self.nav.tracks.get(track_idx).map(|t| t.clips.is_empty()).unwrap_or(false) {

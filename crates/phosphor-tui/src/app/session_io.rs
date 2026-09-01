@@ -152,8 +152,16 @@ impl App {
             }
         };
 
-        // Apply transport settings
+        // History does not cross a load. Every step on the stack captured
+        // tracks that are about to stop existing; undoing one afterwards
+        // would restore a piece of the old session into the new one.
+        self.nav.undo_stack.clear();
+
+        // Apply transport settings. The tempo mirror moves with the
+        // transport, as it does on every tempo edit — undo checkpoints read
+        // the mirror, and a stale one would capture the wrong "before".
         self.engine.transport.set_tempo(session.transport.tempo_bpm);
+        self.nav.tempo_bpm = session.transport.tempo_bpm as f32;
         if session.transport.metronome != self.engine.transport.is_metronome_on() {
             self.engine.transport.toggle_metronome();
         }

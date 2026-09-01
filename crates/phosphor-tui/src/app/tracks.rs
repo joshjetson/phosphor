@@ -175,6 +175,61 @@ impl App {
         }
     }
 
+    /// [`App::create_instrument_track`], as the player's own act: the new
+    /// track goes on the undo stack. Session load and undo's rebuilds call
+    /// the plain version — their tracks are not new work, and a load that
+    /// pushed one "add track" per session track would bury the player's
+    /// history under it.
+    pub(crate) fn create_instrument_track_undoable(&mut self, instrument: InstrumentType) {
+        use crate::state::undo::StateSlice;
+        self.create_instrument_track(instrument);
+        let idx = self.nav.track_cursor;
+        let Some(track) = self.nav.tracks.get(idx) else { return };
+        let saved = Box::new(track.clone());
+        self.nav.push_undo_step(
+            StateSlice::Track { track_idx: idx, track: None },
+            StateSlice::Track { track_idx: idx, track: Some(saved) },
+            "add track",
+        );
+    }
+
+    /// Take an instrument track out of the session — the UI row, the audio
+    /// track, the cursor and clip view that pointed at it. One removal,
+    /// shared by delete and by undo/redo, which are the same act reached
+    /// from different keys.
+    pub(crate) fn remove_instrument_track(&mut self, idx: usize) {
+        use crate::debug_log as dbg;
+        if idx >= self.nav.tracks.len() {
+            return;
+        }
+        // The bus strips are furniture, not tracks; nothing removes them.
+        if self.nav.tracks[idx].kind != TrackKind::Instrument {
+            return;
+        }
+        if let Some(mid) = self.nav.tracks[idx].mixer_id {
+            let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::RemoveTrack {
+                track_id: mid,
+            });
+            dbg::system(&format!("removed track: mixer_id={}", mid));
+        }
+        self.nav.tracks.remove(idx);
+        if self.nav.track_cursor >= self.nav.tracks.len() && self.nav.track_cursor > 0 {
+            self.nav.track_cursor -= 1;
+        }
+        self.nav.track_selected = false;
+        self.nav.clip_view_visible = false;
+        self.nav.clip_view_target = None;
+        // Undo can remove a track from modes the delete flow never reaches —
+        // a locked fader, an open panel, edit mode. Every lock that pointed
+        // into this track releases, or the keys keep routing to a ghost.
+        self.nav.element_locked = false;
+        self.nav.clip_view.sequencer.locked = false;
+        self.nav.clip_view.fx.locked = false;
+        self.nav.clip_view.piano_roll.edit_mode = false;
+        self.nav.clip_view.piano_roll.highlight_locked = false;
+        self.engine.panic();
+    }
+
     /// Apply one sequencer edit to the track under the cursor, and send the
     /// audio thread whatever the edit made stale.
     ///
@@ -185,19 +240,56 @@ impl App {
     /// The step grid's keys are the only caller with a keyboard behind them;
     /// the tests in `test_sequencer` drive the same route.
     pub(crate) fn sequencer_op(&mut self, op: phosphor_app::sequencer::ops::SeqOp) {
+        use crate::state::undo::{UndoGesture, UndoScope};
+        // Content ops land on the undo stack; cursor moves and the
+        // performance controls never do — see `SeqOp::edits_content`. The
+        // knob-like ops fold per sweep, so thirty presses on the swing are
+        // one press of `u`. A child swap is bigger than the sequencer's own
+        // scope — it replaces the instrument and its whole panel — so it is
+        // captured whole under a scope of its own.
+        let track_idx = self.nav.track_cursor;
+        let is_child_swap = matches!(op, phosphor_app::sequencer::ops::SeqOp::SetChild(_));
+        let undo_before = if is_child_swap {
+            Some(self.nav.undo_checkpoint(UndoScope::SeqChild { track_idx }))
+        } else if op.edits_content() {
+            Some(self.nav.undo_checkpoint(UndoScope::Sequencer { track_idx }))
+        } else {
+            None
+        };
+
         let (effect, syncs) = self.nav.sequencer_op(op);
         if effect.child {
-            self.reload_child_instrument();
+            self.reload_child_instrument(track_idx);
         }
         for sync in syncs {
             let _ = self.engine.shared.mixer_command_tx.send(sync.command());
         }
+
+        if let Some(before) = undo_before {
+            if is_child_swap {
+                // The child knob walks a list; a flick through five
+                // instruments is one step back to the one the player left.
+                self.nav.commit_undo_coalesced(
+                    before,
+                    "child instrument",
+                    UndoGesture::ChildSwap { track_idx },
+                );
+            } else if op.is_sweep() {
+                self.nav.commit_undo_coalesced(
+                    before,
+                    op.undo_label(),
+                    UndoGesture::Sequencer { track_idx },
+                );
+            } else {
+                self.nav.commit_undo(before, op.undo_label());
+            }
+        }
     }
 
-    /// Put the current track's child instrument in its plugin slot, with its
-    /// whole panel behind it.
-    fn reload_child_instrument(&mut self) {
-        let Some(track) = self.nav.current_track() else { return };
+    /// Put a track's child instrument in its plugin slot, with its whole
+    /// panel behind it.
+    pub(crate) fn reload_child_instrument(&mut self, track_index: usize) {
+        let Some(track) = self.nav.tracks.get(track_index) else { return };
         let (Some(instrument), Some(track_id)) = (track.instrument_type, track.mixer_id) else {
             return;
         };
@@ -225,8 +317,14 @@ impl App {
     /// command — the same shape `SetInstrument` has, and for the same reason.
     /// Nothing is ever built on the audio thread.
     pub(crate) fn fx_menu_choose(&mut self) {
+        let before = self.nav.undo_checkpoint(
+            crate::state::undo::UndoScope::TrackFx { track_idx: self.nav.track_cursor },
+        );
         let outcome = self.nav.fx_menu_select();
         self.apply_fx_add(outcome);
+        // A refusal — chain full, effect not built — changed nothing, and
+        // the commit's own no-op check knows it.
+        self.nav.commit_undo(before, "add effect");
     }
 
     /// Send an added effect to the audio thread, or say why there is none.
@@ -356,10 +454,27 @@ impl App {
     /// chain it has just edited is one frame behind the edit often enough
     /// that a panic here would be a crash rather than a bug report.
     ///
-    /// No keystroke reaches this yet: the panel that will turn a knob is the
     /// The panel's keys are the only caller with a keyboard behind them —
     /// see `app::fx_keys` — and the integration tests drive the same route.
+    ///
+    /// One knob movement, one (coalesced) undo step: a sweep of the same
+    /// slot's controls folds into a single step, so `u` takes the player
+    /// back to where the sweep began rather than one tick along it.
     pub(crate) fn set_fx_param(&mut self, track_index: usize, slot: usize, param: usize, value: f32) {
+        let before = self.nav.undo_checkpoint(
+            crate::state::undo::UndoScope::TrackFx { track_idx: track_index },
+        );
+        self.write_fx_param(track_index, slot, param, value);
+        self.nav.commit_undo_coalesced(
+            before,
+            "adjust effect",
+            crate::state::undo::UndoGesture::FxSlot { track_idx: track_index, slot },
+        );
+    }
+
+    /// [`Self::set_fx_param`] without the undo step — the half that undo
+    /// itself applies a captured chain through.
+    pub(crate) fn write_fx_param(&mut self, track_index: usize, slot: usize, param: usize, value: f32) {
         let Some(track) = self.nav.tracks.get_mut(track_index) else { return };
         let Some(target) = track.fx_target() else { return };
         let Some(instance) = track.fx_chain.get_mut(slot) else { return };
@@ -377,8 +492,18 @@ impl App {
     /// crossfades it; the mirror is what the strip and the session read.
     ///
     /// Thrown from the chain list and from the panel, through the same door
-    /// as [`Self::set_fx_param`].
+    /// as [`Self::set_fx_param`]. A discrete step, never coalesced: two
+    /// throws are two changes of mind, not one sweep.
     pub(crate) fn set_fx_bypass(&mut self, track_index: usize, slot: usize, bypass: bool) {
+        let before = self.nav.undo_checkpoint(
+            crate::state::undo::UndoScope::TrackFx { track_idx: track_index },
+        );
+        self.write_fx_bypass(track_index, slot, bypass);
+        self.nav.commit_undo(before, "bypass effect");
+    }
+
+    /// [`Self::set_fx_bypass`] without the undo step.
+    pub(crate) fn write_fx_bypass(&mut self, track_index: usize, slot: usize, bypass: bool) {
         let Some(track) = self.nav.tracks.get_mut(track_index) else { return };
         let Some(target) = track.fx_target() else { return };
         let Some(instance) = track.fx_chain.get_mut(slot) else { return };

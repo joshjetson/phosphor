@@ -6,7 +6,25 @@ impl NavState {
 
     /// Adjust the currently selected synth parameter by delta.
     /// Returns the (mixer_id, param_index, new_value) if changed, for sending to audio.
+    ///
+    /// Every route to an instrument's controls comes through here — the
+    /// narrow strip, the `[inst]` tab, the test actions — so this is also
+    /// where the edit lands on the undo stack. Coalesced per panel: a sweep
+    /// is one step, and a patch flick through six programs undoes back to
+    /// the one the player started from in one press.
     pub fn adjust_synth_param(&mut self, delta: f32) -> Option<(usize, usize, f32)> {
+        let track_idx = self.track_cursor;
+        let before = self.undo_checkpoint(undo::UndoScope::SynthParams { track_idx });
+        let result = self.adjust_synth_param_inner(delta);
+        self.commit_undo_coalesced(
+            before,
+            "adjust instrument",
+            undo::UndoGesture::SynthPanel { track_idx },
+        );
+        result
+    }
+
+    fn adjust_synth_param_inner(&mut self, delta: f32) -> Option<(usize, usize, f32)> {
         let idx = self.clip_view.synth_param_cursor;
         if let Some(track) = self.tracks.get_mut(self.track_cursor) {
             if idx < track.synth_params.len() {

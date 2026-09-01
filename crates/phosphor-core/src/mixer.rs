@@ -68,6 +68,16 @@ pub enum MixerCommand {
         track_id: usize,
         clip_index: usize,
     },
+    /// Throw away whatever the recorder is holding, but keep recording.
+    ///
+    /// This is undo's reach into the pass that has not committed yet: the
+    /// player is still recording, dislikes what they just played, and wants
+    /// it gone *without* the transport stopping. The buffer empties and
+    /// restarts — at the loop start when looping, at the playhead when not —
+    /// so the next thing played lands exactly as if the pass had just begun.
+    /// Committed takes are not touched; those live in clips and are undone
+    /// from the UI side.
+    DiscardRecording,
     /// Give one of a sequencer track's eight pattern slots new contents, and
     /// with it the UI's current word on the track-level settings that ride on
     /// a block — see [`PatternBlock`].
@@ -212,7 +222,10 @@ fn command_cost(cmd: &MixerCommand) -> u32 {
         | MixerCommand::SetSendLevel { .. }
         | MixerCommand::SetPan { .. }
         | MixerCommand::SetKeySource { .. }
-        | MixerCommand::SetKeyListen { .. } => 1,
+        | MixerCommand::SetKeyListen { .. }
+        // Clearing a record buffer keeps its capacity: a store and a length
+        // reset, nothing for the allocator.
+        | MixerCommand::DiscardRecording => 1,
         MixerCommand::AddTrack { .. }
         | MixerCommand::SetInstrument { .. }
         | MixerCommand::RemoveTrack { .. }
@@ -616,6 +629,12 @@ pub struct Mixer {
     /// Whether the transport was rolling on the previous block, so that a
     /// stop can clear the key listen without the front end having to.
     was_playing: bool,
+    /// A [`MixerCommand::DiscardRecording`] waiting for the recording pass.
+    ///
+    /// A flag rather than work done in `apply_command`, because emptying a
+    /// record buffer needs the transport — loop start or playhead — and the
+    /// transport arrives with `process`, not with the command.
+    discard_recording: bool,
 }
 
 impl Mixer {
@@ -650,6 +669,7 @@ impl Mixer {
             fx_scratch: FxScratch::new(max_buffer_size),
             key_listen: None,
             was_playing: false,
+            discard_recording: false,
         }
     }
 
@@ -771,6 +791,9 @@ impl Mixer {
 
         let live_events = std::mem::take(&mut self.live_events);
         let clip_tx = &self.clip_tx;
+        // Taken, not read: a discard applies to exactly one block, whether or
+        // not anything was recording when it landed.
+        let discard = std::mem::take(&mut self.discard_recording);
 
         // ── Pass 1: every instrument into its own buffers ──
         //
@@ -812,6 +835,23 @@ impl Mixer {
             }
             if should_record {
                 track.last_record_tick = current_tick;
+            }
+
+            // ── A scrapped pass ──
+            //
+            // Undo, while the recorder is holding uncommitted notes. The
+            // buffer restarts where a fresh pass would — loop start, or the
+            // playhead when not looping — and stays active, so the player
+            // replays the part without the transport so much as flinching.
+            //
+            // Before the stop-commit below on purpose: a discard racing a
+            // stop must not have the stop commit the very notes the discard
+            // was sent to remove. Emptied first, the stop then commits
+            // nothing at all.
+            if discard && track.was_recording && track.record_buf.is_active() {
+                let rec_start = if looping { transport.loop_start() } else { current_tick };
+                track.record_buf.start(rec_start);
+                tracing::debug!("rec discard track={} restart at tick={}", track.id, rec_start);
             }
 
             // Commit when recording stops (user pressed stop)
@@ -1284,6 +1324,9 @@ impl Mixer {
                         track.clips.remove(clip_index);
                     }
                 }
+            }
+            MixerCommand::DiscardRecording => {
+                self.discard_recording = true;
             }
             MixerCommand::SetPattern { track_id, slot, block } => {
                 if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
@@ -1868,6 +1911,115 @@ mod tests {
         mixer.process(&mut output, &[], &transport);
         let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         assert!(peak > 0.001, "Should hear playback, peak={peak}");
+    }
+
+    /// Undo mid-pass: the notes already played this pass are gone, the notes
+    /// played after the discard are the whole take. Recording never stops.
+    #[test]
+    fn discard_drops_the_uncommitted_pass_and_keeps_recording() {
+        let (mut mixer, tx, clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        let sr = 44100u32;
+        let bf = 256u32;
+
+        transport.set_loop_bars(1, 1);
+        transport.start_loop_record();
+        let mut output = vec![0.0f32; bf as usize * 2];
+
+        // The flubbed phrase: a note on and off, both in the buffer.
+        mixer.process(&mut output, &[make_note_on(60, 100)], &transport);
+        transport.advance(bf, sr);
+        mixer.process(&mut output, &[make_note_off(60)], &transport);
+        transport.advance(bf, sr);
+
+        // Undo reaches the recorder.
+        tx.send(MixerCommand::DiscardRecording).unwrap();
+        mixer.process(&mut output, &[], &transport);
+        transport.advance(bf, sr);
+
+        // The replayed phrase.
+        mixer.process(&mut output, &[make_note_on(62, 100)], &transport);
+        transport.advance(bf, sr);
+        mixer.process(&mut output, &[make_note_off(62)], &transport);
+        transport.advance(bf, sr);
+
+        // Round the loop: the commit is the replay alone.
+        let mut snap = None;
+        for _ in 0..400 {
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(bf, sr);
+            if let Ok(s) = clip_rx.try_recv() {
+                snap = Some(s);
+                break;
+            }
+        }
+        let snap = snap.expect("the pass after a discard still commits at the wrap");
+        assert!(
+            snap.notes.iter().any(|n| n.note == 62),
+            "the note played after the discard was lost"
+        );
+        assert!(
+            snap.notes.iter().all(|n| n.note != 60),
+            "the discarded note came back at the wrap"
+        );
+    }
+
+    /// A discard racing a stop: the stop must not commit the notes the
+    /// discard was sent to remove.
+    #[test]
+    fn discard_racing_a_stop_commits_nothing() {
+        let (mut mixer, tx, clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        let sr = 44100u32;
+        let bf = 256u32;
+
+        transport.set_loop_bars(1, 1);
+        transport.start_loop_record();
+        let mut output = vec![0.0f32; bf as usize * 2];
+
+        mixer.process(&mut output, &[make_note_on(60, 100)], &transport);
+        transport.advance(bf, sr);
+        mixer.process(&mut output, &[make_note_off(60)], &transport);
+        transport.advance(bf, sr);
+
+        // Both arrive before the next callback runs.
+        tx.send(MixerCommand::DiscardRecording).unwrap();
+        transport.stop_loop_record();
+        mixer.process(&mut output, &[], &transport);
+
+        assert!(
+            clip_rx.try_recv().is_err(),
+            "the stop committed a pass the discard had already scrapped"
+        );
+    }
+
+    /// A discard with nothing recording is consumed without effect — and
+    /// without poisoning the take that comes after it.
+    #[test]
+    fn discard_when_idle_is_a_noop() {
+        let (mut mixer, tx, clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        let sr = 44100u32;
+        let bf = 256u32;
+        let mut output = vec![0.0f32; bf as usize * 2];
+
+        // Idle discard: no transport, no recording.
+        tx.send(MixerCommand::DiscardRecording).unwrap();
+        mixer.process(&mut output, &[], &transport);
+        assert!(clip_rx.try_recv().is_err());
+
+        // A recording made afterwards commits exactly as it always did.
+        transport.set_loop_bars(1, 1);
+        transport.start_loop_record();
+        mixer.process(&mut output, &[make_note_on(64, 100)], &transport);
+        transport.advance(bf, sr);
+        mixer.process(&mut output, &[make_note_off(64)], &transport);
+        transport.advance(bf, sr);
+        transport.stop_loop_record();
+        mixer.process(&mut output, &[], &transport);
+
+        let snap = clip_rx.try_recv().expect("the take after an idle discard was lost");
+        assert!(snap.notes.iter().any(|n| n.note == 64));
     }
 
     // ── Command budget ──

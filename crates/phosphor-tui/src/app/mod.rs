@@ -39,7 +39,6 @@ mod clips;
 mod tracks;
 mod transport;
 mod undo_redo;
-use crate::state::undo::UndoAction;
 use crate::ui;
 
 /// Shared MIDI status for the UI to display.
@@ -96,6 +95,15 @@ pub struct App {
     /// Every note touched since the last one was let go — the chord being
     /// played, which is written when the last finger lifts.
     pub(crate) recorded_notes: Vec<u8>,
+    /// Note-ons seen since the recorder last emptied its buffer — by
+    /// committing a take, starting, stopping, or discarding a pass. This is
+    /// how undo-while-recording knows whether the newest layer is the pass
+    /// under the player's fingers or the take that already committed: the
+    /// UI's MIDI tap sees every note the recorder can, so a zero here means
+    /// the pass is empty. Approximate on purpose — it does not know which
+    /// armed track a note landed on — and the cost of being wrong is one
+    /// press of `u` peeling the other layer first.
+    pub(crate) live_take_notes: usize,
     /// The receiving end of the mixer command channel, kept alive only when
     /// there is no mixer to own it — which is only ever in tests, since a
     /// headless app has no audio thread.
@@ -309,6 +317,7 @@ impl App {
             midi_ui_rx: enable_midi.then_some(midi_ui_rx),
             held_notes: Vec::new(),
             recorded_notes: Vec::new(),
+            live_take_notes: 0,
             #[cfg(test)]
             mixer_rx: mixer_rx_test,
         };
@@ -418,20 +427,16 @@ impl App {
                 self.log_transport_state();
             }
             Action::LoopStartLeft => {
-                self.nav.loop_editor.move_start_left();
-                self.sync_loop_to_transport();
+                self.edit_loop_range(|l| l.move_start_left());
             }
             Action::LoopStartRight => {
-                self.nav.loop_editor.move_start_right();
-                self.sync_loop_to_transport();
+                self.edit_loop_range(|l| l.move_start_right());
             }
             Action::LoopEndLeft => {
-                self.nav.loop_editor.move_end_left();
-                self.sync_loop_to_transport();
+                self.edit_loop_range(|l| l.move_end_left());
             }
             Action::LoopEndRight => {
-                self.nav.loop_editor.move_end_right();
-                self.sync_loop_to_transport();
+                self.edit_loop_range(|l| l.move_end_right());
             }
             Action::LoopUnfocus => {
                 self.nav.loop_editor.unfocus();
@@ -471,7 +476,7 @@ impl App {
             Action::InstrumentSelect => {
                 let instrument = self.nav.instrument_modal.selected();
                 self.nav.instrument_modal.open = false;
-                self.create_instrument_track(instrument);
+                self.create_instrument_track_undoable(instrument);
             }
             Action::InstrumentCancel => {
                 self.nav.instrument_modal.open = false;
@@ -551,43 +556,29 @@ impl App {
 
             // Poll for recorded clip snapshots from the audio thread
             let is_recording = self.engine.transport.is_recording();
+            let mut committed_while_recording = false;
             while let Ok(snap) = self.clip_rx.try_recv() {
-                let _mixer_id = snap.track_id;
                 if let Some((mid, absorbed)) = self.nav.receive_clip_snapshot(snap, is_recording) {
-                    // Sync absorbed clips to audio — remove them in reverse order
-                    // The audio thread's clip array shifted, so remove from highest index down.
-                    // Since we don't know exact indices, rebuild all clips on this track.
-                    if let Some(track) = self.nav.tracks.iter().find(|t| t.mixer_id == Some(mid)) {
-                        // Remove ALL clips from audio for this track, then re-add current ones
-                        // This is the safest way to resync after absorption.
-                        for i in (0..track.clips.len() + absorbed).rev() {
-                            let _ = self.engine.shared.mixer_command_tx.send(
-                                MixerCommand::RemoveClip { track_id: mid, clip_index: i }
-                            );
-                        }
-                        for (ci, clip) in track.clips.iter().enumerate() {
-                            let _ = self.engine.shared.mixer_command_tx.send(
-                                MixerCommand::CreateClip {
-                                    track_id: mid,
-                                    start_tick: clip.start_tick,
-                                    length_ticks: clip.length_ticks,
-                                }
-                            );
-                            let events = phosphor_core::clip::NoteSnapshot::to_clip_events(
-                                &clip.notes, clip.length_ticks,
-                            );
-                            let _ = self.engine.shared.mixer_command_tx.send(
-                                MixerCommand::UpdateClip {
-                                    track_id: mid, clip_index: ci, events,
-                                }
-                            );
-                        }
-                        crate::debug_log::system(&format!(
-                            "audio resync after absorption: track={} clips={}",
-                            mid, track.clips.len()
-                        ));
+                    // Absorption changed the UI's clip list; rebuild the audio
+                    // thread's copy, which still holds the absorbed clips too.
+                    if let Some(track_idx) =
+                        self.nav.tracks.iter().position(|t| t.mixer_id == Some(mid))
+                    {
+                        let ui_len = self.nav.tracks[track_idx].clips.len();
+                        self.resync_track_clips_to_audio(track_idx, ui_len + absorbed);
                     }
                 }
+                // A commit emptied the recorder's buffer: the in-flight pass
+                // is whatever gets played from here on.
+                if is_recording {
+                    self.live_take_notes = 0;
+                    committed_while_recording = true;
+                }
+            }
+            // Say that a layer landed, and that it is one keypress deep. An
+            // invisible take stack is a take stack nobody trusts.
+            if committed_while_recording && self.nav.undo_stack.top_is_take() {
+                self.flash("take committed · u undoes");
             }
 
             let snapshot = self.engine.transport.snapshot();

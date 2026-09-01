@@ -50,6 +50,9 @@ impl App {
             hidden_notes: Vec::new(),
         };
 
+        let undo_before = self.nav.undo_checkpoint(
+            crate::state::undo::UndoScope::TrackClips { track_idx },
+        );
         let Some(track) = self.nav.tracks.get_mut(track_idx) else { return };
         let clip_index = track.clips.len();
         let mixer_id = track.mixer_id;
@@ -76,7 +79,7 @@ impl App {
             });
         }
 
-        self.nav.undo_stack.push(UndoAction::AddClip { track_idx, clip_idx: clip_index });
+        self.nav.commit_undo(undo_before, "bounce");
 
         let bars = bounce.bars();
         let stopped = if bounce.stops_playback { " · pattern stopped" } else { "" };

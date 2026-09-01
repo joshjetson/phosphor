@@ -217,9 +217,15 @@ impl App {
         };
 
         let name = bank.presets[index].name.clone();
+        let undo_before = self.nav.undo_checkpoint(
+            crate::state::undo::UndoScope::SynthParams { track_idx },
+        );
         if let Some(track) = self.nav.tracks.get_mut(track_idx) {
             track.synth_params.copy_from_slice(&loaded.params);
         }
+        // A whole panel in one keypress is one step — and never folded into
+        // a knob sweep beside it.
+        self.nav.commit_undo(undo_before, "load preset");
         self.push_params_to_audio(track_idx);
 
         // Both notes are about the same thing — a patch that may not be the one

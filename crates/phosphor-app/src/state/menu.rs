@@ -412,8 +412,9 @@ pub enum ConfirmKind {
     DeleteTrack,
     DeleteClip,
     DeletePreset,
-    /// Taking an effect out of a chain. Asked about because a chain is work
-    /// and there is no undo for it yet.
+    /// Taking an effect out of a chain. Undoable, but still asked about:
+    /// a chain is work, and a `d` that lands one row off should have to say
+    /// what it is about to take.
     DeleteFx,
     /// Saving over a preset name the bank already holds.
     OverwritePreset,
@@ -918,6 +919,13 @@ pub const HELP_TOPICS: &[HelpTopic] = &[
             Key("H / L", "move the loop end"),
             Key("enter", "loop on / off"),
             Key("esc", "done"),
+            Gap,
+            Heading("while recording"),
+            Key("u", "scrap what you just played, keep rolling"),
+            Note("Each pass round the loop is a take; u peels the"),
+            Note("newest layer \u{2014} the pass under your fingers first,"),
+            Note("then committed takes, one per press. ctrl+r puts a"),
+            Note("peeled take back. The transport never stops."),
         ],
     },
     HelpTopic {

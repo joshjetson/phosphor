@@ -422,7 +422,6 @@ impl App {
         let total_beats = pr.total_beats;
         let grid = pr.grid;
         let snap = pr.snap_enabled;
-        let target = self.nav.clip_view_target;
 
         let mut indices: Vec<usize> = pr.edit_selected.clone();
         if !indices.contains(&pr.edit_cursor) {
@@ -431,14 +430,7 @@ impl App {
 
         let step = grid.step_frac(total_beats);
 
-        // Capture before-state for undo (only on first move of a selection)
-        let before: Vec<(usize, phosphor_core::clip::NoteSnapshot)> = if let Some(clip) = self.nav.active_clip() {
-            indices.iter()
-                .filter_map(|&idx| clip.notes.get(idx).map(|n| (idx, *n)))
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let undo_before = self.checkpoint_viewed_track();
 
         // Apply the move (grid-step horizontal, snap-aware; semitone vertical)
         if let Some(clip) = self.nav.active_clip_mut() {
@@ -460,14 +452,7 @@ impl App {
             }
         }
 
-        // Push undo
-        if !before.is_empty() {
-            if let Some((ti, ci)) = target {
-                self.nav.undo_stack.push(crate::state::undo::UndoAction::MoveNotes {
-                    track_idx: ti, clip_idx: ci, before,
-                });
-            }
-        }
+        self.commit_viewed_track(undo_before, "move notes");
 
         // Update the cursor note to track the moved note's new pitch
         let cursor_idx = self.nav.clip_view.piano_roll.edit_cursor;
@@ -489,38 +474,27 @@ impl App {
     fn stretch_selected_edit_notes(&mut self, delta: f64, right_edge: bool) {
         use crate::debug_log as dbg;
         let pr = &self.nav.clip_view.piano_roll;
-        let target = self.nav.clip_view_target;
 
         let mut indices: Vec<usize> = pr.edit_selected.clone();
         if !indices.contains(&pr.edit_cursor) {
             indices.push(pr.edit_cursor);
         }
 
-        // Capture before-state
-        let before: Vec<(usize, phosphor_core::clip::NoteSnapshot)> = if let Some(clip) = self.nav.active_clip() {
-            indices.iter()
-                .filter_map(|&idx| clip.notes.get(idx).map(|n| (idx, *n)))
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let undo_before = self.checkpoint_viewed_track();
 
         // Apply stretch
+        let mut touched = 0usize;
         if let Some(clip) = self.nav.active_clip_mut() {
             for &idx in &indices {
                 if let Some(note) = clip.notes.get_mut(idx) {
                     Self::apply_edge_delta(note, delta, right_edge);
+                    touched += 1;
                 }
             }
         }
 
-        // Undo + sync
-        if !before.is_empty() {
-            if let Some((ti, ci)) = target {
-                self.nav.undo_stack.push(crate::state::undo::UndoAction::MoveNotes {
-                    track_idx: ti, clip_idx: ci, before,
-                });
-            }
+        if touched > 0 {
+            self.commit_viewed_track(undo_before, "stretch notes");
             self.send_clip_update();
             dbg::system(&format!("edit stretch: edge={} delta={:.4} notes={}",
                 if right_edge { "right" } else { "left" }, delta, indices.len()));
@@ -530,7 +504,7 @@ impl App {
     /// Delete the note at the edit cursor. Pushes undo, syncs audio, kills sound.
     pub(crate) fn edit_delete_cursor_note(&mut self) {
         use crate::debug_log as dbg;
-        let target = self.nav.clip_view_target;
+        let undo_before = self.checkpoint_viewed_track();
         let cursor = self.nav.clip_view.piano_roll.edit_cursor;
 
         if let Some(clip) = self.nav.active_clip_mut() {
@@ -538,12 +512,7 @@ impl App {
                 let removed = clip.notes.remove(cursor);
                 dbg::system(&format!("edit delete: removed note {} at frac {:.4}", removed.note, removed.start_frac));
 
-                // Push undo
-                if let Some((ti, ci)) = target {
-                    self.nav.undo_stack.push(crate::state::undo::UndoAction::RemoveNote {
-                        track_idx: ti, clip_idx: ci, note: removed,
-                    });
-                }
+                self.commit_viewed_track(undo_before, "delete note");
 
                 // Fix cursor if it's now past the end
                 let len = self.nav.active_clip().map(|c| c.notes.len()).unwrap_or(0);
@@ -563,7 +532,7 @@ impl App {
     /// Delete all selected notes (+ cursor note). Pushes undo, syncs audio.
     fn edit_delete_selected_notes(&mut self) {
         use crate::debug_log as dbg;
-        let target = self.nav.clip_view_target;
+        let undo_before = self.checkpoint_viewed_track();
         let pr = &self.nav.clip_view.piano_roll;
         let mut indices: Vec<usize> = pr.edit_selected.clone();
         if !indices.contains(&pr.edit_cursor) {
@@ -585,11 +554,7 @@ impl App {
 
         if !removed_notes.is_empty() {
             let count = removed_notes.len();
-            if let Some((ti, ci)) = target {
-                self.nav.undo_stack.push(crate::state::undo::UndoAction::DeleteNotes {
-                    track_idx: ti, clip_idx: ci, notes: removed_notes,
-                });
-            }
+            self.commit_viewed_track(undo_before, "delete notes");
 
             // Reset edit state
             let len = self.nav.active_clip().map(|c| c.notes.len()).unwrap_or(0);

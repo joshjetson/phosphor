@@ -26,6 +26,18 @@ impl App {
         };
         let start_frac = raw_start.clamp(0.0, 1.0 - duration_frac);
 
+        // Checkpointed before the implicit clip below, so that undoing the
+        // first note drawn on an empty track takes the clip it conjured with
+        // it rather than leaving an empty box on the timeline.
+        let undo_track = self
+            .nav
+            .clip_view_target
+            .map(|(ti, _)| ti)
+            .unwrap_or(self.nav.track_cursor);
+        let undo_before = self.nav.undo_checkpoint(
+            crate::state::undo::UndoScope::TrackClips { track_idx: undo_track },
+        );
+
         // If there's no clip yet, create one on both TUI and audio thread
         if self.nav.active_clip().is_none() {
             let start_tick = self.nav.loop_editor.start_ticks();
@@ -73,9 +85,7 @@ impl App {
             }
         }
 
-        // Get track/clip indices for undo
-        let target = self.nav.clip_view_target;
-
+        let mut label = "draw note";
         if let Some(clip) = self.nav.active_clip_mut() {
             // Toggle: if a note exists at this position, delete it
             let existing = clip.notes.iter().position(|n| {
@@ -84,45 +94,18 @@ impl App {
             });
 
             if let Some(idx) = existing {
-                let removed = clip.notes.remove(idx);
-                if let Some((ti, ci)) = target {
-                    self.nav.undo_stack.push(UndoAction::RemoveNote {
-                        track_idx: ti, clip_idx: ci, note: removed,
-                    });
-                }
+                clip.notes.remove(idx);
+                label = "remove note";
                 crate::debug_log::system(&format!("removed note {} at col {}", note_num, col));
             } else {
-                let note = phosphor_core::clip::NoteSnapshot {
+                clip.notes.push(phosphor_core::clip::NoteSnapshot {
                     note: note_num, velocity, start_frac, duration_frac,
-                };
-                clip.notes.push(note.clone());
-                if let Some((ti, ci)) = target {
-                    self.nav.undo_stack.push(UndoAction::DrawNote {
-                        track_idx: ti, clip_idx: ci, note,
-                    });
-                }
+                });
                 crate::debug_log::system(&format!("drew note {} at col {}", note_num, col));
             }
         }
+        self.nav.commit_undo(undo_before, label);
     }
-
-    /// Push edited note data from the TUI clip to the audio thread.
-    /// Send clip events to audio thread for a specific track/clip (used by undo/redo).
-    pub(crate) fn send_clip_update_for(&self, track_idx: usize, clip_idx: usize) {
-        if let Some(track) = self.nav.tracks.get(track_idx) {
-            if let (Some(mixer_id), Some(clip)) = (track.mixer_id, track.clips.get(clip_idx)) {
-                let events = phosphor_core::clip::NoteSnapshot::to_clip_events(
-                    &clip.notes, clip.length_ticks,
-                );
-                let _ = self.engine.shared.mixer_command_tx.send(
-                    MixerCommand::UpdateClip {
-                        track_id: mixer_id, clip_index: clip_idx, events,
-                    }
-                );
-            }
-        }
-    }
-
 
     pub(crate) fn send_clip_update(&self) {
         use crate::debug_log as dbg;
@@ -276,7 +259,7 @@ impl App {
         let col_count = self.nav.clip_view.piano_roll.column_count;
         if col_count == 0 { return; }
         let col_w = 1.0 / col_count as f64;
-        let target = self.nav.clip_view_target;
+        let undo_before = self.checkpoint_viewed_track();
 
         if let Some(clip) = self.nav.active_clip_mut() {
             let mut removed = Vec::new();
@@ -302,11 +285,6 @@ impl App {
 
             if !removed.is_empty() {
                 let count = removed.len();
-                if let Some((ti, ci)) = target {
-                    self.nav.undo_stack.push(UndoAction::DeleteNotes {
-                        track_idx: ti, clip_idx: ci, notes: removed,
-                    });
-                }
                 // Invalidate any stale note indices (column-selected mode)
                 self.nav.clip_view.piano_roll.selected_note_indices.clear();
                 self.status_message = Some((
@@ -315,6 +293,7 @@ impl App {
                 ));
             }
         }
+        self.commit_viewed_track(undo_before, "delete notes");
     }
 
     /// Yank notes matching the selected columns and/or rows.
@@ -373,8 +352,7 @@ impl App {
             return;
         }
 
-        // Capture target before mutable borrow
-        let target = self.nav.clip_view_target;
+        let undo_before = self.checkpoint_viewed_track();
         let mut pasted_notes = Vec::new();
 
         if let Some(clip) = self.nav.active_clip_mut() {
@@ -394,15 +372,9 @@ impl App {
             }
         }
 
-        // Push undo AFTER the mutable borrow ends
         if !pasted_notes.is_empty() {
             let count = pasted_notes.len();
-            if let Some((ti, ci)) = target {
-                // Undo a paste = remove the pasted notes
-                self.nav.undo_stack.push(UndoAction::PasteNotes {
-                    track_idx: ti, clip_idx: ci, notes: pasted_notes,
-                });
-            }
+            self.commit_viewed_track(undo_before, "paste notes");
             // Invalidate stale note indices
             self.nav.clip_view.piano_roll.selected_note_indices.clear();
             self.status_message = Some((
@@ -421,14 +393,14 @@ impl App {
         let col_range = self.nav.clip_view.piano_roll.highlight_range();
         let row_range = self.nav.clip_view.piano_roll.row_highlight_range();
         let col_count = self.nav.clip_view.piano_roll.column_count;
-        let target = self.nav.clip_view_target;
+        let undo_before = self.checkpoint_viewed_track();
 
         if col_count == 0 { return; }
         let col_w = 1.0 / col_count as f64;
 
-        let mut before = Vec::new();
+        let mut touched = 0usize;
         if let Some(clip) = self.nav.active_clip_mut() {
-            for (i, note) in clip.notes.iter_mut().enumerate() {
+            for note in clip.notes.iter_mut() {
                 let note_center = note.start_frac + note.duration_frac * 0.5;
                 let in_col = col_range.map_or(true, |(cs, ce)| {
                     let rs = cs as f64 * col_w;
@@ -439,18 +411,14 @@ impl App {
                     note.note >= lo && note.note <= hi
                 });
                 if in_col && in_row {
-                    before.push((i, *note));
+                    touched += 1;
                     Self::apply_edge_delta(note, delta, right_edge);
                 }
             }
         }
 
-        if !before.is_empty() {
-            if let Some((ti, ci)) = target {
-                self.nav.undo_stack.push(UndoAction::MoveNotes {
-                    track_idx: ti, clip_idx: ci, before,
-                });
-            }
+        if touched > 0 {
+            self.commit_viewed_track(undo_before, "stretch notes");
             self.send_clip_update();
             dbg::system(&format!("piano roll: stretched highlighted notes edge={} delta={:.4}",
                 if right_edge { "right" } else { "left" }, delta));
@@ -467,16 +435,15 @@ impl App {
         let total_beats = self.nav.clip_view.piano_roll.total_beats;
         let grid = self.nav.clip_view.piano_roll.grid;
         let snap = self.nav.clip_view.piano_roll.snap_enabled;
-        let target = self.nav.clip_view_target;
+        let undo_before = self.checkpoint_viewed_track();
 
         if col_count == 0 { return; }
         let col_w = 1.0 / col_count as f64;
         let step = grid.step_frac(total_beats);
 
-        // Capture before-state for undo, then apply move
-        let mut before = Vec::new();
+        let mut touched = 0usize;
         if let Some(clip) = self.nav.active_clip_mut() {
-            for (i, note) in clip.notes.iter_mut().enumerate() {
+            for note in clip.notes.iter_mut() {
                 let note_center = note.start_frac + note.duration_frac * 0.5;
                 let in_col = col_range.map_or(true, |(cs, ce)| {
                     let rs = cs as f64 * col_w;
@@ -487,7 +454,7 @@ impl App {
                     note.note >= lo && note.note <= hi
                 });
                 if in_col && in_row {
-                    before.push((i, *note));
+                    touched += 1;
                     if grid_steps != 0 {
                         let new_frac = note.start_frac + grid_steps as f64 * step;
                         note.start_frac = if snap {
@@ -504,12 +471,8 @@ impl App {
             }
         }
 
-        if !before.is_empty() {
-            if let Some((ti, ci)) = target {
-                self.nav.undo_stack.push(UndoAction::MoveNotes {
-                    track_idx: ti, clip_idx: ci, before,
-                });
-            }
+        if touched > 0 {
+            self.commit_viewed_track(undo_before, "move notes");
             self.send_clip_update();
             dbg::system(&format!("piano roll: moved highlighted notes steps={} semi={}", grid_steps, semitones));
         }
@@ -518,15 +481,15 @@ impl App {
     pub(crate) fn apply_quantize(&mut self, grid: crate::state::GridResolution, strength: u8) {
         use crate::debug_log as dbg;
         let total_beats = self.nav.clip_view.piano_roll.total_beats;
-        let target = self.nav.clip_view_target;
+        let undo_before = self.checkpoint_viewed_track();
         let strength_frac = strength as f64 / 100.0;
 
-        let mut before = Vec::new();
+        let mut touched = 0usize;
         if let Some(clip) = self.nav.active_clip_mut() {
-            for (i, note) in clip.notes.iter_mut().enumerate() {
+            for note in clip.notes.iter_mut() {
                 let snapped = grid.snap(note.start_frac, total_beats);
                 if (snapped - note.start_frac).abs() > 1e-9 {
-                    before.push((i, *note));
+                    touched += 1;
                     // Clamp to keep the note within the clip bounds. Without this,
                     // a note near the end (e.g. 0.9375 with a 1/8 grid) snaps to
                     // 1.0 and vanishes from the piano roll while still playing.
@@ -538,13 +501,9 @@ impl App {
             }
         }
 
-        if !before.is_empty() {
-            let count = before.len();
-            if let Some((ti, ci)) = target {
-                self.nav.undo_stack.push(UndoAction::MoveNotes {
-                    track_idx: ti, clip_idx: ci, before,
-                });
-            }
+        if touched > 0 {
+            let count = touched;
+            self.commit_viewed_track(undo_before, "quantize");
             self.send_clip_update();
             dbg::system(&format!("quantized {} notes to {} at {}%", count, grid.label(), strength));
             self.status_message = Some((

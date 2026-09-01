@@ -134,7 +134,12 @@ pub struct ClipSnapshot {
 }
 
 /// A note for display in the piano roll.
-#[derive(Debug, Clone, Copy)]
+///
+/// `PartialEq` compares the fractions exactly, which is right for the one
+/// place it is used: deciding whether an undo checkpoint saw any change at
+/// all. Two clips that differ only in float noise were produced by different
+/// edits, and an edit is a change.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NoteSnapshot {
     pub note: u8,
     pub velocity: u8,

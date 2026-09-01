@@ -38,9 +38,26 @@ impl App {
                 // that runs notes together sends them that way.
                 MidiMessageType::NoteOn { note, velocity: 0, .. }
                 | MidiMessageType::NoteOff { note, .. } => self.step_record_note_off(note),
-                MidiMessageType::NoteOn { note, .. } => self.step_record_note_on(note),
+                MidiMessageType::NoteOn { note, .. } => {
+                    self.observe_note_for_recording_undo();
+                    self.step_record_note_on(note);
+                }
                 _ => {}
             }
+        }
+    }
+
+    /// One more note the recorder may be holding — see
+    /// [`App::live_take_notes`]. The tap sees the same stream the recorder
+    /// does, so counting here is how undo knows an in-flight pass exists
+    /// without asking the audio thread.
+    pub(crate) fn observe_note_for_recording_undo(&mut self) {
+        let transport = &self.engine.transport;
+        if transport.is_recording()
+            && transport.is_playing()
+            && self.nav.tracks.iter().any(|t| t.armed && t.is_live())
+        {
+            self.live_take_notes += 1;
         }
     }
 

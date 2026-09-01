@@ -34,6 +34,8 @@ mod test_presets;
 mod test_sequencer;
 #[cfg(test)]
 mod test_session;
+#[cfg(test)]
+mod test_undo;
 mod theme;
 mod ui;
 

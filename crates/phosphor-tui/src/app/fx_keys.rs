@@ -150,6 +150,9 @@ impl App {
     /// never anything that could be mistaken for a sort.
     fn move_fx(&mut self, from: usize, to: usize) {
         let index = self.nav.track_cursor;
+        let undo_before = self.nav.undo_checkpoint(
+            crate::state::undo::UndoScope::TrackFx { track_idx: index },
+        );
         let Some(track) = self.nav.tracks.get_mut(index) else { return };
         if from >= track.fx_chain.len() || to >= track.fx_chain.len() {
             return;
@@ -170,14 +173,16 @@ impl App {
         if self.nav.clip_view.fx.slot == Some(from) {
             self.nav.clip_view.fx.slot = Some(to);
         }
+        self.nav.commit_undo(undo_before, "move effect");
         self.status_message = Some((
             format!("{label} \u{2192} slot {}", to + 1),
             std::time::Instant::now(),
         ));
     }
 
-    /// Ask before taking an effect out: the chain is work, and there is no
-    /// undo for it yet.
+    /// Ask before taking an effect out. `u` brings it back, settings and
+    /// all, but the modal stays: a chain is work, and a `d` that lands one
+    /// row off should have to say what it is about to take.
     fn request_fx_delete(&mut self, slot: usize) {
         let Some(track) = self.nav.current_track() else { return };
         let Some(instance) = track.fx_chain.get(slot) else { return };
@@ -193,6 +198,9 @@ impl App {
     pub(crate) fn remove_fx_at_cursor(&mut self) {
         let index = self.nav.track_cursor;
         let slot = self.nav.clip_view.fx_cursor;
+        let undo_before = self.nav.undo_checkpoint(
+            crate::state::undo::UndoScope::TrackFx { track_idx: index },
+        );
         let Some(track) = self.nav.tracks.get_mut(index) else { return };
         if slot >= track.fx_chain.len() {
             return;
@@ -218,8 +226,9 @@ impl App {
             Some(open) if open > slot => self.nav.clip_view.fx.slot = Some(open - 1),
             _ => {}
         }
+        self.nav.commit_undo(undo_before, "remove effect");
         self.status_message =
-            Some((format!("{label} removed"), std::time::Instant::now()));
+            Some((format!("{label} removed (u to undo)"), std::time::Instant::now()));
     }
 
     // ── The panel ──
@@ -634,6 +643,9 @@ impl App {
         use phosphor_core::fx::SendSlot;
         let index = self.nav.track_cursor;
         let element = self.nav.track_element;
+        let undo_before = self.nav.undo_checkpoint(
+            crate::state::undo::UndoScope::TrackMix { track_idx: index },
+        );
         let Some(track) = self.nav.tracks.get_mut(index) else { return };
 
         let text = match element {
@@ -667,6 +679,11 @@ impl App {
             _ => return,
         };
 
+        self.nav.commit_undo_coalesced(
+            undo_before,
+            "routing",
+            crate::state::undo::UndoGesture::Routing { track_idx: index },
+        );
         self.sync_routing(index);
         self.status_message = Some((text, std::time::Instant::now()));
     }

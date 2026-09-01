@@ -82,6 +82,23 @@ pub const fn is_drum_child(child: InstrumentType) -> bool {
 
 // ── State ──
 
+/// The parts of a sequencer that are the *music*, for the undo stack.
+///
+/// The cursors ride along so an undone edit puts the editor back on the
+/// step it was made on. What is *not* here is run state — `playing`,
+/// `live`, `pending`, the step-record arm — because `u` must never stop a
+/// running pattern any more than it rewinds the transport.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeqContent {
+    patterns: [PatternBlock; SLOTS],
+    chain: [ChainEntry; MAX_CHAIN],
+    chain_len: u8,
+    switch_quant: SwitchQuant,
+    selected: u8,
+    lane: u8,
+    step: u8,
+}
+
 /// A sequencer track's patterns, and where the player is in them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SequencerState {
@@ -215,6 +232,54 @@ impl SequencerState {
         self.chain_len > 0
     }
 
+    /// The music, cloned out for the undo stack — see [`SeqContent`].
+    #[must_use]
+    pub fn content(&self) -> SeqContent {
+        SeqContent {
+            patterns: self.patterns,
+            chain: self.chain,
+            chain_len: self.chain_len,
+            switch_quant: self.switch_quant,
+            selected: self.selected,
+            lane: self.lane,
+            step: self.step,
+        }
+    }
+
+    /// Put a captured [`SeqContent`] back, and say which slots now need to
+    /// be resent to the audio thread.
+    ///
+    /// Run state — `playing`, `live`, `pending`, the step-record arm — is
+    /// deliberately left as it is: undoing an edit must not stop a running
+    /// pattern or un-queue a switch. A slot lands in the returned effect
+    /// when its pattern changed, and one slot is always marked when the
+    /// chain or the switch quantize moved, because those travel to the
+    /// audio thread riding on a block.
+    pub fn restore_content(&mut self, content: &SeqContent) -> ops::SeqEffect {
+        let mut mask = 0u8;
+        for slot in 0..SLOTS {
+            if self.patterns[slot] != content.patterns[slot] {
+                mask |= 1 << slot;
+            }
+        }
+        let track_word_moved = self.chain != content.chain
+            || self.chain_len != content.chain_len
+            || self.switch_quant != content.switch_quant;
+
+        self.patterns = content.patterns;
+        self.chain = content.chain;
+        self.chain_len = content.chain_len;
+        self.switch_quant = content.switch_quant;
+        self.selected = content.selected.min(SLOTS as u8 - 1);
+        self.lane = content.lane;
+        self.step = content.step;
+
+        if track_word_moved && mask == 0 {
+            mask = 1 << self.selected_slot();
+        }
+        ops::SeqEffect { patterns: mask, child: false }
+    }
+
     /// The block for `slot` as the audio thread should see it: the pattern's
     /// own data with the track-level settings stamped on.
     ///
@@ -340,6 +405,26 @@ impl crate::state::NavState {
     #[must_use]
     pub fn all_sequencer_syncs(&self, track_idx: usize) -> Vec<PatternSync> {
         self.sequencer_syncs(track_idx, ops::SeqEffect::all_slots())
+    }
+
+    /// Put a captured [`SeqContent`] back on a track's sequencer and hand
+    /// back the blocks the audio thread now needs — undo's way in, through
+    /// the same sync path every edit takes.
+    #[must_use]
+    pub fn restore_sequencer_content(
+        &mut self,
+        track_idx: usize,
+        content: &SeqContent,
+    ) -> Vec<PatternSync> {
+        let Some(state) = self
+            .tracks
+            .get_mut(track_idx)
+            .and_then(|t| t.sequencer.as_deref_mut())
+        else {
+            return Vec::new();
+        };
+        let effect = state.restore_content(content);
+        self.sequencer_syncs(track_idx, effect)
     }
 
     /// Make the track under the cursor a sequencer track, and hand back the

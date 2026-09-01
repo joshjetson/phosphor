@@ -28,14 +28,22 @@ pub enum FxAdd {
 
 impl NavState {
 
+    /// Mute is a document property — a muted track stays muted in the
+    /// session — so it is undoable. One step per throw, never coalesced.
     pub fn toggle_mute(&mut self) {
+        let track_idx = self.track_cursor;
+        let before = self.undo_checkpoint(undo::UndoScope::TrackMix { track_idx });
         if let Some(t) = self.current_track_mut() {
             t.muted = !t.muted;
             t.sync_to_audio();
         }
+        self.commit_undo(before, "mute");
     }
 
 
+    /// Solo is audition state — which track the player is listening to, not
+    /// what the session says — so it stays off the undo stack, the way a
+    /// selection does. Undoing an edit must never un-audition a track.
     pub fn toggle_solo(&mut self) {
         if let Some(t) = self.current_track_mut() {
             t.soloed = !t.soloed;
@@ -55,13 +63,17 @@ impl NavState {
     /// audio thread. Returns the new linear gain, or `None` if there is no
     /// track under the cursor.
     ///
-    /// Not undoable, and deliberately: the fader is a continuous control like
-    /// the synth parameters, and none of those push onto the undo stack
-    /// either. The stack is for structural edits — notes, clips, tracks —
-    /// where the change cannot be reversed by looking at the screen and
-    /// pressing the other key.
+    /// Undoable as a *gesture*: a ride down the fader is one step, however
+    /// many presses it took, and `u` puts the fader back where the ride
+    /// began. That coalescing is what makes a continuous control worth
+    /// having on the stack at all — without it, `u` would walk back one
+    /// decibel at a time and nobody would trust it near a mix.
     pub fn adjust_volume(&mut self, steps: i32) -> Option<f32> {
-        self.current_track_mut().map(|t| t.adjust_volume(steps))
+        let track_idx = self.track_cursor;
+        let before = self.undo_checkpoint(undo::UndoScope::TrackMix { track_idx });
+        let result = self.current_track_mut().map(|t| t.adjust_volume(steps));
+        self.commit_undo_coalesced(before, "fader", undo::UndoGesture::Fader { track_idx });
+        result
     }
 
 
@@ -337,6 +349,38 @@ impl NavState {
 
     // ── Accessors ──
 
+    /// Keep the selection and the clip view inside a track's clip list after
+    /// the list has changed length underneath them — an absorbed recording,
+    /// an undone paste, a redone delete. One rule for every caller: point at
+    /// the last clip when the pointed-at one is gone, and at nothing when
+    /// they all are.
+    pub fn clamp_clip_selection(&mut self, track_idx: usize) {
+        let num_clips = self.tracks.get(track_idx).map(|t| t.clips.len()).unwrap_or(0);
+
+        if let Some((ti, ci)) = self.clip_view_target {
+            if ti == track_idx {
+                if num_clips == 0 {
+                    self.clip_view_target = None;
+                    self.clip_view_visible = false;
+                } else if ci >= num_clips {
+                    self.clip_view_target = Some((track_idx, num_clips - 1));
+                    tracing::debug!("  clip_view_target fixed: {} -> {}", ci, num_clips - 1);
+                }
+            }
+        }
+
+        if track_idx == self.track_cursor {
+            if let TrackElement::Clip(i) = self.track_element {
+                if i >= num_clips {
+                    self.track_element = if num_clips > 0 {
+                        TrackElement::Clip(num_clips - 1)
+                    } else {
+                        TrackElement::Label
+                    };
+                }
+            }
+        }
+    }
 
     /// Receive a clip snapshot from the audio thread and add it to the
     /// corresponding TUI track's clip list.
@@ -369,6 +413,15 @@ impl NavState {
             Some(idx) => idx,
             None => return None,
         };
+
+        // Every accepted commit is one take on the undo stack — the layer
+        // `u` peels while the transport is still recording, and the same
+        // layer it peels after the stop. One rule for both, so the habit a
+        // player learns while jamming does not change meaning when they
+        // stop. Committed below, after the merge.
+        let undo_before = self.undo_checkpoint(
+            crate::state::undo::UndoScope::TrackClips { track_idx },
+        );
 
         let mut absorbed_count = 0usize;
         {
@@ -454,23 +507,14 @@ impl NavState {
             }
         }
 
-        // Fix clip_view_target if it was pointing at this track
-        // (clips may have been absorbed/reordered)
-        if let Some((ti, ci)) = self.clip_view_target {
-            if ti == track_idx {
-                let num_clips = self.tracks[track_idx].clips.len();
-                if num_clips == 0 {
-                    self.clip_view_target = None;
-                    self.clip_view_visible = false;
-                } else if ci >= num_clips {
-                    // Target was past the end — point to the last clip
-                    self.clip_view_target = Some((track_idx, num_clips - 1));
-                    tracing::debug!(
-                        "  clip_view_target fixed: {} -> {}", ci, num_clips - 1
-                    );
-                }
-            }
-        }
+        // Absorption may have shortened the clip list out from under the
+        // cursor and the clip view.
+        self.clamp_clip_selection(track_idx);
+
+        // The take goes on the stack. An empty pass never gets here — the
+        // recorder commits nothing when nothing was played — and if one
+        // somehow did, the checkpoint would see no change and push nothing.
+        self.commit_undo_take(undo_before);
 
         // Return absorption info so caller can sync removed clips to audio
         if absorbed_count > 0 {

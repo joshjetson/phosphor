@@ -3,20 +3,6 @@
 use super::*;
 
 impl App {
-    /// Capture clip state before modification for undo.
-    fn capture_clip_state(&self, track_idx: usize, clip_idx: usize) -> Option<crate::state::undo::UndoAction> {
-        let track = self.nav.tracks.get(track_idx)?;
-        let clip = track.clips.get(clip_idx)?;
-        Some(crate::state::undo::UndoAction::ModifyClip {
-            track_idx,
-            clip_idx,
-            prev_start: clip.start_tick,
-            prev_length: clip.length_ticks,
-            prev_notes: clip.notes.clone(),
-            prev_hidden: clip.hidden_notes.clone(),
-        })
-    }
-
     /// Move a clip left/right by one beat (changes start_tick, keeps length).
     pub(crate) fn move_clip(&mut self, clip_idx: usize, direction: i64) {
         use crate::debug_log as dbg;
@@ -51,16 +37,16 @@ impl App {
 
                 if new_start == old_start { return; }
 
-                // Capture state for undo before modifying
-                if let Some(undo) = self.capture_clip_state(track_idx, clip_idx) {
-                    self.nav.undo_stack.push(undo);
-                }
+                let undo_before = self.nav.undo_checkpoint(
+                    crate::state::undo::UndoScope::TrackClips { track_idx },
+                );
 
                 let track = self.nav.tracks.get_mut(track_idx).unwrap();
                 let clip = track.clips.get_mut(clip_idx).unwrap();
                 clip.start_tick = new_start;
                 dbg::system(&format!("clip move: {} → {} ticks", old_start, new_start));
 
+                self.nav.commit_undo(undo_before, "move clip");
                 self.sync_clip_to_audio(track_idx, clip_idx);
                 self.status_message = Some((
                     format!("clip moved to beat {}", new_start / ppq + 1),
@@ -94,10 +80,9 @@ impl App {
 
                 if new_len == old_len { return; }
 
-                // Capture state for undo before modifying
-                if let Some(undo) = self.capture_clip_state(track_idx, clip_idx) {
-                    self.nav.undo_stack.push(undo);
-                }
+                let undo_before = self.nav.undo_checkpoint(
+                    crate::state::undo::UndoScope::TrackClips { track_idx },
+                );
 
                 let track = self.nav.tracks.get_mut(track_idx).unwrap();
                 let clip = track.clips.get_mut(clip_idx).unwrap();
@@ -147,6 +132,7 @@ impl App {
                     old_len, new_len, clip.notes.len(), clip.hidden_notes.len()
                 ));
 
+                self.nav.commit_undo(undo_before, "resize clip");
                 self.sync_clip_to_audio(track_idx, clip_idx);
                 self.status_message = Some((
                     format!("clip length: {} beats", new_len / ppq),
@@ -186,10 +172,9 @@ impl App {
 
                 let new_len = end_tick - new_start;
 
-                // Capture state for undo before modifying
-                if let Some(undo) = self.capture_clip_state(track_idx, clip_idx) {
-                    self.nav.undo_stack.push(undo);
-                }
+                let undo_before = self.nav.undo_checkpoint(
+                    crate::state::undo::UndoScope::TrackClips { track_idx },
+                );
 
                 let track = self.nav.tracks.get_mut(track_idx).unwrap();
                 let clip = track.clips.get_mut(clip_idx).unwrap();
@@ -236,6 +221,7 @@ impl App {
                     old_start, new_start, new_len, clip.notes.len(), clip.hidden_notes.len()
                 ));
 
+                self.nav.commit_undo(undo_before, "trim clip");
                 self.sync_clip_to_audio(track_idx, clip_idx);
                 self.status_message = Some((
                     format!("clip start: beat {}", new_start / ppq + 1),
@@ -273,6 +259,9 @@ impl App {
         };
 
         let track_idx = self.nav.track_cursor;
+        let undo_before = self.nav.undo_checkpoint(
+            crate::state::undo::UndoScope::TrackClips { track_idx },
+        );
         if let Some(track) = self.nav.tracks.get_mut(track_idx) {
             let mut new_clip = yanked;
             new_clip.start_tick = start_tick;
@@ -300,10 +289,7 @@ impl App {
             track.clips.push(new_clip);
             dbg::system(&format!("pasted clip to track {} at tick {}", track_idx, start_tick));
 
-            // Push undo for the new clip
-            self.nav.undo_stack.push(crate::state::undo::UndoAction::AddClip {
-                track_idx, clip_idx: new_idx,
-            });
+            self.nav.commit_undo(undo_before, "paste clip");
 
             // Select the newly pasted clip
             self.nav.track_element = crate::state::TrackElement::Clip(new_idx);
@@ -339,6 +325,42 @@ impl App {
         self.yank_clip(clip_idx);
         self.paste_clip_after(clip_idx);
         self.status_message = Some(("clip duplicated".into(), std::time::Instant::now()));
+    }
+
+    /// Make the audio thread's clip list for one track identical to the UI's.
+    ///
+    /// `audio_clip_count` is how many clips the audio side currently holds
+    /// for this track — the caller knows, because it is the one that just
+    /// diverged from it: an absorbed recording left the audio side with the
+    /// UI's count plus the absorbed ones, an undo left it with the count the
+    /// UI had before the slice was applied. Everything is removed from the
+    /// top down and the UI's list recreated, which is the one order that
+    /// cannot leave a stale clip playing under a renumbered index.
+    pub(crate) fn resync_track_clips_to_audio(&self, track_idx: usize, audio_clip_count: usize) {
+        use crate::debug_log as dbg;
+        let Some(track) = self.nav.tracks.get(track_idx) else { return };
+        let Some(mixer_id) = track.mixer_id else { return };
+        let tx = &self.engine.shared.mixer_command_tx;
+        for i in (0..audio_clip_count).rev() {
+            let _ = tx.send(MixerCommand::RemoveClip { track_id: mixer_id, clip_index: i });
+        }
+        for (ci, clip) in track.clips.iter().enumerate() {
+            let _ = tx.send(MixerCommand::CreateClip {
+                track_id: mixer_id,
+                start_tick: clip.start_tick,
+                length_ticks: clip.length_ticks,
+            });
+            let events = phosphor_core::clip::NoteSnapshot::to_clip_events(
+                &clip.notes, clip.length_ticks,
+            );
+            let _ = tx.send(MixerCommand::UpdateClip {
+                track_id: mixer_id, clip_index: ci, events,
+            });
+        }
+        dbg::system(&format!(
+            "clip resync: track={} removed {} rebuilt {}",
+            mixer_id, audio_clip_count, track.clips.len()
+        ));
     }
 
     /// Sync a clip's data to the audio thread after editing (move, stretch, etc).

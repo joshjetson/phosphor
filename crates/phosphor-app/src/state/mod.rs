@@ -665,17 +665,38 @@ mod tests {
         assert_eq!(nav.track_element, TrackElement::Volume);
     }
 
-    /// The fader is not undoable — it is a continuous control, and neither
-    /// mute, solo, arm nor the synth parameters push onto the stack either.
+    /// The fader is undoable as a *gesture*: a ride of any length is one
+    /// step, and `u` puts the fader back where the ride began. Mute is a
+    /// step of its own. Solo and arm stay off the stack — solo is audition
+    /// state, like a selection, and arm is the transport's business.
     #[test]
-    fn fader_does_not_push_onto_the_undo_stack() {
+    fn a_fader_ride_is_one_undo_step_and_solo_is_none() {
         let mut nav = NavState::new(vec![live_track()]);
+        let origin = nav.tracks[0].volume;
         assert!(!nav.undo_stack.can_undo());
+
         nav.adjust_volume(3);
         nav.adjust_volume(-1);
+        nav.adjust_volume(-1);
+        let step = nav.undo_stack.pop_undo().expect("the ride left no step");
         assert!(
             !nav.undo_stack.can_undo(),
-            "the fader pushed an undo entry; mute and solo do not"
+            "three presses of one ride left more than one step"
+        );
+        let undo::StateSlice::TrackMix { volume, .. } = step.before else {
+            panic!("wrong slice kind");
+        };
+        assert_eq!(volume, origin, "the step does not remember where the ride began");
+
+        nav.toggle_mute();
+        assert!(nav.undo_stack.can_undo(), "mute left no step");
+        let _ = nav.undo_stack.pop_undo();
+
+        nav.toggle_solo();
+        nav.toggle_arm();
+        assert!(
+            !nav.undo_stack.can_undo(),
+            "solo or arm pushed an undo entry; both are transient state"
         );
     }
 }

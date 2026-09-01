@@ -49,7 +49,14 @@ impl App {
             return;
         }
 
-        // Undo (u) / Redo (Ctrl+r) — works globally except in modals
+        // Undo (u) / Redo (Ctrl+r) — global, like every DAW's.
+        //
+        // Blocked only where `u` is a letter (text entry) or an answer
+        // (menus and modals). A locked fader, a locked sequencer grid and an
+        // open effect panel all let it through: none of them bind `u` to
+        // anything, and a key that undoes here and does nothing there is a
+        // key nobody can trust. Edit mode routes its own `u` so its submodes
+        // can decide.
         if key.code == KeyCode::Char('u') {
             dbg::user(&format!("u key received: modifiers={:?} space={} input={} confirm={} instr={} fx={}",
                 key.modifiers, self.nav.space_menu.open, self.nav.input_modal.open,
@@ -58,8 +65,7 @@ impl App {
         if !self.nav.space_menu.open && !self.nav.input_modal.open && !self.nav.confirm_modal.open
             && !self.nav.instrument_modal.open && !self.nav.fx_menu.open
             && !self.nav.preset_modal.open
-            && !self.nav.element_locked && !self.nav.clip_view.piano_roll.edit_mode
-            && !self.nav.clip_view.sequencer.locked && !self.nav.clip_view.fx.locked
+            && !self.nav.clip_view.piano_roll.edit_mode
         {
             if key.code == KeyCode::Char('u') && !key.modifiers.contains(KeyModifiers::SHIFT) {
                 dbg::user("u → performing undo");
@@ -188,36 +194,32 @@ impl App {
                 KeyCode::Char('h') | KeyCode::Left => {
                     if shift {
                         dbg::user("loop editor: Shift+h → move end left");
-                        self.nav.loop_editor.move_end_left();
+                        self.edit_loop_range(|l| l.move_end_left());
                     } else {
                         dbg::user("loop editor: h → move start left");
-                        self.nav.loop_editor.move_start_left();
+                        self.edit_loop_range(|l| l.move_start_left());
                     }
                     dbg::system(&format!("loop range: {}", self.nav.loop_editor.display()));
-                    self.sync_loop_to_transport();
                 }
                 KeyCode::Char('l') | KeyCode::Right => {
                     if shift {
                         dbg::user("loop editor: Shift+l → move end right");
-                        self.nav.loop_editor.move_end_right();
+                        self.edit_loop_range(|l| l.move_end_right());
                     } else {
                         dbg::user("loop editor: l → move start right");
-                        self.nav.loop_editor.move_start_right();
+                        self.edit_loop_range(|l| l.move_start_right());
                     }
                     dbg::system(&format!("loop range: {}", self.nav.loop_editor.display()));
-                    self.sync_loop_to_transport();
                 }
                 KeyCode::Char('H') => {
                     dbg::user("loop editor: H → move end left");
-                    self.nav.loop_editor.move_end_left();
+                    self.edit_loop_range(|l| l.move_end_left());
                     dbg::system(&format!("loop range: {}", self.nav.loop_editor.display()));
-                    self.sync_loop_to_transport();
                 }
                 KeyCode::Char('L') => {
                     dbg::user("loop editor: L → move end right");
-                    self.nav.loop_editor.move_end_right();
+                    self.edit_loop_range(|l| l.move_end_right());
                     dbg::system(&format!("loop range: {}", self.nav.loop_editor.display()));
-                    self.sync_loop_to_transport();
                 }
                 _ => {
                     dbg::user(&format!("loop editor: ignored key {:?}", key.code));
@@ -239,7 +241,7 @@ impl App {
                     let instrument = self.nav.instrument_modal.selected();
                     dbg::user(&format!("instrument modal: Enter → selected {:?}", instrument));
                     self.nav.instrument_modal.open = false;
-                    self.create_instrument_track(instrument);
+                    self.create_instrument_track_undoable(instrument);
                 }
                 _ => {}
             }
@@ -345,15 +347,11 @@ impl App {
         // Global BPM adjustment (+/- always work)
         match key.code {
             KeyCode::Char('+') | KeyCode::Char('=') => {
-                let bpm = self.engine.transport.tempo_bpm() + 1.0;
-                self.engine.transport.set_tempo(bpm);
-                dbg::system(&format!("bpm={:.0}", bpm));
+                self.nudge_tempo(1.0);
                 return;
             }
             KeyCode::Char('-') => {
-                let bpm = (self.engine.transport.tempo_bpm() - 1.0).max(20.0);
-                self.engine.transport.set_tempo(bpm);
-                dbg::system(&format!("bpm={:.0}", bpm));
+                self.nudge_tempo(-1.0);
                 return;
             }
             _ => {}
@@ -369,43 +367,28 @@ impl App {
 
     pub(crate) fn handle_transport_keys(&mut self, key: crossterm::event::KeyEvent) {
         use crate::debug_log as dbg;
-        let tu = &mut self.nav.transport_ui;
 
-        if tu.editing {
+        if self.nav.transport_ui.editing {
             // Controls locked to the current element
-            match tu.element {
+            match self.nav.transport_ui.element {
                 TransportElement::Bpm => match key.code {
                     KeyCode::Char('l') | KeyCode::Right => {
-                        let bpm = self.engine.transport.tempo_bpm() + 1.0;
-                        self.engine.transport.set_tempo(bpm);
-                        dbg::system(&format!("bpm={:.0}", bpm));
+                        self.nudge_tempo(1.0);
                     }
                     KeyCode::Char('h') | KeyCode::Left => {
-                        let bpm = (self.engine.transport.tempo_bpm() - 1.0).max(20.0);
-                        self.engine.transport.set_tempo(bpm);
-                        dbg::system(&format!("bpm={:.0}", bpm));
+                        self.nudge_tempo(-1.0);
                     }
                     KeyCode::Esc | KeyCode::Enter => {
                         dbg::user("transport: release BPM edit");
-                        tu.editing = false;
+                        self.nav.transport_ui.editing = false;
                     }
                     _ => {}
                 },
-                TransportElement::Loop => {
-                    // Delegate to loop editor
-                    // Enter on loop when already editing → just unfocus
-                    match key.code {
-                        KeyCode::Esc | KeyCode::Enter => {
-                            tu.editing = false;
-                        }
-                        _ => {}
-                    }
-                }
+                // Loop delegates to the loop editor; Record and Metronome
+                // have no editing mode. Enter or Esc releases any of them.
                 _ => {
-                    // Record and Metronome don't have editing mode, just release
-                    match key.code {
-                        KeyCode::Esc | KeyCode::Enter => { tu.editing = false; }
-                        _ => {}
+                    if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
+                        self.nav.transport_ui.editing = false;
                     }
                 }
             }
@@ -413,6 +396,7 @@ impl App {
         }
 
         // Not editing — navigate between elements
+        let tu = &mut self.nav.transport_ui;
         match key.code {
             KeyCode::Char('h') | KeyCode::Left => {
                 tu.element = tu.element.move_left();

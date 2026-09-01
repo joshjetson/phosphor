@@ -142,6 +142,110 @@ pub enum SeqOp {
     RecordTie,
 }
 
+impl SeqOp {
+    /// Whether this operation writes *music* — the ones undo captures.
+    ///
+    /// Cursor moves and the performance controls stay off the stack: `u`
+    /// must never stop a running pattern, un-queue a switch, or un-audition
+    /// a soloed lane, any more than it rewinds the transport. Lane mute is
+    /// content — a muted lane is part of what the pattern says — for the
+    /// same reason a track's mute is and its solo is not.
+    ///
+    /// `SetChild` is not here because it is captured under a scope of its
+    /// own: swapping the child touches the track's instrument and whole
+    /// panel, which is a bigger slice than the sequencer's — see
+    /// `UndoScope::SeqChild` and the dispatch in `App::sequencer_op`.
+    #[must_use]
+    pub fn edits_content(&self) -> bool {
+        matches!(
+            self,
+            Self::ToggleStep
+                | Self::SetStep(_)
+                | Self::ClearStep
+                | Self::ToggleAccent
+                | Self::NudgePitch(_)
+                | Self::NudgeOctave(_)
+                | Self::CycleChord(_)
+                | Self::CycleVoicing(_)
+                | Self::ToggleRootBelow
+                | Self::NudgeGate(_)
+                | Self::ToggleTie
+                | Self::ToggleLaneMute
+                | Self::SetLaneNote(_)
+                | Self::CycleLength(_)
+                | Self::CycleRate(_)
+                | Self::NudgeSwing(_)
+                | Self::NudgeBaseVelocity(_)
+                | Self::NudgeAccentVelocity(_)
+                | Self::NudgeDefaultGate(_)
+                | Self::CycleMode(_)
+                | Self::SetTonic(_)
+                | Self::ClearPattern
+                | Self::CopyPattern { .. }
+                | Self::PushChainEntry { .. }
+                | Self::SetChainRepeats { .. }
+                | Self::RemoveChainEntry(_)
+                | Self::ClearChain
+                | Self::CycleSwitchQuant(_)
+                | Self::RecordNotes(_)
+                | Self::RecordTie
+        )
+    }
+
+    /// Whether this is a continuous control — the kind whose repeats fold
+    /// into one undo step, so a swing sweep is one press of `u` and not
+    /// thirty. A step toggle is not: each toggle is its own thought.
+    #[must_use]
+    pub fn is_sweep(&self) -> bool {
+        matches!(
+            self,
+            Self::NudgePitch(_)
+                | Self::NudgeOctave(_)
+                | Self::CycleChord(_)
+                | Self::CycleVoicing(_)
+                | Self::NudgeGate(_)
+                | Self::CycleLength(_)
+                | Self::CycleRate(_)
+                | Self::NudgeSwing(_)
+                | Self::NudgeBaseVelocity(_)
+                | Self::NudgeAccentVelocity(_)
+                | Self::NudgeDefaultGate(_)
+                | Self::CycleMode(_)
+                | Self::CycleSwitchQuant(_)
+                | Self::SetChainRepeats { .. }
+        )
+    }
+
+    /// What the status bar calls the change when it is undone or redone.
+    #[must_use]
+    pub fn undo_label(&self) -> &'static str {
+        match self {
+            Self::ToggleStep | Self::SetStep(_) | Self::ClearStep => "step",
+            Self::ToggleAccent => "accent",
+            Self::NudgePitch(_) | Self::NudgeOctave(_) => "pitch",
+            Self::CycleChord(_) | Self::CycleVoicing(_) | Self::ToggleRootBelow => "chord",
+            Self::NudgeGate(_) | Self::ToggleTie => "gate",
+            Self::ToggleLaneMute => "lane mute",
+            Self::SetLaneNote(_) => "lane voice",
+            Self::CycleLength(_) => "pattern length",
+            Self::CycleRate(_) => "pattern rate",
+            Self::NudgeSwing(_) => "swing",
+            Self::NudgeBaseVelocity(_) | Self::NudgeAccentVelocity(_) => "velocity",
+            Self::NudgeDefaultGate(_) => "default gate",
+            Self::CycleMode(_) | Self::SetTonic(_) => "scale",
+            Self::ClearPattern => "clear pattern",
+            Self::CopyPattern { .. } => "copy pattern",
+            Self::PushChainEntry { .. }
+            | Self::SetChainRepeats { .. }
+            | Self::RemoveChainEntry(_)
+            | Self::ClearChain => "chain",
+            Self::CycleSwitchQuant(_) => "switch quantize",
+            Self::RecordNotes(_) | Self::RecordTie => "step record",
+            _ => "sequencer edit",
+        }
+    }
+}
+
 /// What the audio thread now has to be told.
 ///
 /// Returned by every dispatch, so that a change to a pattern and the command

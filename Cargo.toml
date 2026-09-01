@@ -11,7 +11,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.43"
+version = "0.3.44"
 edition = "2021"
 license = "MIT"
 rust-version = "1.75"
@@ -63,13 +63,13 @@ proptest = "1"
 assert_no_alloc = "1.1"
 
 # Internal crates
-phosphor-app = { path = "crates/phosphor-app", version = "0.3.43" }
-phosphor-core = { path = "crates/phosphor-core", version = "0.3.43" }
-phosphor-dsp = { path = "crates/phosphor-dsp", version = "0.3.43" }
-phosphor-midi = { path = "crates/phosphor-midi", version = "0.3.43" }
-phosphor-plugin = { path = "crates/phosphor-plugin", version = "0.3.43" }
-phosphor-tui = { path = "crates/phosphor-tui", version = "0.3.43" }
-phosphor-gui = { path = "crates/phosphor-gui", version = "0.3.43" }
+phosphor-app = { path = "crates/phosphor-app", version = "0.3.44" }
+phosphor-core = { path = "crates/phosphor-core", version = "0.3.44" }
+phosphor-dsp = { path = "crates/phosphor-dsp", version = "0.3.44" }
+phosphor-midi = { path = "crates/phosphor-midi", version = "0.3.44" }
+phosphor-plugin = { path = "crates/phosphor-plugin", version = "0.3.44" }
+phosphor-tui = { path = "crates/phosphor-tui", version = "0.3.44" }
+phosphor-gui = { path = "crates/phosphor-gui", version = "0.3.44" }
 
 # Root binary
 [package]
