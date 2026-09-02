@@ -4476,4 +4476,50 @@ mod tests {
         eq.set_param_natural(PARAM_OUTPUT_TRIM, 900.0);
         assert_eq!(f64::from(eq.param_natural(PARAM_OUTPUT_TRIM)), TRIM_MAX_DB);
     }
+
+    /// The knob-torture standard, aimed at the sharpest thing here: a
+    /// high-Q bell with its frequency and gain flicked hard and fast. A
+    /// biquad fed inconsistent coefficients can pop or, worse, go
+    /// unstable; whatever it does must stay finite, bounded, and die with
+    /// the input.
+    #[test]
+    fn band_torture_stays_bounded() {
+        let fs = 48_000.0;
+        let mut eq = ParametricEq::new(fs);
+        // Band 0: bell, on, Q high.
+        eq.set_param_natural(0, 0.0); // type = bell
+        eq.set_param_natural(3, 12.0); // q
+        eq.set_param_natural(5, 1.0); // on
+        let mut toggle = false;
+        let mut peak = 0.0f32;
+        let frames = (2.0 * fs) as usize;
+        for n in 0..frames {
+            if n % ((fs * 0.02) as usize) == 0 {
+                toggle = !toggle;
+                eq.set_param_natural(1, if toggle { 120.0 } else { 9_500.0 });
+                eq.set_param_natural(2, if toggle { 15.0 } else { -15.0 });
+            }
+            let x = 0.25 * (2.0 * std::f64::consts::PI * 220.0 * n as f64 / fs).sin() as f32;
+            let mut l = [x];
+            let mut r = [x];
+            eq.process(&mut l, &mut r);
+            assert!(l[0].is_finite() && r[0].is_finite(), "the filter went non-finite");
+            peak = peak.max(l[0].abs()).max(r[0].abs());
+        }
+        // +15 dB on a −12 dB tone is ~1.4; leave room for transients, but a
+        // blow-up is orders past this.
+        assert!(peak < 6.0, "the band torture blew up: peak {peak}");
+
+        // Silence in: the filter state must ring down, not oscillate.
+        let mut late = 0.0f32;
+        for n in 0..(fs as usize) {
+            let mut l = [0.0f32];
+            let mut r = [0.0f32];
+            eq.process(&mut l, &mut r);
+            if n > (fs * 0.5) as usize {
+                late = late.max(l[0].abs());
+            }
+        }
+        assert!(late < 1.0e-4, "the filter kept ringing: {late}");
+    }
 }

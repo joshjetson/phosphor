@@ -1997,8 +1997,17 @@ impl Reverb {
     #[inline]
     fn fade_gains(&self) -> (f64, f64) {
         if self.fading {
-            let t = self.fade * std::f64::consts::FRAC_PI_2;
-            (t.cos(), t.sin())
+            // Linear, not equal-power, and it is load-bearing: these gains
+            // mix two reads of the *same* recirculating signal inside the
+            // tank's feedback loop. Equal-power sums correlated signals to
+            // +3 dB at the midpoint, which multiplies the loop gain by 1.41
+            // — and with a fade running continuously under a fast knob, the
+            // loop sits above unity and regenerates until the saturator is
+            // the only thing holding it. Linear keeps the pair summing to
+            // exactly one, so the loop gain never exceeds the decay the
+            // player set. (Field case: pre-delay flicked rapidly under a
+            // held chord — full-scale feedback that outlived the input.)
+            (1.0 - self.fade, self.fade)
         } else {
             (1.0, 0.0)
         }
@@ -3804,5 +3813,56 @@ mod measure_levels {
                 peak(&l)
             );
         }
+    }
+
+    /// The knob-torture case from the field: pre-delay flicked up and down
+    /// fast, under a sustained tone, then hands off. A geometry crossfade
+    /// runs almost continuously through that — and the crossfade sits
+    /// inside the tank's feedback loop, so its gain law must never push
+    /// the loop past unity. The tail after the hands come off must die,
+    /// and the level during the torture must stay bounded.
+    #[test]
+    fn predelay_torture_never_feeds_back() {
+        let mut verb = wet_only(FS);
+        verb.set_param_natural_immediate(PARAM_DECAY_S, 3.0);
+        verb.snap();
+
+        let mut peak_during = 0.0f32;
+        let mut toggle = false;
+        // Eight seconds of −12 dB sine with the pre-delay flicked every
+        // 20 ms — far faster than any hand, slower than none.
+        let frames = (8.0 * FS) as usize;
+        for n in 0..frames {
+            if n % ((FS * 0.02) as usize) == 0 {
+                toggle = !toggle;
+                verb.set_param_natural(PARAM_PREDELAY_MS, if toggle { 120.0 } else { 5.0 });
+            }
+            let x = 0.25 * (2.0 * std::f64::consts::PI * 220.0 * n as f64 / FS).sin() as f32;
+            let (l, r) = verb.process_sample(x, x);
+            peak_during = peak_during.max(l.abs()).max(r.abs());
+        }
+        assert!(
+            peak_during < 2.0,
+            "the torture drove the tank into runaway: peak {peak_during}"
+        );
+
+        // Hands off: silence in, torture continuing, the tail must decay.
+        let mut late = 0.0f64;
+        let tail = (6.0 * FS) as usize;
+        for n in 0..tail {
+            if n % ((FS * 0.02) as usize) == 0 {
+                toggle = !toggle;
+                verb.set_param_natural(PARAM_PREDELAY_MS, if toggle { 120.0 } else { 5.0 });
+            }
+            let (l, r) = verb.process_sample(0.0, 0.0);
+            if n > tail - (FS as usize) {
+                late += (f64::from(l) * f64::from(l) + f64::from(r) * f64::from(r)) * 0.5;
+            }
+        }
+        let late_rms = (late / FS).sqrt();
+        assert!(
+            late_rms < 0.01,
+            "the tail is regenerating instead of dying: late RMS {late_rms}"
+        );
     }
 }

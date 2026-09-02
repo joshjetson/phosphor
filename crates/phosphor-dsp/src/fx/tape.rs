@@ -2874,4 +2874,46 @@ mod tests {
     }
 
 
+
+    /// The knob-torture standard: speed, wow, flutter and the head bump
+    /// flicked fast under a tone. The wow line is a modulated delay — the
+    /// class of machinery that broke the reverb — so the proof matters:
+    /// bounded during, silent after.
+    #[test]
+    fn knob_torture_stays_bounded() {
+        let fs = 48_000.0;
+        let mut tape = Tape::new(fs);
+        let mut toggle = false;
+        let mut peak = 0.0f32;
+        let frames = (2.0 * fs) as usize;
+        for n in 0..frames {
+            if n % ((fs * 0.02) as usize) == 0 {
+                toggle = !toggle;
+                tape.set_param_natural(PARAM_SPEED, if toggle { 0.0 } else { 2.0 });
+                tape.set_param_natural(PARAM_WOW, if toggle { 100.0 } else { 0.0 });
+                tape.set_param_natural(PARAM_FLUTTER, if toggle { 100.0 } else { 0.0 });
+                tape.set_param_natural(PARAM_BUMP_DB, if toggle { 6.0 } else { 0.0 });
+                tape.set_param_natural(PARAM_DRIVE, if toggle { 12.0 } else { -6.0 });
+            }
+            let x = 0.25 * (2.0 * std::f64::consts::PI * 220.0 * n as f64 / fs).sin() as f32;
+            let mut l = [x];
+            let mut r = [x];
+            tape.process(&mut l, &mut r);
+            assert!(l[0].is_finite() && r[0].is_finite(), "the tape went non-finite");
+            peak = peak.max(l[0].abs()).max(r[0].abs());
+        }
+        assert!(peak < 4.0, "the torture blew up: peak {peak}");
+
+        // Silence in: the machine must go quiet (hiss is off by default).
+        let mut late = 0.0f32;
+        for n in 0..(fs as usize) {
+            let mut l = [0.0f32];
+            let mut r = [0.0f32];
+            tape.process(&mut l, &mut r);
+            if n > (fs * 0.5) as usize {
+                late = late.max(l[0].abs());
+            }
+        }
+        assert!(late < 1.0e-3, "the tape kept sounding after silence: {late}");
+    }
 }

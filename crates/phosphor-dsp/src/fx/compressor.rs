@@ -3234,4 +3234,36 @@ mod tests {
             l[0]
         );
     }
+
+    /// The knob-torture standard: every envelope-shaping control flicked
+    /// hard under a loud tone. There is no feedback here to run away, but
+    /// a detector fed inconsistent coefficients can still go non-finite or
+    /// slam the makeup — the output must stay bounded and settle after.
+    #[test]
+    fn knob_torture_stays_bounded() {
+        let mut comp = Compressor::new(48_000.0);
+        comp.set_param_natural(PARAM_MIX, 100.0);
+        let fs = 48_000.0;
+        let mut toggle = false;
+        let mut peak = 0.0f32;
+        let frames = (2.0 * fs) as usize;
+        for n in 0..frames {
+            if n % ((fs * 0.02) as usize) == 0 {
+                toggle = !toggle;
+                comp.set_param_natural(PARAM_THRESHOLD_DB, if toggle { -50.0 } else { 0.0 });
+                comp.set_param_natural(PARAM_RATIO, if toggle { 20.0 } else { 1.5 });
+                comp.set_param_natural(PARAM_ATTACK_MS, if toggle { 0.1 } else { 80.0 });
+                comp.set_param_natural(PARAM_RELEASE_MS, if toggle { 20.0 } else { 800.0 });
+                comp.set_param_natural(PARAM_MAKEUP_DB, if toggle { 12.0 } else { 0.0 });
+            }
+            let x = 0.5 * (2.0 * std::f64::consts::PI * 220.0 * n as f64 / fs).sin() as f32;
+            let mut l = [x];
+            let mut r = [x];
+            comp.process(&mut l, &mut r, None);
+            assert!(l[0].is_finite() && r[0].is_finite(), "the detector went non-finite");
+            peak = peak.max(l[0].abs()).max(r[0].abs());
+        }
+        // +12 dB makeup over a −6 dB tone bounds near 2; a blow-up is far past.
+        assert!(peak < 4.0, "the torture blew up: peak {peak}");
+    }
 }

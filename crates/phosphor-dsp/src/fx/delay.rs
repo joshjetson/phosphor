@@ -3782,4 +3782,57 @@ mod measure {
             }
         }
     }
+
+    /// The field case that broke the reverb, aimed here: the time knob
+    /// flicked fast in fade mode with the regeneration high but under
+    /// unity. The crossfade lives inside the feedback loop, so its gain
+    /// law must keep the two reads summing to one — equal-power pushes an
+    /// 80% loop to 1.13 and the repeats grow instead of dying.
+    #[test]
+    fn time_torture_never_regenerates_upward() {
+        let fs = 48_000.0;
+        let mut delay = Delay::new(fs);
+        delay.set_param_natural(PARAM_MODE, Mode::Digital.index() as f32);
+        delay.set_param_natural(PARAM_SYNC, 0.0);
+        delay.set_param_natural(PARAM_TIME_MODE, 2.0); // fade
+        delay.set_param_natural(PARAM_FEEDBACK, 80.0);
+        delay.set_param_natural(PARAM_MIX, 100.0);
+
+        // Two seconds of tone with the time flicked every 20 ms.
+        let mut toggle = false;
+        let frames = (2.0 * fs) as usize;
+        for n in 0..frames {
+            if n % ((fs * 0.02) as usize) == 0 {
+                toggle = !toggle;
+                delay.set_param_natural(PARAM_TIME_MS, if toggle { 350.0 } else { 60.0 });
+            }
+            let x = 0.25 * (2.0 * std::f64::consts::PI * 220.0 * n as f64 / fs).sin() as f32;
+            let mut l = [x];
+            let mut r = [x];
+            delay.process(&mut l, &mut r, 120.0);
+        }
+
+        // Hands off: silence in, torture continuing. At 80% regeneration
+        // the repeats must decay — total loop gain stays under one.
+        let mut toggle = false;
+        let tail = (10.0 * fs) as usize;
+        let mut late = 0.0f64;
+        for n in 0..tail {
+            if n % ((fs * 0.02) as usize) == 0 {
+                toggle = !toggle;
+                delay.set_param_natural(PARAM_TIME_MS, if toggle { 350.0 } else { 60.0 });
+            }
+            let mut l = [0.0f32];
+            let mut r = [0.0f32];
+            delay.process(&mut l, &mut r, 120.0);
+            if n > tail - (fs as usize) {
+                late += (f64::from(l[0]).powi(2) + f64::from(r[0]).powi(2)) * 0.5;
+            }
+        }
+        let late_rms = (late / fs).sqrt();
+        assert!(
+            late_rms < 0.02,
+            "the repeats grew under the torture instead of dying: late RMS {late_rms}"
+        );
+    }
 }
