@@ -2,6 +2,27 @@
 
 use super::*;
 
+/// Whether a note belongs to the highlighted column/row region — the one
+/// membership rule every column/row operation shares. Column membership is
+/// judged by the note's centre, in ticks, with doubled arithmetic so the
+/// half-tick centre stays exact.
+fn note_in_selection(
+    n: &phosphor_core::clip::NoteSnapshot,
+    length_ticks: i64,
+    col_range: Option<(usize, usize)>,
+    row_range: Option<(u8, u8)>,
+    col_count: usize,
+) -> bool {
+    let center2 = 2 * n.start_tick + n.duration_ticks;
+    let in_col = col_range.is_none_or(|(cs, ce)| {
+        let rs2 = 2 * (cs as i64 * length_ticks) / col_count.max(1) as i64;
+        let re2 = 2 * ((ce + 1) as i64 * length_ticks) / col_count.max(1) as i64;
+        center2 >= rs2 && center2 < re2
+    });
+    let in_row = row_range.is_none_or(|(lo, hi)| n.note >= lo && n.note <= hi);
+    in_col && in_row
+}
+
 impl App {
 
     /// Draw a new note at the given column and pitch.
@@ -13,18 +34,7 @@ impl App {
         let snap = pr.snap_enabled;
         let grid = pr.grid;
         let velocity = pr.default_velocity;
-        let col_w = 1.0 / col_count as f64;
-        let duration_frac = grid.step_frac(total_beats);
-        // Clamp the start to keep the note inside the clip. Without the clamp,
-        // drawing at the last column with snap on can push start_frac to 1.0,
-        // which renders invisibly while still playing.
-        // Invariant: start_frac + duration_frac <= 1.0.
-        let raw_start = if snap {
-            grid.snap(col as f64 * col_w, total_beats)
-        } else {
-            col as f64 * col_w
-        };
-        let start_frac = raw_start.clamp(0.0, 1.0 - duration_frac);
+        let _ = total_beats;
 
         // Checkpointed before the implicit clip below, so that undoing the
         // first note drawn on an empty track takes the clip it conjured with
@@ -88,10 +98,22 @@ impl App {
 
         let mut label = "draw note";
         if let Some(clip) = self.nav.active_clip_mut() {
+            let len = clip.length_ticks.max(1);
+            let ppq = Transport::PPQ;
+            let col_w_ticks = (len / col_count.max(1) as i64).max(1);
+            let duration_ticks = grid.step_ticks(ppq);
+            // Clamp the start to keep the note inside the clip. Without the
+            // clamp, drawing at the last column with snap on can push the
+            // start to the clip's end, which renders invisibly while still
+            // playing. Invariant: start + duration <= length.
+            let raw_start = col as i64 * col_w_ticks;
+            let raw_start = if snap { grid.snap_ticks(raw_start, ppq) } else { raw_start };
+            let start_tick = raw_start.clamp(0, (len - duration_ticks).max(0));
+
             // Toggle: if a note exists at this position, delete it
             let existing = clip.notes.iter().position(|n| {
                 n.note == note_num
-                    && (n.start_frac - start_frac).abs() < col_w * 0.5
+                    && (n.start_tick - start_tick).abs() < col_w_ticks / 2
             });
 
             if let Some(idx) = existing {
@@ -100,7 +122,7 @@ impl App {
                 crate::debug_log::system(&format!("removed note {} at col {}", note_num, col));
             } else {
                 clip.notes.push(phosphor_core::clip::NoteSnapshot {
-                    note: note_num, velocity, start_frac, duration_frac, muted: false,
+                    note: note_num, velocity, start_tick, duration_ticks, muted: false,
                 });
                 crate::debug_log::system(&format!("drew note {} at col {}", note_num, col));
             }
@@ -154,13 +176,13 @@ impl App {
             0
         };
         // A note sounding in this column, nearest the cursor pitch, if any.
-        let col_lo = col as f64 / col_count as f64;
-        let col_hi = (col + 1) as f64 / col_count as f64;
+        let col_lo = (col as i64 * clip.length_ticks) / col_count as i64;
+        let col_hi = ((col + 1) as i64 * clip.length_ticks) / col_count as i64;
         let cursor_pitch = self.nav.clip_view.piano_roll.cursor_note;
         let target = clip
             .notes
             .iter()
-            .filter(|n| n.start_frac < col_hi && n.start_frac + n.duration_frac > col_lo)
+            .filter(|n| n.start_tick < col_hi && n.end_tick() > col_lo)
             .min_by_key(|n| (n.note as i16 - cursor_pitch as i16).abs())
             .map(|n| n.note);
 
@@ -374,12 +396,14 @@ impl App {
 
 
     /// Adjust a single note's edge. `right_edge` = true adjusts duration, false adjusts start.
-    pub(crate) fn adjust_note_edge(&mut self, col: usize, note_num: u8, delta: f64, right_edge: bool) {
-        let (col_start, col_end) = self.column_frac_range(col);
+    pub(crate) fn adjust_note_edge(&mut self, col: usize, note_num: u8, delta_ticks: i64, right_edge: bool) {
+        let col_count = self.nav.clip_view.piano_roll.column_count;
         if let Some(clip) = self.nav.active_clip_mut() {
+            let (col_start, col_end) = Self::column_tick_range(col, col_count, clip.length_ticks);
+            let len = clip.length_ticks;
             for note in &mut clip.notes {
-                if note.note == note_num && note.start_frac >= col_start && note.start_frac < col_end {
-                    Self::apply_edge_delta(note, delta, right_edge);
+                if note.note == note_num && note.start_tick >= col_start && note.start_tick < col_end {
+                    Self::apply_edge_delta(note, delta_ticks, right_edge, len);
                     return;
                 }
             }
@@ -388,45 +412,57 @@ impl App {
 
     /// Get indices of notes that fall within a column's time range.
     pub(crate) fn note_indices_in_column(&self, col: usize) -> Vec<usize> {
-        let (col_start, col_end) = self.column_frac_range(col);
+        let col_count = self.nav.clip_view.piano_roll.column_count;
         match self.nav.active_clip() {
-            Some(clip) => clip.notes.iter().enumerate()
-                .filter(|(_, n)| n.start_frac >= col_start && n.start_frac < col_end)
-                .map(|(i, _)| i)
-                .collect(),
+            Some(clip) => {
+                let (col_start, col_end) = Self::column_tick_range(col, col_count, clip.length_ticks);
+                clip.notes.iter().enumerate()
+                    .filter(|(_, n)| n.start_tick >= col_start && n.start_tick < col_end)
+                    .map(|(i, _)| i)
+                    .collect()
+            }
             None => Vec::new(),
         }
     }
 
     /// Adjust notes by their stored indices (captured when column was selected).
-    pub(crate) fn adjust_column_edges(&mut self, delta: f64, right_edge: bool) {
+    pub(crate) fn adjust_column_edges(&mut self, delta_ticks: i64, right_edge: bool) {
         let indices = self.nav.clip_view.piano_roll.selected_note_indices.clone();
         let count = indices.len();
         if let Some(clip) = self.nav.active_clip_mut() {
+            let len = clip.length_ticks;
             for &idx in &indices {
                 if let Some(note) = clip.notes.get_mut(idx) {
-                    Self::apply_edge_delta(note, delta, right_edge);
+                    Self::apply_edge_delta(note, delta_ticks, right_edge, len);
                 }
             }
         }
         crate::debug_log::system(&format!("adjust {} notes", count));
     }
 
-    /// Get the fractional range [start, end) for a column index.
-    pub(crate) fn column_frac_range(&self, col: usize) -> (f64, f64) {
-        let col_count = self.nav.clip_view.piano_roll.column_count;
-        let col_w = 1.0 / col_count as f64;
-        (col as f64 * col_w, (col + 1) as f64 * col_w)
+    /// The tick range [start, end) a column covers in a clip.
+    pub(crate) fn column_tick_range(col: usize, col_count: usize, length_ticks: i64) -> (i64, i64) {
+        let cc = col_count.max(1) as i64;
+        ((col as i64 * length_ticks) / cc, ((col + 1) as i64 * length_ticks) / cc)
     }
 
-    /// Apply a delta to a note's left or right edge.
-    pub(crate) fn apply_edge_delta(note: &mut phosphor_core::clip::NoteSnapshot, delta: f64, right_edge: bool) {
+    /// Apply a delta to a note's left or right edge. The floor is a 64th
+    /// note — the same minimum the recorder keeps — so an edge drag can
+    /// shorten a note to a tick of colour but never to nothing.
+    pub(crate) fn apply_edge_delta(
+        note: &mut phosphor_core::clip::NoteSnapshot,
+        delta_ticks: i64,
+        right_edge: bool,
+        length_ticks: i64,
+    ) {
+        let min = Transport::PPQ / 16;
         if right_edge {
-            note.duration_frac = (note.duration_frac + delta).clamp(0.005, 1.0 - note.start_frac);
+            let room = (length_ticks - note.start_tick).max(min);
+            note.duration_ticks = (note.duration_ticks + delta_ticks).clamp(min, room);
         } else {
-            let end = note.start_frac + note.duration_frac;
-            note.start_frac = (note.start_frac + delta).clamp(0.0, end - 0.005);
-            note.duration_frac = end - note.start_frac;
+            let end = note.end_tick();
+            note.start_tick = (note.start_tick + delta_ticks).clamp(0, (end - min).max(0));
+            note.duration_ticks = end - note.start_tick;
         }
     }
 
@@ -489,24 +525,15 @@ impl App {
     ) {
         let col_count = self.nav.clip_view.piano_roll.column_count;
         if col_count == 0 { return; }
-        let col_w = 1.0 / col_count as f64;
         let undo_before = self.checkpoint_viewed_track();
 
         if let Some(clip) = self.nav.active_clip_mut() {
             let mut removed = Vec::new();
             let mut kept = Vec::new();
+            let len = clip.length_ticks;
 
             for n in clip.notes.drain(..) {
-                let note_center = n.start_frac + n.duration_frac * 0.5;
-                let in_col = col_range.map_or(true, |(cs, ce)| {
-                    let range_start = cs as f64 * col_w;
-                    let range_end = (ce + 1) as f64 * col_w;
-                    note_center >= range_start && note_center < range_end
-                });
-                let in_row = row_range.map_or(true, |(lo, hi)| {
-                    n.note >= lo && n.note <= hi
-                });
-                if in_col && in_row {
+                if note_in_selection(&n, len, col_range, row_range, col_count) {
                     removed.push(n);
                 } else {
                     kept.push(n);
@@ -535,25 +562,17 @@ impl App {
     ) {
         let col_count = self.nav.clip_view.piano_roll.column_count;
         if col_count == 0 { return; }
-        let col_w = 1.0 / col_count as f64;
-        let col_start_frac = col_range.map_or(0.0, |(cs, _)| cs as f64 * col_w);
         let _row_base = row_range.map_or(self.nav.clip_view.piano_roll.cursor_note, |(lo, _)| lo);
 
         if let Some(clip) = self.nav.active_clip() {
+            let len = clip.length_ticks;
+            let col_start_tick =
+                col_range.map_or(0, |(cs, _)| (cs as i64 * len) / col_count as i64);
             let mut yanked = Vec::new();
             for n in &clip.notes {
-                let note_center = n.start_frac + n.duration_frac * 0.5;
-                let in_col = col_range.map_or(true, |(cs, ce)| {
-                    let rs = cs as f64 * col_w;
-                    let re = (ce + 1) as f64 * col_w;
-                    note_center >= rs && note_center < re
-                });
-                let in_row = row_range.map_or(true, |(lo, hi)| {
-                    n.note >= lo && n.note <= hi
-                });
-                if in_col && in_row {
+                if note_in_selection(n, len, col_range, row_range, col_count) {
                     let mut copied = *n;
-                    copied.start_frac -= col_start_frac;
+                    copied.start_tick -= col_start_tick;
                     yanked.push(copied);
                 }
             }
@@ -573,8 +592,6 @@ impl App {
     pub(crate) fn paste_selected_notes(&mut self, paste_col: usize, row_offset: Option<i16>) {
         let col_count = self.nav.clip_view.piano_roll.column_count;
         if col_count == 0 { return; }
-        let col_w = 1.0 / col_count as f64;
-        let paste_start = paste_col as f64 * col_w;
         let note_shift = row_offset.unwrap_or(0);
 
         let yank_buf = self.nav.clip_view.piano_roll.yank_buffer.clone();
@@ -587,15 +604,17 @@ impl App {
         let mut pasted_notes = Vec::new();
 
         if let Some(clip) = self.nav.active_clip_mut() {
+            let paste_tick = (paste_col as i64 * clip.length_ticks) / col_count as i64;
             for n in &yank_buf {
                 let new_note = (n.note as i16 + note_shift).clamp(0, 127) as u8;
-                let new_start = n.start_frac + paste_start;
-                if new_start + n.duration_frac <= 1.0 {
+                let new_start = n.start_tick + paste_tick;
+                if new_start + n.duration_ticks <= clip.length_ticks {
                     let pasted = phosphor_core::clip::NoteSnapshot {
                         note: new_note,
                         velocity: n.velocity,
-                        start_frac: new_start,
-                        duration_frac: n.duration_frac, muted: false
+                        start_tick: new_start,
+                        duration_ticks: n.duration_ticks,
+                        muted: false,
                     };
                     clip.notes.push(pasted);
                     pasted_notes.push(pasted);
@@ -619,7 +638,7 @@ impl App {
 
     /// Stretch all notes in the highlighted column/row region.
     /// `right_edge` = true adjusts duration, false adjusts start position.
-    pub(crate) fn stretch_highlighted_notes(&mut self, delta: f64, right_edge: bool) {
+    pub(crate) fn stretch_highlighted_notes(&mut self, delta_ticks: i64, right_edge: bool) {
         use crate::debug_log as dbg;
         let col_range = self.nav.clip_view.piano_roll.highlight_range();
         let row_range = self.nav.clip_view.piano_roll.row_highlight_range();
@@ -627,23 +646,14 @@ impl App {
         let undo_before = self.checkpoint_viewed_track();
 
         if col_count == 0 { return; }
-        let col_w = 1.0 / col_count as f64;
 
         let mut touched = 0usize;
         if let Some(clip) = self.nav.active_clip_mut() {
+            let len = clip.length_ticks;
             for note in clip.notes.iter_mut() {
-                let note_center = note.start_frac + note.duration_frac * 0.5;
-                let in_col = col_range.map_or(true, |(cs, ce)| {
-                    let rs = cs as f64 * col_w;
-                    let re = (ce + 1) as f64 * col_w;
-                    note_center >= rs && note_center < re
-                });
-                let in_row = row_range.map_or(true, |(lo, hi)| {
-                    note.note >= lo && note.note <= hi
-                });
-                if in_col && in_row {
+                if note_in_selection(note, len, col_range, row_range, col_count) {
                     touched += 1;
-                    Self::apply_edge_delta(note, delta, right_edge);
+                    Self::apply_edge_delta(note, delta_ticks, right_edge, len);
                 }
             }
         }
@@ -651,8 +661,8 @@ impl App {
         if touched > 0 {
             self.commit_viewed_track(undo_before, "stretch notes");
             self.send_clip_update();
-            dbg::system(&format!("piano roll: stretched highlighted notes edge={} delta={:.4}",
-                if right_edge { "right" } else { "left" }, delta));
+            dbg::system(&format!("piano roll: stretched highlighted notes edge={} delta={}",
+                if right_edge { "right" } else { "left" }, delta_ticks));
         }
     }
 
@@ -669,30 +679,23 @@ impl App {
         let undo_before = self.checkpoint_viewed_track();
 
         if col_count == 0 { return; }
-        let col_w = 1.0 / col_count as f64;
-        let step = grid.step_frac(total_beats);
+        let _ = total_beats;
+        let step = grid.step_ticks(Transport::PPQ);
 
         let mut touched = 0usize;
         if let Some(clip) = self.nav.active_clip_mut() {
+            let len = clip.length_ticks;
             for note in clip.notes.iter_mut() {
-                let note_center = note.start_frac + note.duration_frac * 0.5;
-                let in_col = col_range.map_or(true, |(cs, ce)| {
-                    let rs = cs as f64 * col_w;
-                    let re = (ce + 1) as f64 * col_w;
-                    note_center >= rs && note_center < re
-                });
-                let in_row = row_range.map_or(true, |(lo, hi)| {
-                    note.note >= lo && note.note <= hi
-                });
-                if in_col && in_row {
+                if note_in_selection(note, len, col_range, row_range, col_count) {
                     touched += 1;
                     if grid_steps != 0 {
-                        let new_frac = note.start_frac + grid_steps as f64 * step;
-                        note.start_frac = if snap {
-                            grid.snap(new_frac, total_beats).clamp(0.0, 1.0 - note.duration_frac)
+                        let new_tick = note.start_tick + grid_steps as i64 * step;
+                        let new_tick = if snap {
+                            grid.snap_ticks(new_tick, Transport::PPQ)
                         } else {
-                            new_frac.clamp(0.0, 1.0 - note.duration_frac)
+                            new_tick
                         };
+                        note.start_tick = new_tick.clamp(0, (len - note.duration_ticks).max(0));
                     }
                     if semitones != 0 {
                         let new_note = note.note as i32 + semitones;
@@ -711,23 +714,23 @@ impl App {
 
     pub(crate) fn apply_quantize(&mut self, grid: crate::state::GridResolution, strength: u8) {
         use crate::debug_log as dbg;
-        let total_beats = self.nav.clip_view.piano_roll.total_beats;
         let undo_before = self.checkpoint_viewed_track();
         let strength_frac = strength as f64 / 100.0;
 
         let mut touched = 0usize;
         if let Some(clip) = self.nav.active_clip_mut() {
+            let len = clip.length_ticks;
             for note in clip.notes.iter_mut() {
-                let snapped = grid.snap(note.start_frac, total_beats);
-                if (snapped - note.start_frac).abs() > 1e-9 {
+                let snapped = grid.snap_ticks(note.start_tick, Transport::PPQ);
+                if snapped != note.start_tick {
                     touched += 1;
-                    // Clamp to keep the note within the clip bounds. Without this,
-                    // a note near the end (e.g. 0.9375 with a 1/8 grid) snaps to
-                    // 1.0 and vanishes from the piano roll while still playing.
-                    // Invariant: start_frac + duration_frac <= 1.0.
-                    note.start_frac = (note.start_frac
-                        + (snapped - note.start_frac) * strength_frac)
-                        .clamp(0.0, 1.0 - note.duration_frac);
+                    // Clamp to keep the note within the clip bounds. Without
+                    // this, a note near the end snaps to the clip's end and
+                    // vanishes from the piano roll while still playing.
+                    // Invariant: start + duration <= length.
+                    let moved = note.start_tick
+                        + (((snapped - note.start_tick) as f64) * strength_frac).round() as i64;
+                    note.start_tick = moved.clamp(0, (len - note.duration_ticks).max(0));
                 }
             }
             if touched > 0 {
@@ -738,12 +741,10 @@ impl App {
                 clip.notes.sort_by(|a, b| {
                     a.note
                         .cmp(&b.note)
-                        .then(a.start_frac.total_cmp(&b.start_frac))
+                        .then(a.start_tick.cmp(&b.start_tick))
                         .then(b.velocity.cmp(&a.velocity))
                 });
-                clip.notes.dedup_by(|a, b| {
-                    a.note == b.note && (a.start_frac - b.start_frac).abs() < 1e-9
-                });
+                clip.notes.dedup_by(|a, b| a.note == b.note && a.start_tick == b.start_tick);
             }
         }
 

@@ -38,8 +38,8 @@ mod tests {
         }
     }
 
-    fn note(pitch: u8, start_frac: f64, duration_frac: f64) -> NoteSnapshot {
-        NoteSnapshot { note: pitch, velocity: 100, start_frac, duration_frac, muted: false }
+    fn note(pitch: u8, start_tick: i64, duration_ticks: i64) -> NoteSnapshot {
+        NoteSnapshot { note: pitch, velocity: 100, start_tick, duration_ticks, muted: false }
     }
 
     // ══════════════════════════════════════════════
@@ -54,7 +54,7 @@ mod tests {
 
         // Create a clip with 3 notes
         create_clip_with_notes(&mut app, ti, 0, 3840, vec![
-            note(60, 0.0, 0.25), note(64, 0.25, 0.25), note(67, 0.5, 0.25),
+            note(60, 0, 960), note(64, 960, 960), note(67, 1920, 960),
         ]);
 
         assert_eq!(app.nav.tracks[ti].clips.len(), 1);
@@ -80,8 +80,8 @@ mod tests {
         add_synth_track(&mut app);
         let ti = app.nav.track_cursor;
 
-        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(60, 0.0, 0.25)]);
-        create_clip_with_notes(&mut app, ti, 3840, 3840, vec![note(72, 0.0, 0.25)]);
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(60, 0, 960)]);
+        create_clip_with_notes(&mut app, ti, 3840, 3840, vec![note(72, 0, 960)]);
 
         // Select clip 0
         app.nav.track_element = TrackElement::Clip(0);
@@ -113,10 +113,10 @@ mod tests {
         // 4-beat clip with notes at beats 1, 2, 3, 4
         let ppq = phosphor_core::transport::Transport::PPQ;
         create_clip_with_notes(&mut app, ti, 0, ppq * 4, vec![
-            note(60, 0.0, 0.1),   // beat 1
-            note(62, 0.25, 0.1),  // beat 2
-            note(64, 0.5, 0.1),   // beat 3
-            note(67, 0.75, 0.1),  // beat 4
+            note(60, 0, 384),   // beat 1
+            note(62, 960, 384),  // beat 2
+            note(64, 1920, 384),   // beat 3
+            note(67, 2880, 384),  // beat 4
         ]);
 
         app.nav.track_element = TrackElement::Clip(0);
@@ -152,9 +152,9 @@ mod tests {
         add_synth_track(&mut app);
         let ti = app.nav.track_cursor;
 
-        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(60, 0.0, 0.25)]);
-        create_clip_with_notes(&mut app, ti, 3840, 3840, vec![note(72, 0.0, 0.25)]);
-        create_clip_with_notes(&mut app, ti, 7680, 3840, vec![note(67, 0.0, 0.25)]);
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(60, 0, 960)]);
+        create_clip_with_notes(&mut app, ti, 3840, 3840, vec![note(72, 0, 960)]);
+        create_clip_with_notes(&mut app, ti, 7680, 3840, vec![note(67, 0, 960)]);
 
         // Delete clip 1 (middle)
         app.nav.track_element = TrackElement::Clip(1);
@@ -183,10 +183,10 @@ mod tests {
 
         // 4-beat clip with a chord on beat 1 (3 notes stacked)
         create_clip_with_notes(&mut app, ti, 0, 3840, vec![
-            note(60, 0.0, 0.25), // C4
-            note(64, 0.0, 0.25), // E4
-            note(67, 0.0, 0.25), // G4
-            note(72, 0.5, 0.25), // C5 on beat 3 (different column)
+            note(60, 0, 960), // C4
+            note(64, 0, 960), // E4
+            note(67, 0, 960), // G4
+            note(72, 1920, 960), // C5 on beat 3 (different column)
         ]);
 
         app.nav.track_element = TrackElement::Clip(0);
@@ -233,7 +233,7 @@ mod tests {
         let ti = app.nav.track_cursor;
 
         create_clip_with_notes(&mut app, ti, 0, 3840, vec![
-            note(60, 0.0, 0.25),
+            note(60, 0, 960),
         ]);
 
         app.nav.track_element = TrackElement::Clip(0);
@@ -266,8 +266,8 @@ mod tests {
         let ti = app.nav.track_cursor;
 
         create_clip_with_notes(&mut app, ti, 0, 3840, vec![
-            note(60, 0.0, 0.25),
-            note(64, 0.25, 0.25),
+            note(60, 0, 960),
+            note(64, 960, 960),
         ]);
 
         app.nav.track_element = TrackElement::Clip(0);
@@ -296,8 +296,8 @@ mod tests {
         let ti = app.nav.track_cursor;
         let ppq = phosphor_core::transport::Transport::PPQ;
 
-        create_clip_with_notes(&mut app, ti, 0, ppq * 4, vec![note(60, 0.0, 0.25)]);
-        create_clip_with_notes(&mut app, ti, ppq * 4, ppq * 4, vec![note(72, 0.0, 0.25)]);
+        create_clip_with_notes(&mut app, ti, 0, ppq * 4, vec![note(60, 0, 960)]);
+        create_clip_with_notes(&mut app, ti, ppq * 4, ppq * 4, vec![note(72, 0, 960)]);
 
         app.nav.track_selected = true;
         app.nav.track_element = TrackElement::Clip(0);
@@ -327,7 +327,7 @@ mod tests {
 
         // Existing clip at tick 0
         create_clip_with_notes(&mut app, ti, 0, 3840, vec![
-            note(60, 0.0, 0.25),
+            note(60, 0, 960),
         ]);
 
         assert_eq!(app.nav.tracks[ti].clips.len(), 1);
@@ -339,7 +339,7 @@ mod tests {
             start_tick: 0,
             length_ticks: 3840,
             event_count: 2,
-            notes: vec![note(64, 0.5, 0.25)],
+            notes: vec![note(64, 1920, 960)],
             controls: Vec::new(),
         };
         let _ = app.nav.receive_clip_snapshot(snap, true);
@@ -355,8 +355,8 @@ mod tests {
         let ti = app.nav.track_cursor;
 
         // Two 4-beat clips side by side
-        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(60, 0.0, 0.25)]);
-        create_clip_with_notes(&mut app, ti, 3840, 3840, vec![note(72, 0.0, 0.25)]);
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(60, 0, 960)]);
+        create_clip_with_notes(&mut app, ti, 3840, 3840, vec![note(72, 0, 960)]);
         assert_eq!(app.nav.tracks[ti].clips.len(), 2);
 
         // Recording covers both (8-beat snapshot)
@@ -364,7 +364,7 @@ mod tests {
         let snap = phosphor_core::clip::ClipSnapshot {
             track_id: mid, clip_index: 0,
             start_tick: 0, length_ticks: 7680,
-            event_count: 4, notes: vec![note(67, 0.25, 0.1)],
+            event_count: 4, notes: vec![note(67, 960, 384)],
             controls: Vec::new(),
         };
         let _ = app.nav.receive_clip_snapshot(snap, true);
@@ -384,7 +384,7 @@ mod tests {
         let ti = app.nav.track_cursor;
 
         create_clip_with_notes(&mut app, ti, 0, 3840, vec![
-            note(60, 0.0, 0.25), note(64, 0.25, 0.25),
+            note(60, 0, 960), note(64, 960, 960),
         ]);
 
         // Open clip in clip view
@@ -400,7 +400,7 @@ mod tests {
         let snap = phosphor_core::clip::ClipSnapshot {
             track_id: mid, clip_index: 0,
             start_tick: 0, length_ticks: 3840,
-            event_count: 4, notes: vec![note(60, 0.0, 0.25), note(64, 0.25, 0.25)],
+            event_count: 4, notes: vec![note(60, 0, 960), note(64, 960, 960)],
             controls: Vec::new(),
         };
         let _ = app.nav.receive_clip_snapshot(snap, false); // NOT recording
@@ -422,18 +422,18 @@ mod tests {
 
         // Record a 4-bar chord progression
         create_clip_with_notes(&mut app, ti, 0, ppq * 16, vec![
-            note(60, 0.0, 0.0625),    // C4 bar 1
-            note(64, 0.0, 0.0625),    // E4 bar 1
-            note(67, 0.0, 0.0625),    // G4 bar 1
-            note(65, 0.25, 0.0625),   // F4 bar 2
-            note(69, 0.25, 0.0625),   // A4 bar 2
-            note(72, 0.25, 0.0625),   // C5 bar 2
-            note(62, 0.5, 0.0625),    // D4 bar 3
-            note(67, 0.5, 0.0625),    // G4 bar 3
-            note(71, 0.5, 0.0625),    // B4 bar 3
-            note(60, 0.75, 0.0625),   // C4 bar 4
-            note(64, 0.75, 0.0625),   // E4 bar 4
-            note(67, 0.75, 0.0625),   // G4 bar 4
+            note(60, 0, 240),    // C4 bar 1
+            note(64, 0, 240),    // E4 bar 1
+            note(67, 0, 240),    // G4 bar 1
+            note(65, 960, 240),   // F4 bar 2
+            note(69, 960, 240),   // A4 bar 2
+            note(72, 960, 240),   // C5 bar 2
+            note(62, 1920, 240),    // D4 bar 3
+            note(67, 1920, 240),    // G4 bar 3
+            note(71, 1920, 240),    // B4 bar 3
+            note(60, 2880, 240),   // C4 bar 4
+            note(64, 2880, 240),   // E4 bar 4
+            note(67, 2880, 240),   // G4 bar 4
         ]);
 
         // Duplicate to create 8-bar arrangement
@@ -473,8 +473,8 @@ mod tests {
         let ti = app.nav.track_cursor;
 
         // Two clips at the same position (phantom)
-        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(60, 0.0, 0.25)]);
-        create_clip_with_notes(&mut app, ti, 0, 7680, vec![note(72, 0.0, 0.25)]);
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(60, 0, 960)]);
+        create_clip_with_notes(&mut app, ti, 0, 7680, vec![note(72, 0, 960)]);
         assert_eq!(app.nav.tracks[ti].clips.len(), 2);
 
         app.nav.dedup_clips();
@@ -494,7 +494,7 @@ mod tests {
         let ti = app.nav.track_cursor;
 
         create_clip_with_notes(&mut app, ti, 0, 3840, vec![
-            note(60, 0.0, 0.25), note(64, 0.25, 0.25), note(67, 0.5, 0.25),
+            note(60, 0, 960), note(64, 960, 960), note(67, 1920, 960),
         ]);
         app.nav.track_element = TrackElement::Clip(0);
         app.nav.open_clip_view(ti, 0);
@@ -522,14 +522,14 @@ mod tests {
         add_synth_track(&mut app);
         let ti = app.nav.track_cursor;
 
-        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(60, 0.0, 0.25)]);
-        create_clip_with_notes(&mut app, ti, 3840, 3840, vec![note(72, 0.0, 0.25)]);
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(60, 0, 960)]);
+        create_clip_with_notes(&mut app, ti, 3840, 3840, vec![note(72, 0, 960)]);
 
         let mid = app.nav.tracks[ti].mixer_id.unwrap_or(0);
         let snap = phosphor_core::clip::ClipSnapshot {
             track_id: mid, clip_index: 0,
             start_tick: 0, length_ticks: 7680,
-            event_count: 4, notes: vec![note(67, 0.25, 0.1)],
+            event_count: 4, notes: vec![note(67, 960, 384)],
             controls: Vec::new(),
         };
 
@@ -550,8 +550,8 @@ mod tests {
         add_synth_track(&mut app);
         let ti = app.nav.track_cursor;
 
-        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(60, 0.0, 0.25)]);
-        create_clip_with_notes(&mut app, ti, 3840, 3840, vec![note(72, 0.0, 0.25)]);
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(60, 0, 960)]);
+        create_clip_with_notes(&mut app, ti, 3840, 3840, vec![note(72, 0, 960)]);
 
         // View clip 1
         app.nav.open_clip_view(ti, 1);
@@ -562,7 +562,7 @@ mod tests {
         let snap = phosphor_core::clip::ClipSnapshot {
             track_id: mid, clip_index: 0,
             start_tick: 0, length_ticks: 7680,
-            event_count: 2, notes: vec![note(67, 0.0, 0.1)],
+            event_count: 2, notes: vec![note(67, 0, 384)],
             controls: Vec::new(),
         };
         let _ = app.nav.receive_clip_snapshot(snap, true);
@@ -584,10 +584,10 @@ mod tests {
         let ti = app.nav.track_cursor;
 
         create_clip_with_notes(&mut app, ti, 0, 3840, vec![
-            note(60, 0.0, 0.125),
-            note(64, 0.0, 0.125),
-            note(67, 0.0, 0.125),
-            note(72, 0.5, 0.125), // different column
+            note(60, 0, 480),
+            note(64, 0, 480),
+            note(67, 0, 480),
+            note(72, 1920, 480), // different column
         ]);
 
         app.nav.track_element = TrackElement::Clip(0);
@@ -599,7 +599,7 @@ mod tests {
         app.nav.clip_view.piano_roll.highlight_end = Some(0);
 
         let original_pitches: Vec<u8> = app.nav.tracks[ti].clips[0].notes.iter()
-            .filter(|n| n.start_frac < 0.25)
+            .filter(|n| n.start_tick < 960)
             .map(|n| n.note)
             .collect();
         assert_eq!(original_pitches, vec![60, 64, 67]);
@@ -608,14 +608,14 @@ mod tests {
         app.move_highlighted_notes(0, 1);
 
         let moved_pitches: Vec<u8> = app.nav.tracks[ti].clips[0].notes.iter()
-            .filter(|n| n.start_frac < 0.25)
+            .filter(|n| n.start_tick < 960)
             .map(|n| n.note)
             .collect();
         assert_eq!(moved_pitches, vec![61, 65, 68], "all highlighted notes should move up 1 semitone");
 
         // The note in column 2 (at frac 0.5) should NOT have moved
         let unmoved = app.nav.tracks[ti].clips[0].notes.iter()
-            .find(|n| n.start_frac >= 0.4)
+            .find(|n| n.start_tick >= 1536)
             .unwrap();
         assert_eq!(unmoved.note, 72, "note outside highlight should be unchanged");
     }
@@ -627,7 +627,7 @@ mod tests {
         let ti = app.nav.track_cursor;
 
         create_clip_with_notes(&mut app, ti, 0, 3840, vec![
-            note(60, 0.0, 0.125),
+            note(60, 0, 480),
         ]);
 
         app.nav.track_element = TrackElement::Clip(0);
@@ -652,7 +652,7 @@ mod tests {
         let mut app = app();
         add_synth_track(&mut app);
         let ti = app.nav.track_cursor;
-        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(60, 0.0, 0.25)]);
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(60, 0, 960)]);
         app.nav.open_clip_view(ti, 0);
         app.nav.clip_view.piano_roll.edit_mode = true;
         app.nav.clip_view.piano_roll.edit_cursor = 0;
@@ -693,7 +693,7 @@ mod tests {
         add_synth_track(&mut app);
         let ti = app.nav.track_cursor;
         create_clip_with_notes(&mut app, ti, 0, 3840, vec![
-            note(60, 0.0, 0.25), note(64, 0.25, 0.25), note(67, 0.5, 0.25),
+            note(60, 0, 960), note(64, 960, 960), note(67, 1920, 960),
         ]);
         app.nav.open_clip_view(ti, 0);
         app.nav.clip_view.piano_roll.edit_mode = true;
@@ -716,7 +716,7 @@ mod tests {
         let ti = app.nav.track_cursor;
         // Notes two octaves apart: a bass note and a lead note.
         create_clip_with_notes(&mut app, ti, 0, 3840, vec![
-            note(36, 0.0, 0.25), note(84, 0.5, 0.25),
+            note(36, 0, 960), note(84, 1920, 960),
         ]);
         app.nav.open_clip_view(ti, 0);
 
@@ -738,6 +738,36 @@ mod tests {
         );
     }
 
+
+    /// A riff yanked from a one-bar clip and pasted into a four-bar clip
+    /// keeps its musical timing — ticks are absolute music time, so a
+    /// quarter-note riff stays a quarter-note riff in any clip. (Under the
+    /// old fractional storage it silently stretched to fill the new clip.)
+    #[test]
+    fn yanked_notes_keep_musical_time_across_clip_lengths() {
+        let mut app = app();
+        add_synth_track(&mut app);
+        let ti = app.nav.track_cursor;
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(60, 0, 960), note(64, 960, 960)]);
+        create_clip_with_notes(&mut app, ti, 3840, 15360, vec![]);
+
+        app.nav.open_clip_view(ti, 0);
+        app.nav.clip_view.piano_roll.total_beats = 4;
+        app.nav.clip_view.piano_roll.update_column_count();
+        app.yank_selected_notes(None, None);
+
+        app.nav.open_clip_view(ti, 1);
+        app.nav.clip_view.piano_roll.total_beats = 16;
+        app.nav.clip_view.piano_roll.update_column_count();
+        app.paste_selected_notes(0, None);
+
+        let pasted = &app.nav.tracks[ti].clips[1].notes;
+        assert_eq!(pasted.len(), 2, "the riff did not arrive");
+        assert_eq!(pasted[0].start_tick, 0);
+        assert_eq!(pasted[1].start_tick, 960, "the riff's spacing changed with the clip");
+        assert_eq!(pasted[0].duration_ticks, 960, "the note length stretched with the clip");
+    }
+
     /// Muting a note silences it without removing it: the clip keeps the
     /// note, the audio stream drops it, and undo brings the sound back.
     #[test]
@@ -746,8 +776,8 @@ mod tests {
         add_synth_track(&mut app);
         let ti = app.nav.track_cursor;
         create_clip_with_notes(&mut app, ti, 0, 3840, vec![
-            note(60, 0.0, 0.25),
-            note(64, 0.5, 0.25),
+            note(60, 0, 960),
+            note(64, 1920, 960),
         ]);
         app.nav.open_clip_view(ti, 0);
         app.nav.clip_view.piano_roll.edit_cursor = 0;
@@ -778,9 +808,9 @@ mod tests {
         add_synth_track(&mut app);
         let ti = app.nav.track_cursor;
         create_clip_with_notes(&mut app, ti, 0, 3840, vec![
-            note(60, 0.0, 0.2),
-            note(64, 0.3, 0.2),
-            note(67, 0.6, 0.2),
+            note(60, 0, 768),
+            note(64, 1152, 768),
+            note(67, 2304, 768),
         ]);
         app.nav.tracks[ti].clips[0].notes[1].muted = true;
         app.nav.open_clip_view(ti, 0);
@@ -806,7 +836,7 @@ mod tests {
         add_synth_track(&mut app);
         let src = app.nav.track_cursor;
         app.nav.tracks[src].synth_params[4] = 0.77;
-        create_clip_with_notes(&mut app, src, 0, 3840, vec![note(60, 0.0, 0.25)]);
+        create_clip_with_notes(&mut app, src, 0, 3840, vec![note(60, 0, 960)]);
         let count = app.nav.tracks.len();
 
         app.duplicate_current_track();
@@ -851,7 +881,7 @@ mod tests {
         add_synth_track(&mut app);
         let ti = app.nav.track_cursor;
         // A one-bar clip; a note on beat 3.
-        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(72, 0.5, 0.2)]);
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(72, 1920, 768)]);
         app.nav.open_clip_view(ti, 0);
         app.nav.clip_view.piano_roll.total_beats = 4;
         app.nav.clip_view.piano_roll.update_column_count();
@@ -881,7 +911,7 @@ mod tests {
         // Park the view high, then open a clip whose notes are low.
         app.nav.clip_view.piano_roll.set_view_height(24);
         app.nav.clip_view.piano_roll.view_bottom_note = 100;
-        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(40, 0.0, 0.25), note(45, 0.5, 0.25)]);
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(40, 0, 960), note(45, 1920, 960)]);
         app.nav.open_clip_view(ti, 0);
 
         let pr = &app.nav.clip_view.piano_roll;

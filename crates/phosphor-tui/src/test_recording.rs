@@ -26,8 +26,8 @@ mod tests {
         app.nav.track_cursor
     }
 
-    fn note(pitch: u8, start_frac: f64) -> NoteSnapshot {
-        NoteSnapshot { note: pitch, velocity: 100, start_frac, duration_frac: 0.1, muted: false }
+    fn note(pitch: u8, start_tick: i64) -> NoteSnapshot {
+        NoteSnapshot { note: pitch, velocity: 100, start_tick, duration_ticks: 384, muted: false }
     }
 
     /// One committed pass on `track_idx`, as the audio thread reports it.
@@ -69,7 +69,7 @@ mod tests {
         let second = app.nav.track_cursor;
 
         app.nav.track_cursor = first;
-        record_take(&mut app, first, BAR, vec![note(60, 0.0), note(64, 0.25), note(67, 0.5)]);
+        record_take(&mut app, first, BAR, vec![note(60, 0), note(64, 960), note(67, 1920)]);
         assert_eq!(app.nav.tracks[first].clips.len(), 1, "the take never landed");
 
         app.yank_clip(0);
@@ -121,9 +121,9 @@ mod tests {
 
         // Both tracks already hold a clip on the same bars.
         app.nav.track_cursor = first;
-        record_take(&mut app, first, BAR, vec![note(60, 0.0)]);
+        record_take(&mut app, first, BAR, vec![note(60, 0)]);
         app.nav.track_cursor = second;
-        record_take(&mut app, second, BAR, vec![note(48, 0.0)]);
+        record_take(&mut app, second, BAR, vec![note(48, 0)]);
 
         app.nav.track_cursor = first;
         app.yank_clip(0);
@@ -147,8 +147,8 @@ mod tests {
     fn duplicate_refuses_when_the_neighbour_is_in_the_way() {
         let mut app = app();
         let ti = add_synth_track(&mut app);
-        record_take(&mut app, ti, 0, vec![note(60, 0.0)]);
-        record_take(&mut app, ti, BAR, vec![note(64, 0.0)]);
+        record_take(&mut app, ti, 0, vec![note(60, 0)]);
+        record_take(&mut app, ti, BAR, vec![note(64, 0)]);
         assert_eq!(app.nav.tracks[ti].clips.len(), 2, "the fixture needs two clips");
 
         app.duplicate_clip(0);
@@ -168,7 +168,7 @@ mod tests {
     fn duplicate_lands_after_its_source_when_there_is_room() {
         let mut app = app();
         let ti = add_synth_track(&mut app);
-        record_take(&mut app, ti, 0, vec![note(60, 0.0)]);
+        record_take(&mut app, ti, 0, vec![note(60, 0)]);
 
         app.duplicate_clip(0);
         assert_eq!(app.nav.tracks[ti].clips.len(), 2, "the duplicate never landed");
@@ -193,9 +193,9 @@ mod tests {
         let second = app.nav.track_cursor;
 
         app.nav.track_cursor = first;
-        record_take(&mut app, first, 0, vec![note(60, 0.0)]);
-        record_take(&mut app, first, BAR * 2, vec![note(64, 0.0)]);
-        record_take(&mut app, first, BAR * 4, vec![note(67, 0.0)]);
+        record_take(&mut app, first, 0, vec![note(60, 0)]);
+        record_take(&mut app, first, BAR * 2, vec![note(64, 0)]);
+        record_take(&mut app, first, BAR * 4, vec![note(67, 0)]);
         assert_eq!(app.nav.tracks[first].clips.len(), 3, "the fixture needs three clips");
 
         app.yank_all_clips();
@@ -226,12 +226,12 @@ mod tests {
         let second = app.nav.track_cursor;
 
         app.nav.track_cursor = first;
-        record_take(&mut app, first, 0, vec![note(60, 0.0)]);
-        record_take(&mut app, first, BAR * 2, vec![note(64, 0.0)]);
+        record_take(&mut app, first, 0, vec![note(60, 0)]);
+        record_take(&mut app, first, BAR * 2, vec![note(64, 0)]);
 
         // The target already holds something on the second clip's bars.
         app.nav.track_cursor = second;
-        record_take(&mut app, second, BAR * 2, vec![note(48, 0.0)]);
+        record_take(&mut app, second, BAR * 2, vec![note(48, 0)]);
 
         app.nav.track_cursor = first;
         app.yank_all_clips();
@@ -251,7 +251,7 @@ mod tests {
     fn paste_refuses_the_bus_strips() {
         let mut app = app();
         let ti = add_synth_track(&mut app);
-        record_take(&mut app, ti, 0, vec![note(60, 0.0)]);
+        record_take(&mut app, ti, 0, vec![note(60, 0)]);
         app.yank_clip(0);
 
         let bus = app
@@ -281,10 +281,10 @@ mod tests {
         let ti = add_synth_track(&mut app);
         // A melody with a three-note chord flubbed at beat 2 of 4.
         record_take(&mut app, ti, 0, vec![
-            note(60, 0.0),
-            note(58, 0.25), note(62, 0.25), note(65, 0.25), // the flub
-            note(67, 0.5),
-            note(72, 0.75),
+            note(60, 0),
+            note(58, 960), note(62, 960), note(65, 960), // the flub
+            note(67, 1920),
+            note(72, 2880),
         ]);
         app.nav.open_clip_view(ti, 0);
         app.nav.clip_view.piano_roll.total_beats = 4;
@@ -299,7 +299,7 @@ mod tests {
         let notes = &app.nav.tracks[ti].clips[0].notes;
         assert_eq!(notes.len(), 3, "the gesture deleted the wrong count: {notes:?}");
         assert!(
-            notes.iter().all(|n| (n.start_frac - 0.25).abs() > 0.01),
+            notes.iter().all(|n| (n.start_tick - 960).abs() > 38),
             "part of the chord survived"
         );
 
@@ -317,7 +317,7 @@ mod tests {
         let mut app = app();
         let ti = add_synth_track(&mut app);
         record_take(&mut app, ti, 0, vec![
-            note(60, 0.0), note(61, 0.25), note(67, 0.5),
+            note(60, 0), note(61, 960), note(67, 1920),
         ]);
         app.nav.open_clip_view(ti, 0);
 
@@ -344,9 +344,9 @@ mod tests {
         // Two overdub passes of the same hat, a few ticks apart, plus an
         // innocent bystander on another pitch.
         record_take(&mut app, ti, 0, vec![
-            NoteSnapshot { note: 42, velocity: 60, start_frac: 0.24, duration_frac: 0.02, muted: false },
-            NoteSnapshot { note: 42, velocity: 110, start_frac: 0.26, duration_frac: 0.02, muted: false },
-            NoteSnapshot { note: 60, velocity: 100, start_frac: 0.5, duration_frac: 0.1, muted: false },
+            NoteSnapshot { note: 42, velocity: 60, start_tick: 922, duration_ticks: 77, muted: false },
+            NoteSnapshot { note: 42, velocity: 110, start_tick: 998, duration_ticks: 77, muted: false },
+            NoteSnapshot { note: 60, velocity: 100, start_tick: 1920, duration_ticks: 384, muted: false },
         ]);
         app.nav.open_clip_view(ti, 0);
         app.nav.clip_view.piano_roll.total_beats = 4;
@@ -375,9 +375,9 @@ mod tests {
         let second = app.nav.track_cursor;
 
         app.nav.track_cursor = first;
-        record_take(&mut app, first, 0, vec![note(60, 0.0)]);
+        record_take(&mut app, first, 0, vec![note(60, 0)]);
         app.nav.track_cursor = second;
-        record_take(&mut app, second, 0, vec![note(48, 0.0), note(52, 0.5)]);
+        record_take(&mut app, second, 0, vec![note(48, 0), note(52, 1920)]);
 
         assert_eq!(app.nav.tracks[first].clips[0].notes.len(), 1);
         assert_eq!(app.nav.tracks[second].clips[0].notes.len(), 2);
@@ -408,7 +408,7 @@ mod tests {
             has_content: true,
             start_tick: BAR * 2,
             length_ticks: BAR * 4,
-            notes: vec![note(72, 0.0), note(74, 0.5)],
+            notes: vec![note(72, 0), note(74, 7680)],
             hidden_notes: Vec::new(),
             controls: Vec::new(),
         });
@@ -422,7 +422,7 @@ mod tests {
             start_tick: 0,
             length_ticks: BAR * 4,
             event_count: 2,
-            notes: vec![note(60, 0.0)],
+            notes: vec![note(60, 0)],
             controls: Vec::new(),
         };
         app.nav.receive_clip_snapshot(snap, true);
@@ -439,7 +439,7 @@ mod tests {
         let abs: Vec<i64> = merged
             .notes
             .iter()
-            .map(|n| merged.start_tick + (n.start_frac * merged.length_ticks as f64).round() as i64)
+            .map(|n| merged.start_tick + n.start_tick)
             .collect();
         assert!(abs.contains(&0), "the take's note moved: {abs:?}");
         assert!(abs.contains(&(BAR * 2)), "the old part's first note moved: {abs:?}");
@@ -452,7 +452,7 @@ mod tests {
     fn a_take_recorded_mid_song_lands_where_it_was_played() {
         let mut app = app();
         let ti = add_synth_track(&mut app);
-        record_take(&mut app, ti, BAR * 4, vec![note(60, 0.0)]);
+        record_take(&mut app, ti, BAR * 4, vec![note(60, 0)]);
         assert_eq!(
             app.nav.tracks[ti].clips[0].start_tick,
             BAR * 4,
@@ -481,9 +481,9 @@ mod tests {
             length_ticks: BAR,
             event_count: 6,
             notes: vec![
-                NoteSnapshot { note: 60, velocity: 90, start_frac: 0.02, duration_frac: 0.05, muted: false },
-                NoteSnapshot { note: 60, velocity: 120, start_frac: 0.23, duration_frac: 0.05, muted: false },
-                NoteSnapshot { note: 60, velocity: 40, start_frac: 0.27, duration_frac: 0.05, muted: false },
+                NoteSnapshot { note: 60, velocity: 90, start_tick: 77, duration_ticks: 192, muted: false },
+                NoteSnapshot { note: 60, velocity: 120, start_tick: 883, duration_ticks: 192, muted: false },
+                NoteSnapshot { note: 60, velocity: 40, start_tick: 1037, duration_ticks: 192, muted: false },
             ],
             controls: Vec::new(),
         };
@@ -492,24 +492,24 @@ mod tests {
 
         let notes = &app.nav.tracks[ti].clips[0].notes;
         assert!(
-            notes.iter().all(|n| (n.start_frac * 4.0).fract().abs() < 1e-6),
+            notes.iter().all(|n| n.start_tick % 960 == 0),
             "a note missed the grid: {notes:?}"
         );
         // The two hits near beat 2 collapsed to the harder one.
-        let at_q2: Vec<_> = notes.iter().filter(|n| (n.start_frac - 0.25).abs() < 1e-6).collect();
+        let at_q2: Vec<_> = notes.iter().filter(|n| n.start_tick == 960).collect();
         assert_eq!(at_q2.len(), 1, "the pulled-together hits did not collapse");
         assert_eq!(at_q2[0].velocity, 120, "the softer hit won");
 
         // Off means untouched.
         app.nav.clip_view.piano_roll.record_quantize = None;
         record_take(&mut app, ti, BAR * 2, vec![
-            NoteSnapshot { note: 62, velocity: 90, start_frac: 0.02, duration_frac: 0.05, muted: false },
+            NoteSnapshot { note: 62, velocity: 90, start_tick: 77, duration_ticks: 192, muted: false },
         ]);
         let free = app.nav.tracks[ti].clips.iter()
             .flat_map(|c| c.notes.iter())
             .find(|n| n.note == 62)
             .unwrap();
-        assert!((free.start_frac - 0.02).abs() < 1e-9, "an unquantized take was moved");
+        assert_eq!(free.start_tick, 77, "an unquantized take was moved");
     }
 
     /// Re-record mode: R clears the loop range on the armed track first —
@@ -518,7 +518,7 @@ mod tests {
     fn re_record_clears_the_range_and_undoes() {
         let mut app = app();
         let ti = add_synth_track(&mut app);
-        record_take(&mut app, ti, 0, vec![note(60, 0.0)]);
+        record_take(&mut app, ti, 0, vec![note(60, 0)]);
         assert_eq!(app.nav.tracks[ti].clips.len(), 1);
 
         app.engine.transport.set_loop_bars(1, 1);
@@ -573,7 +573,7 @@ mod tests {
         app.nav.take_count = 0;
         // Two passes commit — counted where the main loop counts them.
         for k in 0..2 {
-            let snap = take(&app, ti, 0, vec![note(60 + k, 0.0)]);
+            let snap = take(&app, ti, 0, vec![note(60 + k, 0)]);
             app.nav.receive_clip_snapshot(snap, true);
             app.nav.take_count += 1; // the main loop's increment, mirrored here
         }
@@ -622,7 +622,7 @@ mod tests {
         app.engine.transport.start_loop_record();
         let snap = take_with_controls(
             &app, ti,
-            vec![note(60, 0.0), note(64, 0.5)],
+            vec![note(60, 0), note(64, 1920)],
             vec![cc(100, 1, 40), cc(500, 1, 90)],
         );
         app.nav.receive_clip_snapshot(snap, true);
@@ -666,9 +666,9 @@ mod tests {
         app.nav.track_cursor = first;
         app.engine.transport.set_loop_bars(1, 1);
         app.engine.transport.start_loop_record();
-        let pass_one = take_with_controls(&app, first, vec![note(60, 0.0)], vec![cc(200, 1, 80)]);
+        let pass_one = take_with_controls(&app, first, vec![note(60, 0)], vec![cc(200, 1, 80)]);
         app.nav.receive_clip_snapshot(pass_one, true);
-        let pass_two = take_with_controls(&app, first, vec![note(64, 0.5)], vec![]);
+        let pass_two = take_with_controls(&app, first, vec![note(64, 1920)], vec![]);
         app.nav.receive_clip_snapshot(pass_two, true);
         app.engine.transport.stop_loop_record();
 
@@ -691,7 +691,7 @@ mod tests {
     fn a_flubbed_sweep_clears_and_undoes() {
         let mut app = app();
         let ti = add_synth_track(&mut app);
-        record_take(&mut app, ti, 0, vec![note(60, 0.0)]);
+        record_take(&mut app, ti, 0, vec![note(60, 0)]);
         app.nav.tracks[ti].clips[0].controls = vec![cc(100, 1, 30), cc(300, 1, 90)];
 
         app.nav.open_clip_view(ti, 0);
@@ -716,7 +716,7 @@ mod tests {
 
         let mut saving = app();
         let ti = add_synth_track(&mut saving);
-        record_take(&mut saving, ti, 0, vec![note(60, 0.0)]);
+        record_take(&mut saving, ti, 0, vec![note(60, 0)]);
         saving.nav.tracks[ti].clips[0].controls = vec![cc(240, 1, 64)];
         saving.do_save(path_str);
 
@@ -837,7 +837,7 @@ mod tests {
         let second = app.nav.track_cursor;
 
         app.nav.track_cursor = first;
-        record_take(&mut app, first, 0, vec![note(60, 0.0), note(64, 0.25)]);
+        record_take(&mut app, first, 0, vec![note(60, 0), note(64, 960)]);
         app.nav.track_cursor = second;
         record_take(&mut app, second, 0, vec![]);
         // An empty take commits nothing, so give the target an empty clip

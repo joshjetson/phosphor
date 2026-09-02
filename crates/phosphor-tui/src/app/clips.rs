@@ -92,13 +92,9 @@ impl App {
                 // Hidden notes are stored as tick offsets so they survive any
                 // number of shrink/expand cycles.
 
-                // Step 1: convert current notes to tick offsets
+                // Step 1: notes already live in tick offsets
                 let mut all_ticks: Vec<(i64, i64, u8, u8)> = clip.notes.drain(..)
-                    .map(|n| {
-                        let start_tick = (n.start_frac * old_len as f64) as i64;
-                        let dur_tick = (n.duration_frac * old_len as f64) as i64;
-                        (start_tick, dur_tick, n.note, n.velocity)
-                    })
+                    .map(|n| (n.start_tick, n.duration_ticks, n.note, n.velocity))
                     .collect();
 
                 // Include previously hidden notes
@@ -109,12 +105,12 @@ impl App {
                 let mut hidden = Vec::new();
                 for (st, dur, note, vel) in all_ticks {
                     if st < new_len {
-                        let clamped_dur = dur.min(new_len - st);
                         visible.push(phosphor_core::clip::NoteSnapshot {
                             note,
                             velocity: vel,
-                            start_frac: st as f64 / new_len as f64,
-                            duration_frac: clamped_dur as f64 / new_len as f64, muted: false
+                            start_tick: st,
+                            duration_ticks: dur.min(new_len - st).max(1),
+                            muted: false,
                         });
                     } else {
                         hidden.push((st, dur, note, vel));
@@ -182,11 +178,7 @@ impl App {
                 // Convert notes to absolute timeline ticks, move start, convert back.
                 // Notes that fall before the new start get hidden.
                 let mut all_ticks: Vec<(i64, i64, u8, u8)> = clip.notes.drain(..)
-                    .map(|n| {
-                        let abs_start = old_start + (n.start_frac * old_len as f64) as i64;
-                        let dur_tick = (n.duration_frac * old_len as f64) as i64;
-                        (abs_start, dur_tick, n.note, n.velocity)
-                    })
+                    .map(|n| (old_start + n.start_tick, n.duration_ticks, n.note, n.velocity))
                     .collect();
                 // Include hidden notes (stored as tick offsets from old clip start)
                 for (st, dur, note, vel) in clip.hidden_notes.drain(..) {
@@ -200,8 +192,9 @@ impl App {
                     if rel >= 0 && rel < new_len {
                         visible.push(phosphor_core::clip::NoteSnapshot {
                             note, velocity: vel,
-                            start_frac: rel as f64 / new_len as f64,
-                            duration_frac: dur.min(new_len - rel) as f64 / new_len as f64, muted: false
+                            start_tick: rel,
+                            duration_ticks: dur.min(new_len - rel).max(1),
+                            muted: false,
                         });
                     } else {
                         // Store as offset from new clip start (may be negative for left-trimmed)

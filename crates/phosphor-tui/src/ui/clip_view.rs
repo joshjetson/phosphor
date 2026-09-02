@@ -387,6 +387,7 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
     };
     let clip = nav.active_clip();
     let notes = clip.map(|c| c.notes.as_slice()).unwrap_or(&[]);
+    let clip_len = clip.map(|c| c.length_ticks.max(1)).unwrap_or(1);
     let tc = theme::track_color(track.color_index);
 
     let pr = &nav.clip_view.piano_roll;
@@ -600,8 +601,9 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
                     base_note_style.fg(theme::dim_color(tc, brightness))
                 };
                 // Map note position from clip-space to visible-window-space
-                let rel_start = (n.start_frac - scroll_frac) / visible_frac;
-                let rel_end = (n.start_frac + n.duration_frac - scroll_frac) / visible_frac;
+                let rel_start = (n.start_frac(clip_len) - scroll_frac) / visible_frac;
+                let rel_end =
+                    ((n.end_tick() as f64 / clip_len as f64) - scroll_frac) / visible_frac;
                 if rel_end <= 0.0 || rel_start >= 1.0 { continue; } // off-screen
                 let sx = (rel_start.max(0.0) * note_w as f64) as usize;
                 let ex = (rel_end * note_w as f64) as usize;

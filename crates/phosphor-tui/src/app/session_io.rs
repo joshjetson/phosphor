@@ -323,7 +323,7 @@ impl App {
                 // Restore clips
                 track.clips.clear();
                 for sc in &st.clips {
-                    let notes = crate::session::session_notes_to_snapshots(&sc.notes);
+                    let notes = crate::session::session_notes_to_snapshots(&sc.notes, sc.length_ticks);
                     let clip = crate::state::Clip {
                         number: track.clips.len() + 1,
                         width: 4, // will be recalculated by renderer

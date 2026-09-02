@@ -328,26 +328,44 @@ pub struct ClipSnapshot {
     pub controls: Vec<ClipEvent>,
 }
 
-/// A note for display in the piano roll.
+/// A note in a clip, in ticks from the clip's start — the same ruler the
+/// controls use, and the same ruler the audio thread plays from. The screen
+/// converts to fractions at the moment of drawing and nowhere else.
 ///
-/// `PartialEq` compares the fractions exactly, which is right for the one
-/// place it is used: deciding whether an undo checkpoint saw any change at
-/// all. Two clips that differ only in float noise were produced by different
-/// edits, and an edit is a change.
+/// `PartialEq` is exact, which is right for the one place it is used:
+/// deciding whether an undo checkpoint saw any change at all.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NoteSnapshot {
     pub note: u8,
     pub velocity: u8,
-    /// Start position as fraction of clip length (0.0..1.0).
-    pub start_frac: f64,
-    /// Duration as fraction of clip length.
-    pub duration_frac: f64,
+    /// Ticks from the clip's start.
+    pub start_tick: i64,
+    /// Length in ticks. Never below 1.
+    pub duration_ticks: i64,
     /// A muted note stays in the clip — visible, editable, selectable — but
     /// produces no events for the audio thread. The audition-an-edit flag.
     pub muted: bool,
 }
 
 impl NoteSnapshot {
+    /// Where the note starts as a fraction of the clip — the screen's ruler.
+    #[must_use]
+    pub fn start_frac(&self, length_ticks: i64) -> f64 {
+        self.start_tick as f64 / length_ticks.max(1) as f64
+    }
+
+    /// The note's length as a fraction of the clip — the screen's ruler.
+    #[must_use]
+    pub fn duration_frac(&self, length_ticks: i64) -> f64 {
+        self.duration_ticks as f64 / length_ticks.max(1) as f64
+    }
+
+    /// The tick just past the note's end.
+    #[must_use]
+    pub fn end_tick(&self) -> i64 {
+        self.start_tick + self.duration_ticks
+    }
+
     /// Convert edited NoteSnapshots back to ClipEvents for the audio thread.
     /// Each note produces a note-on and note-off event.
     pub fn to_clip_events(notes: &[NoteSnapshot], length_ticks: i64) -> Vec<ClipEvent> {
@@ -356,8 +374,8 @@ impl NoteSnapshot {
             if n.muted {
                 continue;
             }
-            let on_tick = (n.start_frac * length_ticks as f64) as i64;
-            let off_tick = ((n.start_frac + n.duration_frac) * length_ticks as f64) as i64;
+            let on_tick = n.start_tick;
+            let off_tick = n.end_tick();
             events.push(ClipEvent {
                 tick: on_tick,
                 status: 0x90,
@@ -379,7 +397,6 @@ impl NoteSnapshot {
 
 impl ClipSnapshot {
     pub fn from_clip(track_id: usize, clip_index: usize, clip: &MidiClip) -> Self {
-        let len = clip.length_ticks as f64;
         let mut notes = Vec::new();
 
         // Track note-on times to pair with note-offs
@@ -400,8 +417,8 @@ impl ClipSnapshot {
                         notes.push(NoteSnapshot {
                             note,
                             velocity: vel,
-                            start_frac: start as f64 / len,
-                            duration_frac: dur as f64 / len,
+                            start_tick: start,
+                            duration_ticks: dur,
                             muted: false,
                         });
                     }
@@ -416,8 +433,8 @@ impl ClipSnapshot {
             notes.push(NoteSnapshot {
                 note,
                 velocity: vel,
-                start_frac: start as f64 / len,
-                duration_frac: dur as f64 / len,
+                start_tick: start,
+                duration_ticks: dur,
                 muted: false,
             });
         }
@@ -713,8 +730,8 @@ mod tests {
         let snap = ClipSnapshot::from_clip(0, 0, &clip);
         assert_eq!(snap.notes.len(), 2);
         assert_eq!(snap.notes[0].note, 60);
-        assert!((snap.notes[0].start_frac - 0.0).abs() < 0.01);
-        assert!((snap.notes[0].duration_frac - 0.25).abs() < 0.01);
+        assert_eq!(snap.notes[0].start_tick, 0);
+        assert_eq!(snap.notes[0].duration_ticks, 240);
         assert_eq!(snap.notes[1].note, 64);
     }
 
@@ -727,7 +744,7 @@ mod tests {
 
         let snap = ClipSnapshot::from_clip(0, 0, &clip);
         assert_eq!(snap.notes.len(), 1);
-        assert!((snap.notes[0].duration_frac - 1.0).abs() < 0.01);
+        assert_eq!(snap.notes[0].duration_ticks, 960, "the pending note did not close at clip end");
     }
 
     #[test]
@@ -767,27 +784,27 @@ mod tests {
         // First note: tick 0, note 60
         assert_eq!(note_ons[0].data1, 60);
         assert_eq!(note_ons[0].tick, 0);
-        // Second note: tick ~480, note 64
+        // Second note: tick 480 exactly — ticks in, ticks out, no rounding.
         assert_eq!(note_ons[1].data1, 64);
-        assert!((note_ons[1].tick - 480).abs() <= 1);
+        assert_eq!(note_ons[1].tick, 480);
     }
 
     #[test]
     fn edited_snapshot_produces_different_events() {
         let mut notes = vec![
-            NoteSnapshot { note: 60, velocity: 100, start_frac: 0.0, duration_frac: 0.25, muted: false },
+            NoteSnapshot { note: 60, velocity: 100, start_tick: 0, duration_ticks: 240, muted: false },
         ];
 
         let original = NoteSnapshot::to_clip_events(&notes, 960);
         assert_eq!(original[0].tick, 0); // note on at tick 0
 
-        // Edit: move start to 0.5
-        notes[0].start_frac = 0.5;
+        // Edit: move start to tick 480
+        notes[0].start_tick = 480;
         let edited = NoteSnapshot::to_clip_events(&notes, 960);
         assert_eq!(edited[0].tick, 480); // note on at tick 480 now
 
         // Edit: make it shorter
-        notes[0].duration_frac = 0.1;
+        notes[0].duration_ticks = 96;
         let shorter = NoteSnapshot::to_clip_events(&notes, 960);
         let off_tick = shorter.iter().find(|e| e.status == 0x80).unwrap().tick;
         assert_eq!(off_tick, 576); // 480 + 96 = 576

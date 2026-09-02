@@ -104,6 +104,18 @@ impl GridResolution {
         1.0 / (total_beats as f64 * self.subdivisions_per_beat())
     }
 
+    /// Grid step in ticks. Exact for every grid at PPQ 960 — including the
+    /// triplets, since 960 divides by 1.5, 3 and 6.
+    pub fn step_ticks(self, ppq: i64) -> i64 {
+        ((ppq as f64 / self.subdivisions_per_beat()).round() as i64).max(1)
+    }
+
+    /// Snap a tick to the nearest grid line.
+    pub fn snap_ticks(self, tick: i64, ppq: i64) -> i64 {
+        let step = self.step_ticks(ppq);
+        ((tick as f64 / step as f64).round() as i64) * step
+    }
+
     /// Snap a fractional position to the nearest grid line.
     pub fn snap(self, frac: f64, total_beats: usize) -> f64 {
         let step = self.step_frac(total_beats);

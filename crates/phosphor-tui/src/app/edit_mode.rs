@@ -40,7 +40,7 @@ impl App {
             let mut b = 0usize;
             for (i, n) in clip.notes.iter().enumerate() {
                 let bn = &clip.notes[b];
-                if n.note > bn.note || (n.note == bn.note && n.start_frac < bn.start_frac) {
+                if n.note > bn.note || (n.note == bn.note && n.start_tick < bn.start_tick) {
                     b = i;
                 }
             }
@@ -201,9 +201,12 @@ impl App {
                     KeyCode::Char('m') => { self.toggle_note_mute(); return; }
                     _ => {}
                 }
-                let step = self.nav.clip_view.piano_roll.grid.step_frac(
-                    self.nav.clip_view.piano_roll.total_beats
-                );
+                let step = self
+                    .nav
+                    .clip_view
+                    .piano_roll
+                    .grid
+                    .step_ticks(phosphor_core::transport::Transport::PPQ);
                 if let Some(d) = dir {
                     if shift {
                         // Shift+h/l = stretch right edge, Shift+j/k = stretch left edge
@@ -257,8 +260,8 @@ impl App {
     /// Move cursor UP within the same column (higher pitch).
     pub(crate) fn edit_move_up_in_column(&mut self) {
         use crate::debug_log as dbg;
-        let col_frac = self.current_cursor_column_frac();
-        let col_w = self.edit_column_width();
+        let col_tick = self.current_cursor_column_tick();
+        let col_ticks = self.edit_column_ticks();
         let notes = match self.nav.active_clip() {
             Some(c) => c.notes.clone(),
             None => return,
@@ -272,7 +275,7 @@ impl App {
         let mut best: Option<(usize, u8)> = None;
         for (i, n) in notes.iter().enumerate() {
             if i == cur_idx { continue; }
-            if !Self::same_column(n.start_frac, col_frac, col_w) { continue; }
+            if !Self::same_column(n.start_tick, col_tick, col_ticks) { continue; }
             if n.note <= cur_note { continue; }
             if best.map_or(true, |(_, bn)| n.note < bn) {
                 best = Some((i, n.note));
@@ -280,8 +283,7 @@ impl App {
         }
 
         dbg::system(&format!(
-            "edit up: col_frac={:.4} col_w={:.4} cur_note={} found={:?}",
-            col_frac, col_w, cur_note, best
+            "edit up: col_tick={col_tick} col_ticks={col_ticks} cur_note={cur_note} found={best:?}"
         ));
 
         if let Some((idx, note)) = best {
@@ -295,8 +297,8 @@ impl App {
     /// Move cursor DOWN within the same column (lower pitch).
     pub(crate) fn edit_move_down_in_column(&mut self) {
         use crate::debug_log as dbg;
-        let col_frac = self.current_cursor_column_frac();
-        let col_w = self.edit_column_width();
+        let col_tick = self.current_cursor_column_tick();
+        let col_ticks = self.edit_column_ticks();
         let notes = match self.nav.active_clip() {
             Some(c) => c.notes.clone(),
             None => return,
@@ -309,7 +311,7 @@ impl App {
         let mut best: Option<(usize, u8)> = None;
         for (i, n) in notes.iter().enumerate() {
             if i == cur_idx { continue; }
-            if !Self::same_column(n.start_frac, col_frac, col_w) { continue; }
+            if !Self::same_column(n.start_tick, col_tick, col_ticks) { continue; }
             if n.note >= cur_note { continue; }
             if best.map_or(true, |(_, bn)| n.note > bn) {
                 best = Some((i, n.note));
@@ -317,8 +319,7 @@ impl App {
         }
 
         dbg::system(&format!(
-            "edit down: col_frac={:.4} col_w={:.4} cur_note={} found={:?}",
-            col_frac, col_w, cur_note, best
+            "edit down: col_tick={col_tick} col_ticks={col_ticks} cur_note={cur_note} found={best:?}"
         ));
 
         if let Some((idx, note)) = best {
@@ -338,15 +339,18 @@ impl App {
         let pr = &self.nav.clip_view.piano_roll;
         let cur_idx = pr.edit_cursor;
         if cur_idx >= notes.len() { return; }
-        let cur_frac = notes[cur_idx].start_frac;
+        let len = self.nav.active_clip().map_or(1, |c| c.length_ticks.max(1)) as f64;
+        let cur_tick = notes[cur_idx].start_tick;
         let cur_note_val = notes[cur_idx].note;
-        let col_w = self.edit_column_width();
+        let col_ticks = self.edit_column_ticks();
 
-        // Find the nearest note strictly to the left (different column)
+        // Find the nearest note strictly to the left (different column).
+        // Distance stays in clip fractions so the pitch tiebreak keeps the
+        // same weight at every clip length.
         let mut best: Option<(usize, f64)> = None;
         for (i, n) in notes.iter().enumerate() {
-            if n.start_frac >= cur_frac - col_w * 0.5 { continue; }
-            let dx = cur_frac - n.start_frac;
+            if n.start_tick >= cur_tick - col_ticks / 2 { continue; }
+            let dx = (cur_tick - n.start_tick) as f64 / len;
             let dy = (n.note as f64 - cur_note_val as f64).abs() * 0.0001;
             let dist = dx + dy;
             if best.map_or(true, |(_, d)| dist < d) {
@@ -371,14 +375,15 @@ impl App {
         let pr = &self.nav.clip_view.piano_roll;
         let cur_idx = pr.edit_cursor;
         if cur_idx >= notes.len() { return; }
-        let cur_frac = notes[cur_idx].start_frac;
+        let len = self.nav.active_clip().map_or(1, |c| c.length_ticks.max(1)) as f64;
+        let cur_tick = notes[cur_idx].start_tick;
         let cur_note_val = notes[cur_idx].note;
-        let col_w = self.edit_column_width();
+        let col_ticks = self.edit_column_ticks();
 
         let mut best: Option<(usize, f64)> = None;
         for (i, n) in notes.iter().enumerate() {
-            if n.start_frac <= cur_frac + col_w * 0.5 { continue; }
-            let dx = n.start_frac - cur_frac;
+            if n.start_tick <= cur_tick + col_ticks / 2 { continue; }
+            let dx = (n.start_tick - cur_tick) as f64 / len;
             let dy = (n.note as f64 - cur_note_val as f64).abs() * 0.0001;
             let dist = dx + dy;
             if best.map_or(true, |(_, d)| dist < d) {
@@ -394,27 +399,30 @@ impl App {
         }
     }
 
-    /// Get the column center frac for the note at the current edit cursor.
-    fn current_cursor_column_frac(&self) -> f64 {
+    /// The start tick of the note at the current edit cursor.
+    fn current_cursor_column_tick(&self) -> i64 {
         if let Some(clip) = self.nav.active_clip() {
             let idx = self.nav.clip_view.piano_roll.edit_cursor;
             if let Some(n) = clip.notes.get(idx) {
-                return n.start_frac;
+                return n.start_tick;
             }
         }
-        0.0
+        0
     }
 
-    /// Column width based on grid resolution.
-    fn edit_column_width(&self) -> f64 {
-        let pr = &self.nav.clip_view.piano_roll;
-        pr.grid.step_frac(pr.total_beats)
+    /// Column width in ticks, based on grid resolution.
+    fn edit_column_ticks(&self) -> i64 {
+        self.nav
+            .clip_view
+            .piano_roll
+            .grid
+            .step_ticks(phosphor_core::transport::Transport::PPQ)
     }
 
     /// Check if two notes are in the same column.
     /// Uses 90% of column width as tolerance to handle imprecise recorded timing.
-    fn same_column(frac_a: f64, frac_b: f64, col_w: f64) -> bool {
-        (frac_a - frac_b).abs() < col_w * 0.9
+    fn same_column(tick_a: i64, tick_b: i64, col_ticks: i64) -> bool {
+        (tick_a - tick_b).abs() < col_ticks * 9 / 10
     }
 
     fn auto_scroll_edit_cursor(&mut self) {
@@ -441,21 +449,21 @@ impl App {
             indices.push(pr.edit_cursor);
         }
 
-        let step = grid.step_frac(total_beats);
+        let _ = total_beats;
+        let ppq = phosphor_core::transport::Transport::PPQ;
+        let step = grid.step_ticks(ppq);
 
         let undo_before = self.checkpoint_viewed_track();
 
         // Apply the move (grid-step horizontal, snap-aware; semitone vertical)
         if let Some(clip) = self.nav.active_clip_mut() {
+            let len = clip.length_ticks;
             for &idx in &indices {
                 if let Some(note) = clip.notes.get_mut(idx) {
                     if grid_steps != 0 {
-                        let new_frac = note.start_frac + grid_steps as f64 * step;
-                        note.start_frac = if snap {
-                            grid.snap(new_frac, total_beats).clamp(0.0, 1.0 - note.duration_frac)
-                        } else {
-                            new_frac.clamp(0.0, 1.0 - note.duration_frac)
-                        };
+                        let new_tick = note.start_tick + grid_steps as i64 * step;
+                        let new_tick = if snap { grid.snap_ticks(new_tick, ppq) } else { new_tick };
+                        note.start_tick = new_tick.clamp(0, (len - note.duration_ticks).max(0));
                     }
                     if semitones != 0 {
                         let new_note = note.note as i32 + semitones;
@@ -484,7 +492,7 @@ impl App {
     }
 
     /// Stretch selected notes' edges. Reuses apply_edge_delta from piano_roll.
-    fn stretch_selected_edit_notes(&mut self, delta: f64, right_edge: bool) {
+    fn stretch_selected_edit_notes(&mut self, delta_ticks: i64, right_edge: bool) {
         use crate::debug_log as dbg;
         let pr = &self.nav.clip_view.piano_roll;
 
@@ -498,9 +506,10 @@ impl App {
         // Apply stretch
         let mut touched = 0usize;
         if let Some(clip) = self.nav.active_clip_mut() {
+            let len = clip.length_ticks;
             for &idx in &indices {
                 if let Some(note) = clip.notes.get_mut(idx) {
-                    Self::apply_edge_delta(note, delta, right_edge);
+                    Self::apply_edge_delta(note, delta_ticks, right_edge, len);
                     touched += 1;
                 }
             }
@@ -509,8 +518,8 @@ impl App {
         if touched > 0 {
             self.commit_viewed_track(undo_before, "stretch notes");
             self.send_clip_update();
-            dbg::system(&format!("edit stretch: edge={} delta={:.4} notes={}",
-                if right_edge { "right" } else { "left" }, delta, indices.len()));
+            dbg::system(&format!("edit stretch: edge={} delta={} notes={}",
+                if right_edge { "right" } else { "left" }, delta_ticks, indices.len()));
         }
     }
 
@@ -608,7 +617,7 @@ impl App {
         if let Some(clip) = self.nav.active_clip_mut() {
             if cursor < clip.notes.len() {
                 let removed = clip.notes.remove(cursor);
-                dbg::system(&format!("edit delete: removed note {} at frac {:.4}", removed.note, removed.start_frac));
+                dbg::system(&format!("edit delete: removed note {} at tick {}", removed.note, removed.start_tick));
 
                 self.commit_viewed_track(undo_before, "delete note");
 

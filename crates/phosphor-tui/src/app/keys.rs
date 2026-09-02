@@ -793,9 +793,8 @@ impl App {
                 // Highlight-locked stretch mode: Enter was pressed while highlights
                 // were active. h/l adjusts left edge, H/L adjusts right edge.
                 if self.nav.clip_view.piano_roll.highlight_locked {
-                    let step = self.nav.clip_view.piano_roll.grid.step_frac(
-                        self.nav.clip_view.piano_roll.total_beats
-                    );
+                    let step = self.nav.clip_view.piano_roll.grid
+                        .step_ticks(phosphor_core::transport::Transport::PPQ);
                     match key.code {
                         KeyCode::Esc => {
                             self.nav.clip_view.piano_roll.highlight_locked = false;
@@ -999,9 +998,8 @@ impl App {
             //   Esc = back to Browsing
             PianoRollFocus::Selected => {
                 let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-                let step = self.nav.clip_view.piano_roll.grid.step_frac(
-                    self.nav.clip_view.piano_roll.total_beats
-                );
+                let step = self.nav.clip_view.piano_roll.grid
+                    .step_ticks(phosphor_core::transport::Transport::PPQ);
                 match key.code {
                     KeyCode::Esc => {
                         dbg::user("piano roll: Esc → browsing");
@@ -1053,9 +1051,8 @@ impl App {
             //   Esc = back to Column (column-level control restored)
             PianoRollFocus::Row => {
                 let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-                let step = self.nav.clip_view.piano_roll.grid.step_frac(
-                    self.nav.clip_view.piano_roll.total_beats
-                );
+                let step = self.nav.clip_view.piano_roll.grid
+                    .step_ticks(phosphor_core::transport::Transport::PPQ);
                 match key.code {
                     KeyCode::Esc => {
                         dbg::user("piano roll: Esc → column mode");

@@ -457,7 +457,7 @@ mod tests {
             start_tick: 0,
             length_ticks: 3840,
             notes: vec![phosphor_core::clip::NoteSnapshot {
-                note: 60, velocity: 100, start_frac: 0.0, duration_frac: 0.25, muted: false
+                note: 60, velocity: 100, start_tick: 0, duration_ticks: 960, muted: false
             }],
             hidden_notes: Vec::new(),
             controls: Vec::new(),
@@ -534,7 +534,7 @@ mod tests {
         let mut nav = nav_with_clip();
         let before = nav.undo_checkpoint(UndoScope::TrackClips { track_idx: 0 });
         nav.tracks[0].clips[0].notes.push(phosphor_core::clip::NoteSnapshot {
-            note: 62, velocity: 100, start_frac: 0.5, duration_frac: 0.25, muted: false
+            note: 62, velocity: 100, start_tick: 1920, duration_ticks: 960, muted: false
         });
         nav.commit_undo_take(before);
         assert!(nav.undo_stack.top_is_take());

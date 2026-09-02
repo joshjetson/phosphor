@@ -32,8 +32,8 @@ mod tests {
         app.nav.track_cursor
     }
 
-    fn note(pitch: u8, start_frac: f64) -> NoteSnapshot {
-        NoteSnapshot { note: pitch, velocity: 100, start_frac, duration_frac: 0.1, muted: false }
+    fn note(pitch: u8, start_tick: i64) -> NoteSnapshot {
+        NoteSnapshot { note: pitch, velocity: 100, start_tick, duration_ticks: 384, muted: false }
     }
 
     /// One committed pass, as the audio thread reports it.
@@ -72,7 +72,7 @@ mod tests {
         let ti = add_synth_track(&mut app);
         start_recording(&app);
 
-        let snap = take(&app, ti, vec![note(60, 0.0), note(64, 0.5)]);
+        let snap = take(&app, ti, vec![note(60, 0), note(64, 1920)]);
         app.nav.receive_clip_snapshot(snap, true);
 
         assert_eq!(notes_on(&app, ti), 2, "the take reached the clip");
@@ -87,7 +87,7 @@ mod tests {
         let ti = add_synth_track(&mut app);
         start_recording(&app);
 
-        let snap = take(&app, ti, vec![note(60, 0.0)]);
+        let snap = take(&app, ti, vec![note(60, 0)]);
         app.nav.receive_clip_snapshot(snap, true);
         let _ = app.drain_mixer_commands();
 
@@ -119,7 +119,7 @@ mod tests {
         let ti = add_synth_track(&mut app);
         start_recording(&app);
 
-        let snap = take(&app, ti, vec![note(60, 0.0)]);
+        let snap = take(&app, ti, vec![note(60, 0)]);
         app.nav.receive_clip_snapshot(snap, true);
         let _ = app.drain_mixer_commands();
 
@@ -151,7 +151,7 @@ mod tests {
         let ti = add_synth_track(&mut app);
         start_recording(&app);
 
-        let snap = take(&app, ti, vec![note(60, 0.0)]);
+        let snap = take(&app, ti, vec![note(60, 0)]);
         app.nav.receive_clip_snapshot(snap, true);
         let _ = app.drain_mixer_commands();
 
@@ -182,7 +182,7 @@ mod tests {
         app.nav.tracks[ti].clips.push(Clip {
             number: 1, width: 4, has_content: true,
             start_tick: 0, length_ticks: BAR,
-            notes: vec![note(48, 0.0)],
+            notes: vec![note(48, 0)],
             hidden_notes: Vec::new(),
             controls: Vec::new(),
         });
@@ -213,9 +213,9 @@ mod tests {
         start_recording(&app);
         app.live_take_notes = 0;
 
-        let first = take(&app, ti, vec![note(60, 0.0)]);
+        let first = take(&app, ti, vec![note(60, 0)]);
         app.nav.receive_clip_snapshot(first, true);
-        let second = take(&app, ti, vec![note(64, 0.25), note(67, 0.75)]);
+        let second = take(&app, ti, vec![note(64, 960), note(67, 2880)]);
         app.nav.receive_clip_snapshot(second, true);
 
         assert_eq!(notes_on(&app, ti), 3, "the layers did not merge");
@@ -236,12 +236,12 @@ mod tests {
         start_recording(&app);
         app.live_take_notes = 0;
 
-        let first = take(&app, ti, vec![note(60, 0.0)]);
+        let first = take(&app, ti, vec![note(60, 0)]);
         app.nav.receive_clip_snapshot(first, true);
         app.perform_undo();
         assert!(app.nav.undo_stack.can_redo());
 
-        let second = take(&app, ti, vec![note(64, 0.5)]);
+        let second = take(&app, ti, vec![note(64, 1920)]);
         app.nav.receive_clip_snapshot(second, true);
         assert!(!app.nav.undo_stack.can_redo(), "a stale take is still redoable");
     }
@@ -258,7 +258,7 @@ mod tests {
         let ti = add_synth_track(&mut app);
         start_recording(&app);
 
-        let snap = take(&app, ti, vec![note(60, 0.0), note(64, 0.5)]);
+        let snap = take(&app, ti, vec![note(60, 0), note(64, 1920)]);
         app.nav.receive_clip_snapshot(snap, true);
         app.engine.transport.stop_loop_record();
 

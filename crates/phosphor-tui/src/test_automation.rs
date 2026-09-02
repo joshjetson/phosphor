@@ -25,7 +25,7 @@ mod tests {
         app.nav.tracks[ti].clips.push(Clip {
             number: 1, width: 4, has_content: true,
             start_tick: 0, length_ticks: BAR,
-            notes: vec![NoteSnapshot { note: 60, velocity: 100, start_frac: 0.0, duration_frac: 0.25, muted: false }],
+            notes: vec![NoteSnapshot { note: 60, velocity: 100, start_tick: 0, duration_ticks: 960, muted: false }],
             hidden_notes: Vec::new(),
             controls: Vec::new(),
         });

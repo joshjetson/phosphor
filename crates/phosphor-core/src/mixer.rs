@@ -1808,7 +1808,7 @@ mod tests {
 
         let snap = clip_rx.try_recv().expect("commit produced no snapshot");
         let note = snap.notes.first().expect("the note was not recorded");
-        let start = (note.start_frac * snap.length_ticks as f64).round() as i64;
+        let start = note.start_tick;
         let expected = pos - age_ticks;
         assert!(
             (start - expected).abs() <= 8,
@@ -1846,7 +1846,7 @@ mod tests {
         let snap = clip_rx.try_recv().expect("commit produced no snapshot");
         let note = snap.notes.first().expect("the note was not recorded");
         assert_eq!(
-            (note.start_frac * snap.length_ticks as f64).round() as i64,
+            note.start_tick,
             0,
             "an aged first-block note must clamp to the take start, not go before it"
         );
@@ -1884,7 +1884,7 @@ mod tests {
 
         let snap = clip_rx.try_recv().expect("commit produced no snapshot");
         let note = snap.notes.first().expect("the note was not recorded");
-        let start = (note.start_frac * snap.length_ticks as f64).round() as i64;
+        let start = note.start_tick;
         assert!(
             (start - pos).abs() <= 2,
             "a stale stamp moved the note: {start} vs block edge {pos}"

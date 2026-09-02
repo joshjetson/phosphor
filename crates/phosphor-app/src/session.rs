@@ -260,8 +260,17 @@ pub struct SessionClip {
 pub struct SessionNote {
     pub note: u8,
     pub velocity: u8,
-    pub start_frac: f64,
-    pub duration_frac: f64,
+    /// Ticks from the clip's start — the format every save writes now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_tick: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ticks: Option<i64>,
+    /// The old fractional position. Never written any more; still read, so
+    /// every session saved before the tick format loads exactly as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_frac: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_frac: Option<f64>,
     /// Default keeps sessions saved before the flag existed loading clean.
     #[serde(default)]
     pub muted: bool,
@@ -370,8 +379,10 @@ fn extract_session(nav: &NavState, transport: &Transport) -> SessionFile {
                 notes: clip.notes.iter().map(|n| SessionNote {
                     note: n.note,
                     velocity: n.velocity,
-                    start_frac: n.start_frac,
-                    duration_frac: n.duration_frac,
+                    start_tick: Some(n.start_tick),
+                    duration_ticks: Some(n.duration_ticks),
+                    start_frac: None,
+                    duration_frac: None,
                     muted: n.muted,
                 }).collect(),
             }
@@ -514,20 +525,67 @@ pub fn apply_selectors(
     clamped
 }
 
-/// Get the notes for a clip as NoteSnapshots.
-pub fn session_notes_to_snapshots(notes: &[SessionNote]) -> Vec<phosphor_core::clip::NoteSnapshot> {
-    notes.iter().map(|n| phosphor_core::clip::NoteSnapshot {
-        note: n.note,
-        velocity: n.velocity,
-        start_frac: n.start_frac,
-        duration_frac: n.duration_frac,
-        muted: n.muted,
+/// Get the notes for a clip as NoteSnapshots. Ticks pass straight through;
+/// a note from an old fractional session is converted once, here, against
+/// the clip length it was saved with — the last fraction-to-tick sum in the
+/// application.
+pub fn session_notes_to_snapshots(
+    notes: &[SessionNote],
+    length_ticks: i64,
+) -> Vec<phosphor_core::clip::NoteSnapshot> {
+    notes.iter().map(|n| {
+        let start_tick = n.start_tick.unwrap_or_else(|| {
+            (n.start_frac.unwrap_or(0.0) * length_ticks as f64).round() as i64
+        });
+        let duration_ticks = n.duration_ticks.unwrap_or_else(|| {
+            ((n.duration_frac.unwrap_or(0.0) * length_ticks as f64).round() as i64).max(1)
+        });
+        phosphor_core::clip::NoteSnapshot {
+            note: n.note,
+            velocity: n.velocity,
+            start_tick,
+            duration_ticks,
+            muted: n.muted,
+        }
     }).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session saved before the tick format stores notes as fractions.
+    /// It must load with every note on the same tick it always played on.
+    #[test]
+    fn fractional_notes_from_old_sessions_convert_once_and_exactly() {
+        let json = r#"{"note":64,"velocity":90,"start_frac":0.5,"duration_frac":0.25,"muted":true}"#;
+        let old: SessionNote = serde_json::from_str(json).expect("old note parses");
+        let snaps = session_notes_to_snapshots(&[old], 3840);
+        assert_eq!(snaps[0].start_tick, 1920);
+        assert_eq!(snaps[0].duration_ticks, 960);
+        assert!(snaps[0].muted, "the mute flag was dropped in conversion");
+
+        // And a new-format note passes straight through, fractions ignored.
+        let json = r#"{"note":60,"velocity":100,"start_tick":77,"duration_ticks":192}"#;
+        let new: SessionNote = serde_json::from_str(json).expect("tick note parses");
+        let snaps = session_notes_to_snapshots(&[new], 3840);
+        assert_eq!(snaps[0].start_tick, 77);
+        assert_eq!(snaps[0].duration_ticks, 192);
+    }
+
+    /// New saves write ticks and omit the legacy fraction keys entirely.
+    #[test]
+    fn new_saves_write_ticks_and_no_fractions() {
+        let note = SessionNote {
+            note: 60, velocity: 100,
+            start_tick: Some(960), duration_ticks: Some(480),
+            start_frac: None, duration_frac: None, muted: false,
+        };
+        let json = serde_json::to_string(&note).expect("serializes");
+        assert!(json.contains("start_tick"), "ticks missing from save: {json}");
+        assert!(!json.contains("frac"), "legacy keys leaked into a new save: {json}");
+    }
+
     /// Sessions saved before the mute flag existed have no `muted` key on
     /// their notes, and they must load with every note sounding.
     #[test]
@@ -588,8 +646,8 @@ mod tests {
                             start_tick: 0,
                             length_ticks: 3840,
                             notes: vec![
-                                SessionNote { note: 60, velocity: 100, start_frac: 0.0, duration_frac: 0.25, muted: false },
-                                SessionNote { note: 64, velocity: 80, start_frac: 0.25, duration_frac: 0.25, muted: false },
+                                SessionNote { note: 60, velocity: 100, start_tick: Some(0), duration_ticks: Some(960), start_frac: None, duration_frac: None, muted: false },
+                                SessionNote { note: 64, velocity: 80, start_tick: Some(960), duration_ticks: Some(960), start_frac: None, duration_frac: None, muted: false },
                             ],
                             controls: Vec::new(),
                         },

@@ -322,13 +322,9 @@ impl NavState {
                     let shorter_len = track.clips[i + 1].length_ticks;
                     let longer_len = track.clips[i].length_ticks;
                     if longer_len > 0 {
-                        let scale = shorter_len as f64 / longer_len as f64;
-                        let absorbed: Vec<_> = track.clips[i + 1].notes.iter().map(|n| {
-                            let mut rescaled = *n;
-                            rescaled.start_frac *= scale;
-                            rescaled.duration_frac *= scale;
-                            rescaled
-                        }).collect();
+                        // Ticks are ticks in either clip — the notes carry
+                        // straight over, no rescaling.
+                        let absorbed: Vec<_> = track.clips[i + 1].notes.clone();
                         track.clips[i].notes.extend(absorbed);
                     }
                     tracing::debug!(
@@ -427,21 +423,18 @@ impl NavState {
         let mut snap = snap;
         if let Some(grid) = self.clip_view.piano_roll.record_quantize {
             let ppq = phosphor_core::transport::Transport::PPQ;
-            let total_beats = ((snap.length_ticks as f64 / ppq as f64).ceil() as usize).max(1);
             for n in &mut snap.notes {
-                n.start_frac = grid
-                    .snap(n.start_frac, total_beats)
-                    .clamp(0.0, (1.0 - n.duration_frac).max(0.0));
+                n.start_tick = grid
+                    .snap_ticks(n.start_tick, ppq)
+                    .clamp(0, (snap.length_ticks - n.duration_ticks).max(0));
             }
             snap.notes.sort_by(|a, b| {
                 a.note
                     .cmp(&b.note)
-                    .then(a.start_frac.total_cmp(&b.start_frac))
+                    .then(a.start_tick.cmp(&b.start_tick))
                     .then(b.velocity.cmp(&a.velocity))
             });
-            snap.notes.dedup_by(|a, b| {
-                a.note == b.note && (a.start_frac - b.start_frac).abs() < 1e-9
-            });
+            snap.notes.dedup_by(|a, b| a.note == b.note && a.start_tick == b.start_tick);
         }
 
         // Every accepted commit is one take on the undo stack — the layer
@@ -496,11 +489,8 @@ impl NavState {
                     c.number, c.start_tick, c.start_tick + c.length_ticks,
                     union_start, union_end
                 );
-                let offset = (c.start_tick - union_start) as f64 / union_len as f64;
-                let scale = c.length_ticks as f64 / union_len as f64;
                 for mut n in c.notes.clone() {
-                    n.start_frac = n.start_frac * scale + offset;
-                    n.duration_frac *= scale;
+                    n.start_tick += c.start_tick - union_start;
                     all_notes.push(n);
                 }
                 for &(tick, dur, note, vel) in &c.hidden_notes {
@@ -516,11 +506,8 @@ impl NavState {
 
             // The take's own notes and controllers, into the same coordinates.
             {
-                let offset = (snap.start_tick - union_start) as f64 / union_len as f64;
-                let scale = snap.length_ticks as f64 / union_len as f64;
                 for mut n in snap.notes {
-                    n.start_frac = n.start_frac * scale + offset;
-                    n.duration_frac *= scale;
+                    n.start_tick += snap.start_tick - union_start;
                     all_notes.push(n);
                 }
                 for mut e in snap.controls {
