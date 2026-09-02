@@ -61,7 +61,9 @@
       "d": "duplicate clip (when on clip element)",
       "1-9": "jump to clip by number",
       "Esc": "deselect track",
-      "Enter_on_volume": "lock fader (enter volume-locked mode)"
+      "Enter_on_volume": "lock fader (enter volume-locked mode)",
+      "D": "duplicate the whole track — instrument, panel, effects, mix, clips — directly below (one undo step)",
+      "n": "on the label element: rename the track (trimmed, 8 chars max, undoable)"
     },
     "clip_locked": {
       "description": "Enter on a clip enters this mode. h/l moves clip, Shift stretches, Ctrl trims.",
@@ -79,7 +81,8 @@
       "h/l": "fader down/up by 1 dB (bottom = silent, unity = 0 dB, top = +6 dB)",
       "Esc": "release fader (back to element navigation)",
       "Enter": "release fader (back to element navigation)"
-    }
+    },
+    "arm_display": "an armed track's dot draws dim until the track is selected — MIDI records onto the selected track only"
   },
   "clip_view": {
     "focus_switch": {
@@ -114,7 +117,8 @@
     "X": "clear the clip's recorded controller data (mod wheel, pitch bend, aftertouch; undoable)",
     "{ / }": "jump the cursor down / up a whole octave (12 semitones) at once",
     "[ / ]": "snap the cursor to the nearest pitch below / above that has a note",
-    "_framing": "opening a clip frames the view on its notes, so you start on the music"
+    "_framing": "opening a clip frames the view on its notes, so you start on the music",
+    "g": "jump the cursor to the playhead's column, landing on a sounding note there when one exists"
   },
   "piano_roll_highlight_locked": {
     "description": "After highlighting notes and pressing Enter, h/l/H/L stretch the group.",

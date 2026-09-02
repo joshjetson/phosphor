@@ -456,6 +456,8 @@ pub enum InputModalKind {
     Open,
     /// Naming a user preset from the preset browser.
     PresetName,
+    /// Renaming the track under the cursor.
+    RenameTrack,
 }
 
 #[derive(Debug)]
@@ -532,6 +534,17 @@ impl InputModal {
         self.buffer.clear();
         self.cursor = 0;
         self.placeholder.clear();
+    }
+
+    /// Rename a track. Starts empty with the current name as the dim
+    /// fallback, so Enter on an untouched prompt changes nothing and the
+    /// first key pressed is the first letter of the new name.
+    pub fn open_rename(&mut self, current: &str) {
+        self.open = true;
+        self.kind = InputModalKind::RenameTrack;
+        self.buffer.clear();
+        self.cursor = 0;
+        self.placeholder = current.to_string();
     }
 
     /// How many characters are in the field.
@@ -970,6 +983,12 @@ pub const HELP_TOPICS: &[HelpTopic] = &[
             Key("m / s", "mute / solo"),
             Key("r", "arm for recording"),
             Key("R", "loop record"),
+            Note("An armed dot draws dim until its track is selected:"),
+            Note("MIDI records onto one track at a time, the selected one."),
+            Gap,
+            Heading("the track itself"),
+            Key("D", "duplicate it \u{2014} instrument, panel, fx, clips"),
+            Key("n on the label", "rename it"),
             Gap,
             Heading("the fader"),
             Key("enter", "hold it (on the dB reading)"),

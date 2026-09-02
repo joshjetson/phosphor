@@ -738,6 +738,79 @@ mod tests {
         );
     }
 
+    /// Duplicating a track copies everything — instrument, panel, clips —
+    /// onto a fresh audio identity directly below, and one undo lifts it.
+    #[test]
+    fn duplicate_track_copies_everything_below() {
+        let mut app = app();
+        add_synth_track(&mut app);
+        let src = app.nav.track_cursor;
+        app.nav.tracks[src].synth_params[4] = 0.77;
+        create_clip_with_notes(&mut app, src, 0, 3840, vec![note(60, 0.0, 0.25)]);
+        let count = app.nav.tracks.len();
+
+        app.duplicate_current_track();
+        assert_eq!(app.nav.tracks.len(), count + 1, "the duplicate never landed");
+        let copy = &app.nav.tracks[src + 1];
+        assert_eq!(copy.instrument_type, app.nav.tracks[src].instrument_type);
+        assert_eq!(copy.synth_params[4], 0.77, "the panel did not copy");
+        assert_eq!(copy.clips.len(), 1, "the clips did not copy");
+        assert!(!copy.armed, "the copy stole the record arm");
+        assert_ne!(
+            copy.mixer_id, app.nav.tracks[src].mixer_id,
+            "the copy shares the original's audio identity"
+        );
+
+        app.perform_undo();
+        assert_eq!(app.nav.tracks.len(), count, "undo did not lift the duplicate");
+    }
+
+    /// Renaming a track is one undo step, trims and caps the name, and an
+    /// empty entry changes nothing.
+    #[test]
+    fn rename_track_undoes_and_guards() {
+        let mut app = app();
+        add_synth_track(&mut app);
+        let ti = app.nav.track_cursor;
+        let original = app.nav.tracks[ti].name.clone();
+
+        app.do_rename_track("  bassline extended  ");
+        assert_eq!(app.nav.tracks[ti].name, "bassline", "trim/cap did not apply");
+        app.perform_undo();
+        assert_eq!(app.nav.tracks[ti].name, original, "rename did not undo");
+
+        app.do_rename_track("   ");
+        assert_eq!(app.nav.tracks[ti].name, original, "an empty rename changed the name");
+    }
+
+    /// g in the piano roll lands the cursor on the playhead's column, and on
+    /// a sounding note there when one exists.
+    #[test]
+    fn g_jumps_to_the_playhead() {
+        let mut app = app();
+        add_synth_track(&mut app);
+        let ti = app.nav.track_cursor;
+        // A one-bar clip; a note on beat 3.
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(72, 0.5, 0.2)]);
+        app.nav.open_clip_view(ti, 0);
+        app.nav.clip_view.piano_roll.total_beats = 4;
+        app.nav.clip_view.piano_roll.update_column_count();
+        let cols = app.nav.clip_view.piano_roll.column_count;
+
+        // The playhead sits on beat 3.
+        app.engine.transport.set_position(3840 / 2);
+        app.jump_to_playhead();
+        assert_eq!(
+            app.nav.clip_view.piano_roll.column,
+            cols / 2,
+            "the cursor did not land on the playhead's column"
+        );
+        assert_eq!(
+            app.nav.clip_view.piano_roll.cursor_note, 72,
+            "the cursor did not land on the sounding note"
+        );
+    }
+
     /// Opening a clip frames the view on its notes rather than the last
     /// octave the roll sat on.
     #[test]

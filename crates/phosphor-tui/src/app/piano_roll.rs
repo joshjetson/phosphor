@@ -136,6 +136,45 @@ impl App {
         }
     }
 
+    /// Put the column cursor where the playhead is — the column the music
+    /// is on right now, which is where the note that just sounded wrong
+    /// lives — and the pitch cursor on a note in that column when one
+    /// exists. Falls back to the clip's start when the playhead is outside
+    /// the clip.
+    pub(crate) fn jump_to_playhead(&mut self) {
+        let Some(clip) = self.nav.active_clip() else { return };
+        if clip.length_ticks <= 0 {
+            return;
+        }
+        let pos = self.engine.transport.position_ticks() - clip.start_tick;
+        let col_count = self.nav.clip_view.piano_roll.column_count.max(1);
+        let col = if pos >= 0 && pos < clip.length_ticks {
+            ((pos * col_count as i64) / clip.length_ticks) as usize
+        } else {
+            0
+        };
+        // A note sounding in this column, nearest the cursor pitch, if any.
+        let col_lo = col as f64 / col_count as f64;
+        let col_hi = (col + 1) as f64 / col_count as f64;
+        let cursor_pitch = self.nav.clip_view.piano_roll.cursor_note;
+        let target = clip
+            .notes
+            .iter()
+            .filter(|n| n.start_frac < col_hi && n.start_frac + n.duration_frac > col_lo)
+            .min_by_key(|n| (n.note as i16 - cursor_pitch as i16).abs())
+            .map(|n| n.note);
+
+        let pr = &mut self.nav.clip_view.piano_roll;
+        pr.column = col.min(col_count - 1);
+        pr.ensure_column_visible();
+        if let Some(note) = target {
+            pr.cursor_to_note(note);
+            self.flash("at the playhead");
+        } else {
+            self.flash("at the playhead \u{00b7} no note here");
+        }
+    }
+
     // ── Automation lane ──
 
     /// The controller streams the viewed clip offers, or empty when no clip

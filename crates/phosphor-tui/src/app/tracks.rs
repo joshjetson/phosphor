@@ -178,6 +178,57 @@ impl App {
         );
     }
 
+    /// Apply a rename typed into the input modal, as one undo step. Names
+    /// are trimmed and capped to the width a strip can draw.
+    pub(crate) fn do_rename_track(&mut self, name: &str) {
+        let name: String = name.trim().chars().take(8).collect();
+        if name.is_empty() {
+            return;
+        }
+        let track_idx = self.nav.track_cursor;
+        if self.nav.tracks.get(track_idx).is_none() {
+            return;
+        }
+        let before = self.nav.undo_checkpoint(
+            crate::state::undo::UndoScope::TrackName { track_idx },
+        );
+        if let Some(track) = self.nav.tracks.get_mut(track_idx) {
+            track.name = name.clone();
+        }
+        self.nav.commit_undo(before, "rename track");
+        self.flash(format!("track renamed \u{00b7} '{name}'"));
+    }
+
+    /// Duplicate the track under the cursor — instrument, whole panel,
+    /// effects, mix position, clips, sequencer and all — directly below it.
+    /// The layering gesture's other half: double the part, then swap the
+    /// copy's patch or instrument until it is its own voice. One undo step.
+    pub(crate) fn duplicate_current_track(&mut self) {
+        use crate::state::undo::StateSlice;
+        let src_idx = self.nav.track_cursor;
+        let Some(src) = self.nav.tracks.get(src_idx) else { return };
+        if !src.is_live() {
+            self.flash("only instrument tracks duplicate");
+            return;
+        }
+        let mut saved = src.clone();
+        // A short name, like every track name here; the copy says it is one.
+        saved.name = format!("{}2", saved.name.chars().take(4).collect::<String>());
+        // The copy must not steal the original's audio identity or double
+        // its record arm; materialize gives it fresh ones.
+        saved.armed = false;
+
+        let dest = src_idx + 1;
+        self.materialize_track(dest, &saved);
+        let Some(created) = self.nav.tracks.get(dest) else { return };
+        self.nav.push_undo_step(
+            StateSlice::Track { track_idx: dest, track: None },
+            StateSlice::Track { track_idx: dest, track: Some(Box::new(created.clone())) },
+            "duplicate track",
+        );
+        self.flash(format!("track duplicated \u{00b7} '{}'", self.nav.tracks[dest].name));
+    }
+
     /// Take an instrument track out of the session — the UI row, the audio
     /// track, the cursor and clip view that pointed at it. One removal,
     /// shared by delete and by undo/redo, which are the same act reached

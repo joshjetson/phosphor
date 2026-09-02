@@ -218,6 +218,11 @@ impl App {
                 }
                 self.sync_routing(*track_idx);
             }
+            StateSlice::TrackName { track_idx, name } => {
+                if let Some(track) = self.nav.tracks.get_mut(*track_idx) {
+                    track.name = name.clone();
+                }
+            }
             StateSlice::Tempo { bpm } => {
                 self.engine.transport.set_tempo(f64::from(*bpm));
                 self.nav.tempo_bpm = *bpm;
@@ -307,6 +312,14 @@ impl App {
     /// routing, sequencer. The same order a session load uses, because it is
     /// the same job.
     fn restore_track_from_slice(&mut self, track_idx: usize, saved: &crate::state::TrackState) {
+        self.materialize_track(track_idx, saved);
+    }
+
+    /// Build a live track from a captured [`TrackState`] at `track_idx` —
+    /// the shared machinery under undo's track restore and the duplicate
+    /// gesture, which are the same job: a dead state made to sound again
+    /// with a fresh audio identity.
+    pub(crate) fn materialize_track(&mut self, track_idx: usize, saved: &crate::state::TrackState) {
         use crate::debug_log as dbg;
         let Some(instrument) = saved.instrument_type else { return };
         self.create_instrument_track(instrument);

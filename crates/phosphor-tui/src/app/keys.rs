@@ -134,6 +134,7 @@ impl App {
                             InputModalKind::SaveAs => self.do_save(&path),
                             InputModalKind::Open => self.do_load(&path),
                             InputModalKind::PresetName => self.request_preset_save(&path),
+                            InputModalKind::RenameTrack => self.do_rename_track(&path),
                         }
                     }
                 }
@@ -587,6 +588,26 @@ impl App {
                     self.duplicate_clip(idx);
                 }
             }
+            // The layering gesture's other half: double the whole track —
+            // instrument, panel, effects, clips — directly below itself.
+            KeyCode::Char('D')
+                if self.nav.track_selected && !self.nav.fx_menu.open =>
+            {
+                self.duplicate_current_track();
+            }
+            // On the label, n names the track.
+            KeyCode::Char('n')
+                if self.nav.track_selected
+                && self.nav.track_element == crate::state::TrackElement::Label
+                && !self.nav.fx_menu.open =>
+            {
+                if let Some(track) = self.nav.tracks.get(self.nav.track_cursor) {
+                    if track.is_live() {
+                        let current = track.name.clone();
+                        self.nav.input_modal.open_rename(&current);
+                    }
+                }
+            }
             KeyCode::Char('h') | KeyCode::Left => self.nav.move_left(),
             KeyCode::Char('l') | KeyCode::Right => self.nav.move_right(),
             KeyCode::Enter if self.nav.fx_menu.open => {
@@ -938,6 +959,12 @@ impl App {
                     // existing note never means scrolling to find it.
                     KeyCode::Char(']') => {
                         self.snap_note_up();
+                    }
+                    // Go to the playhead: the column the music is on right
+                    // now, which is where the note that just sounded wrong
+                    // lives.
+                    KeyCode::Char('g') => {
+                        self.jump_to_playhead();
                     }
                     KeyCode::Char('[') => {
                         self.snap_note_down();

@@ -139,9 +139,19 @@ pub(super) fn render_header(frame: &mut Frame, area: Rect, ctx: &TrackCtx) {
     // VU — horizontal bar on row 1
     let vu_filled = vu_cells(vu_level);
 
-    // Record arm dot
-    let arm_s = if track.armed {
+    // Record arm dot. Honest about routing: MIDI goes to one track at a
+    // time, so an armed track that is not the MIDI target will not record
+    // until it is selected — its dot draws dim, meaning "will record when
+    // selected", instead of a full red that promises something the mixer
+    // will not do.
+    let midi_target = track
+        .handle
+        .as_ref()
+        .is_some_and(|h| h.config.is_midi_active());
+    let arm_s = if track.armed && midi_target {
         Style::default().fg(theme::rec_active_val()).bg(theme::bg_val())
+    } else if track.armed {
+        Style::default().fg(theme::rec_dim_val()).bg(theme::bg_val())
     } else {
         theme::dim()
     };

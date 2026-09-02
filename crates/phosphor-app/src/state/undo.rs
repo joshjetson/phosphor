@@ -55,6 +55,9 @@ pub enum UndoScope {
     /// because swapping a drum machine for a keyboard re-lays the lanes,
     /// and undoing the swap has to bring the lanes back with it.
     SeqChild { track_idx: usize },
+    /// A track's name — the one field of a track that renames without
+    /// touching anything the audio thread holds.
+    TrackName { track_idx: usize },
     /// The transport's tempo, read from and applied through the
     /// [`NavState::tempo_bpm`] mirror — every tempo edit refreshes the
     /// mirror in the same breath, which is what makes the mirror safe to
@@ -86,6 +89,7 @@ pub enum StateSlice {
         params: Vec<f32>,
         content: Option<Box<crate::sequencer::SeqContent>>,
     },
+    TrackName { track_idx: usize, name: String },
     Tempo { bpm: f32 },
     LoopRange { start_bar: u32, end_bar: u32 },
 }
@@ -139,6 +143,10 @@ impl StateSlice {
                         .map(|s| Box::new(s.content())),
                 }
             }
+            UndoScope::TrackName { track_idx } => Self::TrackName {
+                track_idx,
+                name: nav.tracks.get(track_idx).map(|t| t.name.clone()).unwrap_or_default(),
+            },
             UndoScope::Tempo => Self::Tempo { bpm: nav.tempo_bpm },
             UndoScope::LoopRange => Self::LoopRange {
                 start_bar: nav.loop_editor.start_bar,
@@ -156,6 +164,7 @@ impl StateSlice {
             Self::TrackMix { track_idx, .. } => UndoScope::TrackMix { track_idx: *track_idx },
             Self::Sequencer { track_idx, .. } => UndoScope::Sequencer { track_idx: *track_idx },
             Self::SeqChild { track_idx, .. } => UndoScope::SeqChild { track_idx: *track_idx },
+            Self::TrackName { track_idx, .. } => UndoScope::TrackName { track_idx: *track_idx },
             Self::Tempo { .. } => UndoScope::Tempo,
             Self::LoopRange { .. } => UndoScope::LoopRange,
         }
@@ -198,6 +207,10 @@ impl StateSlice {
                 Self::SeqChild { track_idx: a, instrument: ia, params: pa, content: ca },
                 Self::SeqChild { track_idx: b, instrument: ib, params: pb, content: cb },
             ) => a == b && ia == ib && pa == pb && ca == cb,
+            (
+                Self::TrackName { track_idx: a, name: na },
+                Self::TrackName { track_idx: b, name: nb },
+            ) => a == b && na == nb,
             (Self::Tempo { bpm: a }, Self::Tempo { bpm: b }) => a == b,
             (
                 Self::LoopRange { start_bar: sa, end_bar: ea },
