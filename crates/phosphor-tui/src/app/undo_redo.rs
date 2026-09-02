@@ -176,6 +176,11 @@ impl App {
                 let chain = chain.clone();
                 self.apply_midi_fx_slice(*track_idx, &chain);
             }
+            StateSlice::ClipsAndMidiFx { track_idx, clips, chain } => {
+                self.apply_clips_slice(*track_idx, clips);
+                let chain = chain.clone();
+                self.apply_midi_fx_slice(*track_idx, &chain);
+            }
             StateSlice::SynthParams { track_idx, params } => {
                 if let Some(track) = self.nav.tracks.get_mut(*track_idx) {
                     track.synth_params = params.clone();

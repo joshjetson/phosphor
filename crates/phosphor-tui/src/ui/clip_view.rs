@@ -578,6 +578,24 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
         let scroll_frac = if column_count > 0 { scroll_offset as f64 / column_count as f64 } else { 0.0 };
         let visible_frac = if column_count > 0 { visible_cols as f64 / column_count as f64 } else { 1.0 };
         let in_edit = pr.edit_mode;
+        // Ghosts first, so real notes paint over them: what the MIDI rack
+        // will actually play, faint, behind what was played. A shaded block
+        // rather than the full one, so a ghost can never be mistaken for a
+        // note the cursor could land on.
+        for g in nav.ghost_notes.iter().filter(|g| g.note == note) {
+            let rel_start = (g.start_frac(clip_len) - scroll_frac) / visible_frac;
+            let rel_end =
+                ((g.end_tick() as f64 / clip_len as f64) - scroll_frac) / visible_frac;
+            if rel_end <= 0.0 || rel_start >= 1.0 {
+                continue;
+            }
+            let sx = (rel_start.max(0.0) * note_w as f64) as usize;
+            let ex = ((rel_end * note_w as f64) as usize).max(sx + 1).min(note_w);
+            let ghost_style = base_note_style.fg(theme::dim_color(tc, 30));
+            for cell in gr.iter_mut().take(ex).skip(sx) {
+                *cell = ('\u{2592}', ghost_style);
+            }
+        }
         for (ni, n) in notes.iter().enumerate() {
             if n.note == note {
                 // Determine style based on edit mode state

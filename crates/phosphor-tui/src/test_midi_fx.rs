@@ -151,4 +151,95 @@ mod tests {
         assert_eq!(MidiFxType::Chord.value_text(5, 1.0), "root -1 oct");
         assert_eq!(MidiFxType::Chord.value_text(6, 25.0), "25ms");
     }
+
+    fn clip_with_note(app: &mut App, ti: usize, note: u8) {
+        let bar = phosphor_core::transport::Transport::PPQ * 4;
+        app.nav.tracks[ti].clips.push(crate::state::Clip {
+            number: 1,
+            width: 4,
+            has_content: true,
+            start_tick: 0,
+            length_ticks: bar,
+            notes: vec![phosphor_core::clip::NoteSnapshot {
+                note, velocity: 100, start_tick: 0, duration_ticks: bar - 60, muted: false,
+            }],
+            hidden_notes: Vec::new(),
+            controls: Vec::new(),
+        });
+        app.nav.open_clip_view(ti, 0);
+    }
+
+    /// A preset lands several knobs at once as one undo step.
+    #[test]
+    fn a_preset_is_one_undo_step() {
+        let (mut app, ti) = app_with_track();
+        app.add_midi_fx(ti, MidiFxType::Arp);
+        let before: Vec<f32> = app.nav.tracks[ti].midi_fx[0].params.clone();
+        app.apply_arp_preset(0, 1); // dilla 16ths
+        let after = &app.nav.tracks[ti].midi_fx[0].params;
+        assert!((after[0] - 3.0).abs() < 1e-6, "style should be played-order");
+        assert!((after[6] - 58.0).abs() < 1e-6, "swing should be 58");
+        app.perform_undo();
+        assert_eq!(app.nav.tracks[ti].midi_fx[0].params, before, "one u should undo the preset");
+    }
+
+    /// Ghost notes appear when a device is live and vanish when it is not.
+    #[test]
+    fn ghosts_follow_the_rack() {
+        let (mut app, ti) = app_with_track();
+        clip_with_note(&mut app, ti, 48);
+        app.refresh_ghost_notes();
+        assert!(app.nav.ghost_notes.is_empty(), "no rack, no ghosts");
+
+        app.add_midi_fx(ti, MidiFxType::Chord);
+        app.refresh_ghost_notes();
+        assert!(
+            app.nav.ghost_notes.len() >= 4,
+            "a chord device should ghost a chord: {:?}",
+            app.nav.ghost_notes
+        );
+
+        app.set_midi_fx_bypass(ti, 0, true);
+        app.refresh_ghost_notes();
+        assert!(app.nav.ghost_notes.is_empty(), "a bypassed rack still ghosts");
+    }
+
+    /// Commit prints the rack into the clip, bypasses the devices, and one
+    /// undo restores the played notes and the live rack together.
+    #[test]
+    fn commit_prints_bypasses_and_undoes_as_one() {
+        let (mut app, ti) = app_with_track();
+        clip_with_note(&mut app, ti, 48);
+        app.add_midi_fx(ti, MidiFxType::Chord);
+
+        app.commit_midi_fx();
+        let clip_notes = app.nav.tracks[ti].clips[0].notes.len();
+        assert!(clip_notes >= 4, "the chord was not printed: {clip_notes} notes");
+        assert!(
+            app.nav.tracks[ti].midi_fx.iter().all(|s| s.bypass),
+            "the rack must bypass on commit or the sound transforms twice"
+        );
+
+        app.perform_undo();
+        assert_eq!(
+            app.nav.tracks[ti].clips[0].notes.len(),
+            1,
+            "one u should restore the played note"
+        );
+        assert!(
+            app.nav.tracks[ti].midi_fx.iter().all(|s| !s.bypass),
+            "the same u should bring the rack back live"
+        );
+    }
+
+    /// Committing with nothing active refuses instead of erasing the clip.
+    #[test]
+    fn commit_refuses_a_silent_rack() {
+        let (mut app, ti) = app_with_track();
+        clip_with_note(&mut app, ti, 48);
+        app.add_midi_fx(ti, MidiFxType::Chord);
+        app.set_midi_fx_bypass(ti, 0, true);
+        app.commit_midi_fx();
+        assert_eq!(app.nav.tracks[ti].clips[0].notes.len(), 1, "a bypassed rack committed");
+    }
 }

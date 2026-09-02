@@ -239,6 +239,9 @@
     "order": "MIDI effects always lead the chain — they run on notes, the audio effects run on sound",
     "chord_device": "chord · midi: below the split every key plays its scale degree's full chord — root+scale pick the key, color picks triad/7th/9th/lush, voicing picks close/drop2/rootless A·B/quartal/spread, bass adds the root below, strum rolls it; a register lock voices each chord near the last so progressions walk",
     "chain": "chord before arp always (auto-ordered): one key → full chord → arpeggiated run",
-    "quality_movement": "the minor→major→sus→dim magic: park the root, ride the color and scale knobs — every chord stays voiced near the last, so quality changes read as light changing, not jumps"
+    "quality_movement": "the minor→major→sus→dim magic: park the root, ride the color and scale knobs — every chord stays voiced near the last, so quality changes read as light changing, not jumps",
+    "ghost_notes": "when a midi device is active, the piano roll draws its output as faint shaded notes behind your played notes — what you see is what will sound; they update as you turn knobs and vanish on bypass",
+    "commit": "c in the [trk fx] tab prints the rack's output into the viewed clip as real editable notes and bypasses the devices (so it can't transform twice); one undo restores your played notes AND the live rack together",
+    "arp_presets": "1-4 in the arp panel: rhodes 8ths (up 1/8 gate75 swing56), dilla 16ths (played 1/16 gate45 swing58), wide updown (2 oct), chord pulse (1/8 gate40 swing54) — each one undo step"
   }
 }

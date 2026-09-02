@@ -168,6 +168,9 @@ pub(super) fn render_fx_chain(frame: &mut Frame, area: Rect, nav: &NavState, foc
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled("  enter open  b bypass", theme::dim())));
         lines.push(Line::from(Span::styled("  [ ] order  d remove", theme::dim())));
+        if !midi.is_empty() {
+            lines.push(Line::from(Span::styled("  c commit midi \u{2192} notes", theme::dim())));
+        }
     }
     lines.truncate(h);
     frame.render_widget(Paragraph::new(lines), area);
@@ -218,6 +221,12 @@ fn render_midi_fx_panel(
         "  j/k knob \u{00b7} h/l adjust \u{00b7} b bypass \u{00b7} esc back",
         theme::dim(),
     )));
+    if fx_type == crate::state::MidiFxType::Arp {
+        lines.push(Line::from(Span::styled(
+            "  1-4: rhodes 8ths \u{00b7} dilla 16ths \u{00b7} wide \u{00b7} pulse",
+            theme::dim(),
+        )));
+    }
 
     lines.truncate(area.height as usize);
     frame.render_widget(Paragraph::new(lines), area);

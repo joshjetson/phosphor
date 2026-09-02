@@ -414,6 +414,7 @@ impl NavState {
     /// When NOT recording, snapshots matching the viewed clip are stale (from panic/reset) and ignored.
     /// Returns (mixer_id, count_absorbed) so caller can send RemoveClip commands to audio.
     pub fn receive_clip_snapshot(&mut self, snap: phosphor_core::clip::ClipSnapshot, is_recording: bool) -> Option<(usize, usize)> {
+        self.ghost_dirty = true;
         tracing::debug!(
             "clip received: track={} events={} notes={} ticks={}..{} recording={}",
             snap.track_id, snap.event_count, snap.notes.len(),

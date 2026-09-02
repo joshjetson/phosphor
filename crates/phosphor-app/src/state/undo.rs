@@ -42,6 +42,10 @@ pub enum UndoScope {
     TrackFx { track_idx: usize },
     /// A track's pre-instrument MIDI effects.
     TrackMidiFx { track_idx: usize },
+    /// A track's clips and its MIDI rack together — the commit gesture,
+    /// which prints the rack's output into a clip and bypasses the rack in
+    /// the same breath, and must come back the same way.
+    ClipsAndMidiFx { track_idx: usize },
     /// An instrument panel's parameter block, patch selectors included.
     SynthParams { track_idx: usize },
     /// A strip's mix position: fader, pan, sends, mute. Not solo — solo is
@@ -80,6 +84,11 @@ pub enum StateSlice {
     Track { track_idx: usize, track: Option<Box<TrackState>> },
     TrackFx { track_idx: usize, chain: Vec<FxInstance> },
     TrackMidiFx { track_idx: usize, chain: Vec<super::MidiFxInstance> },
+    ClipsAndMidiFx {
+        track_idx: usize,
+        clips: Vec<Clip>,
+        chain: Vec<super::MidiFxInstance>,
+    },
     SynthParams { track_idx: usize, params: Vec<f32> },
     TrackMix { track_idx: usize, volume: f32, pan: f32, sends: [f32; 2], muted: bool },
     /// `None` when the track had no sequencer — captured for completeness,
@@ -115,6 +124,11 @@ impl StateSlice {
             },
             UndoScope::TrackMidiFx { track_idx } => Self::TrackMidiFx {
                 track_idx,
+                chain: nav.tracks.get(track_idx).map(|t| t.midi_fx.clone()).unwrap_or_default(),
+            },
+            UndoScope::ClipsAndMidiFx { track_idx } => Self::ClipsAndMidiFx {
+                track_idx,
+                clips: nav.tracks.get(track_idx).map(|t| t.clips.clone()).unwrap_or_default(),
                 chain: nav.tracks.get(track_idx).map(|t| t.midi_fx.clone()).unwrap_or_default(),
             },
             UndoScope::SynthParams { track_idx } => Self::SynthParams {
@@ -170,6 +184,9 @@ impl StateSlice {
             Self::TrackMidiFx { track_idx, .. } => {
                 UndoScope::TrackMidiFx { track_idx: *track_idx }
             }
+            Self::ClipsAndMidiFx { track_idx, .. } => {
+                UndoScope::ClipsAndMidiFx { track_idx: *track_idx }
+            }
             Self::SynthParams { track_idx, .. } => UndoScope::SynthParams { track_idx: *track_idx },
             Self::TrackMix { track_idx, .. } => UndoScope::TrackMix { track_idx: *track_idx },
             Self::Sequencer { track_idx, .. } => UndoScope::Sequencer { track_idx: *track_idx },
@@ -201,6 +218,10 @@ impl StateSlice {
                 Self::TrackMidiFx { track_idx: a, chain: ca },
                 Self::TrackMidiFx { track_idx: b, chain: cb },
             ) => a == b && ca == cb,
+            (
+                Self::ClipsAndMidiFx { track_idx: a, clips: la, chain: ca },
+                Self::ClipsAndMidiFx { track_idx: b, clips: lb, chain: cb },
+            ) => a == b && la == lb && ca == cb,
             (
                 Self::SynthParams { track_idx: a, params: pa },
                 Self::SynthParams { track_idx: b, params: pb },

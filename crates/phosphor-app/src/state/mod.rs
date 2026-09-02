@@ -138,6 +138,16 @@ pub struct NavState {
     /// layers onto what is there (overdub, the default), `true` clears the
     /// range first so the take starts clean (re-record).
     pub record_replace: bool,
+    /// The viewed clip as the MIDI rack will play it — dim "ghost" notes
+    /// behind the real ones, so the roll tells the truth when a chord or
+    /// arp device is transforming playback. Recomputed when the clip, the
+    /// rack, or the view changes; empty when no device is active.
+    pub ghost_notes: Vec<phosphor_core::clip::NoteSnapshot>,
+    /// Which (track, clip) the ghosts were rendered for.
+    pub ghost_for: Option<(usize, usize)>,
+    /// Set by anything that may change what the rack would play; the main
+    /// loop re-renders and clears it.
+    pub ghost_dirty: bool,
     /// What the master limiter is taking off, ready to draw.
     ///
     /// The audio thread's end of this is in `Mixer`; the ballistics have
@@ -204,6 +214,9 @@ impl NavState {
             recording_grace: 0,
             take_count: 0,
             record_replace: false,
+            ghost_notes: Vec::new(),
+            ghost_for: None,
+            ghost_dirty: true,
             limiter_gr: std::sync::Arc::new(phosphor_core::fx::GrMeter::new()),
             sample_rate: 48_000,
             tempo_bpm: 120.0,

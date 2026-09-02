@@ -129,6 +129,7 @@ impl App {
                 self.nav.fx_menu.open = true;
                 self.nav.fx_menu.cursor = 0;
             }
+            KeyCode::Char('c') if midi_len > 0 => self.commit_midi_fx(),
             _ => return false,
         }
         true
@@ -676,8 +677,38 @@ impl App {
                 let slot = self.nav.clip_view.fx.midi_slot.unwrap_or(0);
                 self.toggle_midi_fx_bypass(slot);
             }
+            KeyCode::Char(c @ '1'..='4') => {
+                let slot = self.nav.clip_view.fx.midi_slot.unwrap_or(0);
+                self.apply_arp_preset(slot, c as usize - '1' as usize);
+            }
             _ => {}
         }
+    }
+
+    /// One of the arp's factory feels, as one undo step.
+    /// `pub(crate)` with a test alias below, so the battery can press the
+    /// number keys' handler directly.
+    pub(crate) fn apply_arp_preset(&mut self, slot: usize, index: usize) {
+        use crate::state::{MidiFxType, ARP_PRESETS};
+        let track_idx = self.nav.track_cursor;
+        let is_arp = self
+            .nav
+            .tracks
+            .get(track_idx)
+            .and_then(|t| t.midi_fx.get(slot))
+            .is_some_and(|i| i.fx_type == MidiFxType::Arp);
+        if !is_arp {
+            return;
+        }
+        let Some(&(name, settings)) = ARP_PRESETS.get(index) else { return };
+        let before = self.nav.undo_checkpoint(
+            crate::state::undo::UndoScope::TrackMidiFx { track_idx },
+        );
+        for (param, value) in settings {
+            self.write_midi_fx_param(track_idx, slot, param, value);
+        }
+        self.nav.commit_undo(before, "arp preset");
+        self.flash(format!("arp: {name}"));
     }
 
     /// Turn the MIDI-effect control under the cursor. Selectors — style,

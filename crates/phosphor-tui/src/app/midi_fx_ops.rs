@@ -41,6 +41,7 @@ impl App {
             at
         };
         self.send_add_midi_fx(track_index, slot);
+        self.nav.ghost_dirty = true;
         self.nav.commit_undo(before, "add midi effect");
         self.flash(format!("{} added \u{00b7} plays live and on playback", fx_type.label()));
     }
@@ -64,6 +65,7 @@ impl App {
                 .mixer_command_tx
                 .send(MixerCommand::RemoveMidiFx { track_id, slot });
         }
+        self.nav.ghost_dirty = true;
         self.nav.commit_undo(before, "remove midi effect");
     }
 
@@ -111,6 +113,7 @@ impl App {
             param_index: param,
             value: clamped,
         });
+        self.nav.ghost_dirty = true;
     }
 
     /// Throw a slot's switch. Discrete, never coalesced.
@@ -133,6 +136,7 @@ impl App {
             .shared
             .mixer_command_tx
             .send(MixerCommand::SetMidiFxBypass { track_id, slot, bypassed: bypass });
+        self.nav.ghost_dirty = true;
     }
 
     /// Install the mirror's whole rack onto the audio thread — session load
@@ -199,6 +203,90 @@ impl App {
             track.midi_fx = chain.to_vec();
         }
         self.install_midi_fx(track_idx);
+        self.nav.ghost_dirty = true;
+    }
+
+    /// Print the rack into the viewed clip: the notes the devices would
+    /// play become the clip's real, editable notes, and every device is
+    /// bypassed so the sound does not transform twice. One undo step brings
+    /// back both the played notes and the live rack.
+    pub(crate) fn commit_midi_fx(&mut self) {
+        let Some((ti, ci)) = self.nav.clip_view_target else {
+            self.flash("open a clip first");
+            return;
+        };
+        let Some(track) = self.nav.tracks.get(ti) else { return };
+        if !track.midi_fx.iter().any(|s| !s.bypass) {
+            self.flash("no active midi fx to commit");
+            return;
+        }
+        let Some(clip) = track.clips.get(ci) else { return };
+        if clip.notes.is_empty() && clip.controls.is_empty() {
+            self.flash("the clip is empty");
+            return;
+        }
+        let before = self.nav.undo_checkpoint(
+            crate::state::undo::UndoScope::ClipsAndMidiFx { track_idx: ti },
+        );
+        let events = crate::state::render_clip_through_rack(
+            clip,
+            &track.midi_fx,
+            clip.start_tick,
+            self.engine.config.sample_rate as f32,
+            self.engine.transport.tempo_bpm(),
+        );
+        let notes =
+            crate::state::rendered_events_to_notes(events, clip.length_ticks.max(1));
+        let count = notes.len();
+        if let Some(clip) = self
+            .nav
+            .tracks
+            .get_mut(ti)
+            .and_then(|t| t.clips.get_mut(ci))
+        {
+            clip.notes = notes;
+        }
+        let slots = self.nav.tracks.get(ti).map(|t| t.midi_fx.len()).unwrap_or(0);
+        for slot in 0..slots {
+            self.write_midi_fx_bypass(ti, slot, true);
+        }
+        self.nav.commit_undo(before, "commit midi fx");
+        self.send_clip_update();
+        self.flash(format!(
+            "committed \u{00b7} {count} notes \u{00b7} rack bypassed \u{00b7} u undoes"
+        ));
+    }
+
+    /// Keep the piano roll's ghost notes current: what the MIDI rack would
+    /// make of the viewed clip, rendered offline through the same engine a
+    /// commit prints with. Cheap when nothing changed; cleared when no
+    /// device is active so the roll draws nothing stale.
+    pub(crate) fn refresh_ghost_notes(&mut self) {
+        let target = self.nav.clip_view_target;
+        if !self.nav.ghost_dirty && self.nav.ghost_for == target {
+            return;
+        }
+        self.nav.ghost_dirty = false;
+        self.nav.ghost_for = target;
+        self.nav.ghost_notes.clear();
+        let Some((ti, ci)) = target else { return };
+        let Some(track) = self.nav.tracks.get(ti) else { return };
+        if !track.midi_fx.iter().any(|s| !s.bypass) {
+            return;
+        }
+        let Some(clip) = track.clips.get(ci) else { return };
+        if clip.notes.is_empty() && clip.controls.is_empty() {
+            return;
+        }
+        let events = crate::state::render_clip_through_rack(
+            clip,
+            &track.midi_fx,
+            clip.start_tick,
+            self.engine.config.sample_rate as f32,
+            self.engine.transport.tempo_bpm(),
+        );
+        self.nav.ghost_notes =
+            crate::state::rendered_events_to_notes(events, clip.length_ticks.max(1));
     }
 
     /// Build the effect from a mirror slot and send it to the audio thread.

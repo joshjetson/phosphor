@@ -363,8 +363,10 @@ impl App {
         ));
     }
 
-    pub(crate) fn send_clip_update(&self) {
+    pub(crate) fn send_clip_update(&mut self) {
         use crate::debug_log as dbg;
+        // The rack's ghost render reads the clip; it is stale now.
+        self.nav.ghost_dirty = true;
         if let Some((track_idx, clip_idx)) = self.nav.clip_view_target {
             if let Some(track) = self.nav.tracks.get(track_idx) {
                 if let (Some(mixer_id), Some(clip)) = (track.mixer_id, track.clips.get(clip_idx)) {

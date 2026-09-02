@@ -1012,6 +1012,11 @@ pub const HELP_TOPICS: &[HelpTopic] = &[
             Note("chord \u{2192} arp, one finger, a rolling voicing."),
             Key("enter", "open a panel \u{00b7} j/k knob, h/l adjust"),
             Key("b / d", "bypass / remove \u{00b7} latch is an arp knob"),
+            Key("1-4", "in the arp panel: factory feels"),
+            Key("c", "commit: print the rack into the clip's notes"),
+            Note("The roll shows the rack's output as faint ghost"),
+            Note("notes behind yours; commit makes them real and"),
+            Note("bypasses the rack \u{2014} one u restores both."),
         ],
     },
     HelpTopic {
