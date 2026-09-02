@@ -427,79 +427,83 @@ impl NavState {
         {
             let track = &mut self.tracks[track_idx];
             let ppq = phosphor_core::transport::Transport::PPQ;
-            let beats = (snap.length_ticks as f64 / ppq as f64).ceil() as u16;
-            let width = beats.max(2);
             let snap_end = snap.start_tick + snap.length_ticks;
 
-            // Absorb any clips that the new recording fully covers.
-            // A clip is covered if it starts within the snap range and ends within it.
-            let mut absorbed_notes = Vec::new();
-            track.clips.retain(|c| {
+            // The bars the take will occupy: its own range, widened by every
+            // clip it touches. *Overlap*, not containment — recording over
+            // half an older clip merges the whole clip, because two clips on
+            // the same bars is the one thing the timeline never holds; the
+            // move, stretch and paste operations all enforce the same law.
+            // A clip that starts within a beat of the take counts as touched
+            // even if it does not quite reach it, so a take and its own clip
+            // from the previous pass cannot drift apart over a rounding gap.
+            let touches = |c: &Clip| {
                 let c_end = c.start_tick + c.length_ticks;
-                let covered = c.start_tick >= snap.start_tick && c_end <= snap_end;
-                if covered {
-                    tracing::debug!(
-                        "  absorbing clip #{}: tick {}..{} (snap covers {}..{})",
-                        c.number, c.start_tick, c_end, snap.start_tick, snap_end
-                    );
-                    // Rescale notes to snap's coordinate space
-                    let offset = (c.start_tick - snap.start_tick) as f64 / snap.length_ticks as f64;
-                    let scale = c.length_ticks as f64 / snap.length_ticks as f64;
-                    for mut n in c.notes.clone() {
-                        n.start_frac = n.start_frac * scale + offset;
-                        n.duration_frac *= scale;
-                        absorbed_notes.push(n);
-                    }
-                    absorbed_count += 1;
-                    false
-                } else {
-                    true
+                let overlaps = c.start_tick < snap_end && snap.start_tick < c_end;
+                let close = (c.start_tick - snap.start_tick).abs() <= ppq;
+                overlaps || close
+            };
+            let mut union_start = snap.start_tick;
+            let mut union_end = snap_end;
+            for c in track.clips.iter().filter(|c| touches(c)) {
+                union_start = union_start.min(c.start_tick);
+                union_end = union_end.max(c.start_tick + c.length_ticks);
+            }
+            let union_len = (union_end - union_start).max(1);
+
+            // Absorb every touched clip, carrying its notes — and the notes
+            // it was hiding under a trim — into the union's coordinates.
+            let mut all_notes = Vec::new();
+            let mut all_hidden = Vec::new();
+            track.clips.retain(|c| {
+                if !touches(c) {
+                    return true;
                 }
+                tracing::debug!(
+                    "  absorbing clip #{}: tick {}..{} into union {}..{}",
+                    c.number, c.start_tick, c.start_tick + c.length_ticks,
+                    union_start, union_end
+                );
+                let offset = (c.start_tick - union_start) as f64 / union_len as f64;
+                let scale = c.length_ticks as f64 / union_len as f64;
+                for mut n in c.notes.clone() {
+                    n.start_frac = n.start_frac * scale + offset;
+                    n.duration_frac *= scale;
+                    all_notes.push(n);
+                }
+                for &(tick, dur, note, vel) in &c.hidden_notes {
+                    all_hidden.push((tick + c.start_tick - union_start, dur, note, vel));
+                }
+                absorbed_count += 1;
+                false
             });
 
-            // Combine absorbed notes with the new recording's notes
-            let mut all_notes = absorbed_notes;
-            all_notes.extend(snap.notes);
-
-            // Try to merge into an existing clip with a close start
-            let merge_tolerance = ppq;
-            if let Some(existing) = track.clips.iter_mut().find(|c| {
-                (c.start_tick - snap.start_tick).abs() <= merge_tolerance
-            }) {
-                // Rescale if lengths differ
-                if snap.length_ticks != existing.length_ticks && existing.length_ticks > 0 {
-                    let scale = snap.length_ticks as f64 / existing.length_ticks as f64;
-                    let offset = (snap.start_tick - existing.start_tick) as f64 / existing.length_ticks as f64;
-                    for n in &mut all_notes {
-                        n.start_frac = n.start_frac * scale + offset;
-                        n.duration_frac *= scale;
-                    }
+            // The take's own notes, into the same coordinates.
+            {
+                let offset = (snap.start_tick - union_start) as f64 / union_len as f64;
+                let scale = snap.length_ticks as f64 / union_len as f64;
+                for mut n in snap.notes {
+                    n.start_frac = n.start_frac * scale + offset;
+                    n.duration_frac *= scale;
+                    all_notes.push(n);
                 }
-                existing.notes.extend(all_notes);
-                existing.has_content = true;
-                existing.length_ticks = existing.length_ticks.max(snap.length_ticks);
-                existing.width = width.max(existing.width);
-                tracing::debug!(
-                    "  merged into existing clip: now {} notes, len={}",
-                    existing.notes.len(), existing.length_ticks
-                );
-            } else {
-                // Create new clip
-                let clip_number = track.clips.len() + 1;
-                tracing::debug!(
-                    "  new clip: #{} at tick {} len {} ({} notes, absorbed {})",
-                    clip_number, snap.start_tick, snap.length_ticks, all_notes.len(), absorbed_count
-                );
-                track.clips.push(Clip {
-                    number: clip_number,
-                    width,
-                    has_content: true,
-                    start_tick: snap.start_tick,
-                    length_ticks: snap.length_ticks,
-                    notes: all_notes,
-                    hidden_notes: Vec::new(),
-                });
             }
+
+            // One clip for the whole union.
+            let beats = (union_len as f64 / ppq as f64).ceil() as u16;
+            tracing::debug!(
+                "  take clip: tick {} len {} ({} notes, absorbed {})",
+                union_start, union_len, all_notes.len(), absorbed_count
+            );
+            track.clips.push(Clip {
+                number: track.clips.len() + 1,
+                width: beats.max(2),
+                has_content: true,
+                start_tick: union_start,
+                length_ticks: union_len,
+                notes: all_notes,
+                hidden_notes: all_hidden,
+            });
 
             // Renumber clips sequentially
             for (i, c) in track.clips.iter_mut().enumerate() {

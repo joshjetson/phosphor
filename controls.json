@@ -53,9 +53,9 @@
       "s": "toggle solo",
       "r": "toggle record arm",
       "R": "toggle loop record",
-      "y": "yank (copy) clip (when on clip element)",
-      "p": "paste clip after current (when on clip element)",
-      "P": "paste clip to same position on another track",
+      "y": "yank (copy) clip (on a clip element); on the label: yank the track's whole arrangement",
+      "p": "paste clip after current (when on clip element; refuses to overlap)",
+      "P": "paste yanked clip(s) onto this track at the same bars (layering; refuses to overlap)",
       "d": "duplicate clip (when on clip element)",
       "1-9": "jump to clip by number",
       "Esc": "deselect track",
@@ -67,7 +67,7 @@
       "Shift+H/L": "shrink/extend right edge by one beat",
       "Ctrl+H/L": "trim/extend left edge by one beat",
       "y": "yank clip",
-      "p": "paste after",
+      "p": "paste after (refuses to overlap)",
       "P": "paste to track",
       "d": "duplicate clip",
       "Esc": "unlock clip (back to element navigation)"
@@ -96,12 +96,11 @@
   },
   "piano_roll_navigation": {
     "description": "Default mode when viewing the piano roll (not in edit mode).",
-    "n": "toggle note at cursor (draw or remove)",
+    "n": "toggle note at cursor",
     "h/l": "navigate columns (or MOVE highlighted notes left/right if highlights exist)",
     "j/k": "scroll up/down (or MOVE highlighted notes up/down if highlights exist)",
     "1-9": "jump to column by number",
     "Enter": "select column (enter Right-Left-Trick mode)",
-    "n": "toggle note at cursor",
     "Shift+H/L": "start/expand column highlight",
     "Shift+J/K": "start/expand row highlight",
     "d": "delete notes in highlighted region",
@@ -182,7 +181,15 @@
     "Esc": "release element"
   },
   "grid_settings": {
-    "resolutions": ["1/4", "1/8", "1/16", "1/32", "1/4T", "1/8T", "1/16T"],
+    "resolutions": [
+      "1/4",
+      "1/8",
+      "1/16",
+      "1/32",
+      "1/4T",
+      "1/8T",
+      "1/16T"
+    ],
     "snap": "on/off — notes snap to grid when moved in edit mode",
     "default_velocity": "1-127 — velocity for newly drawn notes"
   },

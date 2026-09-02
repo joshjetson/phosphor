@@ -33,6 +33,8 @@ mod test_presets;
 #[cfg(test)]
 mod test_sequencer;
 #[cfg(test)]
+mod test_recording;
+#[cfg(test)]
 mod test_session;
 #[cfg(test)]
 mod test_undo;

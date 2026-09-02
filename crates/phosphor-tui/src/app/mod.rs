@@ -80,10 +80,11 @@ pub struct App {
     pub(crate) preset_dir: Option<std::path::PathBuf>,
     /// Status message shown briefly at bottom of screen.
     pub(crate) status_message: Option<(String, std::time::Instant)>,
-    /// Yanked (copied) clip for cross-track paste.
-    pub(crate) yanked_clip: Option<crate::state::Clip>,
-    /// Timeline position of the yanked clip (for cross-track paste at same position).
-    pub(crate) yanked_clip_start: i64,
+    /// Yanked (copied) clips, for paste and for cross-track layering. One
+    /// entry from `y` on a clip; a whole arrangement from `y` on the track
+    /// label. Each clip keeps its own `start_tick`, which is what lets `P`
+    /// lay the set onto another track on exactly the bars it came from.
+    pub(crate) yanked_clips: Vec<crate::state::Clip>,
     /// The UI's tap on MIDI input, for step record.
     ///
     /// The audio thread's ring has one consumer and this is not it: the
@@ -312,8 +313,7 @@ impl App {
             // bottom bar. Stderr is not available here — it would be painted
             // over by the UI — and silence is how the mismatch went unnoticed.
             status_message: format_notice.map(|m| (m, std::time::Instant::now())),
-            yanked_clip: None,
-            yanked_clip_start: 0,
+            yanked_clips: Vec::new(),
             midi_ui_rx: enable_midi.then_some(midi_ui_rx),
             held_notes: Vec::new(),
             recorded_notes: Vec::new(),

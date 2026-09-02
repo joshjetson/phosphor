@@ -537,6 +537,15 @@ impl App {
                     self.yank_clip(idx);
                 }
             }
+            // On the label, y takes the whole arrangement — every clip with
+            // its bars — so P can lay it under another instrument.
+            KeyCode::Char('y')
+                if self.nav.track_selected
+                && self.nav.track_element == crate::state::TrackElement::Label
+                && !self.nav.fx_menu.open =>
+            {
+                self.yank_all_clips();
+            }
             KeyCode::Char('p')
                 if self.nav.track_selected
                 && matches!(self.nav.track_element, crate::state::TrackElement::Clip(_))

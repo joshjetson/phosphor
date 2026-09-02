@@ -13,12 +13,30 @@ impl App {
         // same frame the sound comes back.
         self.set_key_listen(None);
         if was_recording {
-            self.nav.recording_grace = self.nav.tracks.iter().filter(|t| t.armed).count();
+            self.nav.recording_grace = self.armed_recorder_count();
         }
         self.live_take_notes = 0;
         self.engine.panic();
     }
 
+
+    /// How many tracks will actually commit a take when recording stops:
+    /// the armed ones the MIDI is routed to, which is zero or one. Counting
+    /// every armed track here used to leave the grace counter holding
+    /// credit for commits that never come, and a later stale snapshot could
+    /// spend it and land as a phantom clip.
+    fn armed_recorder_count(&self) -> usize {
+        self.nav
+            .tracks
+            .iter()
+            .filter(|t| {
+                t.armed
+                    && t.handle
+                        .as_ref()
+                        .is_some_and(|h| h.config.is_midi_active())
+            })
+            .count()
+    }
 
     /// Move the tempo by whole BPM — the one door every tempo key goes
     /// through, so the change lands on the undo stack (one step per ride)
@@ -88,7 +106,7 @@ impl App {
 
         if is_recording {
             self.engine.transport.stop_loop_record();
-            self.nav.recording_grace = self.nav.tracks.iter().filter(|t| t.armed).count();
+            self.nav.recording_grace = self.armed_recorder_count();
             self.live_take_notes = 0;
             self.engine.panic(); // silence all notes
         } else {

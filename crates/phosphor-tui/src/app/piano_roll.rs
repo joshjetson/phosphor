@@ -499,6 +499,21 @@ impl App {
                         .clamp(0.0, 1.0 - note.duration_frac);
                 }
             }
+            if touched > 0 {
+                // Quantize pulls neighbours onto the same grid line; two
+                // copies of one pitch on one line are one note that plays
+                // twice as loud and can only be deleted twice. Keep the
+                // harder hit.
+                clip.notes.sort_by(|a, b| {
+                    a.note
+                        .cmp(&b.note)
+                        .then(a.start_frac.total_cmp(&b.start_frac))
+                        .then(b.velocity.cmp(&a.velocity))
+                });
+                clip.notes.dedup_by(|a, b| {
+                    a.note == b.note && (a.start_frac - b.start_frac).abs() < 1e-9
+                });
+            }
         }
 
         if touched > 0 {

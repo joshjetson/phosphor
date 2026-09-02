@@ -828,10 +828,21 @@ impl Mixer {
                 && track.record_buf.is_active() && track.last_record_tick >= 0
                 && current_tick < track.last_record_tick
             {
+                // A downbeat played a hair early belongs to the pass it was
+                // aimed at. Notes still held within a 32nd of the wrap come
+                // out of this take and re-strike at the top of the next —
+                // without this they commit as a stray sliver at the far
+                // right of the previous bar.
+                let window = Transport::PPQ / 8;
+                let end_rel = loop_end - track.record_buf.start_tick();
+                let (anticipated, carried) = track.record_buf.take_anticipated(end_rel, window);
                 commit_recording(track, loop_end, clip_tx);
                 // Start new recording at loop start, not current_tick
                 // (current_tick may be a few ticks past 0 due to buffer boundaries)
                 track.record_buf.start(transport.loop_start());
+                for &(note, velocity) in anticipated.iter().take(carried) {
+                    track.record_buf.record(transport.loop_start(), 0x90, note, velocity);
+                }
             }
             if should_record {
                 track.last_record_tick = current_tick;
@@ -1306,7 +1317,8 @@ impl Mixer {
                 if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
                     if let Some(clip) = track.clips.get_mut(clip_index) {
                         clip.events = events;
-                        clip.events.sort_by_key(|e| e.tick);
+                        // Offs before ons at the same tick — see MidiClip::new.
+                        clip.events.sort_by_key(|e| (e.tick, e.status & 0xF0));
                     }
                 }
             }

@@ -236,8 +236,7 @@ impl App {
         let track_idx = self.nav.track_cursor;
         if let Some(track) = self.nav.tracks.get(track_idx) {
             if let Some(clip) = track.clips.get(clip_idx) {
-                self.yanked_clip = Some(clip.clone());
-                self.yanked_clip_start = clip.start_tick;
+                self.yanked_clips = vec![clip.clone()];
                 self.status_message = Some((
                     format!("clip {} yanked", clip_idx + 1),
                     std::time::Instant::now(),
@@ -246,85 +245,186 @@ impl App {
         }
     }
 
-    /// Paste yanked clip at a specific start tick on the current track.
-    fn paste_clip_at(&mut self, start_tick: i64) {
+    /// Yank a track's whole arrangement — every clip, with the bars each
+    /// one sits on. `P` on another track then lays the lot down at the same
+    /// bars, which is how a recorded part gets doubled by a second
+    /// instrument without walking it over clip by clip.
+    pub(crate) fn yank_all_clips(&mut self) {
+        let track_idx = self.nav.track_cursor;
+        let Some(track) = self.nav.tracks.get(track_idx) else { return };
+        if track.clips.is_empty() {
+            self.flash("nothing to yank \u{b7} this track has no clips");
+            return;
+        }
+        self.yanked_clips = track.clips.clone();
+        let count = self.yanked_clips.len();
+        self.flash(format!(
+            "{count} clip{} yanked \u{b7} P lays them on another track",
+            if count == 1 { "" } else { "s" }
+        ));
+    }
+
+    /// Whether the current track can take clips at all, saying so if not.
+    /// A clip pasted on a bus strip would draw on screen and never play,
+    /// because the mixer's buses hold no clips.
+    fn track_takes_clips(&mut self, track_idx: usize) -> bool {
+        let Some(track) = self.nav.tracks.get(track_idx) else { return false };
+        if track.is_live() {
+            return true;
+        }
+        self.flash("clips live on instrument tracks");
+        false
+    }
+
+    /// Whether `start_tick..start_tick + length_ticks` on this track is
+    /// clear of clips. Moving, stretching, trimming, recording and pasting
+    /// all obey the same law: the timeline never holds two clips on the
+    /// same bars, because overlap double-fires every note.
+    fn clip_room(&self, track_idx: usize, start_tick: i64, length_ticks: i64) -> bool {
+        let Some(track) = self.nav.tracks.get(track_idx) else { return false };
+        let end_tick = start_tick + length_ticks;
+        !track
+            .clips
+            .iter()
+            .any(|c| start_tick < c.start_tick + c.length_ticks && c.start_tick < end_tick)
+    }
+
+    /// Put one clip on a track, on both sides of the fence. No checks and
+    /// no undo step — the caller has already done both.
+    fn place_clip(&mut self, track_idx: usize, mut clip: crate::state::Clip) {
+        let Some(track) = self.nav.tracks.get_mut(track_idx) else { return };
+        clip.number = track.clips.len() + 1;
+        if let Some(mixer_id) = track.mixer_id {
+            let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::CreateClip {
+                track_id: mixer_id,
+                start_tick: clip.start_tick,
+                length_ticks: clip.length_ticks,
+            });
+            let events = phosphor_core::clip::NoteSnapshot::to_clip_events(
+                &clip.notes, clip.length_ticks,
+            );
+            let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::UpdateClip {
+                track_id: mixer_id,
+                clip_index: track.clips.len(),
+                events,
+            });
+        }
+        track.clips.push(clip);
+    }
+
+    /// Paste the yanked clip at a specific start tick on the current track.
+    /// Returns whether it landed, so a caller does not announce a paste
+    /// that was refused.
+    fn paste_clip_at(&mut self, start_tick: i64) -> bool {
         use crate::debug_log as dbg;
 
-        let yanked = match self.yanked_clip.clone() {
-            Some(c) => c,
-            None => {
-                self.status_message = Some(("no clip to paste".into(), std::time::Instant::now()));
-                return;
-            }
+        let Some(yanked) = self.yanked_clips.first().cloned() else {
+            self.flash("no clip to paste");
+            return false;
         };
-
         let track_idx = self.nav.track_cursor;
+        if !self.track_takes_clips(track_idx) {
+            return false;
+        }
+        if !self.clip_room(track_idx, start_tick, yanked.length_ticks) {
+            let ppq = phosphor_core::transport::Transport::PPQ;
+            self.flash(format!(
+                "no room at beat {} \u{b7} clips cannot overlap",
+                start_tick / ppq + 1
+            ));
+            return false;
+        }
+
         let undo_before = self.nav.undo_checkpoint(
             crate::state::undo::UndoScope::TrackClips { track_idx },
         );
-        if let Some(track) = self.nav.tracks.get_mut(track_idx) {
-            let mut new_clip = yanked;
-            new_clip.start_tick = start_tick;
-            new_clip.number = track.clips.len() + 1;
+        let mut clip = yanked;
+        clip.start_tick = start_tick;
+        self.place_clip(track_idx, clip);
+        dbg::system(&format!("pasted clip to track {} at tick {}", track_idx, start_tick));
+        self.nav.commit_undo(undo_before, "paste clip");
 
-            // Send to audio thread
-            if let Some(mixer_id) = track.mixer_id {
-                let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::CreateClip {
-                    track_id: mixer_id,
-                    start_tick: new_clip.start_tick,
-                    length_ticks: new_clip.length_ticks,
-                });
-                let events = phosphor_core::clip::NoteSnapshot::to_clip_events(
-                    &new_clip.notes, new_clip.length_ticks,
-                );
-                let new_idx = track.clips.len();
-                let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::UpdateClip {
-                    track_id: mixer_id,
-                    clip_index: new_idx,
-                    events,
-                });
-            }
-
-            let new_idx = track.clips.len();
-            track.clips.push(new_clip);
-            dbg::system(&format!("pasted clip to track {} at tick {}", track_idx, start_tick));
-
-            self.nav.commit_undo(undo_before, "paste clip");
-
-            // Select the newly pasted clip
-            self.nav.track_element = crate::state::TrackElement::Clip(new_idx);
-            self.nav.open_clip_view(track_idx, new_idx);
-        }
+        // Select the newly pasted clip
+        let new_idx = self.nav.tracks[track_idx].clips.len() - 1;
+        self.nav.track_element = crate::state::TrackElement::Clip(new_idx);
+        self.nav.open_clip_view(track_idx, new_idx);
+        true
     }
 
     /// Paste yanked clip right after the given clip on the same track.
-    pub(crate) fn paste_clip_after(&mut self, clip_idx: usize) {
+    pub(crate) fn paste_clip_after(&mut self, clip_idx: usize) -> bool {
         let track_idx = self.nav.track_cursor;
         let after_tick = self.nav.tracks.get(track_idx)
             .and_then(|t| t.clips.get(clip_idx))
             .map(|c| c.start_tick + c.length_ticks)
             .unwrap_or(0);
 
-        self.paste_clip_at(after_tick);
-        self.status_message = Some((
-            format!("clip pasted at beat {}", after_tick / phosphor_core::transport::Transport::PPQ + 1),
-            std::time::Instant::now(),
-        ));
+        let landed = self.paste_clip_at(after_tick);
+        if landed {
+            self.flash(format!(
+                "clip pasted at beat {}",
+                after_tick / phosphor_core::transport::Transport::PPQ + 1
+            ));
+        }
+        landed
     }
 
-    /// Paste yanked clip to the current track at the same timeline position.
+    /// Lay the yanked clips onto the current track, each on the bars it was
+    /// yanked from. One clip is the cross-track paste; a whole arrangement
+    /// — `y` on the track label — is the layering gesture: record a part,
+    /// yank the lot, put it under a different instrument in two keys.
+    ///
+    /// All or nothing: if any clip has no room, nothing lands and the
+    /// refusal says which beat is blocked. Half an arrangement is not an
+    /// arrangement.
     pub(crate) fn paste_clip_to_track(&mut self) {
-        let start_tick = self.yanked_clip_start;
-        self.paste_clip_at(start_tick);
-        self.status_message = Some(("clip pasted to track".into(), std::time::Instant::now()));
+        if self.yanked_clips.len() <= 1 {
+            let Some(start_tick) = self.yanked_clips.first().map(|c| c.start_tick) else {
+                self.flash("no clip to paste");
+                return;
+            };
+            if self.paste_clip_at(start_tick) {
+                self.flash("clip pasted to track");
+            }
+            return;
+        }
+
+        let track_idx = self.nav.track_cursor;
+        if !self.track_takes_clips(track_idx) {
+            return;
+        }
+        let clips = self.yanked_clips.clone();
+        for clip in &clips {
+            if !self.clip_room(track_idx, clip.start_tick, clip.length_ticks) {
+                let ppq = phosphor_core::transport::Transport::PPQ;
+                self.flash(format!(
+                    "no room at beat {} \u{b7} clips cannot overlap",
+                    clip.start_tick / ppq + 1
+                ));
+                return;
+            }
+        }
+
+        let undo_before = self.nav.undo_checkpoint(
+            crate::state::undo::UndoScope::TrackClips { track_idx },
+        );
+        let count = clips.len();
+        for clip in clips {
+            self.place_clip(track_idx, clip);
+        }
+        self.nav.commit_undo(undo_before, "paste clips");
+        self.nav.track_element = crate::state::TrackElement::Clip(0);
+        self.nav.open_clip_view(track_idx, 0);
+        self.flash(format!("{count} clips laid on their bars"));
     }
 
     /// Duplicate clip immediately after itself.
     pub(crate) fn duplicate_clip(&mut self, clip_idx: usize) {
         // Yank then paste after
         self.yank_clip(clip_idx);
-        self.paste_clip_after(clip_idx);
-        self.status_message = Some(("clip duplicated".into(), std::time::Instant::now()));
+        if self.paste_clip_after(clip_idx) {
+            self.flash("clip duplicated");
+        }
     }
 
     /// Make the audio thread's clip list for one track identical to the UI's.
