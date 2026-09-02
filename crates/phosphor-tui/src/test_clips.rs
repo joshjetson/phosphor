@@ -39,7 +39,7 @@ mod tests {
     }
 
     fn note(pitch: u8, start_frac: f64, duration_frac: f64) -> NoteSnapshot {
-        NoteSnapshot { note: pitch, velocity: 100, start_frac, duration_frac }
+        NoteSnapshot { note: pitch, velocity: 100, start_frac, duration_frac, muted: false }
     }
 
     // ══════════════════════════════════════════════
@@ -736,6 +736,66 @@ mod tests {
             app.live_status().unwrap_or_default().contains("no note higher"),
             "the wall was silent"
         );
+    }
+
+    /// Muting a note silences it without removing it: the clip keeps the
+    /// note, the audio stream drops it, and undo brings the sound back.
+    #[test]
+    fn muted_note_stays_in_the_clip_but_leaves_the_audio() {
+        let mut app = app();
+        add_synth_track(&mut app);
+        let ti = app.nav.track_cursor;
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![
+            note(60, 0.0, 0.25),
+            note(64, 0.5, 0.25),
+        ]);
+        app.nav.open_clip_view(ti, 0);
+        app.nav.clip_view.piano_roll.edit_cursor = 0;
+
+        app.toggle_note_mute();
+        let clip = &app.nav.tracks[ti].clips[0];
+        assert_eq!(clip.notes.len(), 2, "mute removed the note");
+        assert!(clip.notes[0].muted, "the cursor note did not mute");
+        assert!(!clip.notes[1].muted, "mute leaked onto the other note");
+        assert_eq!(
+            clip.events_for_audio().len(), 2,
+            "the muted note still reaches the audio thread"
+        );
+
+        app.perform_undo();
+        assert!(
+            !app.nav.tracks[ti].clips[0].notes[0].muted,
+            "undo did not unmute"
+        );
+        assert_eq!(app.nav.tracks[ti].clips[0].events_for_audio().len(), 4);
+    }
+
+    /// A mixed selection settles to the cursor note's direction in one
+    /// press instead of flapping half the notes each way.
+    #[test]
+    fn mixed_selection_mutes_settle_to_the_cursor_direction() {
+        let mut app = app();
+        add_synth_track(&mut app);
+        let ti = app.nav.track_cursor;
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![
+            note(60, 0.0, 0.2),
+            note(64, 0.3, 0.2),
+            note(67, 0.6, 0.2),
+        ]);
+        app.nav.tracks[ti].clips[0].notes[1].muted = true;
+        app.nav.open_clip_view(ti, 0);
+        app.nav.clip_view.piano_roll.edit_cursor = 0;
+        app.nav.clip_view.piano_roll.edit_selected = vec![0, 1, 2];
+
+        // Cursor note is sounding, so one press mutes the whole group.
+        app.toggle_note_mute();
+        let clip = &app.nav.tracks[ti].clips[0];
+        assert!(clip.notes.iter().all(|n| n.muted), "the group did not settle muted");
+
+        // And the next press brings the whole group back.
+        app.toggle_note_mute();
+        let clip = &app.nav.tracks[ti].clips[0];
+        assert!(clip.notes.iter().all(|n| !n.muted), "the group did not settle unmuted");
     }
 
     /// Duplicating a track copies everything — instrument, panel, clips —

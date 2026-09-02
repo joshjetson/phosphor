@@ -3,8 +3,12 @@
 /// A timestamped MIDI message. Small enough to pass through a ring buffer.
 #[derive(Debug, Clone, Copy)]
 pub struct MidiMessage {
-    /// When this message was received (high-resolution).
-    pub timestamp: Option<u64>, // nanoseconds from midir
+    /// When this message arrived, in `clock::now_micros` time — stamped at
+    /// the receipt site, not by the backend. midir's own timestamp lives in
+    /// an epoch nothing else in the process can reproduce, so it is
+    /// discarded at parse. `None` means "no arrival time known", and the
+    /// recorder then places the event at the block edge as it always has.
+    pub received_micros: Option<u64>,
     /// The parsed message type.
     pub message_type: MidiMessageType,
     /// Raw bytes for forwarding (up to 3 bytes for channel messages).
@@ -51,7 +55,7 @@ pub enum MidiMessageType {
 impl MidiMessage {
     /// Parse a raw MIDI byte slice into a MidiMessage.
     /// Returns None only if the slice is empty.
-    pub fn from_bytes(bytes: &[u8], timestamp: u64) -> Option<Self> {
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.is_empty() {
             return None;
         }
@@ -63,7 +67,7 @@ impl MidiMessage {
         let message_type = Self::parse_type(bytes);
 
         Some(Self {
-            timestamp: Some(timestamp),
+            received_micros: None,
             message_type,
             raw,
             len: len as u8,
@@ -144,7 +148,7 @@ mod tests {
 
     #[test]
     fn parse_note_on() {
-        let msg = MidiMessage::from_bytes(&[0x90, 60, 100], 0).unwrap();
+        let msg = MidiMessage::from_bytes(&[0x90, 60, 100]).unwrap();
         assert_eq!(
             msg.message_type,
             MidiMessageType::NoteOn {
@@ -157,7 +161,7 @@ mod tests {
 
     #[test]
     fn parse_note_on_velocity_zero_is_note_off() {
-        let msg = MidiMessage::from_bytes(&[0x90, 60, 0], 0).unwrap();
+        let msg = MidiMessage::from_bytes(&[0x90, 60, 0]).unwrap();
         assert_eq!(
             msg.message_type,
             MidiMessageType::NoteOff {
@@ -170,7 +174,7 @@ mod tests {
 
     #[test]
     fn parse_note_off() {
-        let msg = MidiMessage::from_bytes(&[0x80, 60, 64], 0).unwrap();
+        let msg = MidiMessage::from_bytes(&[0x80, 60, 64]).unwrap();
         assert_eq!(
             msg.message_type,
             MidiMessageType::NoteOff {
@@ -183,7 +187,7 @@ mod tests {
 
     #[test]
     fn parse_control_change() {
-        let msg = MidiMessage::from_bytes(&[0xB3, 7, 127], 0).unwrap();
+        let msg = MidiMessage::from_bytes(&[0xB3, 7, 127]).unwrap();
         assert_eq!(
             msg.message_type,
             MidiMessageType::ControlChange {
@@ -197,7 +201,7 @@ mod tests {
     #[test]
     fn parse_pitch_bend() {
         // Center position: LSB=0, MSB=64 → value = 8192
-        let msg = MidiMessage::from_bytes(&[0xE0, 0, 64], 0).unwrap();
+        let msg = MidiMessage::from_bytes(&[0xE0, 0, 64]).unwrap();
         assert_eq!(
             msg.message_type,
             MidiMessageType::PitchBend {
@@ -210,12 +214,12 @@ mod tests {
     #[test]
     fn parse_pitch_bend_extremes() {
         // Minimum
-        let msg = MidiMessage::from_bytes(&[0xE0, 0, 0], 0).unwrap();
+        let msg = MidiMessage::from_bytes(&[0xE0, 0, 0]).unwrap();
         if let MidiMessageType::PitchBend { value, .. } = msg.message_type {
             assert_eq!(value, 0);
         }
         // Maximum
-        let msg = MidiMessage::from_bytes(&[0xE0, 127, 127], 0).unwrap();
+        let msg = MidiMessage::from_bytes(&[0xE0, 127, 127]).unwrap();
         if let MidiMessageType::PitchBend { value, .. } = msg.message_type {
             assert_eq!(value, 16383);
         }
@@ -223,7 +227,7 @@ mod tests {
 
     #[test]
     fn parse_program_change() {
-        let msg = MidiMessage::from_bytes(&[0xC5, 42], 0).unwrap();
+        let msg = MidiMessage::from_bytes(&[0xC5, 42]).unwrap();
         assert_eq!(
             msg.message_type,
             MidiMessageType::ProgramChange {
@@ -235,18 +239,18 @@ mod tests {
 
     #[test]
     fn parse_empty_returns_none() {
-        assert!(MidiMessage::from_bytes(&[], 0).is_none());
+        assert!(MidiMessage::from_bytes(&[]).is_none());
     }
 
     #[test]
     fn parse_truncated_note_on_is_other() {
-        let msg = MidiMessage::from_bytes(&[0x90], 0).unwrap();
+        let msg = MidiMessage::from_bytes(&[0x90]).unwrap();
         assert_eq!(msg.message_type, MidiMessageType::Other);
     }
 
     #[test]
     fn parse_unknown_status_is_other() {
-        let msg = MidiMessage::from_bytes(&[0xF0, 0x7E], 0).unwrap();
+        let msg = MidiMessage::from_bytes(&[0xF0, 0x7E]).unwrap();
         assert_eq!(msg.message_type, MidiMessageType::Other);
     }
 
@@ -275,7 +279,7 @@ mod tests {
     #[test]
     fn all_channels_parsed_correctly() {
         for ch in 0..16u8 {
-            let msg = MidiMessage::from_bytes(&[0x90 | ch, 60, 100], 0).unwrap();
+            let msg = MidiMessage::from_bytes(&[0x90 | ch, 60, 100]).unwrap();
             if let MidiMessageType::NoteOn { channel, .. } = msg.message_type {
                 assert_eq!(channel, ch);
             } else {
@@ -286,11 +290,11 @@ mod tests {
 
     #[test]
     fn raw_bytes_preserved() {
-        let msg = MidiMessage::from_bytes(&[0x90, 60, 100], 12345).unwrap();
+        let msg = MidiMessage::from_bytes(&[0x90, 60, 100]).unwrap();
         assert_eq!(msg.raw[0], 0x90);
         assert_eq!(msg.raw[1], 60);
         assert_eq!(msg.raw[2], 100);
         assert_eq!(msg.len, 3);
-        assert_eq!(msg.timestamp, Some(12345));
+        assert_eq!(msg.received_micros, None, "parse must not invent an arrival time");
     }
 }

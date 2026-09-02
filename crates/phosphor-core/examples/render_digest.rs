@@ -55,7 +55,7 @@ fn peaks(samples: &[f32]) -> (f32, f32) {
 
 fn note_on(note: u8, velocity: u8) -> MidiMessage {
     MidiMessage {
-        timestamp: Some(0),
+        received_micros: None,
         message_type: MidiMessageType::NoteOn { channel: 0, note, velocity },
         raw: [0x90, note, velocity],
         len: 3,

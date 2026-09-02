@@ -53,6 +53,9 @@ use phosphor_core::AudioRequest;
 /// by the device, inside [`app::App::new`].
 pub fn run(request: AudioRequest, enable_audio: bool, enable_midi: bool) -> Result<()> {
     debug_log::init();
+    // Pin the MIDI arrival clock before any audio or MIDI thread exists, so
+    // reads on the audio thread never race a first-call initialisation.
+    phosphor_midi::clock::init();
     theme::load_preference();
 
     // Install panic handler that logs to our debug file before crashing

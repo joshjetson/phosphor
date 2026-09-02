@@ -118,6 +118,7 @@ impl App {
                     KeyCode::Char('.') => { self.nudge_velocity(8); return; }
                     KeyCode::Char('<') => { self.nudge_velocity(-24); return; }
                     KeyCode::Char('>') => { self.nudge_velocity(24); return; }
+                    KeyCode::Char('m') => { self.toggle_note_mute(); return; }
                     // Enter = toggle selection on cursor note (single-note select)
                     KeyCode::Enter => {
                         self.add_cursor_to_selection();
@@ -158,6 +159,7 @@ impl App {
                         self.edit_delete_selected_notes();
                         return;
                     }
+                    KeyCode::Char('m') => { self.toggle_note_mute(); return; }
                     _ => {}
                 }
                 if let Some(d) = dir {
@@ -196,6 +198,7 @@ impl App {
                     KeyCode::Char('.') => { self.nudge_velocity(8); return; }
                     KeyCode::Char('<') => { self.nudge_velocity(-24); return; }
                     KeyCode::Char('>') => { self.nudge_velocity(24); return; }
+                    KeyCode::Char('m') => { self.toggle_note_mute(); return; }
                     _ => {}
                 }
                 let step = self.nav.clip_view.piano_roll.grid.step_frac(
@@ -554,6 +557,45 @@ impl App {
             self.flash(format!("vel {cursor_vel} \u{00b7} {touched} notes"));
         } else {
             self.flash(format!("vel {cursor_vel}"));
+        }
+    }
+
+    /// Toggle mute on the selection, or the note under the cursor. A muted
+    /// note stays in the clip — visible and editable — but leaves the audio.
+    /// The cursor note decides the direction for the whole group, so a mixed
+    /// selection settles to one state instead of flapping half-and-half.
+    pub(crate) fn toggle_note_mute(&mut self) {
+        let pr = &self.nav.clip_view.piano_roll;
+        let mut indices: Vec<usize> = pr.edit_selected.clone();
+        if !indices.contains(&pr.edit_cursor) {
+            indices.push(pr.edit_cursor);
+        }
+        let cursor = pr.edit_cursor;
+        let undo_before = self.checkpoint_viewed_track();
+        let mut touched = 0usize;
+        let mut now_muted = false;
+        if let Some(clip) = self.nav.active_clip_mut() {
+            let lead = if cursor < clip.notes.len() { cursor } else { *indices.first().unwrap_or(&0) };
+            let Some(target) = clip.notes.get(lead).map(|n| !n.muted) else { return };
+            for &i in &indices {
+                if let Some(n) = clip.notes.get_mut(i) {
+                    n.muted = target;
+                    touched += 1;
+                }
+            }
+            now_muted = target;
+        }
+        if touched == 0 {
+            return;
+        }
+        let label = if now_muted { "mute note" } else { "unmute note" };
+        self.commit_viewed_track(undo_before, label);
+        self.send_clip_update();
+        let word = if now_muted { "muted" } else { "unmuted" };
+        if touched > 1 {
+            self.flash(format!("{word} \u{00b7} {touched} notes"));
+        } else {
+            self.flash(word.to_string());
         }
     }
 

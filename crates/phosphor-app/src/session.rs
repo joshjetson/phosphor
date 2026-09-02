@@ -262,6 +262,9 @@ pub struct SessionNote {
     pub velocity: u8,
     pub start_frac: f64,
     pub duration_frac: f64,
+    /// Default keeps sessions saved before the flag existed loading clean.
+    #[serde(default)]
+    pub muted: bool,
 }
 
 // ── InstrumentType <-> String conversion ──
@@ -369,6 +372,7 @@ fn extract_session(nav: &NavState, transport: &Transport) -> SessionFile {
                     velocity: n.velocity,
                     start_frac: n.start_frac,
                     duration_frac: n.duration_frac,
+                    muted: n.muted,
                 }).collect(),
             }
         }).collect();
@@ -517,12 +521,22 @@ pub fn session_notes_to_snapshots(notes: &[SessionNote]) -> Vec<phosphor_core::c
         velocity: n.velocity,
         start_frac: n.start_frac,
         duration_frac: n.duration_frac,
+        muted: n.muted,
     }).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Sessions saved before the mute flag existed have no `muted` key on
+    /// their notes, and they must load with every note sounding.
+    #[test]
+    fn notes_without_a_mute_key_load_unmuted() {
+        let json = r#"{"note":60,"velocity":100,"start_frac":0.0,"duration_frac":0.25}"#;
+        let note: SessionNote = serde_json::from_str(json).expect("old note parses");
+        assert!(!note.muted);
+    }
+
 
     #[test]
     fn round_trip_serialize() {
@@ -574,8 +588,8 @@ mod tests {
                             start_tick: 0,
                             length_ticks: 3840,
                             notes: vec![
-                                SessionNote { note: 60, velocity: 100, start_frac: 0.0, duration_frac: 0.25 },
-                                SessionNote { note: 64, velocity: 80, start_frac: 0.25, duration_frac: 0.25 },
+                                SessionNote { note: 60, velocity: 100, start_frac: 0.0, duration_frac: 0.25, muted: false },
+                                SessionNote { note: 64, velocity: 80, start_frac: 0.25, duration_frac: 0.25, muted: false },
                             ],
                             controls: Vec::new(),
                         },

@@ -33,7 +33,7 @@ mod tests {
     }
 
     fn note(pitch: u8, start_frac: f64) -> NoteSnapshot {
-        NoteSnapshot { note: pitch, velocity: 100, start_frac, duration_frac: 0.1 }
+        NoteSnapshot { note: pitch, velocity: 100, start_frac, duration_frac: 0.1, muted: false }
     }
 
     /// One committed pass, as the audio thread reports it.

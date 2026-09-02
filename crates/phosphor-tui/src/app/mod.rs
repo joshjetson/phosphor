@@ -664,8 +664,9 @@ fn start_midi_input(
     match midi_in.connect(
         port,
         "phosphor-in",
-        move |timestamp, data, _| {
-            if let Some(msg) = phosphor_midi::MidiMessage::from_bytes(data, timestamp) {
+        move |_timestamp, data, _| {
+            if let Some(mut msg) = phosphor_midi::MidiMessage::from_bytes(data) {
+                msg.received_micros = Some(phosphor_midi::clock::now_micros());
                 if let phosphor_midi::MidiMessageType::NoteOn { note, .. } = msg.message_type {
                     status_clone.last_note.store(note, Ordering::Relaxed);
                 }

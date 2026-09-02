@@ -172,7 +172,8 @@
       "Esc": "lock notes in place, clear selection",
       ", / .": "velocity of the whole selection down/up (< / > in strides)"
     },
-    "velocity_display": "notes render brighter the harder they were hit, so dynamics are visible at a glance"
+    "velocity_display": "notes render brighter the harder they were hit, so dynamics are visible at a glance",
+    "m": "toggle mute on the selection or cursor note — a muted note stays in the clip (drawn dark, struck through) but produces no sound; one undo step"
   },
   "quantize_modal": {
     "description": "Space+Q opens quantize modal when a clip is selected.",

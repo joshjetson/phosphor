@@ -586,7 +586,7 @@ pub struct Mixer {
     scratch_l: Vec<f32>,
     scratch_r: Vec<f32>,
     /// Pre-allocated buffer for live MIDI conversion.
-    live_events: Vec<MidiEvent>,
+    live_events: Vec<(MidiEvent, i64)>,
     /// The window the previous callback rendered, when playback was running.
     ///
     /// One per mixer rather than one per track: the window is a fact about
@@ -786,11 +786,23 @@ impl Mixer {
         );
         self.last_window = playing.then_some(window);
 
-        // Convert live MIDI to plugin events (reuse pre-allocated buffer)
+        // Convert live MIDI to plugin events (reuse pre-allocated buffer).
+        // Each event carries its age in ticks: how far into the past, in
+        // song time, the note was actually struck. Messages arrive between
+        // callbacks and are drained at the top of the next one, so with no
+        // correction every note lands on a block edge — a 10ms-plus grid at
+        // large buffers. The age puts it back where the player put it.
         self.live_events.clear();
+        let drain_micros = phosphor_midi::clock::now_micros();
         for msg in midi_messages {
             if let Some(ev) = midi_to_plugin_event(msg) {
-                self.live_events.push(ev);
+                let age = event_age_ticks(
+                    msg.received_micros,
+                    drain_micros,
+                    ticks_per_sample,
+                    self.sample_rate,
+                );
+                self.live_events.push((ev, age));
             }
         }
 
@@ -876,14 +888,19 @@ impl Mixer {
             }
             track.was_recording = should_record;
 
-            // Record live MIDI events (and pass through for monitoring)
+            // Record live MIDI events (and pass through for monitoring).
+            // Monitoring renders at the block edge — an already-played note
+            // should sound as soon as possible. The recorded tick walks back
+            // by the event's age, clamped to the take's start so a note
+            // struck just before the loop wrapped lands on the downbeat
+            // instead of before the take exists.
             if is_midi_active {
-                for ev in &live_events {
+                for (ev, age_ticks) in &live_events {
                     track.plugin_events.push(*ev);
                     if should_record {
-                        let event_tick = current_tick
-                            + (ev.sample_offset as f64 * ticks_per_sample) as i64;
-                        track.record_buf.record(event_tick, ev.status, ev.data1, ev.data2);
+                        let played_tick =
+                            (current_tick - age_ticks).max(track.record_buf.start_tick());
+                        track.record_buf.record(played_tick, ev.status, ev.data1, ev.data2);
                     }
                 }
             }
@@ -1553,6 +1570,32 @@ fn commit_recording(track: &mut AudioTrack, end_tick: i64, clip_tx: &Sender<Clip
 /// there and a plugin reads the pressure from `data1`, as the MIDI
 /// specification puts it.
 ///
+/// The oldest arrival stamp the recorder will believe, in microseconds.
+/// Two blocks at the largest common buffer size (2048 frames at 44.1k is
+/// about 46ms) plus headroom. A stamp older than this is not a note that
+/// waited — it is a clock from another domain, a stale ring, or a hand-built
+/// message, and the honest fallback is the block edge, exactly as before.
+const MAX_EVENT_AGE_MICROS: u64 = 120_000;
+
+/// How many ticks into the past an event actually happened, from its
+/// arrival stamp. Zero whenever the stamp is missing or unbelievable, which
+/// makes the correction strictly opt-in: only messages stamped by the
+/// receipt site move off the block edge.
+fn event_age_ticks(
+    received_micros: Option<u64>,
+    drain_micros: u64,
+    ticks_per_sample: f64,
+    sample_rate: u32,
+) -> i64 {
+    let Some(stamp) = received_micros else { return 0 };
+    let age_micros = drain_micros.saturating_sub(stamp);
+    if age_micros > MAX_EVENT_AGE_MICROS {
+        return 0;
+    }
+    let frames = age_micros as f64 * sample_rate as f64 / 1_000_000.0;
+    (frames * ticks_per_sample) as i64
+}
+
 /// Polyphonic key pressure is *not* here, and that is the instruments rather
 /// than an oversight — the Prophet-6 provides "monophonic (or 'channel')
 /// aftertouch" and nothing in the rack has a per-key pressure destination.
@@ -1593,7 +1636,7 @@ mod tests {
 
     fn make_note_on(note: u8, vel: u8) -> MidiMessage {
         MidiMessage {
-            timestamp: Some(0),
+            received_micros: None,
             message_type: MidiMessageType::NoteOn { channel: 0, note, velocity: vel },
             raw: [0x90, note, vel],
             len: 3,
@@ -1605,7 +1648,7 @@ mod tests {
     #[test]
     fn channel_pressure_reaches_the_plugin_and_key_pressure_does_not() {
         let pressure = MidiMessage {
-            timestamp: Some(0),
+            received_micros: None,
             message_type: MidiMessageType::ChannelPressure { channel: 0, pressure: 96 },
             raw: [0xD0, 96, 0],
             len: 2,
@@ -1616,7 +1659,7 @@ mod tests {
 
         // Polyphonic key pressure parses as `Other` and stays there: nothing
         // in the rack has a per-key pressure destination.
-        let key = MidiMessage::from_bytes(&[0xA0, 60, 96], 0).expect("parsed");
+        let key = MidiMessage::from_bytes(&[0xA0, 60, 96]).expect("parsed");
         assert!(
             midi_to_plugin_event(&key).is_none(),
             "polyphonic key pressure has no destination in the rack"
@@ -1625,7 +1668,7 @@ mod tests {
 
     fn make_note_off(note: u8) -> MidiMessage {
         MidiMessage {
-            timestamp: Some(0),
+            received_micros: None,
             message_type: MidiMessageType::NoteOff { channel: 0, note, velocity: 0 },
             raw: [0x80, note, 0],
             len: 3,
@@ -1699,6 +1742,153 @@ mod tests {
         assert_eq!(snap.track_id, 0);
         assert!(snap.event_count >= 2, "Should have note on + off, got {}", snap.event_count);
         assert!(!snap.notes.is_empty(), "Should have parsed notes");
+    }
+
+    /// A parsed message carrying a receipt-site arrival stamp, for the
+    /// timing tests. `from_bytes` itself never invents one.
+    fn stamped(bytes: &[u8], stamp: u64) -> MidiMessage {
+        let mut msg = MidiMessage::from_bytes(bytes).expect("parsed");
+        msg.received_micros = Some(stamp);
+        msg
+    }
+
+    #[test]
+    fn event_age_only_believes_believable_stamps() {
+        let tps = 120.0 * Transport::PPQ as f64 / (60.0 * 44_100.0);
+        // No stamp, a stamp from the future, and a stamp too old to be a
+        // note that merely waited for the next callback: all block-edge.
+        assert_eq!(event_age_ticks(None, 1_000_000, tps, 44_100), 0);
+        assert_eq!(event_age_ticks(Some(2_000_000), 1_000_000, tps, 44_100), 0);
+        assert_eq!(
+            event_age_ticks(Some(1_000_000 - MAX_EVENT_AGE_MICROS - 1), 1_000_000, tps, 44_100),
+            0
+        );
+        // A believable 10ms: 441 frames' worth of ticks.
+        let expected = (441.0 * tps) as i64;
+        assert_eq!(event_age_ticks(Some(990_000), 1_000_000, tps, 44_100), expected);
+        assert!(expected > 0, "the 10ms case must actually move the event");
+    }
+
+    /// A note that arrived 20ms before the callback drained it must land
+    /// 20ms earlier in the take than the block edge — the whole point of
+    /// stamping arrivals.
+    #[test]
+    fn recorded_note_lands_where_it_was_played() {
+        // In a fresh test process the arrival clock's anchor is minutes
+        // younger than in any real session, and a 20ms-old stamp would
+        // saturate to zero. Age the anchor past the stamps this test builds.
+        phosphor_midi::clock::init();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let (mut mixer, tx, clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        let tps = 120.0 * Transport::PPQ as f64 / (60.0 * 44_100.0);
+        transport.play();
+        transport.toggle_record();
+        let mut output = vec![0.0f32; 512];
+
+        // Roll well past the believable-age window before playing.
+        for _ in 0..100 {
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(256, 44_100);
+        }
+        let pos = transport.position_ticks();
+        let age_ticks = (0.020 * 44_100.0 * tps) as i64;
+        let on = stamped(&[0x90, 60, 100], phosphor_midi::clock::now_micros() - 20_000);
+        mixer.process(&mut output, &[on], &transport);
+        transport.advance(256, 44_100);
+
+        for _ in 0..30 {
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(256, 44_100);
+        }
+        let off = stamped(&[0x80, 60, 0], phosphor_midi::clock::now_micros());
+        mixer.process(&mut output, &[off], &transport);
+        transport.toggle_record();
+        mixer.process(&mut output, &[], &transport);
+
+        let snap = clip_rx.try_recv().expect("commit produced no snapshot");
+        let note = snap.notes.first().expect("the note was not recorded");
+        let start = (note.start_frac * snap.length_ticks as f64).round() as i64;
+        let expected = pos - age_ticks;
+        assert!(
+            (start - expected).abs() <= 8,
+            "note landed at {start}, expected about {expected} (block edge would be {pos})"
+        );
+        assert!(
+            start < pos - age_ticks / 2,
+            "note stayed on the block edge: {start} vs edge {pos}"
+        );
+    }
+
+    /// An aged note drained on the take's very first block cannot land
+    /// before the take exists — it clamps to the start.
+    #[test]
+    fn aged_note_on_the_first_block_clamps_to_the_take_start() {
+        phosphor_midi::clock::init();
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        let (mut mixer, tx, clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        transport.play();
+        transport.toggle_record();
+        let mut output = vec![0.0f32; 512];
+
+        let on = stamped(&[0x90, 60, 100], phosphor_midi::clock::now_micros().saturating_sub(50_000));
+        mixer.process(&mut output, &[on], &transport);
+        transport.advance(256, 44_100);
+        for _ in 0..30 {
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(256, 44_100);
+        }
+        mixer.process(&mut output, &[stamped(&[0x80, 60, 0], phosphor_midi::clock::now_micros())], &transport);
+        transport.toggle_record();
+        mixer.process(&mut output, &[], &transport);
+
+        let snap = clip_rx.try_recv().expect("commit produced no snapshot");
+        let note = snap.notes.first().expect("the note was not recorded");
+        assert_eq!(
+            (note.start_frac * snap.length_ticks as f64).round() as i64,
+            0,
+            "an aged first-block note must clamp to the take start, not go before it"
+        );
+    }
+
+    /// A stamp older than any real callback gap is a broken clock, and a
+    /// broken clock must not move notes — the block edge is the fallback.
+    #[test]
+    fn stale_stamps_fall_back_to_the_block_edge() {
+        // The anchor must be older than the stale stamp being tested, or the
+        // stamp saturates to zero and reads as merely a few ms old.
+        phosphor_midi::clock::init();
+        std::thread::sleep(std::time::Duration::from_millis(130));
+        let (mut mixer, tx, clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        transport.play();
+        transport.toggle_record();
+        let mut output = vec![0.0f32; 512];
+
+        for _ in 0..100 {
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(256, 44_100);
+        }
+        let pos = transport.position_ticks();
+        let on = stamped(&[0x90, 60, 100], phosphor_midi::clock::now_micros().saturating_sub(500_000));
+        mixer.process(&mut output, &[on], &transport);
+        transport.advance(256, 44_100);
+        for _ in 0..30 {
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(256, 44_100);
+        }
+        mixer.process(&mut output, &[stamped(&[0x80, 60, 0], phosphor_midi::clock::now_micros())], &transport);
+        transport.toggle_record();
+        mixer.process(&mut output, &[], &transport);
+
+        let snap = clip_rx.try_recv().expect("commit produced no snapshot");
+        let note = snap.notes.first().expect("the note was not recorded");
+        let start = (note.start_frac * snap.length_ticks as f64).round() as i64;
+        assert!(
+            (start - pos).abs() <= 2,
+            "a stale stamp moved the note: {start} vs block edge {pos}"
+        );
     }
 
     #[test]

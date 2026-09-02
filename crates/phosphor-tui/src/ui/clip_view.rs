@@ -586,6 +586,11 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
                 } else if in_edit && pr.edit_selected.contains(&ni) {
                     // Selected note — tinted highlight
                     Style::default().fg(Color::Rgb(255, 255, 200)).bg(Color::Rgb(80, 60, 20)).add_modifier(Modifier::BOLD)
+                } else if n.muted {
+                    // A muted note is still on the page but out of the mix:
+                    // darker than the softest sounding note can ever be, so
+                    // the eye separates "quiet" from "silenced".
+                    base_note_style.fg(theme::dim_color(tc, 25)).add_modifier(Modifier::CROSSED_OUT)
                 } else {
                     // Velocity is the note's brightness: a ghost note reads
                     // faint, an accent reads hot, and a clip's dynamics are

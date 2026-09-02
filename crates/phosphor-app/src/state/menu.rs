@@ -1065,6 +1065,7 @@ pub const HELP_TOPICS: &[HelpTopic] = &[
             Key("h/l, j/k", "with a selection: move it"),
             Key("shift+h/l", "stretch its right edge"),
             Key(", / .", "velocity down / up \u{00b7} < > in strides"),
+            Key("m", "mute \u{2014} the note stays, the sound goes"),
             Key("d", "delete \u{00b7} esc: drop the selection"),
             Key("e / esc", "leave note editing"),
             Note("Notes draw brighter the harder they were hit; the"),

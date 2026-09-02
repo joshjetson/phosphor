@@ -100,7 +100,7 @@ impl App {
                 crate::debug_log::system(&format!("removed note {} at col {}", note_num, col));
             } else {
                 clip.notes.push(phosphor_core::clip::NoteSnapshot {
-                    note: note_num, velocity, start_frac, duration_frac,
+                    note: note_num, velocity, start_frac, duration_frac, muted: false,
                 });
                 crate::debug_log::system(&format!("drew note {} at col {}", note_num, col));
             }
@@ -569,7 +569,7 @@ impl App {
                         note: new_note,
                         velocity: n.velocity,
                         start_frac: new_start,
-                        duration_frac: n.duration_frac,
+                        duration_frac: n.duration_frac, muted: false
                     };
                     clip.notes.push(pasted);
                     pasted_notes.push(pasted);

@@ -342,6 +342,9 @@ pub struct NoteSnapshot {
     pub start_frac: f64,
     /// Duration as fraction of clip length.
     pub duration_frac: f64,
+    /// A muted note stays in the clip — visible, editable, selectable — but
+    /// produces no events for the audio thread. The audition-an-edit flag.
+    pub muted: bool,
 }
 
 impl NoteSnapshot {
@@ -350,6 +353,9 @@ impl NoteSnapshot {
     pub fn to_clip_events(notes: &[NoteSnapshot], length_ticks: i64) -> Vec<ClipEvent> {
         let mut events = Vec::with_capacity(notes.len() * 2);
         for n in notes {
+            if n.muted {
+                continue;
+            }
             let on_tick = (n.start_frac * length_ticks as f64) as i64;
             let off_tick = ((n.start_frac + n.duration_frac) * length_ticks as f64) as i64;
             events.push(ClipEvent {
@@ -396,6 +402,7 @@ impl ClipSnapshot {
                             velocity: vel,
                             start_frac: start as f64 / len,
                             duration_frac: dur as f64 / len,
+                            muted: false,
                         });
                     }
                 }
@@ -411,6 +418,7 @@ impl ClipSnapshot {
                 velocity: vel,
                 start_frac: start as f64 / len,
                 duration_frac: dur as f64 / len,
+                muted: false,
             });
         }
 
@@ -767,7 +775,7 @@ mod tests {
     #[test]
     fn edited_snapshot_produces_different_events() {
         let mut notes = vec![
-            NoteSnapshot { note: 60, velocity: 100, start_frac: 0.0, duration_frac: 0.25 },
+            NoteSnapshot { note: 60, velocity: 100, start_frac: 0.0, duration_frac: 0.25, muted: false },
         ];
 
         let original = NoteSnapshot::to_clip_events(&notes, 960);

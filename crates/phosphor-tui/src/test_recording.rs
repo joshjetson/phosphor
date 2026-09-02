@@ -27,7 +27,7 @@ mod tests {
     }
 
     fn note(pitch: u8, start_frac: f64) -> NoteSnapshot {
-        NoteSnapshot { note: pitch, velocity: 100, start_frac, duration_frac: 0.1 }
+        NoteSnapshot { note: pitch, velocity: 100, start_frac, duration_frac: 0.1, muted: false }
     }
 
     /// One committed pass on `track_idx`, as the audio thread reports it.
@@ -344,9 +344,9 @@ mod tests {
         // Two overdub passes of the same hat, a few ticks apart, plus an
         // innocent bystander on another pitch.
         record_take(&mut app, ti, 0, vec![
-            NoteSnapshot { note: 42, velocity: 60, start_frac: 0.24, duration_frac: 0.02 },
-            NoteSnapshot { note: 42, velocity: 110, start_frac: 0.26, duration_frac: 0.02 },
-            NoteSnapshot { note: 60, velocity: 100, start_frac: 0.5, duration_frac: 0.1 },
+            NoteSnapshot { note: 42, velocity: 60, start_frac: 0.24, duration_frac: 0.02, muted: false },
+            NoteSnapshot { note: 42, velocity: 110, start_frac: 0.26, duration_frac: 0.02, muted: false },
+            NoteSnapshot { note: 60, velocity: 100, start_frac: 0.5, duration_frac: 0.1, muted: false },
         ]);
         app.nav.open_clip_view(ti, 0);
         app.nav.clip_view.piano_roll.total_beats = 4;
@@ -481,9 +481,9 @@ mod tests {
             length_ticks: BAR,
             event_count: 6,
             notes: vec![
-                NoteSnapshot { note: 60, velocity: 90, start_frac: 0.02, duration_frac: 0.05 },
-                NoteSnapshot { note: 60, velocity: 120, start_frac: 0.23, duration_frac: 0.05 },
-                NoteSnapshot { note: 60, velocity: 40, start_frac: 0.27, duration_frac: 0.05 },
+                NoteSnapshot { note: 60, velocity: 90, start_frac: 0.02, duration_frac: 0.05, muted: false },
+                NoteSnapshot { note: 60, velocity: 120, start_frac: 0.23, duration_frac: 0.05, muted: false },
+                NoteSnapshot { note: 60, velocity: 40, start_frac: 0.27, duration_frac: 0.05, muted: false },
             ],
             controls: Vec::new(),
         };
@@ -503,7 +503,7 @@ mod tests {
         // Off means untouched.
         app.nav.clip_view.piano_roll.record_quantize = None;
         record_take(&mut app, ti, BAR * 2, vec![
-            NoteSnapshot { note: 62, velocity: 90, start_frac: 0.02, duration_frac: 0.05 },
+            NoteSnapshot { note: 62, velocity: 90, start_frac: 0.02, duration_frac: 0.05, muted: false },
         ]);
         let free = app.nav.tracks[ti].clips.iter()
             .flat_map(|c| c.notes.iter())

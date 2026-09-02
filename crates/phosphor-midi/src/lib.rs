@@ -3,6 +3,7 @@
 //! Uses midir for cross-platform MIDI port access and wmidi for
 //! zero-allocation message parsing in the audio thread.
 
+pub mod clock;
 pub mod message;
 pub mod ports;
 pub mod ring;

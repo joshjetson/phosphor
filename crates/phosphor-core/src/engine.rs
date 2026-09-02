@@ -362,7 +362,7 @@ mod tests {
         let (mut engine, transport) = test_engine(Some(rx));
 
         // Send note on
-        let msg = MidiMessage::from_bytes(&[0x90, 60, 100], 0).unwrap();
+        let msg = MidiMessage::from_bytes(&[0x90, 60, 100]).unwrap();
         tx.push(msg);
 
         let mut output = vec![0.0f32; 512]; // 256 frames stereo
@@ -380,7 +380,7 @@ mod tests {
         let (mut tx, rx) = midi_ring_buffer();
         let (mut engine, transport) = test_engine(Some(rx));
 
-        let msg = MidiMessage::from_bytes(&[0x90, 60, 100], 0).unwrap();
+        let msg = MidiMessage::from_bytes(&[0x90, 60, 100]).unwrap();
         tx.push(msg);
 
         let mut output = vec![0.0f32; 128];
@@ -397,7 +397,7 @@ mod tests {
         let (mut tx, rx) = midi_ring_buffer();
         let (mut engine, transport) = test_engine(Some(rx));
 
-        let msg = MidiMessage::from_bytes(&[0x90, 60, 127], 0).unwrap();
+        let msg = MidiMessage::from_bytes(&[0x90, 60, 127]).unwrap();
         tx.push(msg);
 
         for _ in 0..1000 {
@@ -413,12 +413,12 @@ mod tests {
         let (mut engine, transport) = test_engine(Some(rx));
 
         // Note on
-        tx.push(MidiMessage::from_bytes(&[0x90, 60, 100], 0).unwrap());
+        tx.push(MidiMessage::from_bytes(&[0x90, 60, 100]).unwrap());
         let mut output = vec![0.0f32; 128];
         engine.process(&mut output, &transport);
 
         // Note off
-        tx.push(MidiMessage::from_bytes(&[0x80, 60, 0], 0).unwrap());
+        tx.push(MidiMessage::from_bytes(&[0x80, 60, 0]).unwrap());
 
         // Process enough for release to finish (exponential decay needs more buffers)
         for _ in 0..500 {

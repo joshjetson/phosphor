@@ -114,7 +114,7 @@ impl App {
                             note,
                             velocity: vel,
                             start_frac: st as f64 / new_len as f64,
-                            duration_frac: clamped_dur as f64 / new_len as f64,
+                            duration_frac: clamped_dur as f64 / new_len as f64, muted: false
                         });
                     } else {
                         hidden.push((st, dur, note, vel));
@@ -201,7 +201,7 @@ impl App {
                         visible.push(phosphor_core::clip::NoteSnapshot {
                             note, velocity: vel,
                             start_frac: rel as f64 / new_len as f64,
-                            duration_frac: dur.min(new_len - rel) as f64 / new_len as f64,
+                            duration_frac: dur.min(new_len - rel) as f64 / new_len as f64, muted: false
                         });
                     } else {
                         // Store as offset from new clip start (may be negative for left-trimmed)
