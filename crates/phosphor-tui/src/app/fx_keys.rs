@@ -74,8 +74,15 @@ impl App {
             }
             return true;
         }
-        let len = self.nav.current_track().map_or(0, |t| t.fx_chain.len());
+        // One cursor walks the combined rack: MIDI slots first — they lead
+        // in the signal — then the audio inserts. `rack_slot_at` says which
+        // half a position names.
+        use crate::state::RackSlot;
+        let midi_len = self.nav.current_track().map_or(0, |t| t.midi_fx.len());
+        let audio_len = self.nav.current_track().map_or(0, |t| t.fx_chain.len());
+        let len = midi_len + audio_len;
         let cursor = self.nav.clip_view.fx_cursor.min(len.saturating_sub(1));
+        let here = self.nav.rack_slot_at(cursor);
         match key.code {
             KeyCode::Char('j') | KeyCode::Down if len > 0 => {
                 self.nav.clip_view.fx_cursor = (cursor + 1).min(len - 1);
@@ -83,11 +90,41 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up if len > 0 => {
                 self.nav.clip_view.fx_cursor = cursor.saturating_sub(1);
             }
-            KeyCode::Enter if len > 0 => self.open_fx_panel(cursor),
-            KeyCode::Char('b') if len > 0 => self.toggle_fx_bypass(cursor),
-            KeyCode::Char('[') if len > 1 => self.move_fx(cursor, cursor.wrapping_sub(1)),
-            KeyCode::Char(']') if len > 1 && cursor + 1 < len => self.move_fx(cursor, cursor + 1),
-            KeyCode::Char('d') if len > 0 => self.request_fx_delete(cursor),
+            KeyCode::Enter if len > 0 => match here {
+                Some(RackSlot::Midi(slot)) => self.open_midi_fx_panel(slot),
+                Some(RackSlot::Audio(slot)) => self.open_fx_panel(slot),
+                None => {}
+            },
+            KeyCode::Char('b') if len > 0 => match here {
+                Some(RackSlot::Midi(slot)) => self.toggle_midi_fx_bypass(slot),
+                Some(RackSlot::Audio(slot)) => self.toggle_fx_bypass(slot),
+                None => {}
+            },
+            KeyCode::Char('[') if len > 1 => match here {
+                Some(RackSlot::Audio(slot)) if slot > 0 => {
+                    self.move_fx(slot, slot - 1);
+                    self.nav.clip_view.fx_cursor = midi_len + slot - 1;
+                }
+                Some(RackSlot::Midi(_)) | Some(RackSlot::Audio(_)) => {
+                    self.flash("midi fx lead the chain \u{2014} order is the signal's");
+                }
+                None => {}
+            },
+            KeyCode::Char(']') if len > 1 => match here {
+                Some(RackSlot::Audio(slot)) if slot + 1 < audio_len => {
+                    self.move_fx(slot, slot + 1);
+                    self.nav.clip_view.fx_cursor = midi_len + slot + 1;
+                }
+                Some(RackSlot::Midi(_)) | Some(RackSlot::Audio(_)) => {
+                    self.flash("midi fx lead the chain \u{2014} order is the signal's");
+                }
+                None => {}
+            },
+            KeyCode::Char('d') if len > 0 => match here {
+                Some(RackSlot::Midi(slot)) => self.request_midi_fx_delete(slot),
+                Some(RackSlot::Audio(slot)) => self.request_fx_delete(slot),
+                None => {}
+            },
             KeyCode::Char('a') => {
                 self.nav.fx_menu.open = true;
                 self.nav.fx_menu.cursor = 0;
@@ -95,6 +132,44 @@ impl App {
             _ => return false,
         }
         true
+    }
+
+    /// Open a MIDI slot's panel in the wide pane.
+    fn open_midi_fx_panel(&mut self, slot: usize) {
+        if self.nav.current_track().and_then(|t| t.midi_fx.get(slot)).is_none() {
+            return;
+        }
+        self.nav.clip_view.fx.open_midi(slot);
+        self.nav.clip_view.clip_tab = ClipTab::Fx;
+        self.nav.clip_view.focus = ClipViewFocus::PianoRoll;
+        self.status_message = Some((
+            "j/k picks a knob, h/l adjusts \u{00b7} plays live and on playback".into(),
+            std::time::Instant::now(),
+        ));
+    }
+
+    fn toggle_midi_fx_bypass(&mut self, slot: usize) {
+        let index = self.nav.track_cursor;
+        let Some(track) = self.nav.tracks.get(index) else { return };
+        let Some(instance) = track.midi_fx.get(slot) else { return };
+        let (bypass, label) = (!instance.bypass, instance.fx_type.label());
+        self.set_midi_fx_bypass(index, slot, bypass);
+        self.status_message = Some((
+            format!("{label}: {}", if bypass { "bypassed" } else { "in the chain" }),
+            std::time::Instant::now(),
+        ));
+    }
+
+    /// The MIDI half of the delete flow: same modal, its own arm.
+    fn request_midi_fx_delete(&mut self, slot: usize) {
+        let Some(track) = self.nav.current_track() else { return };
+        let Some(instance) = track.midi_fx.get(slot) else { return };
+        let label = instance.fx_type.label();
+        self.nav.clip_view.fx_cursor = slot;
+        self.nav.confirm_modal.show(
+            ConfirmKind::DeleteFx,
+            &format!("remove {label} from the midi rack?"),
+        );
     }
 
     /// Open a slot's panel in the wide pane, where there is room for it.
@@ -187,7 +262,8 @@ impl App {
         let Some(track) = self.nav.current_track() else { return };
         let Some(instance) = track.fx_chain.get(slot) else { return };
         let label = instance.fx_type.label();
-        self.nav.clip_view.fx_cursor = slot;
+        let midi_len = track.midi_fx.len();
+        self.nav.clip_view.fx_cursor = midi_len + slot;
         self.nav.confirm_modal.show(
             ConfirmKind::DeleteFx,
             &format!("remove {label} from slot {}?", slot + 1),
@@ -195,9 +271,35 @@ impl App {
     }
 
     /// Take the effect out of the slot under the cursor, on both sides.
+    /// The cursor walks the combined rack, so this routes to whichever half
+    /// it is standing in.
     pub(crate) fn remove_fx_at_cursor(&mut self) {
         let index = self.nav.track_cursor;
-        let slot = self.nav.clip_view.fx_cursor;
+        let cursor = self.nav.clip_view.fx_cursor;
+        match self.nav.rack_slot_at(cursor) {
+            Some(crate::state::RackSlot::Midi(slot)) => {
+                self.remove_midi_fx(index, slot);
+                let len = self.nav.rack_len();
+                self.nav.clip_view.fx_cursor = cursor.min(len.saturating_sub(1));
+                if self.nav.clip_view.fx.midi_slot == Some(slot) {
+                    self.nav.clip_view.fx.close();
+                    self.nav.clip_view.clip_tab = ClipTab::InstConfig;
+                    self.nav.clip_view.focus = ClipViewFocus::FxPanel;
+                }
+                self.status_message =
+                    Some(("midi effect removed (u to undo)".into(), std::time::Instant::now()));
+                return;
+            }
+            Some(crate::state::RackSlot::Audio(slot)) => {
+                // Fall through to the audio path below with the mapped index.
+                self.remove_audio_fx_at(index, slot);
+                return;
+            }
+            None => return,
+        }
+    }
+
+    fn remove_audio_fx_at(&mut self, index: usize, slot: usize) {
         let undo_before = self.nav.undo_checkpoint(
             crate::state::undo::UndoScope::TrackFx { track_idx: index },
         );
@@ -214,7 +316,9 @@ impl App {
             .mixer_command_tx
             .send(MixerCommand::RemoveFx { target, slot });
 
-        self.nav.clip_view.fx_cursor = slot.min(len.saturating_sub(1));
+        let midi_len = self.nav.tracks.get(index).map_or(0, |t| t.midi_fx.len());
+        self.nav.clip_view.fx_cursor = (midi_len + slot.min(len.saturating_sub(1)))
+            .min(self.nav.rack_len().saturating_sub(1));
         // A panel open on the slot that just went is a panel showing an
         // effect that no longer exists.
         match self.nav.clip_view.fx.slot {
@@ -235,6 +339,10 @@ impl App {
 
     /// One key, in an effect's panel.
     pub(crate) fn handle_fx_panel_keys(&mut self, key: crossterm::event::KeyEvent) {
+        if self.nav.clip_view.fx.midi_slot.is_some() {
+            self.handle_midi_fx_panel_keys(key);
+            return;
+        }
         match self.open_fx_type() {
             Some(FxType::Reverb) => {
                 self.handle_reverb_panel_keys(key);
@@ -523,6 +631,88 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// The MIDI-effect panel: a knob list, the reverb panel's manners.
+    fn handle_midi_fx_panel_keys(&mut self, key: crossterm::event::KeyEvent) {
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let count = self
+            .nav
+            .clip_view
+            .fx
+            .midi_slot
+            .and_then(|slot| self.nav.current_track()?.midi_fx.get(slot).map(|i| i.fx_type))
+            .map_or(0, |t| t.params().len());
+        match key.code {
+            KeyCode::Char('H') => self.adjust_midi_fx_control(-1, true),
+            KeyCode::Char('L') => self.adjust_midi_fx_control(1, true),
+            KeyCode::Char('h') | KeyCode::Left => self.adjust_midi_fx_control(-1, shift),
+            KeyCode::Char('l') | KeyCode::Right => self.adjust_midi_fx_control(1, shift),
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.nav.clip_view.fx.move_cursor(1, count);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.nav.clip_view.fx.move_cursor(-1, count);
+            }
+            KeyCode::Enter => {
+                self.nav.clip_view.fx.locked = !self.nav.clip_view.fx.locked;
+                self.status_message = if self.nav.clip_view.fx.locked {
+                    Some(("held: h/l adjusts, H/L strides, esc lets go".into(), std::time::Instant::now()))
+                } else {
+                    None
+                };
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if self.nav.clip_view.fx.locked {
+                    self.nav.clip_view.fx.locked = false;
+                    self.status_message = None;
+                } else {
+                    self.nav.clip_view.fx.close();
+                    self.nav.clip_view.clip_tab = ClipTab::InstConfig;
+                    self.nav.clip_view.focus = ClipViewFocus::FxPanel;
+                }
+            }
+            KeyCode::Char('b') => {
+                let slot = self.nav.clip_view.fx.midi_slot.unwrap_or(0);
+                self.toggle_midi_fx_bypass(slot);
+            }
+            _ => {}
+        }
+    }
+
+    /// Turn the MIDI-effect control under the cursor. Selectors — style,
+    /// rate, octaves, latch — step by one and stop at the ends; the
+    /// percentages stride under shift.
+    fn adjust_midi_fx_control(&mut self, direction: i32, stride: bool) {
+        let track_idx = self.nav.track_cursor;
+        let Some(slot) = self.nav.clip_view.fx.midi_slot else { return };
+        let row = self.nav.clip_view.fx.band;
+        let Some(instance) = self
+            .nav
+            .tracks
+            .get(track_idx)
+            .and_then(|t| t.midi_fx.get(slot))
+        else {
+            return;
+        };
+        let fx_type = instance.fx_type;
+        let Some(info) = fx_type.params().get(row) else { return };
+        let current = instance.params.get(row).copied().unwrap_or(info.default);
+        // Ranges up to ten wide are selectors; the rest are values.
+        let step = if info.max - info.min <= 10.0 {
+            1.0
+        } else if stride {
+            10.0
+        } else {
+            1.0
+        };
+        let value = (current + step * direction as f32).clamp(info.min, info.max);
+        self.set_midi_fx_param(track_idx, slot, row, value);
+        let shown = fx_type
+            .value_label(row, value)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{value:.0}{}", info.unit));
+        self.flash(format!("{}: {shown}", info.name));
     }
 
     /// Turn the reverb control under the cursor.

@@ -353,6 +353,17 @@ impl App {
     /// command — the same shape `SetInstrument` has, and for the same reason.
     /// Nothing is ever built on the audio thread.
     pub(crate) fn fx_menu_choose(&mut self) {
+        // The menu's tail rows are the MIDI effects; they go through their
+        // own door, which takes its own undo step.
+        let audio_count = crate::state::FxType::ALL.len();
+        let cursor = self.nav.fx_menu.cursor;
+        if cursor >= audio_count {
+            self.nav.fx_menu.open = false;
+            if let Some(&fx_type) = crate::state::MidiFxType::ALL.get(cursor - audio_count) {
+                self.add_midi_fx(self.nav.track_cursor, fx_type);
+            }
+            return;
+        }
         let before = self.nav.undo_checkpoint(
             crate::state::undo::UndoScope::TrackFx { track_idx: self.nav.track_cursor },
         );

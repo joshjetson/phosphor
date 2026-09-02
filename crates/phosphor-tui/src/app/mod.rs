@@ -36,6 +36,7 @@ mod piano_roll;
 mod presets;
 mod session_io;
 mod clips;
+mod midi_fx_ops;
 mod tracks;
 mod transport;
 mod undo_redo;

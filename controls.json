@@ -229,5 +229,13 @@
     "Esc": "close the lane",
     "note": "an empty clip offers mod, bend and aftertouch to draw from scratch; a recorded sweep opens on its own stream; edits are undoable and play back",
     "r": "ramp: draw both end values with k/j, then r fills every column back to the previous point with a straight line (one undo step)"
+  },
+  "midi_fx": {
+    "_about": "MIDI effects run on the notes before the instrument, on live playing AND clip playback; recording stores the raw keys you played, never the generated notes — change the effect later and old takes play through the new setting",
+    "add": "a in the [trk fx] tab (or enter on the fx cell) opens the add menu — 'arp · midi' is the MIDI entry; it lands above the audio effects in the same list",
+    "arp_panel": "enter on the arp opens its panel: j/k picks a knob, h/l adjusts (H/L strides), b bypass, esc back",
+    "arp_params": "style up/down/updown/played/chord/random · rate 1/4..1/32 incl. dotted+triplet · gate 1-200% · octaves 1-4 · latch off/hold (hold keeps the chord after hands leave; a new chord replaces it) · vel 0=as played or fixed · swing 50-75% (54/56/58 are the MPC feels)",
+    "bypass_remove": "b bypasses (flushes its held notes so nothing hangs), d removes with confirm, u undoes either",
+    "order": "MIDI effects always lead the chain — they run on notes, the audio effects run on sound"
   }
 }

@@ -32,7 +32,7 @@ pub(super) fn render_clip_view_tabs(frame: &mut Frame, area: Rect, nav: &NavStat
     }
     // An effect's panel is a tab only while a slot is open in it: a tab for a
     // panel with no effect behind it is a tab that shows nothing.
-    if nav.clip_view.fx.slot.is_some() {
+    if nav.clip_view.fx.slot.is_some() || nav.clip_view.fx.midi_slot.is_some() {
         tabs.push(ClipTab::Fx);
     }
     tabs.extend(ClipTab::ALL.iter().copied());

@@ -218,6 +218,9 @@ impl ClipViewState {
 pub struct FxView {
     /// The slot whose panel is open, if one is.
     pub slot: Option<usize>,
+    /// The MIDI-rack slot whose panel is open instead, if one is. The two
+    /// are exclusive: opening either closes the other.
+    pub midi_slot: Option<usize>,
     /// The band under the cursor, `0..8`; [`FxView::TRIM`] is the output trim.
     pub band: usize,
     /// The control under the cursor inside that band, in the EQ's own order:
@@ -249,15 +252,26 @@ impl FxView {
     /// would make the first stray keypress rewrite the band.
     pub fn open(&mut self, slot: usize) {
         self.slot = Some(slot);
+        self.midi_slot = None;
         self.band = 0;
         self.control = 1;
+        self.locked = false;
+    }
+
+    /// Open a MIDI-rack slot's panel, cursor on the first knob.
+    pub fn open_midi(&mut self, slot: usize) {
+        self.midi_slot = Some(slot);
+        self.slot = None;
+        self.band = 0;
+        self.control = 0;
         self.locked = false;
     }
 
     /// Shut the panel, answering whether one was open.
     pub fn close(&mut self) -> bool {
         self.locked = false;
-        self.slot.take().is_some()
+        let midi = self.midi_slot.take().is_some();
+        self.slot.take().is_some() || midi
     }
 
     /// Move between bands, the trim included, stopping at both ends.

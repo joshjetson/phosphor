@@ -129,6 +129,8 @@ pub struct TrackState {
     /// The UI's mirror of this strip's six insert slots. The effects
     /// themselves live on the audio thread; see [`super::FxInstance`].
     pub fx_chain: Vec<super::FxInstance>,
+    /// The pre-instrument MIDI effects, mirrored from the audio thread.
+    pub midi_fx: Vec<super::MidiFxInstance>,
     /// Where the track sits in the image, −1 hard left to +1 hard right.
     ///
     /// Centre is unity in both channels, so a session written before pan
@@ -224,6 +226,7 @@ impl TrackState {
             kind,
             clips,
             fx_chain: Vec::new(),
+            midi_fx: Vec::new(),
             pan: Self::CENTRE_PAN,
             sends: [0.0; 2],
             key_source: None,

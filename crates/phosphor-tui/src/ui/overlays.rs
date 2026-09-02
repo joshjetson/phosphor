@@ -454,7 +454,10 @@ pub(super) fn render_fx_menu(frame: &mut Frame, nav: &NavState) {
 
     let inner = Rect::new(mx + 1, my + 1, mw - 2, mh - 2);
 
-    let items: Vec<(&str, bool)> = FxType::ALL.iter().map(|f| (f.label(), false)).collect();
+    let mut items: Vec<(&str, bool)> = FxType::ALL.iter().map(|f| (f.label(), false)).collect();
+    for m in crate::state::MidiFxType::ALL {
+        items.push((m.menu_label(), false));
+    }
 
     let mut lines: Vec<Line> = Vec::new();
     for (i, (label, active)) in items.iter().enumerate() {

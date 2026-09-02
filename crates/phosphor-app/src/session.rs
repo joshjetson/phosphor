@@ -88,6 +88,9 @@ pub struct SessionTrack {
     /// one that wrote the file — still loads the right thing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fx: Vec<SessionFx>,
+    /// The pre-instrument MIDI effects, same shape as the audio chain.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub midi_fx: Vec<SessionFx>,
     /// Pan position, −1..=1. Absent at centre, which is where every track
     /// written before pan existed sits.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -228,6 +231,38 @@ pub fn chain_from_session(stored: &[SessionFx]) -> (Vec<FxInstance>, usize) {
         });
     }
     (chain, dropped)
+}
+
+/// The MIDI rack as it is stored, and as it comes back. The same
+/// name-plus-params shape the audio chain uses, and the same rule for a
+/// name this build does not know: the slot is dropped, the session opens.
+#[must_use]
+pub fn midi_fx_to_session(rack: &[crate::state::MidiFxInstance]) -> Vec<SessionFx> {
+    rack.iter()
+        .map(|slot| SessionFx {
+            kind: slot.fx_type.key().to_string(),
+            bypass: slot.bypass,
+            params: slot.params.clone(),
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn midi_fx_from_session(stored: &[SessionFx]) -> (Vec<crate::state::MidiFxInstance>, usize) {
+    let mut rack = Vec::new();
+    let mut dropped = 0;
+    for slot in stored {
+        let Some(fx_type) = crate::state::MidiFxType::from_key(&slot.kind) else {
+            dropped += 1;
+            continue;
+        };
+        rack.push(crate::state::MidiFxInstance {
+            fx_type,
+            bypass: slot.bypass,
+            params: slot.params.clone(),
+        });
+    }
+    (rack, dropped)
 }
 
 /// One discrete control, stored by what it selects.
@@ -411,6 +446,7 @@ fn extract_session(nav: &NavState, transport: &Transport) -> SessionFile {
                 )
             }),
             fx: chain_to_session(&track.fx_chain),
+            midi_fx: midi_fx_to_session(&track.midi_fx),
             pan: track.pan,
             send_a: track.send(SendSlot::A),
             send_b: track.send(SendSlot::B),
@@ -633,6 +669,7 @@ mod tests {
                     volume: 0.75,
                     color_index: 2,
                     sequencer: None,
+                    midi_fx: Vec::new(),
                     fx: vec![
                         SessionFx { kind: "eq".into(), bypass: false, params: vec![120.0, 3.0] },
                         SessionFx { kind: "comp".into(), bypass: true, params: vec![-18.0] },
@@ -723,6 +760,7 @@ mod tests {
                 color_index: 0,
                 clips: Vec::new(),
                 sequencer: None,
+                midi_fx: Vec::new(),
                 fx: Vec::new(),
                 pan: 0.0,
                 send_a: 0.0,

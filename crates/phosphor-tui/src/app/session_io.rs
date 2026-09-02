@@ -368,16 +368,20 @@ impl App {
                 track.sends = [st.send_a, st.send_b];
                 let (chain, dropped) = crate::session::chain_from_session(&st.fx);
                 track.fx_chain = chain;
-                if dropped > 0 {
+                let (rack, midi_dropped) = crate::session::midi_fx_from_session(&st.midi_fx);
+                track.midi_fx = rack;
+                if dropped + midi_dropped > 0 {
                     tracing::warn!(
-                        "track '{}': {dropped} effect(s) in the session are not in this build",
-                        st.name
+                        "track '{}': {} effect(s) in the session are not in this build",
+                        st.name,
+                        dropped + midi_dropped
                     );
                 }
 
                 track.sync_to_audio();
             }
             self.install_chain(track_idx);
+            self.install_midi_fx(track_idx);
             self.sync_routing(track_idx);
 
             // The sequencer last, so that it is attached to a track whose

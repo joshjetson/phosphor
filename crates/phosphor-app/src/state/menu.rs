@@ -175,7 +175,7 @@ impl FxMenu {
     }
 
     pub fn item_count(&self) -> usize {
-        FxType::ALL.len()
+        FxType::ALL.len() + super::MidiFxType::ALL.len()
     }
 
     pub fn move_up(&mut self) {
@@ -999,6 +999,15 @@ pub const HELP_TOPICS: &[HelpTopic] = &[
             Heading("track fx"),
             Key("enter", "on the fx cell: choose an effect to add"),
             Key("j / k", "walk the chain in the [trk fx] tab"),
+            Gap,
+            Heading("midi fx (the arp)"),
+            Note("\u{201c}arp \u{00b7} midi\u{201d} in the add menu puts an arpeggiator"),
+            Note("before the instrument: hold a chord, hear a run."),
+            Note("It plays live and on playback \u{2014} recording still"),
+            Note("stores the keys you pressed, so u and edits work"),
+            Note("on your playing, and the arp re-plays it after."),
+            Key("enter", "open its panel \u{00b7} j/k knob, h/l adjust"),
+            Key("b / d", "bypass / remove \u{00b7} latch is a knob"),
         ],
     },
     HelpTopic {

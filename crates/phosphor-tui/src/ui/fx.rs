@@ -89,18 +89,50 @@ pub(super) fn render_fx_chain(frame: &mut Frame, area: Rect, nav: &NavState, foc
         .current_track()
         .map(|t| t.fx_chain.as_slice())
         .unwrap_or(&[]);
+    let midi: &[crate::state::MidiFxInstance] = nav
+        .current_track()
+        .map(|t| t.midi_fx.as_slice())
+        .unwrap_or(&[]);
 
     let mut lines: Vec<Line> = Vec::new();
-    if chain.is_empty() {
+    if chain.is_empty() && midi.is_empty() {
         lines.push(Line::from(Span::styled("  (no fx)", theme::dim())));
         lines.push(Line::from(Span::styled("  a \u{2014} add one", theme::muted())));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled("  works on tracks,", theme::dim())));
         lines.push(Line::from(Span::styled("  buses and master", theme::dim())));
     } else {
-        let cursor = nav.clip_view.fx_cursor.min(chain.len() - 1);
-        for (index, slot) in chain.iter().enumerate() {
+        let total = midi.len() + chain.len();
+        let cursor = nav.clip_view.fx_cursor.min(total - 1);
+        // The MIDI rack leads, drawn the same way with a marker: these run
+        // on the notes, before the instrument.
+        for (index, slot) in midi.iter().enumerate() {
             let here = focused && cursor == index;
+            let open = nav.clip_view.fx.midi_slot == Some(index);
+            let style = if here {
+                theme::amber_bright().add_modifier(Modifier::BOLD)
+            } else if slot.is_active() {
+                theme::normal()
+            } else {
+                theme::dim()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(if here { " \u{25B6} " } else { "   " }, style),
+                Span::styled(
+                    if slot.is_active() { "\u{25CF} " } else { "\u{25CB} " },
+                    if slot.is_active() { style } else { theme::dim() },
+                ),
+                Span::styled(format!("{:<6}", slot.fx_type.label()), style),
+                Span::styled(
+                    if slot.is_active() { "midi" } else { "byp" },
+                    theme::dim(),
+                ),
+                Span::styled(if open { "\u{25B8}" } else { "" }, theme::amber()),
+            ]));
+        }
+        for (index, slot) in chain.iter().enumerate() {
+            let index_all = midi.len() + index;
+            let here = focused && cursor == index_all;
             let open = nav.clip_view.fx.slot == Some(index);
             let style = if here {
                 theme::amber_bright().add_modifier(Modifier::BOLD)
@@ -141,6 +173,59 @@ pub(super) fn render_fx_chain(frame: &mut Frame, area: Rect, nav: &NavState, foc
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+
+/// A MIDI effect's panel: the knob list, one row per control, the value in
+/// its own words where the number names a thing rather than measures one.
+fn render_midi_fx_panel(
+    frame: &mut Frame,
+    area: Rect,
+    nav: &NavState,
+    track: &crate::state::TrackState,
+    slot: usize,
+) {
+    let Some(instance) = track.midi_fx.get(slot) else { return };
+    let fx_type = instance.fx_type;
+    let cursor = nav.clip_view.fx.band;
+    let locked = nav.clip_view.fx.locked;
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {} ", fx_type.label()), theme::amber_bright().add_modifier(Modifier::BOLD)),
+        Span::styled("\u{00b7} midi \u{00b7} plays live and on playback", theme::dim()),
+        Span::styled(if instance.bypass { "  \u{00b7} bypassed" } else { "" }, theme::dim()),
+    ]));
+    lines.push(Line::from(""));
+
+    for (row, info) in fx_type.params().iter().enumerate() {
+        let here = cursor == row;
+        let value = instance.params.get(row).copied().unwrap_or(info.default);
+        let shown = fx_type
+            .value_label(row, value)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{value:.0}{}", info.unit));
+        let style = if here && locked {
+            theme::amber_bright().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else if here {
+            theme::amber_bright().add_modifier(Modifier::BOLD)
+        } else {
+            theme::normal()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(if here { " \u{25B6} " } else { "   " }, style),
+            Span::styled(format!("{:<8}", info.name), style),
+            Span::styled(shown, style),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  j/k knob \u{00b7} h/l adjust \u{00b7} b bypass \u{00b7} esc back",
+        theme::dim(),
+    )));
+
+    lines.truncate(area.height as usize);
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
 // ── The panel ──
 
 /// One effect's panel, in the wide pane.
@@ -150,6 +235,10 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
         return;
     }
     let Some(track) = nav.current_track() else { return };
+    if let Some(mslot) = nav.clip_view.fx.midi_slot {
+        render_midi_fx_panel(frame, area, nav, track, mslot);
+        return;
+    }
     let Some(index) = nav.clip_view.fx.slot else {
         frame.render_widget(
             Paragraph::new(Span::styled(

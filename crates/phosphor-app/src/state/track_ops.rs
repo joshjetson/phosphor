@@ -276,9 +276,33 @@ impl NavState {
 
     pub fn active_fx_chain_len(&self) -> usize {
         match self.clip_view.fx_panel_tab {
-            FxPanelTab::TrackFx | FxPanelTab::Synth => {
-                self.current_track().map(|t| t.fx_chain.len().max(1)).unwrap_or(1)
-            }
+            FxPanelTab::TrackFx | FxPanelTab::Synth => self
+                .current_track()
+                .map(|t| (t.midi_fx.len() + t.fx_chain.len()).max(1))
+                .unwrap_or(1),
+        }
+    }
+
+    /// How long the combined rack is — MIDI slots plus audio inserts.
+    #[must_use]
+    pub fn rack_len(&self) -> usize {
+        self.current_track()
+            .map(|t| t.midi_fx.len() + t.fx_chain.len())
+            .unwrap_or(0)
+    }
+
+    /// What the fx cursor points at in the combined rack: the MIDI slots
+    /// lead — they lead in the signal too — and the audio inserts follow.
+    #[must_use]
+    pub fn rack_slot_at(&self, cursor: usize) -> Option<RackSlot> {
+        let track = self.current_track()?;
+        let midi = track.midi_fx.len();
+        if cursor < midi {
+            Some(RackSlot::Midi(cursor))
+        } else if cursor - midi < track.fx_chain.len() {
+            Some(RackSlot::Audio(cursor - midi))
+        } else {
+            None
         }
     }
 

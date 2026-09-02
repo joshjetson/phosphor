@@ -172,6 +172,10 @@ impl App {
             StateSlice::TrackFx { track_idx, chain } => {
                 self.apply_fx_slice(*track_idx, chain);
             }
+            StateSlice::TrackMidiFx { track_idx, chain } => {
+                let chain = chain.clone();
+                self.apply_midi_fx_slice(*track_idx, &chain);
+            }
             StateSlice::SynthParams { track_idx, params } => {
                 if let Some(track) = self.nav.tracks.get_mut(*track_idx) {
                     track.synth_params = params.clone();
@@ -347,6 +351,7 @@ impl App {
             track.synth_params = saved.synth_params.clone();
             track.clips = saved.clips.clone();
             track.fx_chain = saved.fx_chain.clone();
+            track.midi_fx = saved.midi_fx.clone();
             track.sync_to_audio();
         }
         self.push_params_to_audio(final_idx);
@@ -354,6 +359,7 @@ impl App {
         // The freshly created track has no clips on the audio side yet.
         self.resync_track_clips_to_audio(final_idx, 0);
         self.install_chain(final_idx);
+        self.install_midi_fx(final_idx);
         self.sync_routing(final_idx);
 
         if let Some(sequencer) = saved.sequencer.clone() {

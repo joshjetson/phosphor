@@ -4,6 +4,7 @@ pub mod cpal_backend;
 pub mod engine;
 pub mod fx;
 pub mod metronome;
+pub mod midi_fx;
 pub mod mixer;
 pub mod pattern;
 pub mod project;

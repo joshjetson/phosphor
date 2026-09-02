@@ -114,6 +114,31 @@ pub enum MixerCommand {
         slot: usize,
         effect: Box<dyn Effect>,
     },
+    /// Put a MIDI effect in a track's pre-instrument slot. Tracks only —
+    /// buses and the master have no MIDI, so the address is a track id
+    /// rather than an [`FxTarget`] with two impossible variants.
+    AddMidiFx {
+        track_id: usize,
+        slot: usize,
+        fx: Box<dyn crate::midi_fx::MidiEffect>,
+    },
+    /// Take a MIDI effect out. The slot flushes its note-offs first, so a
+    /// generated chord does not hang under the instrument.
+    RemoveMidiFx {
+        track_id: usize,
+        slot: usize,
+    },
+    SetMidiFxParam {
+        track_id: usize,
+        slot: usize,
+        param_index: usize,
+        value: f32,
+    },
+    SetMidiFxBypass {
+        track_id: usize,
+        slot: usize,
+        bypassed: bool,
+    },
     /// Take the effect out of a slot. Frees on the audio thread, as
     /// `RemoveTrack` and `UpdateClip` already do.
     RemoveFx {
@@ -223,6 +248,10 @@ fn command_cost(cmd: &MixerCommand) -> u32 {
         | MixerCommand::SetPan { .. }
         | MixerCommand::SetKeySource { .. }
         | MixerCommand::SetKeyListen { .. }
+        // A MIDI-FX parameter is a store; a bypass flips a bool and pushes
+        // a handful of note-offs into a buffer that already exists.
+        | MixerCommand::SetMidiFxParam { .. }
+        | MixerCommand::SetMidiFxBypass { .. }
         // Clearing a record buffer keeps its capacity: a store and a length
         // reset, nothing for the allocator.
         | MixerCommand::DiscardRecording => 1,
@@ -237,6 +266,8 @@ fn command_cost(cmd: &MixerCommand) -> u32 {
         // allocator's business.
         | MixerCommand::AddFx { .. }
         | MixerCommand::RemoveFx { .. }
+        | MixerCommand::AddMidiFx { .. }
+        | MixerCommand::RemoveMidiFx { .. }
         | MixerCommand::MoveFx { .. }
         // Only the first pattern a track receives allocates — it builds the
         // player — and the cost is charged before the command is opened, so
@@ -444,6 +475,11 @@ pub struct AudioTrack {
     buf_l: Vec<f32>,
     buf_r: Vec<f32>,
     plugin_events: Vec<MidiEvent>,
+    /// Pre-instrument MIDI effects, run over the assembled event list.
+    midi_fx: Vec<crate::midi_fx::MidiFxSlot>,
+    /// Note-offs owed by a slot that was just bypassed or removed, played
+    /// into the instrument on the next block so nothing hangs.
+    midi_fx_owed: Vec<MidiEvent>,
 }
 
 impl AudioTrack {
@@ -465,6 +501,8 @@ impl AudioTrack {
             buf_l: vec![0.0; max_buffer_size],
             buf_r: vec![0.0; max_buffer_size],
             plugin_events: Vec::with_capacity(PLUGIN_EVENT_CAPACITY),
+            midi_fx: Vec::with_capacity(crate::midi_fx::MAX_MIDI_FX_SLOTS),
+            midi_fx_owed: Vec::with_capacity(64),
         }
     }
 }
@@ -587,6 +625,9 @@ pub struct Mixer {
     scratch_r: Vec<f32>,
     /// Pre-allocated buffer for live MIDI conversion.
     live_events: Vec<(MidiEvent, i64)>,
+    /// One scratch buffer for the whole MIDI-FX layer. Pass 1 is
+    /// sequential, so one is enough for every track's chain.
+    midi_fx_scratch: Vec<MidiEvent>,
     /// The window the previous callback rendered, when playback was running.
     ///
     /// One per mixer rather than one per track: the window is a fact about
@@ -660,6 +701,7 @@ impl Mixer {
             scratch_l: vec![0.0; max_buffer_size],
             scratch_r: vec![0.0; max_buffer_size],
             live_events: Vec::with_capacity(256),
+            midi_fx_scratch: Vec::with_capacity(crate::midi_fx::MIDI_FX_EVENT_CAPACITY),
             last_window: None,
             limiter: MasterLimiter::new(sample_rate),
             limiter_gr: GrBallistics::new(),
@@ -944,6 +986,44 @@ impl Mixer {
 
             if !track.plugin_events.is_empty() {
                 sort_events_by_offset(&mut track.plugin_events);
+            }
+
+            // ── MIDI effects: between the assembled events and the ears ──
+            //
+            // After the sort so every effect sees a correctly ordered list;
+            // after the recorder so what lands in a clip is the played
+            // input, never the generated output. Offs owed by a slot that
+            // was bypassed or removed go in first, so nothing hangs.
+            if !track.midi_fx_owed.is_empty() {
+                for ev in track.midi_fx_owed.drain(..) {
+                    if track.plugin_events.len() < track.plugin_events.capacity() {
+                        track.plugin_events.push(ev);
+                    }
+                }
+            }
+            if track.midi_fx.iter().any(|s| !s.bypassed) {
+                let ctx = crate::midi_fx::MidiFxContext {
+                    sample_rate: self.sample_rate as f32,
+                    tempo_bpm: bpm,
+                    playing,
+                    num_frames: num_frames as u32,
+                    block_start_tick: current_tick,
+                    ticks_per_sample,
+                };
+                for slot in track.midi_fx.iter_mut().filter(|s| !s.bypassed) {
+                    self.midi_fx_scratch.clear();
+                    slot.fx.process(&track.plugin_events, &mut self.midi_fx_scratch, &ctx);
+                    track.plugin_events.clear();
+                    for ev in &self.midi_fx_scratch {
+                        if track.plugin_events.len() >= track.plugin_events.capacity() {
+                            break;
+                        }
+                        track.plugin_events.push(*ev);
+                    }
+                }
+                if !track.plugin_events.is_empty() {
+                    sort_events_by_offset(&mut track.plugin_events);
+                }
             }
 
             // Track position for wrap detection (used by both recording and playback)
@@ -1254,6 +1334,13 @@ impl Mixer {
             // instruments have been silenced is exactly the sound the panic
             // key exists to stop.
             track.chain.reset();
+            // And the MIDI effects drop their state silently — a latched arp
+            // still firing note-ons a millisecond after the panic is the
+            // worst possible version of a panic that does not panic.
+            for slot in &mut track.midi_fx {
+                slot.fx.reset();
+            }
+            track.midi_fx_owed.clear();
             track.handle.vu.set(0.0, 0.0);
             // Commit any active recording before resetting (don't lose overdubs)
             if track.record_buf.is_active() && track.was_recording {
@@ -1403,6 +1490,47 @@ impl Mixer {
             MixerCommand::RemoveFx { target, slot } => {
                 if let Some(chain) = self.chain_mut(target) {
                     drop(chain.remove(slot));
+                }
+            }
+            MixerCommand::AddMidiFx { track_id, slot, mut fx } => {
+                let sr = self.sample_rate;
+                let max_buffer_size = self.max_buffer_size;
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    fx.init(f64::from(sr), max_buffer_size);
+                    let slot = slot.min(track.midi_fx.len());
+                    if track.midi_fx.len() < crate::midi_fx::MAX_MIDI_FX_SLOTS {
+                        track
+                            .midi_fx
+                            .insert(slot, crate::midi_fx::MidiFxSlot { fx, bypassed: false });
+                    }
+                    // A full rack drops the newcomer — the UI is expected to
+                    // have refused already.
+                }
+            }
+            MixerCommand::RemoveMidiFx { track_id, slot } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    if slot < track.midi_fx.len() {
+                        let mut gone = track.midi_fx.remove(slot);
+                        gone.fx.flush(&mut track.midi_fx_owed);
+                        drop(gone);
+                    }
+                }
+            }
+            MixerCommand::SetMidiFxParam { track_id, slot, param_index, value } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    if let Some(s) = track.midi_fx.get_mut(slot) {
+                        s.fx.set_parameter(param_index, value);
+                    }
+                }
+            }
+            MixerCommand::SetMidiFxBypass { track_id, slot, bypassed } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    if let Some(s) = track.midi_fx.get_mut(slot) {
+                        if bypassed && !s.bypassed {
+                            s.fx.flush(&mut track.midi_fx_owed);
+                        }
+                        s.bypassed = bypassed;
+                    }
                 }
             }
             MixerCommand::MoveFx { target, from, to } => {
@@ -1742,6 +1870,114 @@ mod tests {
         assert_eq!(snap.track_id, 0);
         assert!(snap.event_count >= 2, "Should have note on + off, got {}", snap.event_count);
         assert!(!snap.notes.is_empty(), "Should have parsed notes");
+    }
+
+
+    /// The recorder taps the stream upstream of the MIDI effects: a take
+    /// made through an arpeggiator stores the chord the player held, not
+    /// the run the arp generated. Change the arp tomorrow and the take
+    /// plays through the new setting — the whole point of the layer.
+    #[test]
+    fn recording_through_an_arp_stores_the_played_keys() {
+        let (mut mixer, tx, clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        tx.send(MixerCommand::AddMidiFx {
+            track_id: 0,
+            slot: 0,
+            fx: Box::new(crate::midi_fx::Arpeggiator::new()),
+        })
+        .unwrap();
+        transport.play();
+        transport.toggle_record();
+
+        let mut output = vec![0.0f32; 512];
+        let chord = vec![make_note_on(60, 100), make_note_on(64, 100), make_note_on(67, 100)];
+        mixer.process(&mut output, &chord, &transport);
+        transport.advance(256, 44_100);
+        for _ in 0..40 {
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(256, 44_100);
+        }
+        let offs = vec![make_note_off(60), make_note_off(64), make_note_off(67)];
+        mixer.process(&mut output, &offs, &transport);
+        transport.toggle_record();
+        mixer.process(&mut output, &[], &transport);
+
+        let snap = clip_rx.try_recv().expect("commit produced no snapshot");
+        assert_eq!(snap.notes.len(), 3, "the clip stored the arp's output, not the keys");
+        let mut pitches: Vec<u8> = snap.notes.iter().map(|n| n.note).collect();
+        pitches.sort_unstable();
+        assert_eq!(pitches, vec![60, 64, 67]);
+    }
+
+    /// The instrument hears the arp's generated notes, not the raw keys:
+    /// with latch on, a key pressed and released immediately keeps sounding
+    /// through the arp — only the generated steps can be doing that.
+    #[test]
+    fn the_instrument_hears_the_arp_not_the_chord() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        use crate::midi_fx::MidiEffect as _;
+        let mut arp = crate::midi_fx::Arpeggiator::new();
+        arp.set_parameter(4, 1.0); // latch on
+        tx.send(MixerCommand::AddMidiFx { track_id: 0, slot: 0, fx: Box::new(arp) }).unwrap();
+        transport.play();
+
+        // Tap the key: on and off in consecutive blocks.
+        let mut output = vec![0.0f32; 512];
+        mixer.process(&mut output, &[make_note_on(60, 110)], &transport);
+        transport.advance(256, 44_100);
+        mixer.process(&mut output, &[make_note_off(60)], &transport);
+        transport.advance(256, 44_100);
+
+        // Long after any release tail, the latched arp is still firing.
+        let mut late = 0.0f32;
+        for b in 0..600 {
+            output.fill(0.0);
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(256, 44_100);
+            if b > 500 {
+                late = late.max(output.iter().fold(0.0f32, |a, &s| a.max(s.abs())));
+            }
+        }
+        assert!(
+            late > 1.0e-3,
+            "the latched arp went silent — its output is not reaching the instrument"
+        );
+    }
+
+    /// Bypassing the slot mid-run flushes its note-offs — nothing hangs.
+    #[test]
+    fn bypassing_the_arp_hangs_no_note() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        tx.send(MixerCommand::AddMidiFx {
+            track_id: 0,
+            slot: 0,
+            fx: Box::new(crate::midi_fx::Arpeggiator::new()),
+        })
+        .unwrap();
+        transport.play();
+        let mut output = vec![0.0f32; 512];
+        mixer.process(&mut output, &[make_note_on(60, 110)], &transport);
+        transport.advance(256, 44_100);
+        mixer.process(&mut output, &[], &transport);
+        transport.advance(256, 44_100);
+
+        // Bypass, release the key, and let the tail die.
+        tx.send(MixerCommand::SetMidiFxBypass { track_id: 0, slot: 0, bypassed: true }).unwrap();
+        mixer.process(&mut output, &[make_note_off(60)], &transport);
+        transport.advance(256, 44_100);
+        let mut tail = 0.0f32;
+        for b in 0..400 {
+            output.fill(0.0);
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(256, 44_100);
+            if b > 300 {
+                tail = tail.max(output.iter().fold(0.0f32, |a, &s| a.max(s.abs())));
+            }
+        }
+        assert!(tail < 1.0e-3, "a note hung after bypass: tail peak {tail}");
     }
 
     /// A parsed message carrying a receipt-site arrival stamp, for the
