@@ -153,6 +153,32 @@ pub struct UserChord {
     pub root: i8,
     pub quality: u8,
     pub bass: i8,
+    /// A learned voicing's own intervals, semitones from the root, used
+    /// when `quality` is [`LEARNED_QUALITY`] — the shape a hand played,
+    /// spread and all, instead of a dictionary entry.
+    pub custom: [i8; 8],
+    pub custom_len: u8,
+}
+
+/// The `quality` value that says "use the learned intervals".
+pub const LEARNED_QUALITY: u8 = 255;
+
+impl UserChord {
+    /// A chord picked from the dictionary.
+    #[must_use]
+    pub fn pick(root: i8, quality: u8, bass: i8) -> Self {
+        Self { root, quality, bass, custom: [0; 8], custom_len: 0 }
+    }
+
+    /// A chord learned from played notes: `intervals` are semitones above
+    /// the root, starting at 0.
+    #[must_use]
+    pub fn learned(root: i8, intervals: &[i8], bass: i8) -> Self {
+        let mut custom = [0i8; 8];
+        let n = intervals.len().min(8);
+        custom[..n].copy_from_slice(&intervals[..n]);
+        Self { root, quality: LEARNED_QUALITY, bass, custom, custom_len: n as u8 }
+    }
 }
 
 /// How many chords a user progression holds — one per white key.
@@ -174,9 +200,10 @@ const P_BASS: usize = 5;
 const P_STRUM: usize = 6;
 const P_MODE: usize = 7;
 const P_PROG: usize = 8;
+const P_HUMAN: usize = 9;
 
 /// The chord device's parameter table, exported for the panel.
-pub const CHORD_PARAMS: [FxParamInfo; 9] = [
+pub const CHORD_PARAMS: [FxParamInfo; 10] = [
     FxParamInfo { name: "root", unit: "", min: 0.0, max: 11.0, default: 0.0 },
     FxParamInfo { name: "scale", unit: "", min: 0.0, max: 7.0, default: 0.0 },
     // Sevenths by default — the whole genre starts there.
@@ -190,6 +217,8 @@ pub const CHORD_PARAMS: [FxParamInfo; 9] = [
     // with these at their defaults, which is the old behaviour exactly.
     FxParamInfo { name: "mode", unit: "", min: 0.0, max: 1.0, default: 0.0 },
     FxParamInfo { name: "prog", unit: "", min: 0.0, max: 8.0, default: 0.0 },
+    // Appended after v0.3.59; old sessions load with it at zero.
+    FxParamInfo { name: "human", unit: "%", min: 0.0, max: 100.0, default: 0.0 },
 ];
 
 /// The most notes one key can sound: seven stack tones, a doubled top,
@@ -228,6 +257,10 @@ pub struct ChordDevice {
     prog: usize,
     custom: [UserChord; MAX_USER_CHORDS],
     custom_len: usize,
+    human_pct: f32,
+    /// xorshift for humanize; reseeded on reset, so an offline render is
+    /// deterministic.
+    rng: u32,
 
     active: [ActiveChord; MAX_ACTIVE],
     active_len: usize,
@@ -256,8 +289,10 @@ impl ChordDevice {
             strum_ms: 0.0,
             mode: 0,
             prog: 0,
-            custom: [UserChord { root: 0, quality: 0, bass: -1 }; MAX_USER_CHORDS],
+            custom: [UserChord::pick(0, 0, -1); MAX_USER_CHORDS],
             custom_len: 0,
+            human_pct: 0.0,
+            rng: 0x2545_F491,
             active: [ActiveChord { key: 0, notes: [0; MAX_CHORD], count: 0 }; MAX_ACTIVE],
             active_len: 0,
             last_center: None,
@@ -400,11 +435,20 @@ impl ChordDevice {
             }
             let slot = WHITE_MAP[usize::from(key % 12)] % self.custom_len;
             let chord = self.custom[slot];
-            let (_, intervals) = QUALITIES[usize::from(chord.quality).min(QUALITIES.len() - 1)];
             let chord_root = 48 + self.root + i32::from(chord.root);
             let mut offsets = [0i32; MAX_CHORD];
-            let count = intervals.len().min(MAX_CHORD);
-            offsets[..count].copy_from_slice(&intervals[..count]);
+            let count;
+            if chord.quality == LEARNED_QUALITY {
+                count = usize::from(chord.custom_len).min(MAX_CHORD);
+                for (slot_out, &iv) in offsets.iter_mut().zip(&chord.custom[..count]) {
+                    *slot_out = i32::from(iv);
+                }
+            } else {
+                let (_, intervals) =
+                    QUALITIES[usize::from(chord.quality).min(QUALITIES.len() - 1)];
+                count = intervals.len().min(MAX_CHORD);
+                offsets[..count].copy_from_slice(&intervals[..count]);
+            }
             let bass_override = (chord.bass >= 0)
                 .then(|| 48 + self.root + i32::from(chord.bass));
             return self.place(chord_root, &offsets[..count], bass_override);
@@ -484,6 +528,14 @@ impl ChordDevice {
         (notes, len)
     }
 
+    /// The next humanize draw, -1.0..1.0.
+    fn jitter(&mut self) -> f32 {
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 17;
+        self.rng ^= self.rng << 5;
+        (self.rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+    }
+
     fn drain_strum(&mut self, num_frames: u32, out: &mut Vec<MidiEvent>) {
         let mut k = 0;
         while k < self.strum_len {
@@ -530,19 +582,33 @@ impl MidiEffect for ChordDevice {
                         (f64::from(self.strum_ms) / 1000.0 * f64::from(ctx.sample_rate)) as i64;
                     for (k, &note) in notes[..count].iter().enumerate() {
                         let delay = strum_samples * k as i64;
-                        let at = i64::from(ev.sample_offset) + delay;
+                        // Humanize: fingers land a few ms apart and no two
+                        // at the same weight. Delay-only; a late note rides
+                        // the strum book across the block edge like any
+                        // strummed one.
+                        let (drag, vel) = if self.human_pct > 0.0 {
+                            let amt = self.human_pct / 100.0;
+                            let drag = ((self.jitter().abs() * amt * 0.010)
+                                * ctx.sample_rate)
+                                .max(0.0) as i64;
+                            let dv = (self.jitter() * amt * 12.0).round() as i32;
+                            (drag, (i32::from(ev.data2) + dv).clamp(1, 127) as u8)
+                        } else {
+                            (0, ev.data2)
+                        };
+                        let at = i64::from(ev.sample_offset) + delay + drag;
                         if at < i64::from(ctx.num_frames) {
                             if out.len() < out.capacity() {
                                 out.push(MidiEvent {
                                     sample_offset: at as u32,
                                     status: 0x90,
                                     data1: note,
-                                    data2: ev.data2,
+                                    data2: vel,
                                 });
                             }
                         } else if self.strum_len < MAX_STRUM_PENDING {
                             self.strum_pending[self.strum_len] =
-                                (at - i64::from(ctx.num_frames), note, ev.data2);
+                                (at - i64::from(ctx.num_frames), note, vel);
                             self.strum_len += 1;
                         }
                     }
@@ -610,6 +676,7 @@ impl MidiEffect for ChordDevice {
         self.active_len = 0;
         self.strum_len = 0;
         self.last_center = None;
+        self.rng = 0x2545_F491;
     }
 
     fn parameter_count(&self) -> usize {
@@ -631,6 +698,7 @@ impl MidiEffect for ChordDevice {
             P_STRUM => self.strum_ms,
             P_MODE => self.mode as f32,
             P_PROG => self.prog as f32,
+            P_HUMAN => self.human_pct,
             _ => 0.0,
         }
     }
@@ -652,6 +720,7 @@ impl MidiEffect for ChordDevice {
             P_STRUM => self.strum_ms = value.clamp(0.0, 60.0),
             P_MODE => self.mode = (value.round() as usize).min(1),
             P_PROG => self.prog = (value.round() as usize).min(8),
+            P_HUMAN => self.human_pct = value.clamp(0.0, 100.0),
             _ => {}
         }
     }
@@ -965,9 +1034,9 @@ mod tests {
 
         // Am9 -> Fmaj9 -> G13 (quality indices 5, 1, 10), F over its 3rd.
         dev.set_progression(&[
-            UserChord { root: 9, quality: 5, bass: -1 },
-            UserChord { root: 5, quality: 1, bass: 9 },
-            UserChord { root: 7, quality: 10, bass: -1 },
+            UserChord::pick(9, 5, -1),
+            UserChord::pick(5, 1, 9),
+            UserChord::pick(7, 10, -1),
         ]);
         let am9 = pitch_classes(&chord_for(&mut dev, 48));
         assert_eq!(am9, vec![0, 4, 7, 9, 11], "Am9 = A C E G B, got {am9:?}");
@@ -981,9 +1050,71 @@ mod tests {
         let mut dev = ChordDevice::new();
         dev.set_parameter(P_MODE, 1.0);
         dev.set_parameter(P_PROG, 8.0);
-        dev.set_progression(&[UserChord { root: 5, quality: 1, bass: 9 }]); // Fmaj9/A
+        dev.set_progression(&[UserChord::pick(5, 1, 9)]); // Fmaj9/A
         let notes = chord_for(&mut dev, 48);
         assert!(!notes.is_empty());
         assert_eq!(notes[0] % 12, 9, "the bass should be A, got {notes:?}");
+    }
+
+    /// A learned voicing plays back exactly as it was played — spread,
+    /// clusters and all — and the register lock still places it.
+    #[test]
+    fn a_learned_voicing_keeps_its_shape() {
+        let mut dev = ChordDevice::new();
+        dev.set_parameter(P_BASS, 0.0);
+        dev.set_parameter(P_MODE, 1.0);
+        dev.set_parameter(P_PROG, 8.0);
+        // A wide hand: root, 7th, 10th, 14th — nothing in the dictionary.
+        dev.set_progression(&[UserChord::learned(0, &[0, 11, 16, 26], -1)]);
+        let notes = chord_for(&mut dev, 48);
+        assert_eq!(notes.len(), 4, "the learned shape lost notes: {notes:?}");
+        let base = i32::from(notes[0]);
+        let shape: Vec<i32> = notes.iter().map(|&n| i32::from(n) - base).collect();
+        assert_eq!(shape, vec![0, 11, 16, 26], "the spread collapsed: {shape:?}");
+    }
+
+    /// Humanize spreads a chord's fingers in time and weight — no two
+    /// renders of a *live* pass identical, but nothing early, nothing far.
+    #[test]
+    fn humanize_spreads_the_fingers() {
+        let mut dev = ChordDevice::new();
+        dev.set_parameter(P_BASS, 0.0);
+        dev.set_parameter(P_HUMAN, 100.0);
+        let mut out = Vec::with_capacity(64);
+        let ctx = MidiFxContext::bare(SR, BLOCK);
+        dev.process(&[on(48, 100)], &mut out, &ctx);
+        let mut ons: Vec<(u32, u8)> =
+            out.iter().filter(|e| e.status == 0x90).map(|e| (e.sample_offset, e.data2)).collect();
+        // Late fingers may ride the strum book into later blocks.
+        for _ in 0..4 {
+            out.clear();
+            dev.process(&[], &mut out, &ctx);
+            ons.extend(out.iter().filter(|e| e.status == 0x90).map(|e| (e.sample_offset, e.data2)));
+        }
+        assert_eq!(ons.len(), 4, "the chord lost fingers: {ons:?}");
+        let offsets: Vec<u32> = ons.iter().map(|&(o, _)| o).collect();
+        assert!(
+            offsets.iter().any(|&o| o != offsets[0]),
+            "every finger landed at once: {offsets:?}"
+        );
+        let vels: Vec<u8> = ons.iter().map(|&(_, v)| v).collect();
+        assert!(vels.iter().any(|&v| v != vels[0]), "every finger weighed the same: {vels:?}");
+        assert!(vels.iter().all(|&v| (88..=112).contains(&v)));
+    }
+
+    /// reset reseeds the jitter, so an offline render through humanize is
+    /// deterministic — the ghosts and the commit stay honest.
+    #[test]
+    fn humanize_is_deterministic_after_reset() {
+        let run = || {
+            let mut dev = ChordDevice::new();
+            dev.set_parameter(P_HUMAN, 100.0);
+            dev.reset();
+            let mut out = Vec::with_capacity(64);
+            let ctx = MidiFxContext::bare(SR, BLOCK);
+            dev.process(&[on(48, 100)], &mut out, &ctx);
+            out.iter().map(|e| (e.sample_offset, e.data1, e.data2)).collect::<Vec<_>>()
+        };
+        assert_eq!(run(), run(), "two reset renders differed");
     }
 }

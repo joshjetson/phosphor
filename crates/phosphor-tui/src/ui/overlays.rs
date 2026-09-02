@@ -520,7 +520,11 @@ pub(super) fn render_prog_editor(frame: &mut Frame, nav: &NavState) {
             Span::styled(text, style)
         };
         let white = ["C", "D", "E", "F", "G", "A", "B"][i.min(6)];
-        let quality = QUALITIES[usize::from(c.quality).min(QUALITIES.len() - 1)].0;
+        let quality = if c.quality == phosphor_core::midi_fx::LEARNED_QUALITY {
+            "learned"
+        } else {
+            QUALITIES[usize::from(c.quality).min(QUALITIES.len() - 1)].0
+        };
         let bass = if c.bass < 0 {
             "\u{2013}".to_string()
         } else {
@@ -535,8 +539,14 @@ pub(super) fn render_prog_editor(frame: &mut Frame, nav: &NavState) {
         ]));
     }
     lines.push(Line::from(""));
+    if ed.learn_armed {
+        lines.push(Line::from(Span::styled(
+            "  \u{25CF} listening \u{2014} play a chord and lift",
+            theme::amber_bright(),
+        )));
+    }
     lines.push(Line::from(Span::styled(
-        "  j/k chord \u{00b7} tab column \u{00b7} h/l turn",
+        "  j/k chord \u{00b7} tab column \u{00b7} h/l turn \u{00b7} r learn",
         theme::dim(),
     )));
     lines.push(Line::from(Span::styled(

@@ -423,6 +423,13 @@ pub struct ProgEditor {
     /// The library as loaded when the editor opened.
     pub library: Vec<crate::progressions::UserProgression>,
     pub lib_cursor: usize,
+    /// Learn mode: the editor is listening to the controller, and the next
+    /// chord played replaces the cursor's row.
+    pub learn_armed: bool,
+    /// The keys currently down while learning.
+    learn_held: Vec<u8>,
+    /// Every key touched during this learn gesture.
+    learn_captured: Vec<u8>,
 }
 
 impl ProgEditor {
@@ -440,7 +447,7 @@ impl ProgEditor {
         self.row = 0;
         self.col = 0;
         self.chords = if chords.is_empty() {
-            vec![phosphor_core::midi_fx::UserChord { root: 0, quality: 1, bass: -1 }]
+            vec![phosphor_core::midi_fx::UserChord::pick(0, 1, -1)]
         } else {
             chords.to_vec()
         };
@@ -451,6 +458,59 @@ impl ProgEditor {
 
     pub fn close(&mut self) {
         self.open = false;
+        self.learn_armed = false;
+        self.learn_held.clear();
+        self.learn_captured.clear();
+    }
+
+    /// Arm or cancel learn. Armed, the next chord played on the controller
+    /// replaces the cursor's row with exactly the shape of the hand.
+    pub fn toggle_learn(&mut self) -> bool {
+        self.learn_armed = !self.learn_armed;
+        self.learn_held.clear();
+        self.learn_captured.clear();
+        self.learn_armed
+    }
+
+    /// A key went down while learning.
+    pub fn learn_note_on(&mut self, note: u8) {
+        if !self.learn_armed {
+            return;
+        }
+        if !self.learn_held.contains(&note) {
+            self.learn_held.push(note);
+        }
+        if !self.learn_captured.contains(&note) {
+            self.learn_captured.push(note);
+        }
+    }
+
+    /// A key came up. When the last one does, the gesture is the chord:
+    /// the lowest note is the root, everything else its intervals, exactly
+    /// as spaced. Returns true when a chord was captured.
+    pub fn learn_note_off(&mut self, note: u8) -> bool {
+        if !self.learn_armed {
+            return false;
+        }
+        self.learn_held.retain(|&n| n != note);
+        if !self.learn_held.is_empty() || self.learn_captured.is_empty() {
+            return false;
+        }
+        let mut notes = std::mem::take(&mut self.learn_captured);
+        notes.sort_unstable();
+        let low = notes[0];
+        let intervals: Vec<i8> = notes
+            .iter()
+            .take(8)
+            .map(|&n| (n - low).min(120) as i8)
+            .collect();
+        let chord =
+            phosphor_core::midi_fx::UserChord::learned((low % 12) as i8, &intervals, -1);
+        if let Some(slot) = self.chords.get_mut(self.row) {
+            *slot = chord;
+        }
+        self.learn_armed = false;
+        true
     }
 
     pub fn move_row(&mut self, delta: i32) {
@@ -486,7 +546,7 @@ impl ProgEditor {
             return false;
         }
         let template = self.chords.get(self.row).copied().unwrap_or(
-            phosphor_core::midi_fx::UserChord { root: 0, quality: 1, bass: -1 },
+            phosphor_core::midi_fx::UserChord::pick(0, 1, -1),
         );
         self.chords.insert(self.row + 1, template);
         self.row += 1;
@@ -524,7 +584,11 @@ impl ProgEditor {
     pub fn to_progression(&self) -> crate::progressions::UserProgression {
         crate::progressions::UserProgression {
             name: self.name.clone(),
-            chords: self.chords.iter().map(|c| (c.root, c.quality, c.bass)).collect(),
+            chords: self
+                .chords
+                .iter()
+                .map(crate::progressions::StoredChord::from_wire)
+                .collect(),
         }
     }
 }
@@ -532,7 +596,6 @@ impl ProgEditor {
 #[cfg(test)]
 mod editor_tests {
     use super::*;
-    use phosphor_core::midi_fx::UserChord;
 
     /// The editor's cell walk: roots wrap, qualities wrap, the bass stops
     /// at "off" below C.
@@ -561,7 +624,7 @@ mod editor_tests {
     #[test]
     fn add_and_remove_hold_the_shape() {
         let mut ed = ProgEditor::default();
-        ed.open_for(0, &[UserChord { root: 9, quality: 5, bass: -1 }], "x", Vec::new());
+        ed.open_for(0, &[phosphor_core::midi_fx::UserChord::pick(9, 5, -1)], "x", Vec::new());
         assert!(ed.add_chord());
         assert_eq!(ed.chords.len(), 2);
         assert_eq!(ed.chords[1].root, 9, "the new chord should copy the cursor's");
@@ -573,14 +636,53 @@ mod editor_tests {
         assert_eq!(ed.chords.len(), 1, "the last chord must stay");
     }
 
+    /// Learn: arm, play a spread chord, lift — the row becomes exactly
+    /// that shape, root from the lowest key.
+    #[test]
+    fn learn_captures_the_hand() {
+        let mut ed = ProgEditor::default();
+        ed.open_for(0, &[], "", Vec::new());
+        assert!(ed.toggle_learn());
+        // A rolled Dm9 shape, wide: D3 C4 E4 F4 A4.
+        for n in [50u8, 60, 64, 65, 69] {
+            ed.learn_note_on(n);
+        }
+        // Lift in a different order; the chord commits on the last off.
+        assert!(!ed.learn_note_off(60));
+        assert!(!ed.learn_note_off(50));
+        assert!(!ed.learn_note_off(65));
+        assert!(!ed.learn_note_off(64));
+        assert!(ed.learn_note_off(69), "the last lift should commit");
+        assert!(!ed.learn_armed, "learn should disarm after a capture");
+        let c = ed.chords[0];
+        assert_eq!(c.quality, phosphor_core::midi_fx::LEARNED_QUALITY);
+        assert_eq!(c.root, 2, "the root should be the lowest key's pitch class");
+        assert_eq!(&c.custom[..5], &[0, 10, 14, 15, 19], "the spacing changed");
+    }
+
+    /// Turning the quality cell of a learned chord walks back into the
+    /// dictionary instead of wrapping through 255.
+    #[test]
+    fn turning_a_learned_quality_returns_to_the_dictionary() {
+        let mut ed = ProgEditor::default();
+        ed.open_for(0, &[phosphor_core::midi_fx::UserChord::learned(0, &[0, 4, 7], -1)], "", Vec::new());
+        ed.move_col(1);
+        ed.adjust(1);
+        assert!(
+            usize::from(ed.chords[0].quality) < phosphor_core::midi_fx::QUALITIES.len(),
+            "the quality should land in the dictionary, got {}",
+            ed.chords[0].quality
+        );
+    }
+
     /// Browsing the library loads entries into the working copy.
     #[test]
     fn the_library_browses_into_the_editor() {
         let lib = vec![
-            crate::progressions::UserProgression { name: "a".into(), chords: vec![(0, 1, -1)] },
+            crate::progressions::UserProgression { name: "a".into(), chords: vec![crate::progressions::StoredChord::Tuple((0, 1, -1))] },
             crate::progressions::UserProgression {
                 name: "b".into(),
-                chords: vec![(2, 5, -1), (7, 10, -1)],
+                chords: vec![crate::progressions::StoredChord::Tuple((2, 5, -1)), crate::progressions::StoredChord::Tuple((7, 10, -1))],
             },
         ];
         let mut ed = ProgEditor::default();

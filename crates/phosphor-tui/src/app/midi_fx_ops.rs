@@ -343,6 +343,13 @@ impl App {
                 );
             }
             KeyCode::Char('s') => self.save_prog_editor_to_library(),
+            KeyCode::Char('r') => {
+                if self.nav.prog_editor.toggle_learn() {
+                    self.flash("listening \u{2014} play a chord, lift, it lands on this row");
+                } else {
+                    self.flash("learn off");
+                }
+            }
             KeyCode::Enter => {
                 let slot = self.nav.prog_editor.slot;
                 let name = self.nav.prog_editor.name.clone();

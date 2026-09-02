@@ -11,21 +11,61 @@ use std::path::PathBuf;
 
 use phosphor_core::midi_fx::UserChord;
 
-/// One saved progression: a name and its chords, in wire form.
+/// One chord as it is stored — in the library file and in sessions.
+///
+/// Untagged: the `Tuple` form is what v0.3.59 wrote, three numbers; the
+/// `Full` form carries a learned voicing's own intervals. Old files load
+/// as tuples; every new save writes the full form.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StoredChord {
+    Full {
+        root: i8,
+        quality: u8,
+        bass: i8,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        custom: Vec<i8>,
+    },
+    Tuple((i8, u8, i8)),
+}
+
+impl StoredChord {
+    #[must_use]
+    pub fn to_wire(&self) -> UserChord {
+        match self {
+            Self::Tuple((root, quality, bass)) => UserChord::pick(*root, *quality, *bass),
+            Self::Full { root, quality, bass, custom } => {
+                if *quality == phosphor_core::midi_fx::LEARNED_QUALITY {
+                    UserChord::learned(*root, custom, *bass)
+                } else {
+                    UserChord::pick(*root, *quality, *bass)
+                }
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn from_wire(chord: &UserChord) -> Self {
+        Self::Full {
+            root: chord.root,
+            quality: chord.quality,
+            bass: chord.bass,
+            custom: chord.custom[..usize::from(chord.custom_len)].to_vec(),
+        }
+    }
+}
+
+/// One saved progression: a name and its chords, in stored form.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UserProgression {
     pub name: String,
-    /// (root above song root, quality index, bass pitch class or -1).
-    pub chords: Vec<(i8, u8, i8)>,
+    pub chords: Vec<StoredChord>,
 }
 
 impl UserProgression {
     #[must_use]
     pub fn wire_chords(&self) -> Vec<UserChord> {
-        self.chords
-            .iter()
-            .map(|&(root, quality, bass)| UserChord { root, quality, bass })
-            .collect()
+        self.chords.iter().map(StoredChord::to_wire).collect()
     }
 }
 
@@ -73,23 +113,36 @@ mod tests {
     /// Round trip through the serialized form, and upsert-by-name.
     #[test]
     fn the_library_round_trips_and_upserts() {
-        let entry = UserProgression { name: "mine".into(), chords: vec![(9, 5, -1), (5, 1, 9)] };
+        let entry = UserProgression {
+            name: "mine".into(),
+            chords: vec![
+                StoredChord::from_wire(&UserChord::pick(9, 5, -1)),
+                StoredChord::from_wire(&UserChord::learned(5, &[0, 11, 16], 9)),
+            ],
+        };
         let json = serde_json::to_string(&[entry.clone()]).unwrap();
         let back: Vec<UserProgression> = serde_json::from_str(&json).unwrap();
         assert_eq!(back[0], entry);
-        assert_eq!(back[0].wire_chords()[1].bass, 9);
+        let wires = back[0].wire_chords();
+        assert_eq!(wires[1].bass, 9);
+        assert_eq!(wires[1].custom_len, 3, "the learned shape was lost in the file");
+
+        // A v0.3.59 library file — bare triples — still loads.
+        let old_json = r#"[{"name":"old","chords":[[9,5,-1],[5,1,9]]}]"#;
+        let old: Vec<UserProgression> = serde_json::from_str(old_json).unwrap();
+        assert_eq!(old[0].wire_chords().len(), 2);
+        assert_eq!(old[0].wire_chords()[0].root, 9);
 
         let mut lib = vec![entry.clone()];
         let replaced = upsert(
             &mut lib,
-            UserProgression { name: "mine".into(), chords: vec![(0, 0, -1)] },
+            UserProgression { name: "mine".into(), chords: vec![StoredChord::Tuple((0, 0, -1))] },
         );
         assert!(replaced);
         assert_eq!(lib.len(), 1);
-        assert_eq!(lib[0].chords, vec![(0, 0, -1)]);
         let replaced = upsert(
             &mut lib,
-            UserProgression { name: "other".into(), chords: vec![(2, 5, -1)] },
+            UserProgression { name: "other".into(), chords: vec![StoredChord::Tuple((2, 5, -1))] },
         );
         assert!(!replaced);
         assert_eq!(lib.len(), 2);

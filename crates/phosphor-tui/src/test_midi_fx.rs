@@ -285,7 +285,11 @@ mod tests {
         app.nav.tracks[ti].midi_fx[0].params.truncate(7); // a v0.3.56 save
         app.set_midi_fx_param(ti, 0, 7, 1.0); // mode -> prog
         let inst = &app.nav.tracks[ti].midi_fx[0];
-        assert_eq!(inst.params.len(), 9, "the mirror did not grow");
+        assert_eq!(
+            inst.params.len(),
+            MidiFxType::Chord.params().len(),
+            "the mirror did not grow to the table"
+        );
         assert!((inst.params[7] - 1.0).abs() < 1e-6, "the write was dropped");
     }
 
@@ -301,7 +305,7 @@ mod tests {
             ti,
             0,
             "mine",
-            vec![UserChord { root: 9, quality: 5, bass: -1 }],
+            vec![phosphor_core::midi_fx::UserChord::pick(9, 5, -1)],
         );
         let inst = &app.nav.tracks[ti].midi_fx[0];
         assert_eq!(inst.custom_name, "mine");
@@ -326,10 +330,13 @@ mod tests {
             ti,
             0,
             "mine",
-            vec![UserChord { root: 5, quality: 1, bass: 9 }],
+            vec![phosphor_core::midi_fx::UserChord::pick(5, 1, 9)],
         );
         let stored = crate::session::midi_fx_to_session(&app.nav.tracks[ti].midi_fx);
-        assert_eq!(stored[0].chords, vec![(5, 1, 9)]);
+        assert_eq!(
+            stored[0].chords.iter().map(|c| c.to_wire()).collect::<Vec<_>>(),
+            vec![phosphor_core::midi_fx::UserChord::pick(5, 1, 9)]
+        );
         assert_eq!(stored[0].chords_name, "mine");
         let (rack, _) = crate::session::midi_fx_from_session(&stored);
         assert_eq!(rack, app.nav.tracks[ti].midi_fx, "the round trip lost something");
@@ -347,7 +354,7 @@ mod tests {
             ti,
             0,
             "mine",
-            vec![UserChord { root: 9, quality: 5, bass: -1 }],
+            vec![phosphor_core::midi_fx::UserChord::pick(9, 5, -1)],
         );
         app.refresh_ghost_notes();
         assert!(
@@ -374,7 +381,10 @@ mod tests {
         app.nav.prog_editor.adjust(4); // maj9 -> m9 (index 1 + 4 = 5)
         app.nav.prog_editor.name = "test walk".into();
         let entry = app.nav.prog_editor.to_progression();
-        assert_eq!(entry.chords, vec![(9, 5, -1)]);
+        assert_eq!(
+            entry.chords.iter().map(|c| c.to_wire()).collect::<Vec<_>>(),
+            vec![phosphor_core::midi_fx::UserChord::pick(9, 5, -1)]
+        );
 
         let slot = app.nav.prog_editor.slot;
         let name = app.nav.prog_editor.name.clone();

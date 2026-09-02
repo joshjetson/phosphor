@@ -33,6 +33,24 @@ impl App {
             events.push(message.message_type);
         }
         for event in events {
+            // The progression editor's learn mode takes the stream while it
+            // is listening — a chord played to be captured should not also
+            // step-record.
+            if self.nav.prog_editor.open && self.nav.prog_editor.learn_armed {
+                match event {
+                    MidiMessageType::NoteOn { note, velocity: 0, .. }
+                    | MidiMessageType::NoteOff { note, .. } => {
+                        if self.nav.prog_editor.learn_note_off(note) {
+                            self.flash("learned \u{00b7} the row is your chord");
+                        }
+                    }
+                    MidiMessageType::NoteOn { note, .. } => {
+                        self.nav.prog_editor.learn_note_on(note);
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             match event {
                 // A note-on with no velocity is a note-off; every controller
                 // that runs notes together sends them that way.

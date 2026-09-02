@@ -128,9 +128,10 @@ pub struct SessionFx {
     /// The effect's controls in its own units, in the order it declares them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<f32>,
-    /// A chord device's user progression, resolved: (root, quality, bass).
+    /// A chord device's user progression, resolved. Stored in the same
+    /// dual-read form the library uses, so learned voicings travel too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub chords: Vec<(i8, u8, i8)>,
+    pub chords: Vec<crate::progressions::StoredChord>,
     /// The loaded progression's display name.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub chords_name: String,
@@ -251,7 +252,11 @@ pub fn midi_fx_to_session(rack: &[crate::state::MidiFxInstance]) -> Vec<SessionF
             kind: slot.fx_type.key().to_string(),
             bypass: slot.bypass,
             params: slot.params.clone(),
-            chords: slot.custom_chords.iter().map(|c| (c.root, c.quality, c.bass)).collect(),
+            chords: slot
+                .custom_chords
+                .iter()
+                .map(crate::progressions::StoredChord::from_wire)
+                .collect(),
             chords_name: slot.custom_name.clone(),
         })
         .collect()
@@ -273,11 +278,7 @@ pub fn midi_fx_from_session(stored: &[SessionFx]) -> (Vec<crate::state::MidiFxIn
             custom_chords: slot
                 .chords
                 .iter()
-                .map(|&(root, quality, bass)| phosphor_core::midi_fx::UserChord {
-                    root,
-                    quality,
-                    bass,
-                })
+                .map(crate::progressions::StoredChord::to_wire)
                 .collect(),
             custom_name: slot.chords_name.clone(),
         });

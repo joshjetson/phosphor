@@ -42,10 +42,11 @@ const P_OCTAVES: usize = 3;
 const P_LATCH: usize = 4;
 const P_VEL: usize = 5;
 const P_SWING: usize = 6;
+const P_HUMAN: usize = 7;
 
 /// The arp's parameter table, exported so the front end can draw a panel
 /// without holding an instance.
-pub const ARP_PARAMS: [FxParamInfo; 7] = [
+pub const ARP_PARAMS: [FxParamInfo; 8] = [
     FxParamInfo { name: "style", unit: "", min: 0.0, max: 5.0, default: 0.0 },
     FxParamInfo { name: "rate", unit: "", min: 0.0, max: 7.0, default: 5.0 },
     FxParamInfo { name: "gate", unit: "%", min: 1.0, max: 200.0, default: 60.0 },
@@ -54,6 +55,8 @@ pub const ARP_PARAMS: [FxParamInfo; 7] = [
     // 0 = as played; anything above is a fixed velocity.
     FxParamInfo { name: "vel", unit: "", min: 0.0, max: 127.0, default: 0.0 },
     FxParamInfo { name: "swing", unit: "%", min: 50.0, max: 75.0, default: 50.0 },
+    // Appended after v0.3.59; old sessions load with it at zero.
+    FxParamInfo { name: "human", unit: "%", min: 0.0, max: 100.0, default: 0.0 },
 ];
 
 /// All ten fingers, with room for a generated chord on top.
@@ -72,6 +75,7 @@ pub struct Arpeggiator {
     latch: bool,
     vel_fixed: u8,
     swing_pct: f32,
+    human_pct: f32,
 
     // ── the key pool ──
     /// Held input keys in the order they were played.
@@ -114,6 +118,7 @@ impl Arpeggiator {
             latch: false,
             vel_fixed: 0,
             swing_pct: 50.0,
+            human_pct: 0.0,
             held: [(0, 0); MAX_HELD],
             held_len: 0,
             down: [0; MAX_HELD],
@@ -187,7 +192,7 @@ impl Arpeggiator {
     }
 
     /// Fire one step at `offset` samples into the block.
-    fn fire(&mut self, offset: u32, step_len: i64, out: &mut Vec<MidiEvent>) {
+    fn fire(&mut self, offset: u32, step_len: i64, sample_rate: f32, out: &mut Vec<MidiEvent>) {
         if self.held_len == 0 {
             return;
         }
@@ -196,18 +201,46 @@ impl Arpeggiator {
             // chord: every held note at once
             for k in 0..self.held_len {
                 let (note, vel) = self.held[k];
-                self.emit_on(note, vel, offset, gate, out);
+                self.emit_on(note, vel, offset, gate, sample_rate, out);
             }
         } else {
             let i = self.step_index;
             let (note, vel) = self.pattern_note(i);
-            self.emit_on(note, vel, offset, gate, out);
+            self.emit_on(note, vel, offset, gate, sample_rate, out);
         }
         self.step_index = (self.step_index + 1) % self.pattern_len();
     }
 
-    fn emit_on(&mut self, note: u8, vel: u8, offset: u32, gate: i64, out: &mut Vec<MidiEvent>) {
+    /// The next humanize draw, -1.0..1.0.
+    fn jitter(&mut self) -> f32 {
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 17;
+        self.rng ^= self.rng << 5;
+        (self.rng as f32 / u32::MAX as f32) * 2.0 - 1.0
+    }
+
+    fn emit_on(
+        &mut self,
+        note: u8,
+        vel: u8,
+        offset: u32,
+        gate: i64,
+        sample_rate: f32,
+        out: &mut Vec<MidiEvent>,
+    ) {
         let vel = if self.vel_fixed > 0 { self.vel_fixed } else { vel };
+        // Humanize: a hand drags a few milliseconds and no two hits land
+        // at the same weight. Delay-only, so a step never fires before its
+        // grid line; the off rides the same delay through the gate book.
+        let (offset, vel) = if self.human_pct > 0.0 {
+            let amt = self.human_pct / 100.0;
+            let drag =
+                ((self.jitter().abs() * amt * 0.010) * sample_rate).max(0.0) as u32;
+            let dv = (self.jitter() * amt * 12.0).round() as i32;
+            (offset + drag, (i32::from(vel) + dv).clamp(1, 127) as u8)
+        } else {
+            (offset, vel)
+        };
         if out.len() >= out.capacity() {
             return;
         }
@@ -284,7 +317,7 @@ impl Arpeggiator {
                 if offset >= i64::from(ctx.num_frames) {
                     break;
                 }
-                self.fire(offset as u32, step_len, out);
+                self.fire(offset as u32, step_len, ctx.sample_rate, out);
                 self.last_grid_step = g;
             }
         } else {
@@ -294,7 +327,7 @@ impl Arpeggiator {
             }
             while self.free_next < i64::from(ctx.num_frames) {
                 let offset = self.free_next.max(0) as u32;
-                self.fire(offset, step_len, out);
+                self.fire(offset, step_len, ctx.sample_rate, out);
                 let mut advance = step_len;
                 // Swing on the free clock: odd steps late, even steps early
                 // by the same amount, so pairs keep their combined length.
@@ -419,6 +452,7 @@ impl MidiEffect for Arpeggiator {
             P_LATCH => if self.latch { 1.0 } else { 0.0 },
             P_VEL => f32::from(self.vel_fixed),
             P_SWING => self.swing_pct,
+            P_HUMAN => self.human_pct,
             _ => 0.0,
         }
     }
@@ -440,6 +474,7 @@ impl MidiEffect for Arpeggiator {
             }
             P_VEL => self.vel_fixed = (value.round() as i32).clamp(0, 127) as u8,
             P_SWING => self.swing_pct = value.clamp(50.0, 75.0),
+            P_HUMAN => self.human_pct = value.clamp(0.0, 100.0),
             _ => {}
         }
     }
@@ -658,5 +693,37 @@ mod tests {
         arp.process(&chord, &mut out, &ctx);
         assert!(out.capacity() == 4, "the buffer grew on the audio thread");
         assert!(out.len() <= 4);
+    }
+
+    /// Humanize drags steps a few milliseconds and varies their weight —
+    /// but never fires a step early, and never at full jitter leaves the
+    /// 10ms window.
+    #[test]
+    fn humanize_drags_late_and_varies_weight() {
+        let mut arp = Arpeggiator::new();
+        arp.set_parameter(P_HUMAN, 100.0);
+        let events = run_free(&mut arp, &[on(60, 100)], 200);
+        let ons: Vec<(usize, u32, u8)> = events
+            .iter()
+            .filter(|(_, e)| e.status == 0x90)
+            .map(|(b, e)| (*b, e.sample_offset, e.data2))
+            .collect();
+        assert!(ons.len() >= 6, "not enough steps: {}", ons.len());
+        // Step k's grid line is at k*6000 absolute samples; every on must
+        // land on or after it, within 10ms (480 samples at 48k).
+        let mut dragged = 0;
+        for (k, &(b, off, _)) in ons.iter().enumerate() {
+            let abs = b as i64 * i64::from(BLOCK) + i64::from(off);
+            let grid = k as i64 * 6000;
+            assert!(abs >= grid, "step {k} fired early: {abs} vs {grid}");
+            assert!(abs - grid <= 480, "step {k} dragged past 10ms: {}", abs - grid);
+            if abs > grid {
+                dragged += 1;
+            }
+        }
+        assert!(dragged >= 3, "humanize never moved a step: {ons:?}");
+        let vels: Vec<u8> = ons.iter().map(|&(_, _, v)| v).collect();
+        assert!(vels.iter().any(|&v| v != vels[0]), "every hit weighed the same: {vels:?}");
+        assert!(vels.iter().all(|&v| (88..=112).contains(&v)), "weight left the band: {vels:?}");
     }
 }

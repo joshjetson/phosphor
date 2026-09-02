@@ -25,7 +25,7 @@ mod arp;
 mod chord;
 
 pub use arp::{Arpeggiator, ARP_PARAMS, RATE_LABELS, STYLE_LABELS};
-pub use chord::{ChordDevice, UserChord, CHORD_PARAMS, COLOR_LABELS, MAX_USER_CHORDS, MODE_LABELS, NOTE_NAMES, PROG_LABELS, QUALITIES, SCALE_LABELS, VOICING_LABELS};
+pub use chord::{ChordDevice, UserChord, CHORD_PARAMS, LEARNED_QUALITY, COLOR_LABELS, MAX_USER_CHORDS, MODE_LABELS, NOTE_NAMES, PROG_LABELS, QUALITIES, SCALE_LABELS, VOICING_LABELS};
 
 /// How many MIDI effects one track holds. Two is the canonical chain —
 /// a chord device feeding an arpeggiator — and what fits on the panel.
