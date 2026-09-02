@@ -782,6 +782,7 @@ impl App {
                         KeyCode::Char('[') => self.automation_cycle_stream(-1),
                         KeyCode::Char(']') => self.automation_cycle_stream(1),
                         KeyCode::Char('d') => self.automation_clear_point(),
+                        KeyCode::Char('r') => self.automation_ramp(),
                         KeyCode::Char('A') => self.toggle_automation_lane(),
                         KeyCode::Esc => self.close_automation_lane(),
                         _ => {}

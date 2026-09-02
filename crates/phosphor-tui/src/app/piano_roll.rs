@@ -208,7 +208,7 @@ impl App {
                 .current_automation_stream()
                 .map(|s| s.label())
                 .unwrap_or_else(|| "mod".to_string());
-            self.flash(format!("automation: {label} \u{00b7} jk draw, [ ] lane, d clear, A note grid"));
+            self.flash(format!("automation: {label} \u{00b7} jk draw, r ramp, [ ] lane, d clear, A note grid"));
         }
     }
 
@@ -269,6 +269,32 @@ impl App {
             crate::state::undo::UndoGesture::Automation { track_idx },
         );
         self.send_clip_update();
+    }
+
+
+    /// Pull a straight line back from the cursor column to the stream's
+    /// previous point. The far end is drawn first with jk; r fills the gap.
+    /// One undo step — a ramp is one deliberate action, not a sweep.
+    pub(crate) fn automation_ramp(&mut self) {
+        let Some(stream) = self.current_automation_stream() else { return };
+        let (col, col_count) = {
+            let pr = &self.nav.clip_view.piano_roll;
+            (pr.column, pr.column_count.max(1))
+        };
+        let undo_before = self.checkpoint_viewed_track();
+        let written = self
+            .nav
+            .active_clip_mut()
+            .and_then(|c| c.ramp_control_to(stream, col, col_count));
+        match written {
+            None => self.flash("ramp needs a point here and one earlier \u{00b7} draw with jk"),
+            Some(0) => self.flash("nothing between the points to fill"),
+            Some(n) => {
+                self.commit_viewed_track(undo_before, "ramp automation");
+                self.send_clip_update();
+                self.flash(format!("ramp \u{00b7} {n} points"));
+            }
+        }
     }
 
     /// Remove the stream's point in the cursor column.

@@ -227,6 +227,7 @@
     "[ / ]": "cycle which controller the lane shows (recorded streams first, then mod/bend/aftertouch)",
     "d": "clear the point in the cursor column",
     "Esc": "close the lane",
-    "note": "an empty clip offers mod, bend and aftertouch to draw from scratch; a recorded sweep opens on its own stream; edits are undoable and play back"
+    "note": "an empty clip offers mod, bend and aftertouch to draw from scratch; a recorded sweep opens on its own stream; edits are undoable and play back",
+    "r": "ramp: draw both end values with k/j, then r fills every column back to the previous point with a straight line (one undo step)"
   }
 }

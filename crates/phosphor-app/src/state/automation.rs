@@ -166,6 +166,45 @@ impl Clip {
             .retain(|e| !(stream.matches(e) && e.tick >= start && e.tick < end));
         before != self.controls.len()
     }
+
+    /// Lay a straight line from the stream's previous point up to the
+    /// cursor column: every column strictly between them gets a linearly
+    /// interpolated point. The cursor column must hold a point of its own —
+    /// the ramp's far end is drawn first, then the line is pulled back to
+    /// the point before it. Returns how many columns were written, or
+    /// `None` when an end is missing.
+    pub fn ramp_control_to(
+        &mut self,
+        stream: AutomationStream,
+        col: usize,
+        col_count: usize,
+    ) -> Option<usize> {
+        let start = self.column_tick(col, col_count);
+        let end = self.column_tick(col + 1, col_count);
+        let to_value = self
+            .controls
+            .iter()
+            .find(|e| stream.matches(e) && e.tick >= start && e.tick < end)
+            .map(|e| stream.value_of(e))?;
+        let prev = self
+            .controls
+            .iter()
+            .filter(|e| stream.matches(e) && e.tick < start)
+            .max_by_key(|e| e.tick)?;
+        let (prev_tick, from_value) = (prev.tick, stream.value_of(prev));
+        let prev_col = ((prev_tick * col_count as i64) / self.length_ticks.max(1)) as usize;
+        if prev_col + 1 >= col {
+            return Some(0);
+        }
+        let span = (col - prev_col) as f64;
+        for c in prev_col + 1..col {
+            let t = (c - prev_col) as f64 / span;
+            let value =
+                (from_value as f64 + (to_value as f64 - from_value as f64) * t).round() as u8;
+            self.set_control_point(stream, c, col_count, value);
+        }
+        Some(col - prev_col - 1)
+    }
 }
 
 
@@ -262,5 +301,66 @@ mod automation_tests {
         assert_eq!(e.status, 0xE0);
         assert_eq!(bend.value_of(&e), 96, "the bend value did not survive the round trip");
     }
-}
 
+    /// r pulls a straight line back from the cursor's point to the previous
+    /// one: every column between them gets an interpolated point, and the
+    /// endpoints themselves are left exactly as drawn.
+    #[test]
+    fn a_ramp_fills_the_columns_between_two_points() {
+        let mod_wheel = AutomationStream { kind: 0xB0, cc: 1 };
+        let cols = 16;
+        let mut clip = clip_with(Vec::new());
+        clip.set_control_point(mod_wheel, 2, cols, 20);
+        clip.set_control_point(mod_wheel, 10, cols, 100);
+        let written = clip.ramp_control_to(mod_wheel, 10, cols);
+        assert_eq!(written, Some(7), "eight columns apart leaves seven to fill");
+        let values: Vec<u8> = (2..=10)
+            .map(|c| clip.control_value_at_column(mod_wheel, c, cols).unwrap())
+            .collect();
+        assert_eq!(values[0], 20, "the ramp moved its own start point");
+        assert_eq!(values[8], 100, "the ramp moved its own end point");
+        for w in values.windows(2) {
+            assert!(w[1] > w[0], "the ramp is not strictly rising: {values:?}");
+        }
+    }
+
+    /// A ramp downhill interpolates just as well as one uphill.
+    #[test]
+    fn a_ramp_can_fall() {
+        let mod_wheel = AutomationStream { kind: 0xB0, cc: 1 };
+        let cols = 16;
+        let mut clip = clip_with(Vec::new());
+        clip.set_control_point(mod_wheel, 0, cols, 120);
+        clip.set_control_point(mod_wheel, 8, cols, 0);
+        assert_eq!(clip.ramp_control_to(mod_wheel, 8, cols), Some(7));
+        let mid = clip.control_value_at_column(mod_wheel, 4, cols).unwrap();
+        assert!((55..=65).contains(&mid), "midpoint of 120..0 should be near 60, got {mid}");
+    }
+
+    /// Both ends must exist: no point under the cursor, or nothing to the
+    /// left, and the ramp refuses instead of inventing an endpoint.
+    #[test]
+    fn a_ramp_refuses_when_an_end_is_missing() {
+        let mod_wheel = AutomationStream { kind: 0xB0, cc: 1 };
+        let cols = 16;
+        let mut clip = clip_with(Vec::new());
+        clip.set_control_point(mod_wheel, 2, cols, 20);
+        assert_eq!(clip.ramp_control_to(mod_wheel, 10, cols), None, "no point at the cursor");
+        let mut clip = clip_with(Vec::new());
+        clip.set_control_point(mod_wheel, 10, cols, 100);
+        assert_eq!(clip.ramp_control_to(mod_wheel, 10, cols), None, "no point to the left");
+    }
+
+    /// Adjacent points have nothing between them; the ramp says so rather
+    /// than doing something.
+    #[test]
+    fn a_ramp_between_neighbours_writes_nothing() {
+        let mod_wheel = AutomationStream { kind: 0xB0, cc: 1 };
+        let cols = 16;
+        let mut clip = clip_with(Vec::new());
+        clip.set_control_point(mod_wheel, 4, cols, 20);
+        clip.set_control_point(mod_wheel, 5, cols, 100);
+        assert_eq!(clip.ramp_control_to(mod_wheel, 5, cols), Some(0));
+        assert_eq!(clip.controls.len(), 2, "a neighbour ramp invented points");
+    }
+}

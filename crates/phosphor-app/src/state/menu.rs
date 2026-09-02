@@ -963,6 +963,7 @@ pub const HELP_TOPICS: &[HelpTopic] = &[
             Key("K / J", "the same, in bigger steps"),
             Key("h / l", "walk columns \u{00b7} the value carries along"),
             Key("[ / ]", "the controller the lane shows"),
+            Key("r", "ramp: a straight line back to the last point"),
             Key("d", "clear the point under the cursor"),
             Note("An empty clip offers mod, bend and aftertouch to"),
             Note("draw from scratch; a recorded sweep opens on its own."),

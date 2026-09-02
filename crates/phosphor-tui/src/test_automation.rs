@@ -215,4 +215,34 @@ mod tests {
         assert_eq!(clip.control_value_at_column(stream, 0, 4), Some(30));
         assert_eq!(clip.control_value_at_column(stream, 3, 4), Some(100));
     }
+
+    /// r lays the line in one undo step: draw two ends, ramp, and a single
+    /// u removes the whole line while the hand-drawn ends survive.
+    #[test]
+    fn a_ramp_is_one_undo_step() {
+        let (mut app, ti) = app_with_clip();
+        let mod_wheel = AutomationStream { kind: 0xB0, cc: 1 };
+        app.nav.clip_view.piano_roll.grid = GridResolution::Sixteenth;
+        app.nav.clip_view.piano_roll.update_column_count();
+        let cols = app.nav.clip_view.piano_roll.column_count.max(1);
+        app.toggle_automation_lane();
+
+        app.nav.tracks[ti].clips[0].set_control_point(mod_wheel, 1, cols, 10);
+        app.nav.tracks[ti].clips[0].set_control_point(mod_wheel, 9, cols, 90);
+        app.nav.clip_view.piano_roll.column = 9;
+        app.automation_ramp();
+        assert_eq!(mod_events(&app, ti).len(), 9, "seven fills plus two ends");
+
+        app.perform_undo();
+        assert_eq!(
+            mod_events(&app, ti).len(),
+            2,
+            "one undo should remove exactly the ramp's fill"
+        );
+
+        // And with a missing end the ramp changes nothing at all.
+        app.nav.clip_view.piano_roll.column = 5;
+        app.automation_ramp();
+        assert_eq!(mod_events(&app, ti).len(), 2, "a refused ramp still wrote points");
+    }
 }
