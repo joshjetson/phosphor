@@ -644,6 +644,69 @@ mod tests {
             "undo should restore original pitch");
     }
 
+    /// The velocity ride: , and . nudge the cursor note, a held ride is one
+    /// undo step, and the floor is 1 — velocity zero is a note-off on the
+    /// wire, and a dynamic must never quietly delete its own note.
+    #[test]
+    fn velocity_rides_clamp_and_undo_whole() {
+        let mut app = app();
+        add_synth_track(&mut app);
+        let ti = app.nav.track_cursor;
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(60, 0.0, 0.25)]);
+        app.nav.open_clip_view(ti, 0);
+        app.nav.clip_view.piano_roll.edit_mode = true;
+        app.nav.clip_view.piano_roll.edit_cursor = 0;
+
+        let origin = app.nav.tracks[ti].clips[0].notes[0].velocity;
+        app.nudge_velocity(8);
+        app.nudge_velocity(8);
+        app.nudge_velocity(8);
+        assert_eq!(app.nav.tracks[ti].clips[0].notes[0].velocity, origin + 24);
+        assert!(
+            app.live_status().unwrap_or_default().starts_with("vel "),
+            "the ride did not read out its value"
+        );
+
+        // One undo returns to where the ride began.
+        app.perform_undo();
+        assert_eq!(
+            app.nav.tracks[ti].clips[0].notes[0].velocity, origin,
+            "one undo did not return the whole ride"
+        );
+
+        // The floor: ride down hard, the note stays audible and alive.
+        for _ in 0..30 { app.nudge_velocity(-24); }
+        assert_eq!(app.nav.tracks[ti].clips[0].notes[0].velocity, 1, "the floor gave way");
+        // And what goes to the audio thread is still a note-on.
+        let events = app.nav.tracks[ti].clips[0].events_for_audio();
+        assert!(
+            events.iter().any(|e| e.status == 0x90 && e.data2 > 0),
+            "a floored note became a note-off on the wire"
+        );
+    }
+
+    /// A selection rides together: every selected note moves by the nudge,
+    /// unselected neighbours hold still.
+    #[test]
+    fn velocity_ride_carries_the_selection() {
+        let mut app = app();
+        add_synth_track(&mut app);
+        let ti = app.nav.track_cursor;
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![
+            note(60, 0.0, 0.25), note(64, 0.25, 0.25), note(67, 0.5, 0.25),
+        ]);
+        app.nav.open_clip_view(ti, 0);
+        app.nav.clip_view.piano_roll.edit_mode = true;
+        app.nav.clip_view.piano_roll.edit_cursor = 0;
+        app.nav.clip_view.piano_roll.edit_selected = vec![0, 1];
+
+        app.nudge_velocity(16);
+        let notes = &app.nav.tracks[ti].clips[0].notes;
+        assert_eq!(notes[0].velocity, 116);
+        assert_eq!(notes[1].velocity, 116);
+        assert_eq!(notes[2].velocity, 100, "an unselected note was dragged along");
+    }
+
     /// Snap-to-note lands the cursor on the nearest pitch that has a note,
     /// above and below, and says so when there is none that way.
     #[test]

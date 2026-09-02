@@ -236,6 +236,9 @@ pub enum UndoGesture {
     /// Drawing on an automation lane — a whole sweep across columns folds
     /// into one step, so one `u` lifts the curve back to where it began.
     Automation { track_idx: usize },
+    /// Riding note velocities in the editor — held presses fold, so one
+    /// `u` puts the dynamics back where the ride began.
+    Velocity { track_idx: usize },
     /// The transport's tempo.
     Tempo,
     /// The loop brace.

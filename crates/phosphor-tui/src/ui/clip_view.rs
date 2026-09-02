@@ -423,9 +423,18 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
     // Column number header row (only when in column/row mode)
     if in_col_mode && h > 1 {
         let mut hdr_spans: Vec<Span> = Vec::new();
-        // Show recording indicator
+        // Show recording indicator — or, in edit mode, the cursor note's
+        // velocity, which is otherwise a byte with no face.
         if snap.recording {
             hdr_spans.push(Span::styled(" \u{25CF}REC", Style::default().fg(theme::rec_active_val()).add_modifier(Modifier::BOLD)));
+            hdr_spans.push(Span::styled(" ", theme::bg()));
+        } else if pr.edit_mode {
+            let vel = notes.get(pr.edit_cursor).map(|n| n.velocity);
+            let label = match vel {
+                Some(v) => format!("v{v:>4}"),
+                None => "     ".to_string(),
+            };
+            hdr_spans.push(Span::styled(label, theme::amber()));
             hdr_spans.push(Span::styled(" ", theme::bg()));
         } else {
             hdr_spans.push(Span::styled("      ", theme::bg()));
@@ -578,7 +587,12 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
                     // Selected note — tinted highlight
                     Style::default().fg(Color::Rgb(255, 255, 200)).bg(Color::Rgb(80, 60, 20)).add_modifier(Modifier::BOLD)
                 } else {
-                    base_note_style
+                    // Velocity is the note's brightness: a ghost note reads
+                    // faint, an accent reads hot, and a clip's dynamics are
+                    // visible at a glance instead of hiding in a byte. The
+                    // floor keeps the quietest note findable on screen.
+                    let brightness = 45 + (n.velocity as u16 * 55) / 127;
+                    base_note_style.fg(theme::dim_color(tc, brightness))
                 };
                 // Map note position from clip-space to visible-window-space
                 let rel_start = (n.start_frac - scroll_frac) / visible_frac;

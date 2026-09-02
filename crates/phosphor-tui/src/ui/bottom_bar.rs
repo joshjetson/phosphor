@@ -185,6 +185,10 @@ pub(super) fn render_bottom_bar(
                         ("X","clear"),("jk","band"),
                     ],
                 },
+            // Note editing: proximity nav, selection, and the velocity ride.
+            Pane::ClipView if nav.clip_view.piano_roll.edit_mode =>
+                vec![("hjkl","note"),("enter","sel"),(",.","vel"),("<>","vel\u{00b1}"),
+                     ("d","del"),("esc","exit")],
             Pane::ClipView if nav.clip_view.focus == ClipViewFocus::PianoRoll
                 && nav.clip_view.clip_tab == ClipTab::InstConfig =>
                 vec![("jk","select"),("hl","adjust"),("tab","next"),("esc","back")],

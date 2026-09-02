@@ -145,7 +145,8 @@
       "Enter": "select cursor note for moving (single-note select)",
       "d": "delete cursor note (undoable)",
       "u": "undo",
-      "Esc": "exit edit mode"
+      "Esc": "exit edit mode",
+      ", / .": "velocity of the cursor note down/up by 8 (< / > by 24); the header shows the value"
     },
     "selecting": {
       "trigger": "Shift+direction from navigate mode",
@@ -162,8 +163,10 @@
       "Shift+H/L": "stretch RIGHT edge of selected notes (duration)",
       "Shift+J/K": "stretch LEFT edge of selected notes (start position)",
       "d": "delete all selected notes",
-      "Esc": "lock notes in place, clear selection"
-    }
+      "Esc": "lock notes in place, clear selection",
+      ", / .": "velocity of the whole selection down/up (< / > in strides)"
+    },
+    "velocity_display": "notes render brighter the harder they were hit, so dynamics are visible at a glance"
   },
   "quantize_modal": {
     "description": "Space+Q opens quantize modal when a clip is selected.",

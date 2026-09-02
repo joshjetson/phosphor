@@ -113,6 +113,11 @@ impl App {
                         self.perform_undo();
                         return;
                     }
+                    // Velocity ride: , and . nudge, < and > stride.
+                    KeyCode::Char(',') => { self.nudge_velocity(-8); return; }
+                    KeyCode::Char('.') => { self.nudge_velocity(8); return; }
+                    KeyCode::Char('<') => { self.nudge_velocity(-24); return; }
+                    KeyCode::Char('>') => { self.nudge_velocity(24); return; }
                     // Enter = toggle selection on cursor note (single-note select)
                     KeyCode::Enter => {
                         self.add_cursor_to_selection();
@@ -186,6 +191,11 @@ impl App {
                         self.edit_delete_selected_notes();
                         return;
                     }
+                    // The whole selection rides together.
+                    KeyCode::Char(',') => { self.nudge_velocity(-8); return; }
+                    KeyCode::Char('.') => { self.nudge_velocity(8); return; }
+                    KeyCode::Char('<') => { self.nudge_velocity(-24); return; }
+                    KeyCode::Char('>') => { self.nudge_velocity(24); return; }
                     _ => {}
                 }
                 let step = self.nav.clip_view.piano_roll.grid.step_frac(
@@ -498,6 +508,52 @@ impl App {
             self.send_clip_update();
             dbg::system(&format!("edit stretch: edge={} delta={:.4} notes={}",
                 if right_edge { "right" } else { "left" }, delta, indices.len()));
+        }
+    }
+
+    /// Nudge the velocity of the cursor note — and of the selection, when
+    /// one is held — clamped to 1..=127 because velocity zero is a note-off
+    /// on the wire and a note that silently stops existing is not a
+    /// dynamic. A held ride folds into one undo step.
+    pub(crate) fn nudge_velocity(&mut self, delta: i32) {
+        let pr = &self.nav.clip_view.piano_roll;
+        let mut indices: Vec<usize> = pr.edit_selected.clone();
+        if !indices.contains(&pr.edit_cursor) {
+            indices.push(pr.edit_cursor);
+        }
+        let track_idx = match self.nav.clip_view_target {
+            Some((ti, _)) => ti,
+            None => return,
+        };
+
+        let cursor = self.nav.clip_view.piano_roll.edit_cursor;
+        let undo_before = self.checkpoint_viewed_track();
+        let mut touched = 0usize;
+        let mut cursor_vel = 0u8;
+        if let Some(clip) = self.nav.active_clip_mut() {
+            for &i in &indices {
+                if let Some(n) = clip.notes.get_mut(i) {
+                    n.velocity = (n.velocity as i32 + delta).clamp(1, 127) as u8;
+                    touched += 1;
+                }
+            }
+            if let Some(n) = clip.notes.get(cursor) {
+                cursor_vel = n.velocity;
+            }
+        }
+        if touched == 0 {
+            return;
+        }
+        self.commit_viewed_track_coalesced(
+            undo_before,
+            "velocity",
+            crate::state::undo::UndoGesture::Velocity { track_idx },
+        );
+        self.send_clip_update();
+        if touched > 1 {
+            self.flash(format!("vel {cursor_vel} \u{00b7} {touched} notes"));
+        } else {
+            self.flash(format!("vel {cursor_vel}"));
         }
     }
 
