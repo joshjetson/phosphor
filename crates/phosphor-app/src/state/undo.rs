@@ -233,6 +233,9 @@ pub enum UndoGesture {
     /// gesture, so a flick through five instruments is one step back to
     /// the one the player left — and never folds into a pattern sweep.
     ChildSwap { track_idx: usize },
+    /// Drawing on an automation lane — a whole sweep across columns folds
+    /// into one step, so one `u` lifts the curve back to where it began.
+    Automation { track_idx: usize },
     /// The transport's tempo.
     Tempo,
     /// The loop brace.

@@ -556,6 +556,16 @@ pub struct PianoRollState {
     pub default_velocity: u8,
     /// Settings panel cursor (for the Settings tab).
     pub settings_cursor: usize,
+    // ── Automation lane ──
+    /// Whether the controller lane is showing under the note grid.
+    pub automation_open: bool,
+    /// Whether the lane has the keys: j/k draw values at the column cursor,
+    /// h/l walk columns, rather than the note grid taking them.
+    pub automation_focus: bool,
+    /// Which of the clip's controller streams the lane shows, as an index
+    /// into [`Clip::control_streams`]. Clamped to what the clip offers when
+    /// the lane is drawn.
+    pub automation_lane: usize,
 }
 
 impl Default for PianoRollState {
@@ -591,6 +601,9 @@ impl PianoRollState {
             snap_enabled: true,
             default_velocity: 100,
             settings_cursor: 0,
+            automation_open: false,
+            automation_focus: false,
+            automation_lane: 0,
         }
     }
 

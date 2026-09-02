@@ -445,7 +445,18 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
         lines.push(Line::from(hdr_spans));
     }
 
-    let rows_for_notes = if in_col_mode && h > 1 { h - 1 } else { h };
+    // The automation lane, when open, takes a strip off the bottom: one
+    // label row and a few bar rows. It shares the column grid above it to
+    // the cell, so a point drawn in a column sits under the notes in it.
+    let lane_open = pr.automation_open && clip.is_some();
+    let lane_h = if lane_open { LANE_ROWS.min(h.saturating_sub(2)) } else { 0 };
+
+    let rows_before_lane = h.saturating_sub(lane_h);
+    let rows_for_notes = if in_col_mode && rows_before_lane > 1 {
+        rows_before_lane - 1
+    } else {
+        rows_before_lane
+    };
 
     for row in 0..rows_for_notes {
         let note_i = pr.view_bottom_note as i16 + (rows_for_notes as i16 - 1 - row as i16);
@@ -625,7 +636,137 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
         lines.push(Line::from(spans));
     }
 
+    if lane_open {
+        append_automation_lane(
+            &mut lines, clip.unwrap(), pr, key_w, note_w, col_w,
+            visible_cols, scroll_offset, lane_h, focused, snap,
+        );
+    }
+
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// How many rows the automation lane's bars get, below its one label row.
+const LANE_ROWS: usize = 6;
+
+/// Draw the automation lane under the note grid: a label row naming the
+/// stream, then bar rows whose height is the controller value in each
+/// column. Column geometry is passed in from the note grid so the two are
+/// aligned to the cell.
+#[allow(clippy::too_many_arguments)]
+fn append_automation_lane(
+    lines: &mut Vec<Line<'static>>,
+    clip: &crate::state::Clip,
+    pr: &crate::state::PianoRollState,
+    key_w: usize,
+    note_w: usize,
+    col_w: usize,
+    visible_cols: usize,
+    scroll_offset: usize,
+    lane_h: usize,
+    focused: bool,
+    snap: &TransportSnapshot,
+) {
+    let streams = clip.control_streams();
+    if streams.is_empty() || lane_h == 0 {
+        return;
+    }
+    let stream = streams[pr.automation_lane.min(streams.len() - 1)];
+    let active = focused && pr.automation_focus;
+    let col_count = pr.column_count.max(1);
+    let bar_rows = lane_h.saturating_sub(1).max(1);
+
+    // Label row: the stream name, and a hint at which of several it is.
+    let name_style = if active {
+        theme::amber_bright().add_modifier(Modifier::BOLD)
+    } else {
+        theme::dim()
+    };
+    let lane_hint = if streams.len() > 1 {
+        format!("auto {} ({}/{})", stream.label(), pr.automation_lane.min(streams.len() - 1) + 1, streams.len())
+    } else {
+        format!("auto {}", stream.label())
+    };
+    lines.push(Line::from(vec![
+        Span::styled(format!("{lane_hint:>kw$} ", kw = key_w.saturating_sub(1)), name_style),
+        Span::styled("\u{2502}", theme::border_style()),
+        Span::styled(
+            if active { " jk draw \u{00b7} [ ] lane \u{00b7} d clear".to_string() } else { String::new() },
+            theme::dim(),
+        ),
+    ]));
+
+    // Per-column value, held from the last point — the same rule playback
+    // and editing use, so the bars show what the instrument will hear.
+    let values: Vec<Option<u8>> = (0..visible_cols)
+        .map(|c| clip.control_value_at_column(stream, c + scroll_offset, col_count))
+        .collect();
+
+    let cursor_vis = pr.column.checked_sub(scroll_offset).filter(|&c| c < visible_cols);
+    // Playhead column, for the same vertical line the note grid draws.
+    let play_col = if snap.playing && clip.length_ticks > 0 {
+        let pos = snap.position_ticks - clip.start_tick;
+        if pos >= 0 && pos < clip.length_ticks {
+            let c = ((pos * col_count as i64) / clip.length_ticks) as usize;
+            c.checked_sub(scroll_offset).filter(|&c| c < visible_cols)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    for r in 0..bar_rows {
+        // Top row is the highest value band; bottom row the lowest.
+        let band_hi = 127 - (r * 128 / bar_rows) as u8;
+        let band_lo = 127u8.saturating_sub(((r + 1) * 128 / bar_rows) as u8);
+        let mut cells: Vec<(char, Style)> = Vec::with_capacity(note_w);
+        for c in 0..visible_cols {
+            let is_cursor_col = cursor_vis == Some(c);
+            let is_play_col = play_col == Some(c);
+            let filled = values[c].is_some_and(|v| v >= band_lo);
+            let at_top = values[c].is_some_and(|v| v >= band_lo && v <= band_hi);
+            let (ch, fg) = if at_top {
+                ('\u{2584}', theme::amber_bright_val()) // the value's own band: a cap
+            } else if filled {
+                ('\u{2588}', theme::amber_val())
+            } else {
+                (' ', theme::dim_val())
+            };
+            let bg = if is_play_col {
+                theme::playhead_bg()
+            } else if is_cursor_col && active {
+                theme::col_highlight_bg()
+            } else {
+                theme::bg_val()
+            };
+            for _ in 0..col_w {
+                cells.push((ch, Style::default().fg(fg).bg(bg)));
+            }
+        }
+        // Pad to the note width so the lane's background reaches the edge.
+        while cells.len() < note_w {
+            cells.push((' ', Style::default().bg(theme::bg_val())));
+        }
+
+        let mut spans: Vec<Span> = Vec::with_capacity(note_w + 2);
+        spans.push(Span::styled(" ".repeat(key_w), theme::bg()));
+        spans.push(Span::styled("\u{2502}", theme::border_style()));
+        // Merge equal cells into runs.
+        let mut text = String::new();
+        let mut cur = Style::default().bg(theme::bg_val());
+        for (ch, s) in cells {
+            if s == cur {
+                text.push(ch);
+            } else {
+                if !text.is_empty() { spans.push(Span::styled(std::mem::take(&mut text), cur)); }
+                cur = s;
+                text.push(ch);
+            }
+        }
+        if !text.is_empty() { spans.push(Span::styled(text, cur)); }
+        lines.push(Line::from(spans));
+    }
 }
 
 // ── Settings Panel ──

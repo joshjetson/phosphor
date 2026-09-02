@@ -71,6 +71,20 @@ impl App {
         }
     }
 
+    /// [`Self::commit_viewed_track`] for a continuous gesture — an
+    /// automation sweep — so a ramp drawn across many columns folds into
+    /// one undo step.
+    pub(crate) fn commit_viewed_track_coalesced(
+        &mut self,
+        before: Option<StateSlice>,
+        label: &'static str,
+        gesture: crate::state::undo::UndoGesture,
+    ) {
+        if let Some(before) = before {
+            self.nav.commit_undo_coalesced(before, label, gesture);
+        }
+    }
+
     // ── Undo while the transport is recording ──
 
     /// The looper's undo: peel the newest layer, keep rolling.

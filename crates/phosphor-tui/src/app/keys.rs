@@ -736,6 +736,30 @@ impl App {
             PianoRollFocus::Navigation => {
                 let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
+                // Automation lane has the keys: h/l walk columns (shared with
+                // the note grid, so the highlight lines up), k/j raise/lower
+                // the curve at the cursor and draw it, [ ] change lane, d
+                // clears the point, A hands the keys back, Esc closes.
+                if self.nav.clip_view.piano_roll.automation_focus {
+                    match key.code {
+                        KeyCode::Char('h') | KeyCode::Left => {
+                            self.nav.clip_view.piano_roll.move_column_left();
+                        }
+                        KeyCode::Char('l') | KeyCode::Right => {
+                            self.nav.clip_view.piano_roll.move_column_right();
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => self.automation_draw(if shift { 16 } else { 4 }),
+                        KeyCode::Char('j') | KeyCode::Down => self.automation_draw(if shift { -16 } else { -4 }),
+                        KeyCode::Char('[') => self.automation_cycle_stream(-1),
+                        KeyCode::Char(']') => self.automation_cycle_stream(1),
+                        KeyCode::Char('d') => self.automation_clear_point(),
+                        KeyCode::Char('A') => self.toggle_automation_lane(),
+                        KeyCode::Esc => self.close_automation_lane(),
+                        _ => {}
+                    }
+                    return;
+                }
+
                 // Highlight-locked stretch mode: Enter was pressed while highlights
                 // were active. h/l adjusts left edge, H/L adjusts right edge.
                 if self.nav.clip_view.piano_roll.highlight_locked {
@@ -890,6 +914,9 @@ impl App {
                     }
                     KeyCode::Char('X') => {
                         self.clear_clip_controls();
+                    }
+                    KeyCode::Char('A') => {
+                        self.toggle_automation_lane();
                     }
                     KeyCode::Enter => {
                         let has_highlights = self.nav.clip_view.piano_roll.has_highlights();

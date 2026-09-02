@@ -108,6 +108,121 @@ impl App {
         self.nav.commit_undo(undo_before, label);
     }
 
+    // ── Automation lane ──
+
+    /// The controller streams the viewed clip offers, or empty when no clip
+    /// is in view.
+    pub(crate) fn automation_streams(&self) -> Vec<crate::state::AutomationStream> {
+        self.nav.active_clip().map(|c| c.control_streams()).unwrap_or_default()
+    }
+
+    /// The stream the lane is currently pointed at, its index clamped to
+    /// what the clip offers.
+    pub(crate) fn current_automation_stream(&self) -> Option<crate::state::AutomationStream> {
+        let streams = self.automation_streams();
+        if streams.is_empty() {
+            return None;
+        }
+        let idx = self.nav.clip_view.piano_roll.automation_lane.min(streams.len() - 1);
+        Some(streams[idx])
+    }
+
+    /// Open the lane and give it the keys, or (if already focused) hand the
+    /// keys back to the note grid. Toggled with `A` from the piano roll.
+    pub(crate) fn toggle_automation_lane(&mut self) {
+        let pr = &mut self.nav.clip_view.piano_roll;
+        if pr.automation_open && pr.automation_focus {
+            pr.automation_focus = false;
+            self.flash("automation: note grid has the keys");
+        } else {
+            pr.automation_open = true;
+            pr.automation_focus = true;
+            let label = self
+                .current_automation_stream()
+                .map(|s| s.label())
+                .unwrap_or_else(|| "mod".to_string());
+            self.flash(format!("automation: {label} \u{00b7} jk draw, [ ] lane, d clear, A note grid"));
+        }
+    }
+
+    /// Close the lane entirely (Esc from a focused lane).
+    pub(crate) fn close_automation_lane(&mut self) {
+        let pr = &mut self.nav.clip_view.piano_roll;
+        pr.automation_open = false;
+        pr.automation_focus = false;
+    }
+
+    /// Point the lane at the next or previous controller stream.
+    pub(crate) fn automation_cycle_stream(&mut self, delta: i32) {
+        let count = self.automation_streams().len();
+        if count == 0 {
+            return;
+        }
+        let pr = &mut self.nav.clip_view.piano_roll;
+        let cur = pr.automation_lane.min(count - 1) as i32;
+        pr.automation_lane = (cur + delta).rem_euclid(count as i32) as usize;
+        if let Some(stream) = self.current_automation_stream() {
+            self.flash(format!("automation lane: {}", stream.label()));
+        }
+    }
+
+    /// Raise or lower the curve at the cursor column, drawing a point there.
+    /// A sweep of these — held, or walked across columns — folds into one
+    /// undo step; the value carries between columns so a ramp is just h then
+    /// k, k, k.
+    pub(crate) fn automation_draw(&mut self, delta: i32) {
+        let Some(stream) = self.current_automation_stream() else { return };
+        let (col, col_count) = {
+            let pr = &self.nav.clip_view.piano_roll;
+            (pr.column, pr.column_count.max(1))
+        };
+        let track_idx = match self.nav.clip_view_target {
+            Some((ti, _)) => ti,
+            None => return,
+        };
+
+        // Start from what this column already holds — which, because a value
+        // holds until the next event, is the value carried from the last
+        // column drawn. An untouched lane reads zero, so a ramp is built by
+        // walking right and pressing up.
+        let current = self
+            .nav
+            .active_clip()
+            .and_then(|c| c.control_value_at_column(stream, col, col_count))
+            .unwrap_or(0);
+        let value = (current as i32 + delta).clamp(0, 127) as u8;
+
+        let undo_before = self.checkpoint_viewed_track();
+        if let Some(clip) = self.nav.active_clip_mut() {
+            clip.set_control_point(stream, col, col_count, value);
+        }
+        self.commit_viewed_track_coalesced(
+            undo_before,
+            "automation",
+            crate::state::undo::UndoGesture::Automation { track_idx },
+        );
+        self.send_clip_update();
+    }
+
+    /// Remove the stream's point in the cursor column.
+    pub(crate) fn automation_clear_point(&mut self) {
+        let Some(stream) = self.current_automation_stream() else { return };
+        let (col, col_count) = {
+            let pr = &self.nav.clip_view.piano_roll;
+            (pr.column, pr.column_count.max(1))
+        };
+        let undo_before = self.checkpoint_viewed_track();
+        let cleared = self
+            .nav
+            .active_clip_mut()
+            .map(|c| c.clear_control_point(stream, col, col_count))
+            .unwrap_or(false);
+        if cleared {
+            self.commit_viewed_track(undo_before, "clear automation point");
+            self.send_clip_update();
+        }
+    }
+
     /// Wipe the viewed clip's recorded controllers — the one eraser for a
     /// flubbed wheel sweep until automation lanes give them a face. Undoable
     /// like any clip edit, and honest about what it found.

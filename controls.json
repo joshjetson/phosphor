@@ -203,5 +203,15 @@
     "duplicate": "d in clip-locked mode. Creates copy right after the clip.",
     "delete": "Space+D with y/n confirmation. Selects adjacent clip after delete.",
     "piano_roll_sync": "Clip view always shows the selected clip. Stretching/trimming updates piano roll in real time."
+  },
+  "automation_lane": {
+    "description": "A in the piano roll opens a controller lane under the note grid, sharing the column grid so points sit under the notes in each column.",
+    "A": "open the lane and give it the keys; A again hands them back to the note grid",
+    "k/j": "raise/lower the controller value at the cursor column and draw a point (K/J = bigger steps)",
+    "h/l": "walk columns; the value carries along, so a ramp is walk-right-and-raise",
+    "[ / ]": "cycle which controller the lane shows (recorded streams first, then mod/bend/aftertouch)",
+    "d": "clear the point in the cursor column",
+    "Esc": "close the lane",
+    "note": "an empty clip offers mod, bend and aftertouch to draw from scratch; a recorded sweep opens on its own stream; edits are undoable and play back"
   }
 }
