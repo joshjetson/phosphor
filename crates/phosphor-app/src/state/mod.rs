@@ -8,6 +8,7 @@
 //!   Enter    → select / activate / open menus
 //!   Esc      → back out one level
 
+mod automation;
 mod clip_view;
 mod input;
 mod loop_editor;
@@ -16,6 +17,7 @@ mod track;
 mod transport_ui;
 pub mod undo;
 
+pub use automation::*;
 pub use clip_view::*;
 pub use input::*;
 pub use loop_editor::*;
