@@ -109,7 +109,10 @@
     "p": "paste yanked notes at cursor/highlight",
     "Enter_with_highlights": "lock highlights for STRETCHING (Right-Left-Trick on group)",
     "Esc": "clear highlights, or exit piano roll if no highlights",
-    "X": "clear the clip's recorded controller data (mod wheel, pitch bend, aftertouch; undoable)"
+    "X": "clear the clip's recorded controller data (mod wheel, pitch bend, aftertouch; undoable)",
+    "{ / }": "jump the cursor down / up a whole octave (12 semitones) at once",
+    "[ / ]": "snap the cursor to the nearest pitch below / above that has a note",
+    "_framing": "opening a clip frames the view on its notes, so you start on the music"
   },
   "piano_roll_highlight_locked": {
     "description": "After highlighting notes and pressing Enter, h/l/H/L stretch the group.",

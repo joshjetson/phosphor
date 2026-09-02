@@ -210,6 +210,12 @@ impl NavState {
         self.clip_view_visible = true;
         self.clip_view_target = Some((track_idx, clip_idx));
         self.clip_view.fx_cursor = 0;
+        // Frame the roll on the clip's notes, so it opens looking at the
+        // music rather than at whatever octave the view last sat on.
+        if let Some(clip) = self.tracks.get(track_idx).and_then(|t| t.clips.get(clip_idx)) {
+            let pitches: Vec<u8> = clip.notes.iter().map(|n| n.note).collect();
+            self.clip_view.piano_roll.frame_notes(pitches.into_iter());
+        }
         tracing::debug!(
             "open_clip_view: track={} clip={} (notes={})",
             track_idx, clip_idx,

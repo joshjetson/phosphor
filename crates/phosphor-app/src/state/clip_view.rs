@@ -667,6 +667,51 @@ impl PianoRollState {
         }
     }
 
+    /// Put the cursor on `note`, dragging the view to keep it in sight. The
+    /// one place a jump lands, so octave hops, note snaps and framing all
+    /// scroll the same way a single step does.
+    pub fn cursor_to_note(&mut self, note: u8) {
+        self.cursor_note = note;
+        let top = self.view_bottom_note.saturating_add(self.view_height);
+        if self.cursor_note < self.view_bottom_note {
+            self.view_bottom_note = self.cursor_note;
+        } else if self.cursor_note >= top {
+            self.view_bottom_note = self.cursor_note.saturating_sub(self.view_height - 1);
+        }
+    }
+
+    /// Jump the cursor a whole octave, clamped to the MIDI range. Twelve
+    /// steps of `j` in one press — the coarse gear for reaching a bass note
+    /// or a lead line without walking every semitone.
+    pub fn jump_octave_up(&mut self) {
+        self.cursor_to_note(self.cursor_note.saturating_add(12).min(127));
+    }
+
+    pub fn jump_octave_down(&mut self) {
+        self.cursor_to_note(self.cursor_note.saturating_sub(12));
+    }
+
+    /// Frame the view on a clip's notes: put the cursor and the window on
+    /// the pitch range the music actually uses, so a clip opens looking at
+    /// its notes instead of at an empty octave. `pitches` is every note's
+    /// pitch; nothing to do when there are none.
+    pub fn frame_notes(&mut self, pitches: impl Iterator<Item = u8>) {
+        let (mut lo, mut hi) = (u8::MAX, u8::MIN);
+        for p in pitches {
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        if lo > hi {
+            return; // no notes
+        }
+        // Centre the used span in the window, then land the cursor on the
+        // top note — the same note edit mode starts on, so the two agree.
+        let span = hi - lo;
+        let pad = self.view_height.saturating_sub(span) / 2;
+        self.view_bottom_note = lo.saturating_sub(pad);
+        self.cursor_to_note(hi);
+    }
+
     // ── Column navigation ──
 
     pub fn move_column_left(&mut self) {
@@ -933,6 +978,47 @@ impl PianoRollState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An octave hop moves twelve semitones, clamps at the ends, and drags
+    /// the view so the cursor stays on screen.
+    #[test]
+    fn octave_jumps_move_twelve_and_clamp() {
+        let mut pr = PianoRollState::new();
+        pr.set_view_height(12);
+        pr.cursor_to_note(60);
+        pr.jump_octave_up();
+        assert_eq!(pr.cursor_note, 72);
+        pr.jump_octave_down();
+        pr.jump_octave_down();
+        assert_eq!(pr.cursor_note, 48);
+        // Clamp at the ceiling and the floor.
+        for _ in 0..20 { pr.jump_octave_up(); }
+        assert_eq!(pr.cursor_note, 127);
+        for _ in 0..20 { pr.jump_octave_down(); }
+        assert_eq!(pr.cursor_note, 0);
+        // The cursor is always inside the window it dragged along.
+        assert!(pr.cursor_note >= pr.view_bottom_note);
+        assert!(pr.cursor_note < pr.view_bottom_note.saturating_add(pr.view_height));
+    }
+
+    /// Framing lands the view and the cursor on the notes, not on whatever
+    /// octave the roll last sat on; an empty clip is left where it was.
+    #[test]
+    fn framing_lands_on_the_notes() {
+        let mut pr = PianoRollState::new();
+        pr.set_view_height(24);
+        pr.view_bottom_note = 96; // parked high, away from the music
+        pr.frame_notes([36, 40, 43].into_iter()); // a low chord
+        assert_eq!(pr.cursor_note, 43, "the cursor did not land on the top note");
+        assert!(pr.view_bottom_note <= 36, "the lowest note is above the window: {}", pr.view_bottom_note);
+        assert!(43 < pr.view_bottom_note + pr.view_height, "the top note is below the window");
+
+        // No notes: the view does not move.
+        let mut empty = PianoRollState::new();
+        empty.view_bottom_note = 60;
+        empty.frame_notes(std::iter::empty());
+        assert_eq!(empty.view_bottom_note, 60);
+    }
 
     #[test]
     fn focus_hierarchy() {

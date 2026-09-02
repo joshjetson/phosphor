@@ -108,6 +108,34 @@ impl App {
         self.nav.commit_undo(undo_before, label);
     }
 
+    // ── Vertical navigation: snap between note-bearing pitches ──
+
+    /// Move the cursor to the nearest pitch above it that has a note, so
+    /// editing a note never means scrolling to find it. Lands on the row,
+    /// not the note — h/l and n then work it. A no-op, said out loud, when
+    /// there is no note higher up.
+    pub(crate) fn snap_note_up(&mut self) {
+        self.snap_note(true);
+    }
+
+    pub(crate) fn snap_note_down(&mut self) {
+        self.snap_note(false);
+    }
+
+    fn snap_note(&mut self, up: bool) {
+        let cursor = self.nav.clip_view.piano_roll.cursor_note;
+        let Some(clip) = self.nav.active_clip() else { return };
+        let target = if up {
+            clip.notes.iter().map(|n| n.note).filter(|&p| p > cursor).min()
+        } else {
+            clip.notes.iter().map(|n| n.note).filter(|&p| p < cursor).max()
+        };
+        match target {
+            Some(note) => self.nav.clip_view.piano_roll.cursor_to_note(note),
+            None => self.flash(if up { "no note higher" } else { "no note lower" }),
+        }
+    }
+
     // ── Automation lane ──
 
     /// The controller streams the viewed clip offers, or empty when no clip

@@ -643,4 +643,53 @@ mod tests {
         assert_eq!(app.nav.tracks[ti].clips[0].notes[0].note, 60,
             "undo should restore original pitch");
     }
+
+    /// Snap-to-note lands the cursor on the nearest pitch that has a note,
+    /// above and below, and says so when there is none that way.
+    #[test]
+    fn snap_jumps_between_note_pitches() {
+        let mut app = app();
+        add_synth_track(&mut app);
+        let ti = app.nav.track_cursor;
+        // Notes two octaves apart: a bass note and a lead note.
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![
+            note(36, 0.0, 0.25), note(84, 0.5, 0.25),
+        ]);
+        app.nav.open_clip_view(ti, 0);
+
+        // Park the cursor in the middle, then snap down to the bass note.
+        app.nav.clip_view.piano_roll.cursor_to_note(60);
+        app.snap_note_down();
+        assert_eq!(app.nav.clip_view.piano_roll.cursor_note, 36, "did not snap to the low note");
+
+        // From the bass note, snap up jumps straight to the lead note.
+        app.snap_note_up();
+        assert_eq!(app.nav.clip_view.piano_roll.cursor_note, 84, "did not snap to the high note");
+
+        // Nothing higher: the cursor stays and the refusal is spoken.
+        app.snap_note_up();
+        assert_eq!(app.nav.clip_view.piano_roll.cursor_note, 84, "snap moved with no note above");
+        assert!(
+            app.live_status().unwrap_or_default().contains("no note higher"),
+            "the wall was silent"
+        );
+    }
+
+    /// Opening a clip frames the view on its notes rather than the last
+    /// octave the roll sat on.
+    #[test]
+    fn opening_a_clip_frames_its_notes() {
+        let mut app = app();
+        add_synth_track(&mut app);
+        let ti = app.nav.track_cursor;
+        // Park the view high, then open a clip whose notes are low.
+        app.nav.clip_view.piano_roll.set_view_height(24);
+        app.nav.clip_view.piano_roll.view_bottom_note = 100;
+        create_clip_with_notes(&mut app, ti, 0, 3840, vec![note(40, 0.0, 0.25), note(45, 0.5, 0.25)]);
+        app.nav.open_clip_view(ti, 0);
+
+        let pr = &app.nav.clip_view.piano_roll;
+        assert!(pr.view_bottom_note <= 40, "the low notes are off the top of the window: {}", pr.view_bottom_note);
+        assert_eq!(pr.cursor_note, 45, "the cursor did not land on the clip's top note");
+    }
 }

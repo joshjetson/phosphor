@@ -918,6 +918,22 @@ impl App {
                     KeyCode::Char('A') => {
                         self.toggle_automation_lane();
                     }
+                    // Coarse vertical: a whole octave a press, for reaching a
+                    // bass note or a lead line without walking every semitone.
+                    KeyCode::Char('}') => {
+                        self.nav.clip_view.piano_roll.jump_octave_up();
+                    }
+                    KeyCode::Char('{') => {
+                        self.nav.clip_view.piano_roll.jump_octave_down();
+                    }
+                    // Snap to the nearest pitch that has a note, so editing an
+                    // existing note never means scrolling to find it.
+                    KeyCode::Char(']') => {
+                        self.snap_note_up();
+                    }
+                    KeyCode::Char('[') => {
+                        self.snap_note_down();
+                    }
                     KeyCode::Enter => {
                         let has_highlights = self.nav.clip_view.piano_roll.has_highlights();
                         if has_highlights {
