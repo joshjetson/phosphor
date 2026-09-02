@@ -1130,6 +1130,7 @@ pub const HELP_TOPICS: &[HelpTopic] = &[
             Key("n", "write or erase the step under the cursor"),
             Key("a", "accent it \u{00b7} x: clear it"),
             Key("y / p", "yank this step \u{00b7} drop it \u{2014} chord and all"),
+            Note("(works from inside the step panel too)"),
             Key("enter", "open the panel for what the cursor is on"),
             Key("[ / ]", "previous / next row, from any depth"),
             Key("1-9", "jump to a step"),

@@ -1537,3 +1537,29 @@ fn a_pattern_yanked_from_the_instrument_row_crosses_tracks() {
         "undo did not clear the pasted pattern"
     );
 }
+
+#[test]
+fn yank_from_the_step_panel_takes_the_step() {
+    use phosphor_app::state::SeqBand;
+    let mut app = headless();
+    app.create_instrument_track(InstrumentType::Sequencer);
+    app.sequencer_op(SeqOp::SetChild(InstrumentType::Synth));
+    app.sequencer_op(SeqOp::SelectStep(3));
+    app.sequencer_op(SeqOp::ToggleStep);
+    app.sequencer_op(SeqOp::CycleChord(1));
+
+    // The player is still in the step panel, looking at the chord they
+    // just set — y must take the step, not the pattern.
+    app.nav.clip_view.sequencer.band = SeqBand::Step;
+    app.sequencer_yank();
+    assert!(app.seq_step_clip.is_some(), "the panel yank did not take the step");
+    assert!(app.seq_pattern_clip.is_none(), "the panel yank took the pattern instead");
+
+    // And p from the panel drops it on the cursor position too.
+    app.sequencer_op(SeqOp::SelectStep(7));
+    app.sequencer_paste();
+    let state = app.nav.current_track().and_then(|t| t.sequencer.as_deref()).unwrap();
+    let pasted = state.pattern().lanes[state.lane_cursor()].steps[7];
+    assert!(pasted.on, "the paste never landed");
+    assert_eq!(pasted.chord, state.pattern().lanes[state.lane_cursor()].steps[3].chord);
+}

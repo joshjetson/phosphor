@@ -249,7 +249,7 @@
     "learn": "r in the progression editor arms learn: play any chord on the controller and lift — the row becomes exactly that voicing, spread and all (root = lowest key). Turning its quality knob afterwards returns it to the dictionary. Learned chords save to the library and into sessions like any other"
   },
   "sequencer_yank_paste": {
-    "step": "y with the cursor on the grid yanks the one step under it — pitch, chord, voicing, gate, accent; p on any grid position drops it there (one undo step). y on an empty step refuses",
+    "step": "y with the cursor on the grid OR inside the step panel yanks the one step under it — pitch, chord, voicing, gate, accent; p drops it on the cursor position (one undo step). y on an empty step refuses",
     "pattern": "y anywhere off the grid (the pattern/instrument row, the slots row) yanks the whole pattern as a block; p pastes it into the selected slot of whichever track's sequencer you're on — it crosses tracks and carries the notes, the length, the rate, everything (one undo step)"
   }
 }

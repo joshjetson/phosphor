@@ -530,7 +530,11 @@ impl App {
         let Some(state) = self.nav.current_track().and_then(|t| t.sequencer.as_deref()) else {
             return;
         };
-        if band == crate::state::SeqBand::Grid {
+        // The step panel is *about* the step under the cursor, so y there
+        // takes the step exactly as it does on the grid — a player who has
+        // just dressed a chord in the panel is looking at the thing they
+        // mean to take.
+        if matches!(band, crate::state::SeqBand::Grid | crate::state::SeqBand::Step) {
             let step = *state.step();
             if !step.on {
                 self.flash("nothing on this step");
@@ -553,7 +557,7 @@ impl App {
     /// track's sequencer the cursor is on.
     pub(crate) fn sequencer_paste(&mut self) {
         let band = self.nav.clip_view.sequencer.band;
-        if band == crate::state::SeqBand::Grid {
+        if matches!(band, crate::state::SeqBand::Grid | crate::state::SeqBand::Step) {
             let Some(step) = self.seq_step_clip else {
                 self.flash("nothing yanked \u{00b7} y on a step first");
                 return;
