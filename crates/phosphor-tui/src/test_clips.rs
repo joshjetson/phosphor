@@ -33,6 +33,7 @@ mod tests {
                 length_ticks,
                 notes,
                 hidden_notes: Vec::new(),
+                controls: Vec::new(),
             });
         }
     }
@@ -339,6 +340,7 @@ mod tests {
             length_ticks: 3840,
             event_count: 2,
             notes: vec![note(64, 0.5, 0.25)],
+            controls: Vec::new(),
         };
         let _ = app.nav.receive_clip_snapshot(snap, true);
 
@@ -363,6 +365,7 @@ mod tests {
             track_id: mid, clip_index: 0,
             start_tick: 0, length_ticks: 7680,
             event_count: 4, notes: vec![note(67, 0.25, 0.1)],
+            controls: Vec::new(),
         };
         let _ = app.nav.receive_clip_snapshot(snap, true);
 
@@ -398,6 +401,7 @@ mod tests {
             track_id: mid, clip_index: 0,
             start_tick: 0, length_ticks: 3840,
             event_count: 4, notes: vec![note(60, 0.0, 0.25), note(64, 0.25, 0.25)],
+            controls: Vec::new(),
         };
         let _ = app.nav.receive_clip_snapshot(snap, false); // NOT recording
 
@@ -526,6 +530,7 @@ mod tests {
             track_id: mid, clip_index: 0,
             start_tick: 0, length_ticks: 7680,
             event_count: 4, notes: vec![note(67, 0.25, 0.1)],
+            controls: Vec::new(),
         };
 
         let result = app.nav.receive_clip_snapshot(snap, true);
@@ -558,6 +563,7 @@ mod tests {
             track_id: mid, clip_index: 0,
             start_tick: 0, length_ticks: 7680,
             event_count: 2, notes: vec![note(67, 0.0, 0.1)],
+            controls: Vec::new(),
         };
         let _ = app.nav.receive_clip_snapshot(snap, true);
 

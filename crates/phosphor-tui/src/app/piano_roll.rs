@@ -55,6 +55,7 @@ impl App {
                     length_ticks,
                     notes: Vec::new(),
                     hidden_notes: Vec::new(),
+                    controls: Vec::new(),
                 });
                 self.nav.clip_view_target = Some((self.nav.track_cursor, track.clips.len() - 1));
 
@@ -107,15 +108,37 @@ impl App {
         self.nav.commit_undo(undo_before, label);
     }
 
+    /// Wipe the viewed clip's recorded controllers — the one eraser for a
+    /// flubbed wheel sweep until automation lanes give them a face. Undoable
+    /// like any clip edit, and honest about what it found.
+    pub(crate) fn clear_clip_controls(&mut self) {
+        let undo_before = self.checkpoint_viewed_track();
+        let count = match self.nav.active_clip_mut() {
+            Some(clip) => {
+                let count = clip.controls.len();
+                clip.controls.clear();
+                count
+            }
+            None => 0,
+        };
+        if count == 0 {
+            self.flash("no controller data in this clip");
+            return;
+        }
+        self.commit_viewed_track(undo_before, "clear controllers");
+        self.send_clip_update();
+        self.flash(format!(
+            "cleared {count} controller event{} (u to undo)",
+            if count == 1 { "" } else { "s" }
+        ));
+    }
+
     pub(crate) fn send_clip_update(&self) {
         use crate::debug_log as dbg;
         if let Some((track_idx, clip_idx)) = self.nav.clip_view_target {
             if let Some(track) = self.nav.tracks.get(track_idx) {
                 if let (Some(mixer_id), Some(clip)) = (track.mixer_id, track.clips.get(clip_idx)) {
-                    let events = phosphor_core::clip::NoteSnapshot::to_clip_events(
-                        &clip.notes,
-                        clip.length_ticks,
-                    );
+                    let events = clip.events_for_audio();
                     dbg::system(&format!(
                         "send_clip_update: track={} clip={} mixer={} notes={} events={}",
                         track_idx, clip_idx, mixer_id, clip.notes.len(), events.len()

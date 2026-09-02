@@ -45,6 +45,7 @@ mod tests {
             length_ticks: BAR,
             event_count: notes.len() * 2,
             notes,
+            controls: Vec::new(),
         }
     }
 
@@ -183,6 +184,7 @@ mod tests {
             start_tick: 0, length_ticks: BAR,
             notes: vec![note(48, 0.0)],
             hidden_notes: Vec::new(),
+            controls: Vec::new(),
         });
         app.nav.commit_undo(before, "draw note");
         assert!(app.nav.undo_stack.can_undo());

@@ -421,6 +421,15 @@ impl App {
                         self.engine.transport.toggle_metronome();
                         dbg::system(&format!("metronome={}", self.engine.transport.is_metronome_on()));
                     }
+                    TransportElement::CountIn => {
+                        let bars = self.engine.transport.cycle_count_in();
+                        dbg::system(&format!("count-in bars={bars}"));
+                        self.flash(match bars {
+                            0 => "count-in: off".to_string(),
+                            1 => "count-in: 1 bar before recording".to_string(),
+                            n => format!("count-in: {n} bars before recording"),
+                        });
+                    }
                 }
             }
             KeyCode::Char('q') => { self.running = false; }
@@ -878,6 +887,9 @@ impl App {
                         self.draw_note(col, cursor_note);
                         self.send_clip_update();
                         dbg::user(&format!("piano roll: toggle note {} at col {}", cursor_note, col + 1));
+                    }
+                    KeyCode::Char('X') => {
+                        self.clear_clip_controls();
                     }
                     KeyCode::Enter => {
                         let has_highlights = self.nav.clip_view.piano_roll.has_highlights();

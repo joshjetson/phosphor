@@ -162,6 +162,7 @@ impl App {
         // the mirror, and a stale one would capture the wrong "before".
         self.engine.transport.set_tempo(session.transport.tempo_bpm);
         self.nav.tempo_bpm = session.transport.tempo_bpm as f32;
+        self.engine.transport.set_count_in_bars(session.transport.count_in_bars);
         if session.transport.metronome != self.engine.transport.is_metronome_on() {
             self.engine.transport.toggle_metronome();
         }
@@ -316,7 +317,7 @@ impl App {
                 track.clips.clear();
                 for sc in &st.clips {
                     let notes = crate::session::session_notes_to_snapshots(&sc.notes);
-                    track.clips.push(crate::state::Clip {
+                    let clip = crate::state::Clip {
                         number: track.clips.len() + 1,
                         width: 4, // will be recalculated by renderer
                         has_content: !notes.is_empty(),
@@ -324,26 +325,30 @@ impl App {
                         length_ticks: sc.length_ticks,
                         notes,
                         hidden_notes: Vec::new(),
-                    });
+                        controls: sc
+                            .controls
+                            .iter()
+                            .map(|&(tick, status, data1, data2)| {
+                                phosphor_core::clip::ClipEvent { tick, status, data1, data2 }
+                            })
+                            .collect(),
+                    };
 
                     // Send clip to audio thread: create then update events
                     if let Some(mixer_id) = track.mixer_id {
-                        let clip_idx = track.clips.len() - 1;
+                        let clip_idx = track.clips.len();
                         let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::CreateClip {
                             track_id: mixer_id,
                             start_tick: sc.start_tick,
                             length_ticks: sc.length_ticks,
                         });
-                        let events = phosphor_core::clip::NoteSnapshot::to_clip_events(
-                            &crate::session::session_notes_to_snapshots(&sc.notes),
-                            sc.length_ticks,
-                        );
                         let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::UpdateClip {
                             track_id: mixer_id,
                             clip_index: clip_idx,
-                            events,
+                            events: clip.events_for_audio(),
                         });
                     }
+                    track.clips.push(clip);
                 }
 
                 // ── Routing and inserts ──

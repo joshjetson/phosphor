@@ -635,6 +635,10 @@ pub struct Mixer {
     /// record buffer needs the transport — loop start or playhead — and the
     /// transport arrives with `process`, not with the command.
     discard_recording: bool,
+    /// Whether the previous block was inside a count-in, so the metronome's
+    /// beat tracker can be reset on the way in rather than swallowing the
+    /// countdown's first click.
+    was_counting: bool,
 }
 
 impl Mixer {
@@ -670,6 +674,7 @@ impl Mixer {
             key_listen: None,
             was_playing: false,
             discard_recording: false,
+            was_counting: false,
         }
     }
 
@@ -1171,7 +1176,25 @@ impl Mixer {
         self.scratch_r = master_r;
 
         // Mix metronome click into output (after tracks, so it's always audible)
-        self.metronome.process(output, transport);
+        //
+        // The count-in owns this spot while it runs: the transport is still
+        // stopped — no clips, no recording — and only the countdown's click
+        // sounds. The countdown is consumed here on the audio thread, and
+        // the block it reaches zero on is the block that fires the
+        // transport, which is what lands the take's first downbeat exactly
+        // on the bar rather than a UI frame late.
+        if transport.is_counting_in() {
+            if !self.was_counting {
+                self.metronome.reset();
+            }
+            let elapsed = transport.count_in_total_ticks() - transport.count_in_remaining();
+            self.metronome.count_in(output, elapsed, transport);
+            let fired = transport.consume_count_in(num_frames as u32, self.sample_rate);
+            self.was_counting = !fired;
+        } else {
+            self.was_counting = false;
+            self.metronome.process(output, transport);
+        }
 
         // ── Master limiter ──
         // Everything that reaches the device passes through here, the
@@ -1317,8 +1340,9 @@ impl Mixer {
                 if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
                     if let Some(clip) = track.clips.get_mut(clip_index) {
                         clip.events = events;
-                        // Offs before ons at the same tick — see MidiClip::new.
-                        clip.events.sort_by_key(|e| (e.tick, e.status & 0xF0));
+                        // Offs first, controllers between, ons last — see
+                        // `clip::same_tick_order`.
+                        clip.events.sort_by_key(|e| (e.tick, crate::clip::same_tick_order(e.status)));
                     }
                 }
             }
@@ -2003,6 +2027,55 @@ mod tests {
             clip_rx.try_recv().is_err(),
             "the stop committed a pass the discard had already scrapped"
         );
+    }
+
+    /// The count-in end to end: the bars click down over a stopped
+    /// transport, and the block the countdown ends on is the block the take
+    /// starts rolling — no keypress in between.
+    #[test]
+    fn the_count_in_clicks_and_then_the_take_rolls() {
+        let (mut mixer, tx, clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        let sr = 44100u32;
+        let bf = 256u32;
+        let mut output = vec![0.0f32; bf as usize * 2];
+
+        transport.set_loop_bars(1, 1);
+        transport.set_count_in_bars(1);
+        transport.begin_count_in(true);
+
+        // First blocks of the countdown: the click sounds, nothing rolls.
+        let mut click_peak = 0.0f32;
+        for _ in 0..4 {
+            output.fill(0.0);
+            mixer.process(&mut output, &[], &transport);
+            click_peak = click_peak.max(output.iter().fold(0.0f32, |a, &s| a.max(s.abs())));
+            assert!(!transport.is_playing(), "the countdown started playback early");
+        }
+        assert!(click_peak > 0.0001, "the countdown made no click, peak={click_peak}");
+
+        // Run the countdown out; the mixer itself fires the transport.
+        for _ in 0..500 {
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(bf, sr);
+            if transport.is_playing() {
+                break;
+            }
+        }
+        assert!(
+            transport.is_playing() && transport.is_recording(),
+            "the countdown never handed over to the take"
+        );
+
+        // And the take records exactly as one started by hand.
+        mixer.process(&mut output, &[make_note_on(60, 100)], &transport);
+        transport.advance(bf, sr);
+        mixer.process(&mut output, &[make_note_off(60)], &transport);
+        transport.advance(bf, sr);
+        transport.stop_loop_record();
+        mixer.process(&mut output, &[], &transport);
+        let snap = clip_rx.try_recv().expect("the counted-in take was lost");
+        assert!(snap.notes.iter().any(|n| n.note == 60));
     }
 
     /// A discard with nothing recording is consumed without effect — and

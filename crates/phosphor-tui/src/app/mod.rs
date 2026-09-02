@@ -364,7 +364,6 @@ impl App {
     #[allow(dead_code)]
     pub(crate) fn execute_action(&mut self, action: crate::actions::Action) {
         use crate::actions::Action;
-        use crate::debug_log as dbg;
 
         match action {
             // Global
@@ -391,19 +390,7 @@ impl App {
 
             // Transport
             Action::PlayPause => {
-                if self.engine.transport.is_playing() {
-                    dbg::system("action: stop playback");
-                    self.stop_playback();
-                } else {
-                    if self.nav.loop_editor.enabled {
-                        let start = self.nav.loop_editor.start_ticks();
-                        dbg::system(&format!("action: play from loop start (tick {start})"));
-                        self.engine.transport.set_position(start);
-                    }
-                    self.sync_loop_to_transport();
-                    self.engine.transport.play();
-                }
-                self.log_transport_state();
+                self.toggle_play_pause();
             }
             Action::ToggleRecord => {
                 self.engine.transport.toggle_record();

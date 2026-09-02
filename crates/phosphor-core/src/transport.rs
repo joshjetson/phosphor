@@ -38,6 +38,18 @@ pub struct Transport {
     /// end of bar 4 at 15359 ticks instead of 15360, at every block size at
     /// 44.1 kHz.
     tick_residual: AtomicU64,
+    /// The count-in setting: bars of click before recording rolls. 0 = off.
+    /// A preference like the metronome switch, and like it, never on the
+    /// undo stack and written into every session.
+    count_in_bars: AtomicU32,
+    /// Ticks of count-in still to run. Above zero the transport is counting:
+    /// not playing, not recording, only the click sounding. Consumed on the
+    /// audio thread by [`Transport::consume_count_in`]; zeroed by a cancel.
+    count_in_remaining: AtomicI64,
+    /// What the countdown fires at zero — one of the `THEN_*` constants.
+    /// Decided by the gesture that began the count: `R` wants the full
+    /// loop-record start, an armed `play` wants plain playback.
+    count_in_then: AtomicU32,
 }
 
 /// Snapshot of transport state for the UI to display. Cheap to copy.
@@ -51,6 +63,10 @@ pub struct TransportSnapshot {
     pub tempo_bpm: f64,
     pub loop_start_ticks: i64,
     pub loop_end_ticks: i64,
+    /// The count-in setting, in bars. 0 = off.
+    pub count_in_bars: u32,
+    /// Ticks of count-in still running; 0 when not counting.
+    pub count_in_remaining: i64,
 }
 
 impl Transport {
@@ -68,6 +84,9 @@ impl Transport {
             loop_start_ticks: AtomicI64::new(0),
             loop_end_ticks: AtomicI64::new(Self::PPQ * 4 * 4), // default 4 bars
             tick_residual: AtomicU64::new(0),
+            count_in_bars: AtomicU32::new(0),
+            count_in_remaining: AtomicI64::new(0),
+            count_in_then: AtomicU32::new(Self::THEN_NOTHING),
         }
     }
 
@@ -140,6 +159,98 @@ impl Transport {
 
     pub fn loop_start(&self) -> i64 { self.loop_start_ticks.load(ORD) }
     pub fn loop_end(&self) -> i64 { self.loop_end_ticks.load(ORD) }
+
+    // -- Count-in --
+
+    const THEN_NOTHING: u32 = 0;
+    const THEN_PLAY: u32 = 1;
+    const THEN_LOOP_RECORD: u32 = 2;
+
+    /// How many bars of click before recording rolls. 0 = off.
+    pub fn count_in_bars(&self) -> u32 {
+        self.count_in_bars.load(ORD)
+    }
+
+    pub fn set_count_in_bars(&self, bars: u32) {
+        self.count_in_bars.store(bars.min(2), ORD);
+    }
+
+    /// Step the setting through off → 1 → 2 → off, and say where it landed.
+    pub fn cycle_count_in(&self) -> u32 {
+        let next = (self.count_in_bars() + 1) % 3;
+        self.count_in_bars.store(next, ORD);
+        next
+    }
+
+    /// Begin the countdown. The transport stays stopped — no clips play, no
+    /// notes record — while the mixer clicks the bars down and then fires
+    /// [`Transport::start_loop_record`] or [`Transport::play`] on the audio
+    /// thread, which is what puts the first recorded downbeat exactly on
+    /// the bar. A no-op when the setting is off.
+    pub fn begin_count_in(&self, then_loop_record: bool) {
+        let bars = self.count_in_bars() as i64;
+        if bars == 0 {
+            return;
+        }
+        self.count_in_remaining.store(bars * Self::PPQ * 4, ORD);
+        self.count_in_then.store(
+            if then_loop_record { Self::THEN_LOOP_RECORD } else { Self::THEN_PLAY },
+            ORD,
+        );
+    }
+
+    pub fn is_counting_in(&self) -> bool {
+        self.count_in_remaining.load(ORD) > 0
+    }
+
+    pub fn count_in_remaining(&self) -> i64 {
+        self.count_in_remaining.load(ORD)
+    }
+
+    /// The whole countdown, in ticks, as it was begun.
+    pub fn count_in_total_ticks(&self) -> i64 {
+        self.count_in_bars() as i64 * Self::PPQ * 4
+    }
+
+    /// Abandon a running countdown. Nothing was playing or recording, so
+    /// there is nothing else to unwind.
+    pub fn cancel_count_in(&self) {
+        self.count_in_remaining.store(0, ORD);
+        self.count_in_then.store(Self::THEN_NOTHING, ORD);
+    }
+
+    /// Burn one audio block's worth of countdown. Audio thread only.
+    /// Returns true on the block the countdown ends — the transport has
+    /// already been fired by then, so the caller's next read of `playing`
+    /// and `recording` sees the take rolling.
+    ///
+    /// Sub-tick exactness deliberately does not matter here the way it does
+    /// in [`Transport::advance`]: a countdown a fraction of a tick short
+    /// moves the first click of the take by microseconds, and nothing
+    /// downstream measures against it.
+    pub fn consume_count_in(&self, num_samples: u32, sample_rate: u32) -> bool {
+        let remaining = self.count_in_remaining.load(ORD);
+        if remaining <= 0 || sample_rate == 0 {
+            return false;
+        }
+        let delta = (u128::from(num_samples)
+            * u128::from(self.tempo_centibpm.load(ORD))
+            * Self::PPQ as u128
+            / (6000u128 * u128::from(sample_rate)))
+        .min(i64::MAX as u128) as i64;
+        let left = remaining - delta.max(1);
+        if left > 0 {
+            self.count_in_remaining.store(left, ORD);
+            return false;
+        }
+        self.count_in_remaining.store(0, ORD);
+        match self.count_in_then.swap(Self::THEN_NOTHING, ORD) {
+            Self::THEN_LOOP_RECORD => self.start_loop_record(),
+            Self::THEN_PLAY => self.play(),
+            _ => {}
+        }
+        true
+    }
 
     /// Start recording within the loop range.
     /// Sets up loop, rewinds to loop start, enables record + play.
@@ -246,6 +357,8 @@ impl Transport {
             tempo_bpm: self.tempo_bpm(),
             loop_start_ticks: self.loop_start_ticks.load(ORD),
             loop_end_ticks: self.loop_end_ticks.load(ORD),
+            count_in_bars: self.count_in_bars(),
+            count_in_remaining: self.count_in_remaining.load(ORD),
         }
     }
 }
@@ -377,6 +490,66 @@ mod tests {
                 "Round trip failed: {tick} → {samples} → {back}"
             );
         }
+    }
+
+    /// The countdown holds the transport still, then fires the full
+    /// loop-record start the moment it runs out — on the audio thread, so
+    /// the first recorded downbeat is on the bar, not a UI frame late.
+    #[test]
+    fn count_in_counts_down_and_then_fires_loop_record() {
+        let t = Transport::new(120.0);
+        t.set_loop_bars(1, 1);
+        t.set_count_in_bars(1);
+        t.begin_count_in(true);
+
+        assert!(t.is_counting_in());
+        assert!(!t.is_playing(), "the countdown started playback early");
+        assert!(!t.is_recording(), "the countdown started recording early");
+
+        let mut fired = false;
+        for _ in 0..2000 {
+            if t.consume_count_in(256, 44100) {
+                fired = true;
+                break;
+            }
+        }
+        assert!(fired, "the countdown never ran out");
+        assert!(!t.is_counting_in());
+        assert!(t.is_playing() && t.is_recording(), "the take did not roll at zero");
+        assert_eq!(t.position_ticks(), t.loop_start(), "the take did not start at the top");
+    }
+
+    /// An armed play (space+r then space+p) counts down into plain
+    /// playback: the record switch was already thrown by the player.
+    #[test]
+    fn count_in_can_end_in_plain_play() {
+        let t = Transport::new(120.0);
+        t.set_count_in_bars(1);
+        t.toggle_record(); // the player armed the switch themselves
+        t.begin_count_in(false);
+        while !t.consume_count_in(1024, 44100) {}
+        assert!(t.is_playing());
+        assert!(t.is_recording(), "the armed switch was lost in the countdown");
+    }
+
+    /// A cancelled countdown fires nothing, and a setting of zero never
+    /// starts one.
+    #[test]
+    fn count_in_cancel_and_off() {
+        let t = Transport::new(120.0);
+        t.set_count_in_bars(2);
+        t.begin_count_in(true);
+        assert!(t.is_counting_in());
+        t.cancel_count_in();
+        assert!(!t.is_counting_in());
+        for _ in 0..100 {
+            assert!(!t.consume_count_in(1024, 44100));
+        }
+        assert!(!t.is_playing(), "a cancelled countdown still fired");
+
+        t.set_count_in_bars(0);
+        t.begin_count_in(true);
+        assert!(!t.is_counting_in(), "a zero-bar countdown began");
     }
 
     #[test]

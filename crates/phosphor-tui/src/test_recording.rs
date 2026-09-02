@@ -39,6 +39,7 @@ mod tests {
             length_ticks: BAR,
             event_count: notes.len() * 2,
             notes,
+            controls: Vec::new(),
         }
     }
 
@@ -409,6 +410,7 @@ mod tests {
             length_ticks: BAR * 4,
             notes: vec![note(72, 0.0), note(74, 0.5)],
             hidden_notes: Vec::new(),
+            controls: Vec::new(),
         });
 
         // A new take is recorded over bars 1–5 (ticks 0 .. 4*BAR).
@@ -421,6 +423,7 @@ mod tests {
             length_ticks: BAR * 4,
             event_count: 2,
             notes: vec![note(60, 0.0)],
+            controls: Vec::new(),
         };
         app.nav.receive_clip_snapshot(snap, true);
         app.engine.transport.stop_loop_record();
@@ -458,6 +461,245 @@ mod tests {
     }
 
     // ══════════════════════════════════════════════
+    // Recorded controllers (automation)
+    // ══════════════════════════════════════════════
+
+    use phosphor_core::clip::ClipEvent;
+
+    fn take_with_controls(
+        app: &App,
+        track_idx: usize,
+        notes: Vec<NoteSnapshot>,
+        controls: Vec<ClipEvent>,
+    ) -> ClipSnapshot {
+        ClipSnapshot {
+            track_id: app.nav.tracks[track_idx].mixer_id.expect("instrument track"),
+            clip_index: 0,
+            start_tick: 0,
+            length_ticks: BAR,
+            event_count: notes.len() * 2 + controls.len(),
+            notes,
+            controls,
+        }
+    }
+
+    fn cc(tick: i64, controller: u8, value: u8) -> ClipEvent {
+        ClipEvent { tick, status: 0xB0, data1: controller, data2: value }
+    }
+
+    /// The regression the whole feature exists to kill: a recorded wheel
+    /// sweep must survive the first note edit instead of being silently
+    /// erased when the clip's events are rebuilt.
+    #[test]
+    fn a_recorded_sweep_survives_a_note_edit() {
+        let mut app = app();
+        let ti = add_synth_track(&mut app);
+        app.engine.transport.set_loop_bars(1, 1);
+        app.engine.transport.start_loop_record();
+        let snap = take_with_controls(
+            &app, ti,
+            vec![note(60, 0.0), note(64, 0.5)],
+            vec![cc(100, 1, 40), cc(500, 1, 90)],
+        );
+        app.nav.receive_clip_snapshot(snap, true);
+        app.engine.transport.stop_loop_record();
+        assert_eq!(app.nav.tracks[ti].clips[0].controls.len(), 2, "the sweep never landed");
+
+        // The first edit after the take: delete a note.
+        app.nav.open_clip_view(ti, 0);
+        app.nav.clip_view.piano_roll.edit_mode = true;
+        app.nav.clip_view.piano_roll.edit_cursor = 0;
+        let _ = app.drain_mixer_commands();
+        app.edit_delete_cursor_note();
+
+        assert_eq!(
+            app.nav.tracks[ti].clips[0].controls.len(), 2,
+            "the note edit erased the recorded sweep"
+        );
+        // And what went to the audio thread still carries it.
+        let commands = app.drain_mixer_commands();
+        let sent_sweep = commands.iter().any(|c| matches!(
+            c,
+            MixerCommand::UpdateClip { events, .. }
+                if events.iter().any(|e| e.status & 0xF0 == 0xB0)
+        ));
+        assert!(sent_sweep, "the rebuilt clip reached the audio thread without the sweep");
+
+        // Undo of the note edit keeps the sweep too.
+        app.perform_undo();
+        assert_eq!(app.nav.tracks[ti].clips[0].controls.len(), 2);
+    }
+
+    /// Overdubbing a second pass keeps the first pass's controllers on
+    /// their bars, and a layered paste carries them to the other track.
+    #[test]
+    fn controllers_ride_through_overdub_and_paste() {
+        let mut app = app();
+        let first = add_synth_track(&mut app);
+        app.create_instrument_track(InstrumentType::Juno60);
+        let second = app.nav.track_cursor;
+
+        app.nav.track_cursor = first;
+        app.engine.transport.set_loop_bars(1, 1);
+        app.engine.transport.start_loop_record();
+        let pass_one = take_with_controls(&app, first, vec![note(60, 0.0)], vec![cc(200, 1, 80)]);
+        app.nav.receive_clip_snapshot(pass_one, true);
+        let pass_two = take_with_controls(&app, first, vec![note(64, 0.5)], vec![]);
+        app.nav.receive_clip_snapshot(pass_two, true);
+        app.engine.transport.stop_loop_record();
+
+        let clip = &app.nav.tracks[first].clips[0];
+        assert_eq!(clip.notes.len(), 2, "the overdub lost a note");
+        assert_eq!(clip.controls.len(), 1, "the overdub lost the sweep");
+        assert_eq!(clip.controls[0].tick, 200, "the sweep drifted in the merge");
+
+        app.yank_clip(0);
+        app.nav.track_cursor = second;
+        app.paste_clip_to_track();
+        assert_eq!(
+            app.nav.tracks[second].clips[0].controls.len(), 1,
+            "the layer arrived without its sweep"
+        );
+    }
+
+    /// X wipes a flubbed sweep from the viewed clip; u puts it back.
+    #[test]
+    fn a_flubbed_sweep_clears_and_undoes() {
+        let mut app = app();
+        let ti = add_synth_track(&mut app);
+        record_take(&mut app, ti, 0, vec![note(60, 0.0)]);
+        app.nav.tracks[ti].clips[0].controls = vec![cc(100, 1, 30), cc(300, 1, 90)];
+
+        app.nav.open_clip_view(ti, 0);
+        app.clear_clip_controls();
+        assert!(app.nav.tracks[ti].clips[0].controls.is_empty(), "X did not clear");
+        assert!(status(&app).contains("2 controller"), "the clear did not say what it found");
+
+        app.perform_undo();
+        assert_eq!(
+            app.nav.tracks[ti].clips[0].controls.len(), 2,
+            "undo did not restore the sweep"
+        );
+    }
+
+    /// Controllers survive the session file.
+    #[test]
+    fn controllers_survive_the_session() {
+        let dir = std::env::temp_dir().join("phosphor_controls_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("controls.phos");
+        let path_str = path.to_str().unwrap();
+
+        let mut saving = app();
+        let ti = add_synth_track(&mut saving);
+        record_take(&mut saving, ti, 0, vec![note(60, 0.0)]);
+        saving.nav.tracks[ti].clips[0].controls = vec![cc(240, 1, 64)];
+        saving.do_save(path_str);
+
+        let mut loading = app();
+        loading.do_load(path_str);
+        let track = loading
+            .nav
+            .tracks
+            .iter()
+            .find(|t| t.instrument_type.is_some())
+            .expect("the track loaded");
+        assert_eq!(track.clips[0].controls.len(), 1, "the sweep was lost in the file");
+        assert_eq!(track.clips[0].controls[0], cc(240, 1, 64));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ══════════════════════════════════════════════
+    // Count-in
+    // ══════════════════════════════════════════════
+
+    /// The count-in fires on exactly three conditions together: the setting
+    /// on, the record switch armed, play pressed. Any two alone behave as
+    /// they always did.
+    #[test]
+    fn count_in_needs_all_three_conditions() {
+        let mut app = app();
+        add_synth_track(&mut app);
+
+        // Setting on, record NOT armed, play → plays immediately, no count.
+        app.engine.transport.set_count_in_bars(1);
+        app.toggle_play_pause();
+        assert!(app.engine.transport.is_playing(), "plain play stopped playing");
+        assert!(!app.engine.transport.is_counting_in(), "play without record counted in");
+        app.toggle_play_pause(); // stop
+
+        // Record armed, setting OFF → rolls immediately, as it always did.
+        app.engine.transport.set_count_in_bars(0);
+        app.engine.transport.toggle_record();
+        app.toggle_play_pause();
+        assert!(app.engine.transport.is_playing(), "armed play without count-in did not roll");
+        assert!(!app.engine.transport.is_counting_in());
+        app.toggle_play_pause(); // stop
+        if app.engine.transport.is_recording() {
+            app.engine.transport.toggle_record();
+        }
+
+        // All three: setting on, record armed, play pressed → the countdown
+        // runs and nothing rolls yet.
+        app.engine.transport.set_count_in_bars(1);
+        app.engine.transport.toggle_record();
+        app.toggle_play_pause();
+        assert!(app.engine.transport.is_counting_in(), "all three conditions did not count in");
+        assert!(!app.engine.transport.is_playing(), "the countdown started playback early");
+
+        // A second press backs out of it.
+        app.toggle_play_pause();
+        assert!(!app.engine.transport.is_counting_in(), "the second press did not cancel");
+        assert!(!app.engine.transport.is_playing());
+    }
+
+    /// R is record intent and play in one press, so with the setting on it
+    /// counts in too — and ends in the full loop-record start.
+    #[test]
+    fn r_with_count_in_counts_before_the_take() {
+        let mut app = app();
+        add_synth_track(&mut app);
+        app.engine.transport.set_count_in_bars(2);
+
+        app.toggle_loop_record();
+        assert!(app.engine.transport.is_counting_in(), "R with count-in set did not count");
+        assert!(!app.engine.transport.is_playing());
+        assert!(!app.engine.transport.is_recording());
+
+        // R again backs out.
+        app.toggle_loop_record();
+        assert!(!app.engine.transport.is_counting_in());
+
+        // And with the setting off, R rolls immediately as it always did.
+        app.engine.transport.set_count_in_bars(0);
+        app.toggle_loop_record();
+        assert!(app.engine.transport.is_recording() && app.engine.transport.is_playing());
+        app.toggle_loop_record();
+    }
+
+    /// The setting survives a save and a load, like the metronome switch.
+    #[test]
+    fn count_in_setting_survives_the_session() {
+        let dir = std::env::temp_dir().join("phosphor_count_in_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("count_in.phos");
+        let path_str = path.to_str().unwrap();
+
+        let mut saving = app();
+        add_synth_track(&mut saving);
+        saving.engine.transport.set_count_in_bars(2);
+        saving.do_save(path_str);
+
+        let mut loading = app();
+        loading.do_load(path_str);
+        assert_eq!(
+            loading.engine.transport.count_in_bars(), 2,
+            "the count-in setting was lost in the file"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ══════════════════════════════════════════════
     // Notes travel between clips and tracks
     // ══════════════════════════════════════════════
 
@@ -481,6 +723,7 @@ mod tests {
                 number: 1, width: 4, has_content: false,
                 start_tick: 0, length_ticks: BAR,
                 notes: Vec::new(), hidden_notes: Vec::new(),
+                controls: Vec::new(),
             });
         }
 

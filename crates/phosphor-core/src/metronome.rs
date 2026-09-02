@@ -48,11 +48,22 @@ impl Metronome {
         if !transport.is_metronome_on() || !transport.is_playing() {
             return;
         }
+        self.render(output, transport.position_ticks(), transport.tempo_bpm());
+    }
 
+    /// The count-in's bars of click, on the countdown's own timeline.
+    ///
+    /// Always sounds, whatever the metronome switch says: a silent count-in
+    /// is dead air, and the click *is* the count. `elapsed_tick` runs from
+    /// zero at the top of the countdown, so beat one of each counted bar
+    /// pops the downbeat voice exactly as the song's bars do.
+    pub fn count_in(&mut self, output: &mut [f32], elapsed_tick: i64, transport: &Transport) {
+        self.render(output, elapsed_tick, transport.tempo_bpm());
+    }
+
+    fn render(&mut self, output: &mut [f32], current_tick: i64, bpm: f64) {
         let ppq = Transport::PPQ;
         let ticks_per_bar = ppq * 4; // 4/4 time
-        let current_tick = transport.position_ticks();
-        let bpm = transport.tempo_bpm();
         let ticks_per_sample = (bpm * ppq as f64) / (60.0 * self.sample_rate);
         let num_frames = output.len() / 2;
 

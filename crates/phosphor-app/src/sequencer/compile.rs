@@ -184,6 +184,7 @@ mod tests {
             length_ticks,
             notes: Vec::new(),
             hidden_notes: Vec::new(),
+            controls: Vec::new(),
         }
     }
 

@@ -441,6 +441,7 @@ mod tests {
                 note: 60, velocity: 100, start_frac: 0.0, duration_frac: 0.25,
             }],
             hidden_notes: Vec::new(),
+            controls: Vec::new(),
         });
         nav.tracks.insert(0, track);
         nav

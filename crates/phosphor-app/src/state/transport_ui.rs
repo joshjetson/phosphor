@@ -9,6 +9,7 @@ pub enum TransportElement {
     Record,
     Loop,
     Metronome,
+    CountIn,
 }
 
 impl TransportElement {
@@ -17,7 +18,8 @@ impl TransportElement {
             Self::Bpm => Self::Record,
             Self::Record => Self::Loop,
             Self::Loop => Self::Metronome,
-            Self::Metronome => Self::Metronome,
+            Self::Metronome => Self::CountIn,
+            Self::CountIn => Self::CountIn,
         }
     }
 
@@ -27,6 +29,7 @@ impl TransportElement {
             Self::Record => Self::Bpm,
             Self::Loop => Self::Record,
             Self::Metronome => Self::Loop,
+            Self::CountIn => Self::Metronome,
         }
     }
 
@@ -36,6 +39,7 @@ impl TransportElement {
             Self::Record => "rec",
             Self::Loop => "loop",
             Self::Metronome => "met",
+            Self::CountIn => "count",
         }
     }
 }
@@ -72,11 +76,13 @@ mod tests {
         assert_eq!(e.move_right(), TransportElement::Record);
         assert_eq!(e.move_right().move_right(), TransportElement::Loop);
         assert_eq!(e.move_right().move_right().move_right(), TransportElement::Metronome);
-        assert_eq!(TransportElement::Metronome.move_right(), TransportElement::Metronome);
+        assert_eq!(TransportElement::Metronome.move_right(), TransportElement::CountIn);
+        assert_eq!(TransportElement::CountIn.move_right(), TransportElement::CountIn);
     }
 
     #[test]
     fn element_left_navigation() {
+        assert_eq!(TransportElement::CountIn.move_left(), TransportElement::Metronome);
         assert_eq!(TransportElement::Metronome.move_left(), TransportElement::Loop);
         assert_eq!(TransportElement::Loop.move_left(), TransportElement::Record);
         assert_eq!(TransportElement::Record.move_left(), TransportElement::Bpm);

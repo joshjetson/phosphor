@@ -452,9 +452,11 @@ impl NavState {
             let union_len = (union_end - union_start).max(1);
 
             // Absorb every touched clip, carrying its notes — and the notes
-            // it was hiding under a trim — into the union's coordinates.
+            // it was hiding under a trim, and its recorded controllers —
+            // into the union's coordinates.
             let mut all_notes = Vec::new();
             let mut all_hidden = Vec::new();
+            let mut all_controls = Vec::new();
             track.clips.retain(|c| {
                 if !touches(c) {
                     return true;
@@ -474,11 +476,15 @@ impl NavState {
                 for &(tick, dur, note, vel) in &c.hidden_notes {
                     all_hidden.push((tick + c.start_tick - union_start, dur, note, vel));
                 }
+                for mut e in c.controls.clone() {
+                    e.tick += c.start_tick - union_start;
+                    all_controls.push(e);
+                }
                 absorbed_count += 1;
                 false
             });
 
-            // The take's own notes, into the same coordinates.
+            // The take's own notes and controllers, into the same coordinates.
             {
                 let offset = (snap.start_tick - union_start) as f64 / union_len as f64;
                 let scale = snap.length_ticks as f64 / union_len as f64;
@@ -486,6 +492,10 @@ impl NavState {
                     n.start_frac = n.start_frac * scale + offset;
                     n.duration_frac *= scale;
                     all_notes.push(n);
+                }
+                for mut e in snap.controls {
+                    e.tick += snap.start_tick - union_start;
+                    all_controls.push(e);
                 }
             }
 
@@ -503,6 +513,7 @@ impl NavState {
                 length_ticks: union_len,
                 notes: all_notes,
                 hidden_notes: all_hidden,
+                controls: all_controls,
             });
 
             // Renumber clips sequentially

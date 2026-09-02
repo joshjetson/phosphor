@@ -79,6 +79,34 @@ pub struct Clip {
     /// converted to tick offsets for stable restore.
     /// Format: (tick_offset_from_clip_start, duration_ticks, note, velocity)
     pub hidden_notes: Vec<(i64, i64, u8, u8)>,
+    /// The recorded performance controllers — control change, pitch bend,
+    /// channel pressure — in ticks from the clip's start. Invisible in the
+    /// roll until automation lanes exist, but carried through every edit,
+    /// paste, undo and session: a recorded wheel sweep must never vanish
+    /// because a note near it was deleted.
+    pub controls: Vec<phosphor_core::clip::ClipEvent>,
+}
+
+impl Clip {
+    /// Everything the audio thread should play for this clip: the notes
+    /// rebuilt from the roll's fractions, and the controllers as recorded,
+    /// ordered so that offs lead, controllers set their state, and ons
+    /// strike last on any shared tick. The one way a UI clip's events are
+    /// built — a site that rebuilds from notes alone is a site that erases
+    /// a recorded sweep.
+    #[must_use]
+    pub fn events_for_audio(&self) -> Vec<phosphor_core::clip::ClipEvent> {
+        use phosphor_core::clip::{same_tick_order, NoteSnapshot};
+        let mut events = NoteSnapshot::to_clip_events(&self.notes, self.length_ticks);
+        events.extend(
+            self.controls
+                .iter()
+                .filter(|e| e.tick >= 0 && e.tick <= self.length_ticks)
+                .copied(),
+        );
+        events.sort_by_key(|e| (e.tick, same_tick_order(e.status)));
+        events
+    }
 }
 
 /// Which half of the `sends` pair a bus is.

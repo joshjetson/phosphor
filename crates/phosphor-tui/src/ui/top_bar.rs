@@ -100,6 +100,28 @@ pub(super) fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap
     // top-bar "seq:on" that means "the transport is rolling" reads as a lie.
     let seq = if snap.playing { Span::styled("play:on", theme::normal()) } else { Span::styled("play:off", theme::dim()) };
 
+    // Count-in: the setting when idle, the countdown itself — beats left,
+    // loud and bold — while the bars click down.
+    let cnt_sel = tp && te == TransportElement::CountIn;
+    let cnt = if snap.count_in_remaining > 0 {
+        let beats = (snap.count_in_remaining + Transport::PPQ - 1) / Transport::PPQ;
+        Span::styled(
+            format!("count \u{00B7} {beats}"),
+            theme::amber_bright().add_modifier(Modifier::BOLD),
+        )
+    } else if snap.count_in_bars > 0 {
+        Span::styled(
+            format!("cnt:{}", snap.count_in_bars),
+            Style::default()
+                .fg(theme::amber_val())
+                .bg(if cnt_sel { hi } else { theme::bg_val() }),
+        )
+    } else {
+        Span::styled("cnt:off", Style::default()
+            .fg(if cnt_sel { theme::normal_val() } else { theme::dim_val() })
+            .bg(if cnt_sel { hi } else { theme::bg_val() }))
+    };
+
     let mut middle = vec![
         seq,
         Span::styled(format!("  {bpm_label}"), theme::normal()),
@@ -110,6 +132,8 @@ pub(super) fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap
         lp,
         Span::styled("  ", theme::bg()),
         met,
+        Span::styled("  ", theme::bg()),
+        cnt,
     ];
     middle.extend(lim);
     frame.render_widget(

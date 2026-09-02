@@ -18,22 +18,7 @@ impl App {
                 self.log_transport_state();
             }
             SpaceAction::PlayPause => {
-                use crate::debug_log as dbg;
-                if self.engine.transport.is_playing() {
-                    dbg::system("play/pause → stop playback");
-                    self.stop_playback();
-                } else {
-                    if self.nav.loop_editor.enabled {
-                        let start = self.nav.loop_editor.start_ticks();
-                        dbg::system(&format!("play/pause → play from loop start (tick {start})"));
-                        self.engine.transport.set_position(start);
-                    } else {
-                        dbg::system("play/pause → play from current position");
-                    }
-                    self.sync_loop_to_transport();
-                    self.engine.transport.play();
-                }
-                self.log_transport_state();
+                self.toggle_play_pause();
             }
             SpaceAction::ToggleRecord => {
                 use crate::debug_log as dbg;
@@ -41,7 +26,7 @@ impl App {
                 self.engine.transport.toggle_record();
                 let now_recording = self.engine.transport.is_recording();
                 if was_recording && !now_recording {
-                    self.nav.recording_grace = self.nav.tracks.iter().filter(|t| t.armed).count();
+                    self.nav.recording_grace = self.armed_recorder_count();
                 }
                 dbg::system(&format!("toggle record → recording={}", now_recording));
                 self.log_transport_state();

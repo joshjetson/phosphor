@@ -47,6 +47,10 @@ pub struct SessionTransport {
     pub loop_start_bar: u32,
     pub loop_end_bar: u32,
     pub metronome: bool,
+    /// Bars of count-in before recording. Absent in files written before
+    /// the count-in existed, which is the same as off.
+    #[serde(default)]
+    pub count_in_bars: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -236,6 +240,12 @@ pub struct SessionClip {
     pub start_tick: i64,
     pub length_ticks: i64,
     pub notes: Vec<SessionNote>,
+    /// Recorded performance controllers as `(tick, status, data1, data2)`,
+    /// ticks from the clip's start. Absent — not an empty list — for every
+    /// clip that has none, which is every clip written before controllers
+    /// were recorded at all.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub controls: Vec<(i64, u8, u8, u8)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -341,6 +351,11 @@ fn extract_session(nav: &NavState, transport: &Transport) -> SessionFile {
             SessionClip {
                 start_tick: clip.start_tick,
                 length_ticks: clip.length_ticks,
+                controls: clip
+                    .controls
+                    .iter()
+                    .map(|e| (e.tick, e.status, e.data1, e.data2))
+                    .collect(),
                 notes: clip.notes.iter().map(|n| SessionNote {
                     note: n.note,
                     velocity: n.velocity,
@@ -390,6 +405,7 @@ fn extract_session(nav: &NavState, transport: &Transport) -> SessionFile {
             loop_start_bar: nav.loop_editor.start_bar,
             loop_end_bar: nav.loop_editor.end_bar,
             metronome: transport.is_metronome_on(),
+            count_in_bars: transport.count_in_bars(),
         },
         tracks,
         buses: (!buses.is_default()).then_some(buses),
@@ -503,6 +519,7 @@ mod tests {
                 loop_start_bar: 1,
                 loop_end_bar: 5,
                 metronome: true,
+                count_in_bars: 0,
             },
             buses: Some(SessionBuses {
                 send_a: vec![SessionFx {
@@ -543,6 +560,7 @@ mod tests {
                                 SessionNote { note: 60, velocity: 100, start_frac: 0.0, duration_frac: 0.25 },
                                 SessionNote { note: 64, velocity: 80, start_frac: 0.25, duration_frac: 0.25 },
                             ],
+                            controls: Vec::new(),
                         },
                     ],
                 },
@@ -599,6 +617,7 @@ mod tests {
                 loop_start_bar: 1,
                 loop_end_bar: 2,
                 metronome: false,
+                count_in_bars: 0,
             },
             buses: None,
             tracks: vec![SessionTrack {

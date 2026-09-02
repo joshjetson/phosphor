@@ -48,6 +48,7 @@ impl App {
             length_ticks: bounce.length_ticks,
             notes: bounce.notes(),
             hidden_notes: Vec::new(),
+            controls: Vec::new(),
         };
 
         let undo_before = self.nav.undo_checkpoint(

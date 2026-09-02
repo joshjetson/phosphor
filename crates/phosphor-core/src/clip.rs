@@ -24,13 +24,32 @@ pub struct MidiClip {
     pub events: Vec<ClipEvent>,
 }
 
+/// Which controller stream an event belongs to, for thinning: a control
+/// change is one stream per controller number, while pitch bend and channel
+/// pressure carry their value in the data bytes and are one stream each.
+fn control_stream(e: &ClipEvent) -> (u8, u8) {
+    match e.status & 0xF0 {
+        0xB0 => (0xB0, e.data1),
+        other => (other, 0),
+    }
+}
+
+/// Where an event sorts among its neighbours on the same tick: note-offs
+/// first, then controllers — a mod value or a bend is *state*, set before
+/// the strike that should hear it — then note-ons. Without the off-first
+/// rule, a repeated note whose off and re-strike share a tick reaches the
+/// instrument as on, on, off, off, and the second strike is eaten.
+pub fn same_tick_order(status: u8) -> u8 {
+    match status & 0xF0 {
+        0x80 => 0,
+        0x90 => 2,
+        _ => 1,
+    }
+}
+
 impl MidiClip {
     pub fn new(start_tick: i64, length_ticks: i64, mut events: Vec<ClipEvent>) -> Self {
-        // Offs before ons at the same tick — 0x80 sorts below 0x90, so the
-        // status nibble is the tiebreak. Without it, a repeated note whose
-        // off and re-strike share a tick can reach the instrument as
-        // on, on, off, off, and the second strike is eaten.
-        events.sort_by_key(|e| (e.tick, e.status & 0xF0));
+        events.sort_by_key(|e| (e.tick, same_tick_order(e.status)));
         Self { start_tick, length_ticks, events }
     }
 
@@ -87,11 +106,12 @@ impl RecordBuffer {
     /// roll, which reads as a note that vanished.
     pub const MIN_NOTE_TICKS: i64 = 60;
 
-    /// Room for four thousand notes in one pass — far past human playing,
-    /// since only note events land here. The buffer never grows on the
-    /// audio thread: allocated once when the track is built (`AddTrack` is
-    /// already charged for allocation), full means the event is dropped.
-    const CAPACITY: usize = 8192;
+    /// Room for one pass of hard playing *and* a continuous controller
+    /// sweep — a held mod-wheel ride lands one event per audio block. The
+    /// buffer never grows on the audio thread: allocated once when the
+    /// track is built (`AddTrack` is already charged for allocation), full
+    /// means the event is dropped.
+    const CAPACITY: usize = 16384;
 
     pub fn new() -> Self {
         Self { start_tick: 0, events: Vec::with_capacity(Self::CAPACITY), active: false }
@@ -106,12 +126,11 @@ impl RecordBuffer {
 
     /// Record a MIDI event at the given absolute tick.
     ///
-    /// Notes only. A controller sweep or a pitch bend has no lane to live
-    /// on yet: captured, it would play back until the first edit rebuilt
-    /// the clip from its notes and silently erased it — data loss with no
-    /// message and no undo entry that names it. Refused here, the rule is
-    /// simply "what the roll shows is what the clip holds", until
-    /// automation lanes exist.
+    /// Notes, and the three performance controllers an instrument in the
+    /// rack can hear — control change, pitch bend, channel pressure. The
+    /// controllers travel with the clip from here on: through the snapshot,
+    /// through every edit, into the session file. Anything else has no
+    /// destination and is refused at the door.
     ///
     /// A note-on at velocity zero is a note-off — every controller that
     /// runs notes together sends them that way — and it is normalised to
@@ -120,7 +139,7 @@ impl RecordBuffer {
     pub fn record(&mut self, tick: i64, status: u8, data1: u8, data2: u8) {
         if !self.active { return; }
         let kind = status & 0xF0;
-        if kind != 0x90 && kind != 0x80 { return; }
+        if !matches!(kind, 0x90 | 0x80 | 0xB0 | 0xE0 | 0xD0) { return; }
         let (status, data2) = if kind == 0x90 && data2 == 0 { (0x80, 0) } else { (status, data2) };
         if self.events.len() >= self.events.capacity() {
             // Growing here is a heap allocation on the audio thread. The cap
@@ -207,9 +226,11 @@ impl RecordBuffer {
         let length = ((raw_end + bar - 1) / bar) * bar;
 
         // Pair the raw stream into notes: FIFO per pitch, held notes closed
-        // at the clip's end.
+        // at the clip's end. Controllers ride alongside, untouched but for
+        // the shift onto the bar-snapped timeline.
         let mut notes: Vec<(u8, u8, i64, i64)> = Vec::new(); // note, vel, on, off
         let mut pending: Vec<(u8, u8, i64)> = Vec::new();
+        let mut controls: Vec<ClipEvent> = Vec::new();
         for e in self.events.drain(..) {
             let tick = e.tick + shift;
             match e.status & 0xF0 {
@@ -220,7 +241,7 @@ impl RecordBuffer {
                         notes.push((note, vel, on, tick));
                     }
                 }
-                _ => {}
+                _ => controls.push(ClipEvent { tick, ..e }),
             }
         }
         for (note, vel, on) in pending {
@@ -235,11 +256,20 @@ impl RecordBuffer {
         notes.sort_by_key(|&(note, vel, on, _)| (on, note, std::cmp::Reverse(vel)));
         notes.dedup_by_key(|&mut (note, _, on, _)| (note, on));
 
-        let mut events = Vec::with_capacity(notes.len() * 2);
+        // Same controller, same tick: the last word wins — a wheel that
+        // moved twice inside one block is at its final value. Reversed
+        // before the stable sort so that within a tick the newest event
+        // leads, which is the one dedup keeps.
+        controls.reverse();
+        controls.sort_by_key(|e| (control_stream(e), e.tick));
+        controls.dedup_by(|a, b| control_stream(a) == control_stream(b) && a.tick == b.tick);
+
+        let mut events = Vec::with_capacity(notes.len() * 2 + controls.len());
         for (note, vel, on, off) in notes {
             events.push(ClipEvent { tick: on, status: 0x90, data1: note, data2: vel });
             events.push(ClipEvent { tick: off, status: 0x80, data1: note, data2: 0 });
         }
+        events.extend(controls);
         Some(MidiClip::new(snapped_start, length, events))
     }
 
@@ -260,6 +290,11 @@ pub struct ClipSnapshot {
     pub event_count: usize,
     /// Simplified note data for piano roll display.
     pub notes: Vec<NoteSnapshot>,
+    /// The performance controllers — control change, pitch bend, channel
+    /// pressure — in ticks from the clip's start. They travel with the clip
+    /// through every edit, which is what keeps a recorded wheel sweep alive
+    /// past the first note deleted after it.
+    pub controls: Vec<ClipEvent>,
 }
 
 /// A note for display in the piano roll.
@@ -299,8 +334,8 @@ impl NoteSnapshot {
                 data2: 0,
             });
         }
-        // Offs before ons at the same tick — see [`MidiClip::new`].
-        events.sort_by_key(|e| (e.tick, e.status & 0xF0));
+        // Offs before ons at the same tick — see [`same_tick_order`].
+        events.sort_by_key(|e| (e.tick, same_tick_order(e.status)));
         events
     }
 }
@@ -312,6 +347,7 @@ impl ClipSnapshot {
 
         // Track note-on times to pair with note-offs
         let mut pending: Vec<(u8, u8, i64)> = Vec::new(); // (note, velocity, start_tick)
+        let mut controls = Vec::new();
 
         for event in &clip.events {
             let status = event.status & 0xF0;
@@ -332,7 +368,7 @@ impl ClipSnapshot {
                         });
                     }
                 }
-                _ => {}
+                _ => controls.push(*event),
             }
         }
 
@@ -354,6 +390,7 @@ impl ClipSnapshot {
             length_ticks: clip.length_ticks,
             event_count: clip.events.len(),
             notes,
+            controls,
         }
     }
 }
@@ -449,17 +486,23 @@ mod tests {
         assert_eq!(ons[0].data2, 110, "the softer hit won");
     }
 
-    /// Controller data is refused at the door: captured, it would play back
-    /// until the first edit rebuilt the clip from its notes and silently
-    /// erased it. Notes only, until automation lanes exist.
+    /// The performance controllers are captured with the notes; anything
+    /// with no destination in the rack is refused at the door.
     #[test]
-    fn record_refuses_what_the_roll_cannot_hold() {
+    fn record_captures_controllers_and_refuses_the_rest() {
         let mut buf = RecordBuffer::new();
         buf.start(0);
-        buf.record(50, 0xB0, 1, 90);  // mod wheel
-        buf.record(60, 0xE0, 0, 64);  // pitch bend
-        buf.record(70, 0xD0, 80, 0);  // aftertouch
-        assert!(buf.commit(BAR).is_none(), "controller data was recorded");
+        buf.record(50, 0xB0, 1, 90);   // mod wheel
+        buf.record(60, 0xE0, 0, 64);   // pitch bend
+        buf.record(70, 0xD0, 80, 0);   // aftertouch
+        buf.record(80, 0xA0, 60, 90);  // poly pressure — nothing plays it
+        buf.record(90, 0xC0, 5, 0);    // program change — nothing plays it
+        let clip = buf.commit(BAR).unwrap();
+        let kinds: Vec<u8> = clip.events.iter().map(|e| e.status & 0xF0).collect();
+        assert!(kinds.contains(&0xB0), "the mod wheel was lost");
+        assert!(kinds.contains(&0xE0), "the pitch bend was lost");
+        assert!(kinds.contains(&0xD0), "the aftertouch was lost");
+        assert!(!kinds.contains(&0xA0) && !kinds.contains(&0xC0), "an event with no destination was kept");
 
         // A note-on at velocity zero is a note-off, normalised so offs can
         // sort before ons by status byte alone.
@@ -474,6 +517,45 @@ mod tests {
         );
         let off = clip.events.iter().find(|e| e.status == 0x80).unwrap();
         assert_eq!(off.tick, 200, "the off drifted from where it was played");
+    }
+
+    /// A wheel that moved twice inside one block keeps its final value;
+    /// separate controller streams never thin each other.
+    #[test]
+    fn commit_thins_a_controller_to_its_last_word() {
+        let mut buf = RecordBuffer::new();
+        buf.start(0);
+        buf.record(100, 0xB0, 1, 40);
+        buf.record(100, 0xB0, 1, 90);  // same tick, later word
+        buf.record(100, 0xB0, 7, 120); // a different controller, same tick
+        let clip = buf.commit(BAR).unwrap();
+        let mod_wheel: Vec<_> = clip
+            .events
+            .iter()
+            .filter(|e| e.status & 0xF0 == 0xB0 && e.data1 == 1)
+            .collect();
+        assert_eq!(mod_wheel.len(), 1, "the doubled wheel value survived");
+        assert_eq!(mod_wheel[0].data2, 90, "the earlier word won");
+        assert!(
+            clip.events.iter().any(|e| e.status & 0xF0 == 0xB0 && e.data1 == 7),
+            "a different controller was thinned away"
+        );
+    }
+
+    /// The snapshot hands the controllers to the UI alongside the notes.
+    #[test]
+    fn snapshot_carries_the_controllers() {
+        let mut buf = RecordBuffer::new();
+        buf.start(0);
+        buf.record(100, 0x90, 60, 100);
+        buf.record(300, 0x80, 60, 0);
+        buf.record(200, 0xB0, 1, 75);
+        let clip = buf.commit(BAR).unwrap();
+        let snap = ClipSnapshot::from_clip(0, 0, &clip);
+        assert_eq!(snap.notes.len(), 1);
+        assert_eq!(snap.controls.len(), 1, "the controller missed the snapshot");
+        assert_eq!(snap.controls[0].tick, 200);
+        assert_eq!(snap.controls[0].data2, 75);
     }
 
     /// A downbeat played a hair before the wrap comes out of the old pass

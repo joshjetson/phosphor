@@ -211,6 +211,12 @@ impl App {
 
                 clip.notes = visible;
                 clip.hidden_notes = hidden;
+                // The controllers ride ticks-from-clip-start, so a moved
+                // start shifts them the opposite way; ones trimmed off the
+                // front keep negative ticks and come back if the edge does.
+                for e in &mut clip.controls {
+                    e.tick += old_start - new_start;
+                }
                 clip.start_tick = new_start;
                 clip.length_ticks = new_len;
                 let beats = (new_len as f64 / ppq as f64).ceil() as u16;
@@ -300,13 +306,10 @@ impl App {
                 start_tick: clip.start_tick,
                 length_ticks: clip.length_ticks,
             });
-            let events = phosphor_core::clip::NoteSnapshot::to_clip_events(
-                &clip.notes, clip.length_ticks,
-            );
             let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::UpdateClip {
                 track_id: mixer_id,
                 clip_index: track.clips.len(),
-                events,
+                events: clip.events_for_audio(),
             });
         }
         track.clips.push(clip);
@@ -450,11 +453,8 @@ impl App {
                 start_tick: clip.start_tick,
                 length_ticks: clip.length_ticks,
             });
-            let events = phosphor_core::clip::NoteSnapshot::to_clip_events(
-                &clip.notes, clip.length_ticks,
-            );
             let _ = tx.send(MixerCommand::UpdateClip {
-                track_id: mixer_id, clip_index: ci, events,
+                track_id: mixer_id, clip_index: ci, events: clip.events_for_audio(),
             });
         }
         dbg::system(&format!(
@@ -476,9 +476,7 @@ impl App {
                     length_ticks: clip.length_ticks,
                 });
                 // Update events
-                let events = phosphor_core::clip::NoteSnapshot::to_clip_events(
-                    &clip.notes, clip.length_ticks,
-                );
+                let events = clip.events_for_audio();
                 let event_count = events.len();
                 let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::UpdateClip {
                     track_id: mixer_id,
@@ -521,13 +519,10 @@ impl App {
                         start_tick: clip.start_tick,
                         length_ticks: clip.length_ticks,
                     });
-                    let events = phosphor_core::clip::NoteSnapshot::to_clip_events(
-                        &clip.notes, clip.length_ticks,
-                    );
                     let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::UpdateClip {
                         track_id: mid,
                         clip_index: ci,
-                        events,
+                        events: clip.events_for_audio(),
                     });
                 }
                 dbg::system(&format!("dedup audio: resynced {} clips on mixer {}", track.clips.len(), mid));

@@ -8,7 +8,8 @@
     "Tab": "cycle panes / tabs",
     "Shift+Tab": "prev pane",
     "Esc": "back / close / clear / unlock",
-    "+/-": "adjust BPM"
+    "+/-": "adjust BPM",
+    "recording_automation": "mod wheel, pitch bend and channel aftertouch are recorded with the notes, survive every edit and the session file, and play back; X in the piano roll erases them from a clip"
   },
   "space_menu": {
     "1": "focus transport",
@@ -107,7 +108,8 @@
     "y": "yank notes in highlighted region",
     "p": "paste yanked notes at cursor/highlight",
     "Enter_with_highlights": "lock highlights for STRETCHING (Right-Left-Trick on group)",
-    "Esc": "clear highlights, or exit piano roll if no highlights"
+    "Esc": "clear highlights, or exit piano roll if no highlights",
+    "X": "clear the clip's recorded controller data (mod wheel, pitch bend, aftertouch; undoable)"
   },
   "piano_roll_highlight_locked": {
     "description": "After highlighting notes and pressing Enter, h/l/H/L stretch the group.",
@@ -178,7 +180,8 @@
     "h/l": "navigate transport elements (BPM, Record, Loop, Metronome)",
     "Enter": "activate element (edit BPM, toggle record, etc.)",
     "h/l_while_editing_bpm": "decrease/increase BPM",
-    "Esc": "release element"
+    "Esc": "release element",
+    "count_in": "Enter on the count element cycles off → 1 bar → 2 bars. With count-in set AND record armed (Space+r) AND play pressed — all three — the bars click down before recording rolls. R counts in too; any transport key during the countdown cancels it."
   },
   "grid_settings": {
     "resolutions": [
