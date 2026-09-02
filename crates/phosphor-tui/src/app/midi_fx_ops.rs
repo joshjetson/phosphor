@@ -179,6 +179,7 @@ impl App {
         if same_shape {
             let mut params = Vec::new();
             let mut switches = Vec::new();
+            let mut progressions = Vec::new();
             if let Some(track) = self.nav.tracks.get(track_idx) {
                 for (slot, wanted) in chain.iter().enumerate() {
                     let current = &track.midi_fx[slot];
@@ -190,6 +191,15 @@ impl App {
                     if current.bypass != wanted.bypass {
                         switches.push((slot, wanted.bypass));
                     }
+                    if current.custom_chords != wanted.custom_chords
+                        || current.custom_name != wanted.custom_name
+                    {
+                        progressions.push((
+                            slot,
+                            wanted.custom_name.clone(),
+                            wanted.custom_chords.clone(),
+                        ));
+                    }
                 }
             }
             for (slot, param, value) in params {
@@ -197,6 +207,21 @@ impl App {
             }
             for (slot, bypass) in switches {
                 self.write_midi_fx_bypass(track_idx, slot, bypass);
+            }
+            for (slot, name, chords) in progressions {
+                if let Some(track) = self.nav.tracks.get_mut(track_idx) {
+                    let track_id = track.mixer_id;
+                    if let Some(instance) = track.midi_fx.get_mut(slot) {
+                        instance.custom_chords = chords.clone();
+                        instance.custom_name = name;
+                        if let Some(track_id) = track_id {
+                            let _ = self.engine.shared.mixer_command_tx.send(
+                                MixerCommand::SetMidiFxProgression { track_id, slot, chords },
+                            );
+                        }
+                    }
+                }
+                self.nav.ghost_dirty = true;
             }
             return;
         }
@@ -260,6 +285,93 @@ impl App {
         ));
     }
 
+    /// Open the progression editor over a chord slot, seeded from what the
+    /// slot already holds and the library on disk.
+    pub(crate) fn open_prog_editor(&mut self, slot: usize) {
+        let (chords, name) = self
+            .nav
+            .tracks
+            .get(self.nav.track_cursor)
+            .and_then(|t| t.midi_fx.get(slot))
+            .map(|i| (i.custom_chords.clone(), i.custom_name.clone()))
+            .unwrap_or_default();
+        let library = phosphor_app::progressions::load_library();
+        self.nav.prog_editor.open_for(slot, &chords, &name, library);
+        self.flash("progression editor \u{00b7} enter uses it, s saves it");
+    }
+
+    /// The editor's keys. Everything stays in the working copy until Enter
+    /// (load into the device) or s (save to the library).
+    pub(crate) fn handle_prog_editor_keys(&mut self, key: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyCode;
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.nav.prog_editor.close(),
+            KeyCode::Char('j') | KeyCode::Down => self.nav.prog_editor.move_row(1),
+            KeyCode::Char('k') | KeyCode::Up => self.nav.prog_editor.move_row(-1),
+            KeyCode::Tab => self.nav.prog_editor.move_col(1),
+            KeyCode::Char('h') | KeyCode::Left => self.nav.prog_editor.adjust(-1),
+            KeyCode::Char('l') | KeyCode::Right => self.nav.prog_editor.adjust(1),
+            KeyCode::Char('a') => {
+                if !self.nav.prog_editor.add_chord() {
+                    self.flash("seven chords is the walk \u{2014} one per white key");
+                }
+            }
+            KeyCode::Char('d') => {
+                if !self.nav.prog_editor.remove_chord() {
+                    self.flash("the last chord stays");
+                }
+            }
+            KeyCode::Char('[') => {
+                if let Some(name) = self.nav.prog_editor.cycle_library(-1) {
+                    self.flash(format!("library: {name}"));
+                } else {
+                    self.flash("the library is empty \u{2014} s saves this one");
+                }
+            }
+            KeyCode::Char(']') => {
+                if let Some(name) = self.nav.prog_editor.cycle_library(1) {
+                    self.flash(format!("library: {name}"));
+                } else {
+                    self.flash("the library is empty \u{2014} s saves this one");
+                }
+            }
+            KeyCode::Char('n') => {
+                let current = self.nav.prog_editor.name.clone();
+                self.nav.input_modal.open_named(
+                    crate::state::InputModalKind::ProgressionName,
+                    &current,
+                );
+            }
+            KeyCode::Char('s') => self.save_prog_editor_to_library(),
+            KeyCode::Enter => {
+                let slot = self.nav.prog_editor.slot;
+                let name = self.nav.prog_editor.name.clone();
+                let chords = self.nav.prog_editor.chords.clone();
+                self.nav.prog_editor.close();
+                self.set_user_progression(self.nav.track_cursor, slot, &name, chords);
+            }
+            _ => {}
+        }
+    }
+
+    /// Save the working copy into the library file, replacing by name.
+    fn save_prog_editor_to_library(&mut self) {
+        let entry = self.nav.prog_editor.to_progression();
+        let name = entry.name.clone();
+        let mut library = phosphor_app::progressions::load_library();
+        let replaced = phosphor_app::progressions::upsert(&mut library, entry);
+        match phosphor_app::progressions::save_library(&library) {
+            Ok(()) => {
+                self.nav.prog_editor.library = library;
+                self.flash(format!(
+                    "{} \u{201c}{name}\u{201d} in the library",
+                    if replaced { "updated" } else { "saved" }
+                ));
+            }
+            Err(e) => self.flash(format!("could not save the library: {e}")),
+        }
+    }
+
     /// Keep the piano roll's ghost notes current: what the MIDI rack would
     /// make of the viewed clip, rendered offline through the same engine a
     /// commit prints with. Cheap when nothing changed; cleared when no
@@ -304,10 +416,49 @@ impl App {
             fx.set_parameter(index, value);
         }
         let bypassed = instance.bypass;
+        let chords = instance.custom_chords.clone();
         let tx = &self.engine.shared.mixer_command_tx;
         let _ = tx.send(MixerCommand::AddMidiFx { track_id, slot, fx });
+        if !chords.is_empty() {
+            let _ = tx.send(MixerCommand::SetMidiFxProgression { track_id, slot, chords });
+        }
         if bypassed {
             let _ = tx.send(MixerCommand::SetMidiFxBypass { track_id, slot, bypassed: true });
         }
+    }
+
+    /// Load a user progression into a chord slot, on both sides, as one
+    /// undo step. The mirror stores the resolved chords and the name, so
+    /// the session owns its sound.
+    pub(crate) fn set_user_progression(
+        &mut self,
+        track_index: usize,
+        slot: usize,
+        name: &str,
+        chords: Vec<phosphor_core::midi_fx::UserChord>,
+    ) {
+        if chords.is_empty() {
+            self.flash("the progression is empty");
+            return;
+        }
+        let before = self.nav.undo_checkpoint(
+            crate::state::undo::UndoScope::TrackMidiFx { track_idx: track_index },
+        );
+        let Some(track) = self.nav.tracks.get_mut(track_index) else { return };
+        let Some(track_id) = track.mixer_id else { return };
+        let Some(instance) = track.midi_fx.get_mut(slot) else { return };
+        instance.custom_chords = chords.clone();
+        instance.custom_name = name.to_string();
+        let _ = self
+            .engine
+            .shared
+            .mixer_command_tx
+            .send(MixerCommand::SetMidiFxProgression { track_id, slot, chords });
+        // The knob follows: mode to prog, prog to the user slot.
+        self.write_midi_fx_param(track_index, slot, 7, 1.0);
+        self.write_midi_fx_param(track_index, slot, 8, 8.0);
+        self.nav.ghost_dirty = true;
+        self.nav.commit_undo(before, "load progression");
+        self.flash(format!("progression: {name}"));
     }
 }

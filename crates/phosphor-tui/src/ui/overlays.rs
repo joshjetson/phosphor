@@ -274,6 +274,7 @@ pub(super) fn render_input_modal(frame: &mut Frame, nav: &NavState) {
         InputModalKind::Open => " open project ",
         InputModalKind::PresetName => " name preset ",
         InputModalKind::RenameTrack => " rename track ",
+        InputModalKind::ProgressionName => " name progression ",
     };
     let block = Block::default()
         .style(Style::default().bg(theme::overlay_bg()))
@@ -289,6 +290,7 @@ pub(super) fn render_input_modal(frame: &mut Frame, nav: &NavState) {
         InputModalKind::Open => "path: ",
         InputModalKind::PresetName => "name: ",
         InputModalKind::RenameTrack => "name: ",
+        InputModalKind::ProgressionName => "name: ",
     };
 
     // The field, as characters rather than bytes: a path can contain any of
@@ -472,6 +474,80 @@ pub(super) fn render_fx_menu(frame: &mut Frame, nav: &NavState) {
         ]));
     }
 
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The progression editor: one row per chord — root, quality, slash bass —
+/// with the cursor's column underlined and the working name in the title.
+pub(super) fn render_prog_editor(frame: &mut Frame, nav: &NavState) {
+    use phosphor_core::midi_fx::{NOTE_NAMES, QUALITIES};
+    let ed = &nav.prog_editor;
+    let area = frame.area();
+    let mw = 44u16.min(area.width.saturating_sub(4));
+    let mh = (ed.chords.len() as u16 + 8).min(area.height.saturating_sub(2));
+    let mx = (area.width.saturating_sub(mw)) / 2;
+    let my = (area.height.saturating_sub(mh)) / 2;
+    let menu_area = Rect::new(mx, my, mw, mh);
+
+    frame.render_widget(Clear, menu_area);
+    let block = Block::default()
+        .style(Style::default().bg(theme::overlay_bg()))
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(theme::border_style())
+        .title(Span::styled(
+            format!(" progression \u{00b7} {} ", ed.name),
+            theme::amber_bright(),
+        ));
+    frame.render_widget(block, menu_area);
+    let inner = Rect::new(mx + 1, my + 1, mw - 2, mh - 2);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        "  key   root  quality  bass",
+        theme::muted(),
+    )));
+    for (i, c) in ed.chords.iter().enumerate() {
+        let here = ed.row == i;
+        let cell = |col: usize, text: String| -> Span<'static> {
+            let mut style = if here {
+                theme::amber_bright().add_modifier(Modifier::BOLD)
+            } else {
+                theme::normal()
+            };
+            if here && ed.col == col {
+                style = style.add_modifier(Modifier::UNDERLINED);
+            }
+            Span::styled(text, style)
+        };
+        let white = ["C", "D", "E", "F", "G", "A", "B"][i.min(6)];
+        let quality = QUALITIES[usize::from(c.quality).min(QUALITIES.len() - 1)].0;
+        let bass = if c.bass < 0 {
+            "\u{2013}".to_string()
+        } else {
+            NOTE_NAMES[(c.bass as usize) % 12].to_string()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(if here { " \u{25B6} " } else { "   " }, theme::amber()),
+            Span::styled(format!("{white:<5}"), theme::dim()),
+            cell(0, format!("{:<6}", NOTE_NAMES[(c.root as usize) % 12])),
+            cell(1, format!("{quality:<9}")),
+            cell(2, bass),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  j/k chord \u{00b7} tab column \u{00b7} h/l turn",
+        theme::dim(),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  a add \u{00b7} d remove \u{00b7} [ ] library \u{00b7} n name",
+        theme::dim(),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  enter \u{2014} use it \u{00b7} s \u{2014} save \u{00b7} esc \u{2014} close",
+        theme::dim(),
+    )));
+    lines.truncate(inner.height as usize);
     frame.render_widget(Paragraph::new(lines), inner);
 }
 

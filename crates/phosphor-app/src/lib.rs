@@ -9,6 +9,7 @@ pub mod discrete;
 pub mod fx;
 pub mod paths;
 pub mod preset;
+pub mod progressions;
 pub mod sequencer;
 pub mod session;
 pub mod state;

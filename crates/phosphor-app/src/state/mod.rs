@@ -148,6 +148,8 @@ pub struct NavState {
     /// Set by anything that may change what the rack would play; the main
     /// loop re-renders and clears it.
     pub ghost_dirty: bool,
+    /// The chord device's progression editor, when it is open.
+    pub prog_editor: ProgEditor,
     /// What the master limiter is taking off, ready to draw.
     ///
     /// The audio thread's end of this is in `Mixer`; the ballistics have
@@ -217,6 +219,7 @@ impl NavState {
             ghost_notes: Vec::new(),
             ghost_for: None,
             ghost_dirty: true,
+            prog_editor: ProgEditor::default(),
             limiter_gr: std::sync::Arc::new(phosphor_core::fx::GrMeter::new()),
             sample_rate: 48_000,
             tempo_bpm: 120.0,

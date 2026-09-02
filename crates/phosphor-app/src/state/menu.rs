@@ -458,6 +458,8 @@ pub enum InputModalKind {
     PresetName,
     /// Renaming the track under the cursor.
     RenameTrack,
+    /// Naming the progression in the progression editor.
+    ProgressionName,
 }
 
 #[derive(Debug)]
@@ -542,6 +544,15 @@ impl InputModal {
     pub fn open_rename(&mut self, current: &str) {
         self.open = true;
         self.kind = InputModalKind::RenameTrack;
+        self.buffer.clear();
+        self.cursor = 0;
+        self.placeholder = current.to_string();
+    }
+
+    /// A generic named prompt: empty field, `current` as the dim fallback.
+    pub fn open_named(&mut self, kind: InputModalKind, current: &str) {
+        self.open = true;
+        self.kind = kind;
         self.buffer.clear();
         self.cursor = 0;
         self.placeholder = current.to_string();
@@ -1011,6 +1022,9 @@ pub const HELP_TOPICS: &[HelpTopic] = &[
             Note("mode \u{201c}prog\u{201d}: white keys walk a stored progression"),
             Note("\u{2014} C its first chord, D its second \u{2014} eight to pick"),
             Note("from, 2-5-1 to the quality cycle. Root transposes."),
+            Key("e", "in the chord panel: write your own progression"),
+            Note("\u{2014} pick each chord's root, quality and slash bass,"),
+            Note("save it to your library, enter loads it in."),
             Note("arp: hold a chord, hear a run. Chain them:"),
             Note("chord \u{2192} arp, one finger, a rolling voicing."),
             Key("enter", "open a panel \u{00b7} j/k knob, h/l adjust"),

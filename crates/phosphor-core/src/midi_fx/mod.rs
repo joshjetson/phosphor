@@ -25,7 +25,7 @@ mod arp;
 mod chord;
 
 pub use arp::{Arpeggiator, ARP_PARAMS, RATE_LABELS, STYLE_LABELS};
-pub use chord::{ChordDevice, CHORD_PARAMS, COLOR_LABELS, MODE_LABELS, NOTE_NAMES, PROG_LABELS, SCALE_LABELS, VOICING_LABELS};
+pub use chord::{ChordDevice, UserChord, CHORD_PARAMS, COLOR_LABELS, MAX_USER_CHORDS, MODE_LABELS, NOTE_NAMES, PROG_LABELS, QUALITIES, SCALE_LABELS, VOICING_LABELS};
 
 /// How many MIDI effects one track holds. Two is the canonical chain —
 /// a chord device feeding an arpeggiator — and what fits on the panel.
@@ -117,6 +117,11 @@ pub trait MidiEffect: Send {
     /// Set a parameter, in its natural unit. Out-of-range values are the
     /// effect's to clamp; an unknown index is ignored.
     fn set_parameter(&mut self, index: usize, value: f32);
+
+    /// Hand the effect a user progression, for effects that hold one. A
+    /// default no-op, because most effects have no notion of a chord list.
+    /// Real-time: the effect copies into storage it already owns.
+    fn set_progression(&mut self, _chords: &[chord::UserChord]) {}
 }
 
 /// One slot: an effect and its bypass.

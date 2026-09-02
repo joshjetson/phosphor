@@ -128,6 +128,12 @@ pub struct SessionFx {
     /// The effect's controls in its own units, in the order it declares them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<f32>,
+    /// A chord device's user progression, resolved: (root, quality, bass).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chords: Vec<(i8, u8, i8)>,
+    /// The loaded progression's display name.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub chords_name: String,
 }
 
 /// The send buses and the master.
@@ -203,6 +209,8 @@ pub fn chain_to_session(chain: &[FxInstance]) -> Vec<SessionFx> {
             kind: slot.fx_type.key().to_string(),
             bypass: slot.bypass,
             params: slot.params.clone(),
+            chords: Vec::new(),
+            chords_name: String::new(),
         })
         .collect()
 }
@@ -243,6 +251,8 @@ pub fn midi_fx_to_session(rack: &[crate::state::MidiFxInstance]) -> Vec<SessionF
             kind: slot.fx_type.key().to_string(),
             bypass: slot.bypass,
             params: slot.params.clone(),
+            chords: slot.custom_chords.iter().map(|c| (c.root, c.quality, c.bass)).collect(),
+            chords_name: slot.custom_name.clone(),
         })
         .collect()
 }
@@ -260,6 +270,16 @@ pub fn midi_fx_from_session(stored: &[SessionFx]) -> (Vec<crate::state::MidiFxIn
             fx_type,
             bypass: slot.bypass,
             params: slot.params.clone(),
+            custom_chords: slot
+                .chords
+                .iter()
+                .map(|&(root, quality, bass)| phosphor_core::midi_fx::UserChord {
+                    root,
+                    quality,
+                    bass,
+                })
+                .collect(),
+            custom_name: slot.chords_name.clone(),
         });
     }
     (rack, dropped)
@@ -651,9 +671,13 @@ mod tests {
                     kind: "reverb".into(),
                     bypass: false,
                     params: vec![20.0, 1.8],
+                    chords: Vec::new(),
+                    chords_name: String::new(),
                 }],
                 send_b: Vec::new(),
-                master: vec![SessionFx { kind: "eq".into(), bypass: true, params: vec![0.0] }],
+                master: vec![SessionFx { kind: "eq".into(), bypass: true, params: vec![0.0] ,
+                    chords: Vec::new(),
+                    chords_name: String::new(),}],
                 return_a: 0.8,
                 return_b: 1.0,
             }),
@@ -671,8 +695,16 @@ mod tests {
                     sequencer: None,
                     midi_fx: Vec::new(),
                     fx: vec![
-                        SessionFx { kind: "eq".into(), bypass: false, params: vec![120.0, 3.0] },
-                        SessionFx { kind: "comp".into(), bypass: true, params: vec![-18.0] },
+                        SessionFx {
+                            kind: "eq".into(),
+                            bypass: false,
+                            params: vec![120.0, 3.0],
+                            chords: Vec::new(),
+                            chords_name: String::new(),
+                        },
+                        SessionFx { kind: "comp".into(), bypass: true, params: vec![-18.0] ,
+                    chords: Vec::new(),
+                    chords_name: String::new(),},
                     ],
                     pan: -0.5,
                     send_a: 0.5,
@@ -839,9 +871,15 @@ mod tests {
     #[test]
     fn an_unknown_effect_costs_one_slot() {
         let stored = vec![
-            SessionFx { kind: "eq".into(), bypass: false, params: vec![] },
-            SessionFx { kind: "quantum-flanger".into(), bypass: false, params: vec![] },
-            SessionFx { kind: "reverb".into(), bypass: false, params: vec![] },
+            SessionFx { kind: "eq".into(), bypass: false, params: vec![] ,
+                    chords: Vec::new(),
+                    chords_name: String::new(),},
+            SessionFx { kind: "quantum-flanger".into(), bypass: false, params: vec![] ,
+                    chords: Vec::new(),
+                    chords_name: String::new(),},
+            SessionFx { kind: "reverb".into(), bypass: false, params: vec![] ,
+                    chords: Vec::new(),
+                    chords_name: String::new(),},
         ];
         let (chain, dropped) = chain_from_session(&stored);
         assert_eq!(dropped, 1);

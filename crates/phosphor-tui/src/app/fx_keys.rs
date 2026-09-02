@@ -681,6 +681,17 @@ impl App {
                 let slot = self.nav.clip_view.fx.midi_slot.unwrap_or(0);
                 self.apply_arp_preset(slot, c as usize - '1' as usize);
             }
+            KeyCode::Char('e') => {
+                let slot = self.nav.clip_view.fx.midi_slot.unwrap_or(0);
+                let is_chord = self
+                    .nav
+                    .current_track()
+                    .and_then(|t| t.midi_fx.get(slot))
+                    .is_some_and(|i| i.fx_type == crate::state::MidiFxType::Chord);
+                if is_chord {
+                    self.open_prog_editor(slot);
+                }
+            }
             _ => {}
         }
     }

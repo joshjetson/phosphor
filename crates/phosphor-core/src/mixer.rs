@@ -139,6 +139,14 @@ pub enum MixerCommand {
         slot: usize,
         bypassed: bool,
     },
+    /// Hand a MIDI effect a user progression. The Vec travels in and is
+    /// copied into the effect's own storage; dropping it here frees it,
+    /// the same road `UpdateClip` events already take.
+    SetMidiFxProgression {
+        track_id: usize,
+        slot: usize,
+        chords: Vec<crate::midi_fx::UserChord>,
+    },
     /// Take the effect out of a slot. Frees on the audio thread, as
     /// `RemoveTrack` and `UpdateClip` already do.
     RemoveFx {
@@ -268,6 +276,7 @@ fn command_cost(cmd: &MixerCommand) -> u32 {
         | MixerCommand::RemoveFx { .. }
         | MixerCommand::AddMidiFx { .. }
         | MixerCommand::RemoveMidiFx { .. }
+        | MixerCommand::SetMidiFxProgression { .. }
         | MixerCommand::MoveFx { .. }
         // Only the first pattern a track receives allocates — it builds the
         // player — and the cost is charged before the command is opened, so
@@ -1520,6 +1529,13 @@ impl Mixer {
                 if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
                     if let Some(s) = track.midi_fx.get_mut(slot) {
                         s.fx.set_parameter(param_index, value);
+                    }
+                }
+            }
+            MixerCommand::SetMidiFxProgression { track_id, slot, chords } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    if let Some(s) = track.midi_fx.get_mut(slot) {
+                        s.fx.set_progression(&chords);
                     }
                 }
             }

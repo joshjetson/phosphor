@@ -122,6 +122,42 @@ const PROGRESSIONS: [&[ProgChord]; 8] = [
     ],
 ];
 
+/// The chord qualities a user progression picks from — the working
+/// vocabulary of the idiom, each spelled in semitones from its root.
+pub const QUALITIES: [(&str, &[i32]); 16] = [
+    ("maj7", &[0, 4, 7, 11]),
+    ("maj9", &[0, 4, 7, 11, 14]),
+    ("6/9", &[0, 4, 7, 9, 14]),
+    ("maj13", &[0, 4, 7, 11, 14, 21]),
+    ("m7", &[0, 3, 7, 10]),
+    ("m9", &[0, 3, 7, 10, 14]),
+    ("m11", &[0, 3, 7, 10, 14, 17]),
+    ("m6/9", &[0, 3, 7, 9, 14]),
+    ("7", &[0, 4, 7, 10]),
+    ("9", &[0, 4, 7, 10, 14]),
+    ("13", &[0, 4, 10, 14, 21]),
+    ("9sus4", &[0, 5, 7, 10, 14]),
+    ("7b9", &[0, 4, 7, 10, 13]),
+    ("7#9", &[0, 4, 7, 10, 15]),
+    ("mMaj7", &[0, 3, 7, 11]),
+    ("dim7", &[0, 3, 6, 9]),
+];
+
+/// One chord of a user progression, in wire form: a root as semitones
+/// above the song root, a quality as an index into [`QUALITIES`], and a
+/// bass pitch class of its own for slash chords (`-1` = none, the chord
+/// root carries the bass). Small and `Copy`, because it crosses to the
+/// audio thread by value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserChord {
+    pub root: i8,
+    pub quality: u8,
+    pub bass: i8,
+}
+
+/// How many chords a user progression holds — one per white key.
+pub const MAX_USER_CHORDS: usize = 7;
+
 /// Panel names, indexed like [`PROGRESSIONS`].
 pub const PROG_LABELS: [&str; 8] =
     ["2-5-1", "gospel v", "backdoor", "iv \u{2192} iv", "turnrnd", "halfstep", "neo loop", "quality"];
@@ -153,7 +189,7 @@ pub const CHORD_PARAMS: [FxParamInfo; 9] = [
     // Appended after v0.3.56 — sessions that stored seven parameters load
     // with these at their defaults, which is the old behaviour exactly.
     FxParamInfo { name: "mode", unit: "", min: 0.0, max: 1.0, default: 0.0 },
-    FxParamInfo { name: "prog", unit: "", min: 0.0, max: 7.0, default: 0.0 },
+    FxParamInfo { name: "prog", unit: "", min: 0.0, max: 8.0, default: 0.0 },
 ];
 
 /// The most notes one key can sound: seven stack tones, a doubled top,
@@ -190,6 +226,8 @@ pub struct ChordDevice {
     /// keys walk the stored progression).
     mode: usize,
     prog: usize,
+    custom: [UserChord; MAX_USER_CHORDS],
+    custom_len: usize,
 
     active: [ActiveChord; MAX_ACTIVE],
     active_len: usize,
@@ -218,6 +256,8 @@ impl ChordDevice {
             strum_ms: 0.0,
             mode: 0,
             prog: 0,
+            custom: [UserChord { root: 0, quality: 0, bass: -1 }; MAX_USER_CHORDS],
+            custom_len: 0,
             active: [ActiveChord { key: 0, notes: [0; MAX_CHORD], count: 0 }; MAX_ACTIVE],
             active_len: 0,
             last_center: None,
@@ -350,12 +390,30 @@ impl ChordDevice {
     /// cannot land on nothing. The octave played does not pick the octave
     /// heard — the register lock does, exactly as in scale mode.
     fn build_prog(&mut self, key: u8) -> ([u8; MAX_CHORD], usize) {
+        const WHITE_MAP: [usize; 12] = [0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6];
+        // Past the factory bank sits the user's own progression, supplied
+        // over a command and held here in wire form.
+        if self.prog >= PROGRESSIONS.len() {
+            if self.custom_len == 0 {
+                // Nothing loaded: an honest silence beats a wrong chord.
+                return ([0; MAX_CHORD], 0);
+            }
+            let slot = WHITE_MAP[usize::from(key % 12)] % self.custom_len;
+            let chord = self.custom[slot];
+            let (_, intervals) = QUALITIES[usize::from(chord.quality).min(QUALITIES.len() - 1)];
+            let chord_root = 48 + self.root + i32::from(chord.root);
+            let mut offsets = [0i32; MAX_CHORD];
+            let count = intervals.len().min(MAX_CHORD);
+            offsets[..count].copy_from_slice(&intervals[..count]);
+            let bass_override = (chord.bass >= 0)
+                .then(|| 48 + self.root + i32::from(chord.bass));
+            return self.place(chord_root, &offsets[..count], bass_override);
+        }
         let prog = PROGRESSIONS[self.prog.min(PROGRESSIONS.len() - 1)];
         // Pitch class → white-key index, black keys borrowing the white
         // below: C C# → 0, D D# → 1, E → 2, F F# → 3, G G# → 4, A A# → 5,
         // B → 6.
-        const WHITE: [usize; 12] = [0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6];
-        let slot = WHITE[usize::from(key % 12)] % prog.len();
+        let slot = WHITE_MAP[usize::from(key % 12)] % prog.len();
         let chord = &prog[slot];
         // Build near the middle of the keyboard; the register lock places
         // it properly from there.
@@ -577,6 +635,12 @@ impl MidiEffect for ChordDevice {
         }
     }
 
+    fn set_progression(&mut self, chords: &[UserChord]) {
+        let n = chords.len().min(MAX_USER_CHORDS);
+        self.custom[..n].copy_from_slice(&chords[..n]);
+        self.custom_len = n;
+    }
+
     fn set_parameter(&mut self, index: usize, value: f32) {
         match index {
             P_ROOT => self.root = (value.round() as i32).clamp(0, 11),
@@ -587,7 +651,7 @@ impl MidiEffect for ChordDevice {
             P_BASS => self.bass = (value.round() as usize).min(2),
             P_STRUM => self.strum_ms = value.clamp(0.0, 60.0),
             P_MODE => self.mode = (value.round() as usize).min(1),
-            P_PROG => self.prog = (value.round() as usize).min(7),
+            P_PROG => self.prog = (value.round() as usize).min(8),
             _ => {}
         }
     }
@@ -886,5 +950,40 @@ mod tests {
             }
             last = Some(c);
         }
+    }
+
+    /// A user progression: loaded over the wire, walked by the white keys,
+    /// with its qualities looked up from the shared dictionary.
+    #[test]
+    fn a_user_progression_walks_like_a_factory_one() {
+        let mut dev = ChordDevice::new();
+        dev.set_parameter(P_BASS, 0.0);
+        dev.set_parameter(P_MODE, 1.0);
+        dev.set_parameter(P_PROG, 8.0);
+        // Nothing loaded yet: an honest silence.
+        assert!(chord_for(&mut dev, 48).is_empty(), "an empty user slot sounded");
+
+        // Am9 -> Fmaj9 -> G13 (quality indices 5, 1, 10), F over its 3rd.
+        dev.set_progression(&[
+            UserChord { root: 9, quality: 5, bass: -1 },
+            UserChord { root: 5, quality: 1, bass: 9 },
+            UserChord { root: 7, quality: 10, bass: -1 },
+        ]);
+        let am9 = pitch_classes(&chord_for(&mut dev, 48));
+        assert_eq!(am9, vec![0, 4, 7, 9, 11], "Am9 = A C E G B, got {am9:?}");
+        let g13 = pitch_classes(&chord_for(&mut dev, 52));
+        assert_eq!(g13, vec![4, 5, 7, 9, 11], "G13 no fifth, got {g13:?}");
+    }
+
+    /// The user slash bass lands under the voicing when the bass knob is on.
+    #[test]
+    fn a_user_slash_bass_lands_underneath() {
+        let mut dev = ChordDevice::new();
+        dev.set_parameter(P_MODE, 1.0);
+        dev.set_parameter(P_PROG, 8.0);
+        dev.set_progression(&[UserChord { root: 5, quality: 1, bass: 9 }]); // Fmaj9/A
+        let notes = chord_for(&mut dev, 48);
+        assert!(!notes.is_empty());
+        assert_eq!(notes[0] % 12, 9, "the bass should be A, got {notes:?}");
     }
 }

@@ -83,7 +83,8 @@ impl MidiFxType {
             (Self::Chord, 3) => VOICING_LABELS.get(idx).copied(),
             (Self::Chord, 5) => Some(["off", "root -1 oct", "root -2 oct"][idx.min(2)]),
             (Self::Chord, 7) => MODE_LABELS.get(idx).copied(),
-            (Self::Chord, 8) => PROG_LABELS.get(idx).copied(),
+            (Self::Chord, 8) if idx < PROG_LABELS.len() => PROG_LABELS.get(idx).copied(),
+            (Self::Chord, 8) => Some("user"),
             _ => None,
         }
     }
@@ -135,6 +136,12 @@ pub struct MidiFxInstance {
     pub fx_type: MidiFxType,
     pub bypass: bool,
     pub params: Vec<f32>,
+    /// The chord device's user progression, when one is loaded — resolved
+    /// chords, not a library reference, so the session owns its sound even
+    /// if the library changes later.
+    pub custom_chords: Vec<phosphor_core::midi_fx::UserChord>,
+    /// What the panel calls the loaded progression.
+    pub custom_name: String,
 }
 
 impl MidiFxInstance {
@@ -145,6 +152,8 @@ impl MidiFxInstance {
             fx_type,
             bypass: false,
             params: fx_type.params().iter().map(|p| p.default).collect(),
+            custom_chords: Vec::new(),
+            custom_name: String::new(),
         }
     }
 
@@ -199,6 +208,9 @@ pub fn render_clip_through_rack(
         let Some(mut fx) = build_midi_fx(slot.fx_type.key()) else { continue };
         for (index, &value) in slot.params.iter().enumerate() {
             fx.set_parameter(index, value);
+        }
+        if !slot.custom_chords.is_empty() {
+            fx.set_progression(&slot.custom_chords);
         }
         fx.init(f64::from(sample_rate), 256);
         fx.reset();
@@ -391,5 +403,193 @@ mod render_tests {
         pc.dedup();
         assert_eq!(pc, vec![0, 4, 7, 11], "the printed run is not the chord: {pc:?}");
         assert!(notes.len() > 8, "the chain printed too few steps: {}", notes.len());
+    }
+}
+/// The progression editor: a small modal over the chord panel where a
+/// progression is written one chord at a time — root, quality, slash bass
+/// — browsed against the library, named, saved, and loaded into the
+/// device. Cursors and a working copy only; the library file and the
+/// device both change through `App` methods.
+#[derive(Debug, Default)]
+pub struct ProgEditor {
+    pub open: bool,
+    /// The chord slot in the rack this editor is working for.
+    pub slot: usize,
+    pub row: usize,
+    /// 0 = root, 1 = quality, 2 = bass.
+    pub col: usize,
+    pub chords: Vec<phosphor_core::midi_fx::UserChord>,
+    pub name: String,
+    /// The library as loaded when the editor opened.
+    pub library: Vec<crate::progressions::UserProgression>,
+    pub lib_cursor: usize,
+}
+
+impl ProgEditor {
+    /// Open over `slot`, seeded from what the device already holds — its
+    /// loaded progression, or a one-chord starting point.
+    pub fn open_for(
+        &mut self,
+        slot: usize,
+        chords: &[phosphor_core::midi_fx::UserChord],
+        name: &str,
+        library: Vec<crate::progressions::UserProgression>,
+    ) {
+        self.open = true;
+        self.slot = slot;
+        self.row = 0;
+        self.col = 0;
+        self.chords = if chords.is_empty() {
+            vec![phosphor_core::midi_fx::UserChord { root: 0, quality: 1, bass: -1 }]
+        } else {
+            chords.to_vec()
+        };
+        self.name = if name.is_empty() { "untitled".to_string() } else { name.to_string() };
+        self.library = library;
+        self.lib_cursor = 0;
+    }
+
+    pub fn close(&mut self) {
+        self.open = false;
+    }
+
+    pub fn move_row(&mut self, delta: i32) {
+        let max = self.chords.len().saturating_sub(1) as i32;
+        self.row = (self.row as i32 + delta).clamp(0, max) as usize;
+    }
+
+    pub fn move_col(&mut self, delta: i32) {
+        self.col = (self.col as i32 + delta).rem_euclid(3) as usize;
+    }
+
+    /// Turn the selected cell. Roots and basses walk the pitch classes,
+    /// the bass with an "off" stop below C; qualities walk the dictionary.
+    pub fn adjust(&mut self, delta: i32) {
+        let Some(chord) = self.chords.get_mut(self.row) else { return };
+        match self.col {
+            0 => chord.root = (i32::from(chord.root) + delta).rem_euclid(12) as i8,
+            1 => {
+                let n = phosphor_core::midi_fx::QUALITIES.len() as i32;
+                chord.quality = (i32::from(chord.quality) + delta).rem_euclid(n) as u8;
+            }
+            _ => {
+                // -1 (off) .. 11, stopping at the ends.
+                chord.bass = (i32::from(chord.bass) + delta).clamp(-1, 11) as i8;
+            }
+        }
+    }
+
+    /// Add a chord after the cursor, copying it — the next chord in a
+    /// progression usually starts life as a variation of the last.
+    pub fn add_chord(&mut self) -> bool {
+        if self.chords.len() >= phosphor_core::midi_fx::MAX_USER_CHORDS {
+            return false;
+        }
+        let template = self.chords.get(self.row).copied().unwrap_or(
+            phosphor_core::midi_fx::UserChord { root: 0, quality: 1, bass: -1 },
+        );
+        self.chords.insert(self.row + 1, template);
+        self.row += 1;
+        true
+    }
+
+    /// Remove the cursor's chord; the last one stays — an empty
+    /// progression is not a thing the editor can hold.
+    pub fn remove_chord(&mut self) -> bool {
+        if self.chords.len() <= 1 {
+            return false;
+        }
+        self.chords.remove(self.row);
+        self.row = self.row.min(self.chords.len() - 1);
+        true
+    }
+
+    /// Step through the library, loading the entry under the cursor into
+    /// the working copy. Returns the loaded name, if the library has any.
+    pub fn cycle_library(&mut self, delta: i32) -> Option<String> {
+        if self.library.is_empty() {
+            return None;
+        }
+        let n = self.library.len() as i32;
+        self.lib_cursor = (self.lib_cursor as i32 + delta).rem_euclid(n) as usize;
+        let entry = &self.library[self.lib_cursor];
+        self.chords = entry.wire_chords();
+        self.name = entry.name.clone();
+        self.row = self.row.min(self.chords.len().saturating_sub(1));
+        Some(entry.name.clone())
+    }
+
+    /// The working copy as a library entry.
+    #[must_use]
+    pub fn to_progression(&self) -> crate::progressions::UserProgression {
+        crate::progressions::UserProgression {
+            name: self.name.clone(),
+            chords: self.chords.iter().map(|c| (c.root, c.quality, c.bass)).collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod editor_tests {
+    use super::*;
+    use phosphor_core::midi_fx::UserChord;
+
+    /// The editor's cell walk: roots wrap, qualities wrap, the bass stops
+    /// at "off" below C.
+    #[test]
+    fn cells_turn_within_their_ranges() {
+        let mut ed = ProgEditor::default();
+        ed.open_for(0, &[], "", Vec::new());
+        ed.adjust(-1);
+        assert_eq!(ed.chords[0].root, 11, "the root should wrap under C");
+        ed.move_col(1);
+        ed.adjust(-2);
+        assert_eq!(
+            ed.chords[0].quality,
+            (phosphor_core::midi_fx::QUALITIES.len() - 1) as u8,
+            "the quality should wrap"
+        );
+        ed.move_col(1);
+        ed.adjust(-5);
+        assert_eq!(ed.chords[0].bass, -1, "the bass should stop at off");
+        ed.adjust(3);
+        assert_eq!(ed.chords[0].bass, 2);
+    }
+
+    /// Add copies the cursor's chord; remove keeps at least one; the cap
+    /// is one chord per white key.
+    #[test]
+    fn add_and_remove_hold_the_shape() {
+        let mut ed = ProgEditor::default();
+        ed.open_for(0, &[UserChord { root: 9, quality: 5, bass: -1 }], "x", Vec::new());
+        assert!(ed.add_chord());
+        assert_eq!(ed.chords.len(), 2);
+        assert_eq!(ed.chords[1].root, 9, "the new chord should copy the cursor's");
+        for _ in 0..10 {
+            ed.add_chord();
+        }
+        assert_eq!(ed.chords.len(), phosphor_core::midi_fx::MAX_USER_CHORDS, "the cap broke");
+        while ed.remove_chord() {}
+        assert_eq!(ed.chords.len(), 1, "the last chord must stay");
+    }
+
+    /// Browsing the library loads entries into the working copy.
+    #[test]
+    fn the_library_browses_into_the_editor() {
+        let lib = vec![
+            crate::progressions::UserProgression { name: "a".into(), chords: vec![(0, 1, -1)] },
+            crate::progressions::UserProgression {
+                name: "b".into(),
+                chords: vec![(2, 5, -1), (7, 10, -1)],
+            },
+        ];
+        let mut ed = ProgEditor::default();
+        ed.open_for(0, &[], "", lib);
+        // The cursor starts at 0; the first step lands on entry 1.
+        assert_eq!(ed.cycle_library(1).as_deref(), Some("b"));
+        assert_eq!(ed.chords.len(), 2);
+        assert_eq!(ed.name, "b");
+        assert_eq!(ed.cycle_library(1).as_deref(), Some("a"));
+        assert_eq!(ed.chords.len(), 1);
     }
 }

@@ -65,6 +65,7 @@ impl App {
         if !self.nav.space_menu.open && !self.nav.input_modal.open && !self.nav.confirm_modal.open
             && !self.nav.instrument_modal.open && !self.nav.fx_menu.open
             && !self.nav.preset_modal.open
+            && !self.nav.prog_editor.open
             && !self.nav.clip_view.piano_roll.edit_mode
         {
             if key.code == KeyCode::Char('u') && !key.modifiers.contains(KeyModifiers::SHIFT) {
@@ -97,6 +98,13 @@ impl App {
         }
 
         // Quantize modal — j/k navigate, h/l adjust, Enter applies
+        // After the input modal's check by way of the guard here: the name
+        // prompt opens over the editor, and typing must land in the field.
+        if self.nav.prog_editor.open && !self.nav.input_modal.open {
+            self.handle_prog_editor_keys(key);
+            return;
+        }
+
         if self.nav.quantize_modal.open {
             match key.code {
                 KeyCode::Esc => { self.nav.quantize_modal.close(); }
@@ -135,6 +143,12 @@ impl App {
                             InputModalKind::Open => self.do_load(&path),
                             InputModalKind::PresetName => self.request_preset_save(&path),
                             InputModalKind::RenameTrack => self.do_rename_track(&path),
+                            InputModalKind::ProgressionName => {
+                                let trimmed = path.trim().to_string();
+                                if !trimmed.is_empty() {
+                                    self.nav.prog_editor.name = trimmed;
+                                }
+                            }
                         }
                     }
                 }

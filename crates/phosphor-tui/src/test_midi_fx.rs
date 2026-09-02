@@ -106,6 +106,8 @@ mod tests {
             kind: "chordizer-9000".into(),
             bypass: false,
             params: vec![1.0],
+            chords: Vec::new(),
+            chords_name: String::new(),
         };
         let (rack, dropped) = crate::session::midi_fx_from_session(&[alien]);
         assert!(rack.is_empty());
@@ -258,6 +260,8 @@ mod tests {
             kind: "chord".into(),
             bypass: false,
             params: vec![0.0, 0.0, 1.0, 0.0, 60.0, 1.0, 0.0],
+            chords: Vec::new(),
+            chords_name: String::new(),
         };
         let (rack, dropped) = crate::session::midi_fx_from_session(&[old]);
         assert_eq!(dropped, 0);
@@ -283,5 +287,100 @@ mod tests {
         let inst = &app.nav.tracks[ti].midi_fx[0];
         assert_eq!(inst.params.len(), 9, "the mirror did not grow");
         assert!((inst.params[7] - 1.0).abs() < 1e-6, "the write was dropped");
+    }
+
+    /// Loading a user progression is one undo step: the mirror takes the
+    /// chords and the name, the knobs follow to prog/user, and u brings
+    /// back what was there before.
+    #[test]
+    fn loading_a_user_progression_is_one_undo_step() {
+        use phosphor_core::midi_fx::UserChord;
+        let (mut app, ti) = app_with_track();
+        app.add_midi_fx(ti, MidiFxType::Chord);
+        app.set_user_progression(
+            ti,
+            0,
+            "mine",
+            vec![UserChord { root: 9, quality: 5, bass: -1 }],
+        );
+        let inst = &app.nav.tracks[ti].midi_fx[0];
+        assert_eq!(inst.custom_name, "mine");
+        assert_eq!(inst.custom_chords.len(), 1);
+        assert!((inst.params[7] - 1.0).abs() < 1e-6, "mode should follow to prog");
+        assert!((inst.params[8] - 8.0).abs() < 1e-6, "prog should follow to user");
+
+        app.perform_undo();
+        let inst = &app.nav.tracks[ti].midi_fx[0];
+        assert!(inst.custom_chords.is_empty(), "undo did not clear the progression");
+        assert!((inst.params[7] - 0.0).abs() < 1e-6, "undo did not restore the mode");
+    }
+
+    /// The session carries the resolved chords and the name, so a song
+    /// keeps its sound even if the library changes later.
+    #[test]
+    fn the_session_owns_the_progression() {
+        use phosphor_core::midi_fx::UserChord;
+        let (mut app, ti) = app_with_track();
+        app.add_midi_fx(ti, MidiFxType::Chord);
+        app.set_user_progression(
+            ti,
+            0,
+            "mine",
+            vec![UserChord { root: 5, quality: 1, bass: 9 }],
+        );
+        let stored = crate::session::midi_fx_to_session(&app.nav.tracks[ti].midi_fx);
+        assert_eq!(stored[0].chords, vec![(5, 1, 9)]);
+        assert_eq!(stored[0].chords_name, "mine");
+        let (rack, _) = crate::session::midi_fx_from_session(&stored);
+        assert_eq!(rack, app.nav.tracks[ti].midi_fx, "the round trip lost something");
+    }
+
+    /// Ghosts and commit see the user progression — the offline render
+    /// hands it to the fresh instance along with the params.
+    #[test]
+    fn ghosts_render_the_user_progression() {
+        use phosphor_core::midi_fx::UserChord;
+        let (mut app, ti) = app_with_track();
+        clip_with_note(&mut app, ti, 48);
+        app.add_midi_fx(ti, MidiFxType::Chord);
+        app.set_user_progression(
+            ti,
+            0,
+            "mine",
+            vec![UserChord { root: 9, quality: 5, bass: -1 }],
+        );
+        app.refresh_ghost_notes();
+        assert!(
+            app.nav.ghost_notes.len() >= 4,
+            "the user progression never reached the ghost render: {:?}",
+            app.nav.ghost_notes
+        );
+        let pcs: Vec<u8> = app.nav.ghost_notes.iter().map(|n| n.note % 12).collect();
+        assert!(pcs.contains(&9), "the ghost chord is not the Am9 asked for: {pcs:?}");
+    }
+
+    /// The editor opens seeded, applies on demand, and its working copy
+    /// converts to a library entry.
+    #[test]
+    fn the_editor_seeds_and_applies() {
+        let (mut app, ti) = app_with_track();
+        app.add_midi_fx(ti, MidiFxType::Chord);
+        app.open_prog_editor(0);
+        assert!(app.nav.prog_editor.open);
+        assert_eq!(app.nav.prog_editor.chords.len(), 1, "the editor should seed one chord");
+
+        app.nav.prog_editor.adjust(9); // root up to A
+        app.nav.prog_editor.move_col(1);
+        app.nav.prog_editor.adjust(4); // maj9 -> m9 (index 1 + 4 = 5)
+        app.nav.prog_editor.name = "test walk".into();
+        let entry = app.nav.prog_editor.to_progression();
+        assert_eq!(entry.chords, vec![(9, 5, -1)]);
+
+        let slot = app.nav.prog_editor.slot;
+        let name = app.nav.prog_editor.name.clone();
+        let chords = app.nav.prog_editor.chords.clone();
+        app.nav.prog_editor.close();
+        app.set_user_progression(ti, slot, &name, chords);
+        assert_eq!(app.nav.tracks[ti].midi_fx[0].custom_name, "test walk");
     }
 }
