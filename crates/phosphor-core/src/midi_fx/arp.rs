@@ -96,6 +96,10 @@ pub struct Arpeggiator {
     running: bool,
     /// The grid step the last rolling fire landed on, to fire each step once.
     last_grid_step: i64,
+    /// Where the last rolling block started, to see the transport jump
+    /// backward — a loop wrap, a rewind, a fresh play — and let the grid
+    /// tracker follow instead of starving.
+    last_block_tick: i64,
     /// xorshift state for the random style. Reseeded on reset, so a
     /// committed render reproduces what was heard.
     rng: u32,
@@ -129,6 +133,7 @@ impl Arpeggiator {
             free_next: 0,
             running: false,
             last_grid_step: i64::MIN,
+            last_block_tick: i64::MIN,
             rng: 0x9E37_79B9,
         }
     }
@@ -292,6 +297,15 @@ impl Arpeggiator {
         let step_len = self.step_samples(ctx);
         let swing = f64::from(self.swing_pct);
         if ctx.playing && ctx.ticks_per_sample > 0.0 {
+            // The transport moved backward — a loop wrap, a rewind, play
+            // pressed again from the top. The tracker resets so the steps
+            // of the new pass fire; without this, one trip round a loop
+            // reads as "everything already played" and the arp starves
+            // while the keys are still down.
+            if ctx.block_start_tick < self.last_block_tick {
+                self.last_grid_step = i64::MIN;
+            }
+            self.last_block_tick = ctx.block_start_tick;
             // Grid-locked: fire every multiple of the step division the
             // block covers. Swing delays every second division.
             let step_ticks = self.step_ticks();
@@ -360,6 +374,7 @@ impl Arpeggiator {
             self.free_next = 0;
             self.running = true;
             self.last_grid_step = i64::MIN;
+            self.last_block_tick = i64::MIN;
         }
     }
 
@@ -432,6 +447,7 @@ impl MidiEffect for Arpeggiator {
         self.step_index = 0;
         self.free_next = 0;
         self.last_grid_step = i64::MIN;
+        self.last_block_tick = i64::MIN;
         self.rng = 0x9E37_79B9;
     }
 
@@ -725,5 +741,51 @@ mod tests {
         let vels: Vec<u8> = ons.iter().map(|&(_, _, v)| v).collect();
         assert!(vels.iter().any(|&v| v != vels[0]), "every hit weighed the same: {vels:?}");
         assert!(vels.iter().all(|&v| (88..=112).contains(&v)), "weight left the band: {vels:?}");
+    }
+
+    /// The field report: hold keys, and the arp stops "at a certain point".
+    /// The point is the loop wrap — the grid tracker only ever moves
+    /// forward, so when the transport's ticks jump back to the loop start,
+    /// every step reads as already fired and the arp starves for the rest
+    /// of the session.
+    #[test]
+    fn the_arp_survives_a_loop_wrap() {
+        let mut arp = Arpeggiator::new();
+        let tps = 120.0 * Transport::PPQ as f64 / (60.0 * f64::from(SR));
+        let loop_len = Transport::PPQ * 4; // one bar
+        let mut tick = 0i64;
+        let mut fires_before = 0usize;
+        let mut fires_after = 0usize;
+        let mut wrapped = false;
+        let mut out = Vec::with_capacity(256);
+        for b in 0..400 {
+            out.clear();
+            let ctx = MidiFxContext {
+                sample_rate: SR,
+                tempo_bpm: 120.0,
+                playing: true,
+                num_frames: BLOCK,
+                block_start_tick: tick,
+                ticks_per_sample: tps,
+            };
+            let input = if b == 0 { vec![on(60, 100)] } else { vec![] };
+            arp.process(&input, &mut out, &ctx);
+            let fired = out.iter().filter(|e| e.status == 0x90).count();
+            if wrapped {
+                fires_after += fired;
+            } else {
+                fires_before += fired;
+            }
+            tick += (f64::from(BLOCK) * tps).round() as i64;
+            if tick >= loop_len {
+                tick -= loop_len;
+                wrapped = true;
+            }
+        }
+        assert!(fires_before > 4, "the arp never ran at all: {fires_before}");
+        assert!(
+            fires_after > 8,
+            "the arp starved after the loop wrapped: {fires_after} fires in three-plus passes"
+        );
     }
 }

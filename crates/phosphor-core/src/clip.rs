@@ -280,7 +280,10 @@ impl RecordBuffer {
         }
 
         for (_, _, on, off) in &mut notes {
-            *off = (*on + Self::MIN_NOTE_TICKS).max(*off).min(length).max(*on + 1);
+            // `length - 1`, not `length`: an off at the clip's exact end
+            // falls outside every [from, to) playback window and is never
+            // delivered — see the same rule in `to_clip_events`.
+            *off = (*on + Self::MIN_NOTE_TICKS).max(*off).min(length - 1).max(*on + 1);
         }
 
         // Same pitch, same tick: one note, the harder hit.
@@ -383,7 +386,13 @@ impl NoteSnapshot {
                 data2: n.velocity,
             });
             events.push(ClipEvent {
-                tick: off_tick.min(length_ticks),
+                // One tick shy of the end, never at it: playback windows
+                // are [from, to), and the window that ends at the loop
+                // point excludes its own last tick — an off placed exactly
+                // there is never delivered, and everything downstream that
+                // tracks held notes (an arpeggiator's pool, most of all)
+                // holds the note forever.
+                tick: off_tick.min(length_ticks - 1).max(on_tick + 1),
                 status: 0x80,
                 data1: n.note,
                 data2: 0,
@@ -506,7 +515,9 @@ mod tests {
         let clip = buf.commit(BAR).unwrap();
         let offs: Vec<_> = clip.events.iter().filter(|e| e.status == 0x80).collect();
         assert_eq!(offs.len(), 1, "the held note was left open");
-        assert_eq!(offs[0].tick, BAR, "the off did not land at the clip's end");
+        // One tick shy of the end — an off AT the end sits outside every
+        // [from, to) playback window and would never be delivered.
+        assert_eq!(offs[0].tick, BAR - 1, "the off did not land at the clip's end");
     }
 
     /// A stab whose on and off land in the same block keeps a playable,
@@ -651,7 +662,8 @@ mod tests {
         // pedal never lifts
         let clip = buf.commit(BAR).unwrap();
         let off = clip.events.iter().find(|e| e.status == 0x80 && e.data1 == 60).unwrap();
-        assert_eq!(off.tick, BAR, "the never-lifted pedal did not hold to the end");
+        // BAR - 1: held to the end, placed where playback can deliver it.
+        assert_eq!(off.tick, BAR - 1, "the never-lifted pedal did not hold to the end");
     }
 
     /// A downbeat played a hair before the wrap comes out of the old pass
@@ -808,5 +820,32 @@ mod tests {
         let shorter = NoteSnapshot::to_clip_events(&notes, 960);
         let off_tick = shorter.iter().find(|e| e.status == 0x80).unwrap().tick;
         assert_eq!(off_tick, 576); // 480 + 96 = 576
+    }
+
+    /// An off at the clip's exact end tick falls outside every [from, to)
+    /// playback window and is never delivered. Both creation paths — the
+    /// editor's and the recorder's — must land it one tick shy.
+    #[test]
+    fn note_offs_never_sit_on_the_clip_end() {
+        // The editor path: a note running to the very end.
+        let notes = vec![NoteSnapshot {
+            note: 60, velocity: 100, start_tick: 0, duration_ticks: 960, muted: false,
+        }];
+        let events = NoteSnapshot::to_clip_events(&notes, 960);
+        let off = events.iter().find(|e| e.status == 0x80).unwrap();
+        assert_eq!(off.tick, 959, "the editor placed an undeliverable off");
+
+        // The recorder path: a key held straight through the stop.
+        let mut buf = RecordBuffer::new();
+        buf.start(0);
+        buf.record(0, 0x90, 64, 100);
+        let clip = buf.commit(960).unwrap();
+        let off = clip.events.iter().find(|e| e.status == 0x80).unwrap();
+        assert!(
+            off.tick < clip.length_ticks,
+            "the recorder placed an off at the end: {} of {}",
+            off.tick,
+            clip.length_ticks
+        );
     }
 }

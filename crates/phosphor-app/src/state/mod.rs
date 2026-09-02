@@ -150,6 +150,9 @@ pub struct NavState {
     pub ghost_dirty: bool,
     /// The chord device's progression editor, when it is open.
     pub prog_editor: ProgEditor,
+    /// The (track, clip) already warned about sitting above the chord
+    /// split, so the flash fires once per clip rather than every frame.
+    pub split_warned_for: Option<(usize, usize)>,
     /// What the master limiter is taking off, ready to draw.
     ///
     /// The audio thread's end of this is in `Mixer`; the ballistics have
@@ -220,6 +223,7 @@ impl NavState {
             ghost_for: None,
             ghost_dirty: true,
             prog_editor: ProgEditor::default(),
+            split_warned_for: None,
             limiter_gr: std::sync::Arc::new(phosphor_core::fx::GrMeter::new()),
             sample_rate: 48_000,
             tempo_bpm: 120.0,

@@ -811,6 +811,18 @@ impl Mixer {
         // key against live playing is a thing people do.
         if self.was_playing && !playing {
             self.key_listen = None;
+            // A stop cuts clip playback mid-note, and the note-offs that
+            // would have closed those notes never render. Anything in the
+            // MIDI-FX layer that tracks held notes — the arpeggiator's
+            // pool, a chord device's release book — would keep them
+            // forever and fold them into whatever the player does next.
+            // Flush on the edge: generated notes get their offs, the pools
+            // empty, and the next play starts from what the hands say.
+            for track in &mut self.tracks {
+                for slot in &mut track.midi_fx {
+                    slot.fx.flush(&mut track.midi_fx_owed);
+                }
+            }
         }
         self.was_playing = playing;
 
@@ -1001,15 +1013,7 @@ impl Mixer {
             //
             // After the sort so every effect sees a correctly ordered list;
             // after the recorder so what lands in a clip is the played
-            // input, never the generated output. Offs owed by a slot that
-            // was bypassed or removed go in first, so nothing hangs.
-            if !track.midi_fx_owed.is_empty() {
-                for ev in track.midi_fx_owed.drain(..) {
-                    if track.plugin_events.len() < track.plugin_events.capacity() {
-                        track.plugin_events.push(ev);
-                    }
-                }
-            }
+            // input, never the generated output.
             if track.midi_fx.iter().any(|s| !s.bypassed) {
                 let ctx = crate::midi_fx::MidiFxContext {
                     sample_rate: self.sample_rate as f32,
@@ -1033,6 +1037,18 @@ impl Mixer {
                 if !track.plugin_events.is_empty() {
                     sort_events_by_offset(&mut track.plugin_events);
                 }
+            }
+            // Offs owed by a flushed slot go in AFTER the chain, straight
+            // to the instrument. Before it, an active arp would swallow
+            // them — it consumes note events for its pool — and the very
+            // notes the flush exists to close would hang forever.
+            if !track.midi_fx_owed.is_empty() {
+                for ev in track.midi_fx_owed.drain(..) {
+                    if track.plugin_events.len() < track.plugin_events.capacity() {
+                        track.plugin_events.push(ev);
+                    }
+                }
+                sort_events_by_offset(&mut track.plugin_events);
             }
 
             // Track position for wrap detection (used by both recording and playback)
@@ -1331,6 +1347,14 @@ impl Mixer {
         if let Some(handle) = &self.master_handle {
             publish_vu(&handle.vu, mp_l, mp_r);
         }
+    }
+
+    /// Test-only: read a MIDI effect's parameter as the audio thread holds
+    /// it, so a test can prove a command landed rather than assume it.
+    #[cfg(any(test, feature = "test-introspection"))]
+    pub fn midi_fx_param(&self, track_id: usize, slot: usize, index: usize) -> Option<f32> {
+        let track = self.tracks.iter().find(|t| t.id == track_id)?;
+        Some(track.midi_fx.get(slot)?.fx.get_parameter(index))
     }
 
     pub fn reset_all(&mut self) {
@@ -1994,6 +2018,55 @@ mod tests {
             }
         }
         assert!(tail < 1.0e-3, "a note hung after bypass: tail peak {tail}");
+    }
+
+    /// The stop edge flushes the MIDI-FX layer: an arp still holding keys
+    /// when the transport stops goes quiet instead of folding those notes
+    /// — live or from a cut-off clip — into whatever is played next.
+    #[test]
+    fn stopping_the_transport_empties_the_arp_pool() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        tx.send(MixerCommand::AddMidiFx {
+            track_id: 0,
+            slot: 0,
+            fx: Box::new(crate::midi_fx::Arpeggiator::new()),
+        })
+        .unwrap();
+        transport.play();
+        let mut output = vec![0.0f32; 512];
+        // Hold a key with no off — the shape of a clip note cut by a stop.
+        mixer.process(&mut output, &[make_note_on(60, 110)], &transport);
+        transport.advance(256, 44_100);
+        let mut heard = 0.0f32;
+        for _ in 0..200 {
+            output.fill(0.0);
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(256, 44_100);
+            heard = heard.max(output.iter().fold(0.0f32, |a, &s| a.max(s.abs())));
+        }
+        assert!(heard > 1.0e-3, "the arp never sounded while playing");
+
+        // Stop. The pool must empty: no new steps, and the tail dies.
+        transport.pause();
+        let mut mid = 0.0f32;
+        let mut late = 0.0f32;
+        for b in 0..2400 {
+            output.fill(0.0);
+            mixer.process(&mut output, &[], &transport);
+            let peak = output.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+            if (500..600).contains(&b) {
+                mid = mid.max(peak);
+            }
+            if b > 2300 {
+                late = late.max(peak);
+            }
+        }
+        let _ = mid;
+        assert!(
+            late < 1.0e-3,
+            "the arp kept firing after the stop — its pool still holds the cut note: {late}"
+        );
     }
 
     /// A parsed message carrying a receipt-site arrival stamp, for the

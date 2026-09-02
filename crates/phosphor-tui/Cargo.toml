@@ -21,3 +21,6 @@ anyhow.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+phosphor-core = { workspace = true, features = ["test-introspection"] }

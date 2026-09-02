@@ -26,3 +26,6 @@ assert_no_alloc.workspace = true
 [[bench]]
 name = "audio_engine"
 harness = false
+
+[features]
+test-introspection = []

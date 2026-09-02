@@ -236,6 +236,7 @@ const HOME_CENTER: f32 = 65.0;
 #[derive(Clone, Copy)]
 struct ActiveChord {
     key: u8,
+    vel: u8,
     notes: [u8; MAX_CHORD],
     count: usize,
 }
@@ -261,6 +262,10 @@ pub struct ChordDevice {
     /// xorshift for humanize; reseeded on reset, so an offline render is
     /// deterministic.
     rng: u32,
+    /// A chord-shaping parameter changed while chords were sounding: the
+    /// next block re-voices them in place, so the panel is live under held
+    /// keys instead of waiting for the next note-on.
+    revoice: bool,
 
     active: [ActiveChord; MAX_ACTIVE],
     active_len: usize,
@@ -293,7 +298,8 @@ impl ChordDevice {
             custom_len: 0,
             human_pct: 0.0,
             rng: 0x2545_F491,
-            active: [ActiveChord { key: 0, notes: [0; MAX_CHORD], count: 0 }; MAX_ACTIVE],
+            revoice: false,
+            active: [ActiveChord { key: 0, vel: 0, notes: [0; MAX_CHORD], count: 0 }; MAX_ACTIVE],
             active_len: 0,
             last_center: None,
             strum_pending: [(0, 0, 0); MAX_STRUM_PENDING],
@@ -536,6 +542,92 @@ impl ChordDevice {
         (self.rng as f32 / u32::MAX as f32) * 2.0 - 1.0
     }
 
+    /// Rebuild every sounding chord from its key under the current knobs,
+    /// and glide: common tones keep sounding untouched, removed tones get
+    /// their offs, new tones their ons — the same voice-leading manners a
+    /// hand has when it reshapes a chord without lifting.
+    fn revoice_active(&mut self, out: &mut Vec<MidiEvent>) {
+        if self.active_len == 0 {
+            return;
+        }
+        let count = self.active_len;
+        let olds = self.active;
+
+        // Notes of the old voicings still waiting in the strum book never
+        // fired; drop them silently — they are not sounding, so no off is
+        // owed, and the new voicing gets its own ons below.
+        let mut unfired: [(u8, bool); MAX_CHORD * MAX_ACTIVE] = [(0, false); MAX_CHORD * MAX_ACTIVE];
+        let mut unfired_len = 0usize;
+        let mut k = 0;
+        while k < self.strum_len {
+            let (_, note, _) = self.strum_pending[k];
+            let of_old = olds[..count]
+                .iter()
+                .any(|a| a.notes[..a.count].contains(&note));
+            if of_old {
+                if unfired_len < unfired.len() {
+                    unfired[unfired_len] = (note, true);
+                    unfired_len += 1;
+                }
+                self.strum_len -= 1;
+                self.strum_pending[k] = self.strum_pending[self.strum_len];
+            } else {
+                k += 1;
+            }
+        }
+        let was_sounding = |note: u8| {
+            olds[..count].iter().any(|a| a.notes[..a.count].contains(&note))
+                && !unfired[..unfired_len].iter().any(|&(n, _)| n == note)
+        };
+
+        for (slot, old) in olds.iter().enumerate().take(count) {
+            let (key, vel) = (old.key, old.vel);
+            let (notes, len) = self.build(key);
+            self.active[slot] = ActiveChord { key, vel, notes, count: len };
+        }
+        let now_sounds = |active: &[ActiveChord], note: u8| {
+            active[..count].iter().any(|a| a.notes[..a.count].contains(&note))
+        };
+
+        // Offs for tones the new voicings no longer hold — each once.
+        let mut done: [u8; MAX_CHORD * MAX_ACTIVE] = [255; MAX_CHORD * MAX_ACTIVE];
+        let mut done_len = 0usize;
+        for a in &olds[..count] {
+            for &note in &a.notes[..a.count] {
+                if was_sounding(note)
+                    && !now_sounds(&self.active, note)
+                    && !done[..done_len].contains(&note)
+                    && out.len() < out.capacity()
+                {
+                    out.push(MidiEvent { sample_offset: 0, status: 0x80, data1: note, data2: 0 });
+                    done[done_len] = note;
+                    done_len += 1;
+                }
+            }
+        }
+        // Ons for tones that were not sounding before — each once, at the
+        // chord's own velocity, immediately: a knob answered now.
+        let mut done_on: [u8; MAX_CHORD * MAX_ACTIVE] = [255; MAX_CHORD * MAX_ACTIVE];
+        let mut on_len = 0usize;
+        for a in &self.active[..count] {
+            for &note in &a.notes[..a.count] {
+                if !was_sounding(note)
+                    && !done_on[..on_len].contains(&note)
+                    && out.len() < out.capacity()
+                {
+                    out.push(MidiEvent {
+                        sample_offset: 0,
+                        status: 0x90,
+                        data1: note,
+                        data2: a.vel,
+                    });
+                    done_on[on_len] = note;
+                    on_len += 1;
+                }
+            }
+        }
+    }
+
     fn drain_strum(&mut self, num_frames: u32, out: &mut Vec<MidiEvent>) {
         let mut k = 0;
         while k < self.strum_len {
@@ -567,6 +659,10 @@ impl MidiEffect for ChordDevice {
     fn init(&mut self, _sample_rate: f64, _max_block: usize) {}
 
     fn process(&mut self, input: &[MidiEvent], out: &mut Vec<MidiEvent>, ctx: &MidiFxContext) {
+        if self.revoice {
+            self.revoice = false;
+            self.revoice_active(out);
+        }
         self.drain_strum(ctx.num_frames, out);
         for ev in input {
             match ev.status & 0xF0 {
@@ -576,7 +672,7 @@ impl MidiEffect for ChordDevice {
                     }
                     let (notes, count) = self.build(ev.data1);
                     self.active[self.active_len] =
-                        ActiveChord { key: ev.data1, notes, count };
+                        ActiveChord { key: ev.data1, vel: ev.data2, notes, count };
                     self.active_len += 1;
                     let strum_samples =
                         (f64::from(self.strum_ms) / 1000.0 * f64::from(ctx.sample_rate)) as i64;
@@ -677,6 +773,7 @@ impl MidiEffect for ChordDevice {
         self.strum_len = 0;
         self.last_center = None;
         self.rng = 0x2545_F491;
+        self.revoice = false;
     }
 
     fn parameter_count(&self) -> usize {
@@ -707,9 +804,11 @@ impl MidiEffect for ChordDevice {
         let n = chords.len().min(MAX_USER_CHORDS);
         self.custom[..n].copy_from_slice(&chords[..n]);
         self.custom_len = n;
+        self.revoice = true;
     }
 
     fn set_parameter(&mut self, index: usize, value: f32) {
+        let before = self.get_parameter(index);
         match index {
             P_ROOT => self.root = (value.round() as i32).clamp(0, 11),
             P_SCALE => self.scale = (value.round() as usize).min(7),
@@ -722,6 +821,16 @@ impl MidiEffect for ChordDevice {
             P_PROG => self.prog = (value.round() as usize).min(8),
             P_HUMAN => self.human_pct = value.clamp(0.0, 100.0),
             _ => {}
+        }
+        // A shape-changing knob re-voices what is sounding, so the panel is
+        // audible NOW — not at the next note-on. Split, strum and humanize
+        // shape future presses only.
+        let shapes = matches!(
+            index,
+            P_ROOT | P_SCALE | P_COLOR | P_VOICING | P_BASS | P_MODE | P_PROG
+        );
+        if shapes && (self.get_parameter(index) - before).abs() > f32::EPSILON {
+            self.revoice = true;
         }
     }
 }
@@ -1116,5 +1225,100 @@ mod tests {
             out.iter().map(|e| (e.sample_offset, e.data1, e.data2)).collect::<Vec<_>>()
         };
         assert_eq!(run(), run(), "two reset renders differed");
+    }
+
+    /// The field report's first half: a knob turned while a chord is
+    /// sounding must be audible NOW. The sounding chord re-voices in place
+    /// — removed tones off, new tones on, common tones untouched.
+    #[test]
+    fn a_knob_turned_under_a_held_chord_revoices_now() {
+        let mut dev = ChordDevice::new();
+        dev.set_parameter(P_BASS, 0.0);
+        let mut out = Vec::with_capacity(64);
+        let ctx = MidiFxContext::bare(SR, BLOCK);
+        // Hold the I of C major as a 7th: C E G B.
+        dev.process(&[on(48, 100)], &mut out, &ctx);
+        let held: Vec<u8> = out.iter().filter(|e| e.status == 0x90).map(|e| e.data1).collect();
+        assert_eq!(held.len(), 4);
+
+        // Turn color to lush while the key stays down.
+        dev.set_parameter(P_COLOR, 3.0);
+        out.clear();
+        dev.process(&[], &mut out, &ctx);
+        let ons: Vec<u8> = out.iter().filter(|e| e.status == 0x90).map(|e| e.data1).collect();
+        let offs: Vec<u8> = out.iter().filter(|e| e.status == 0x80).map(|e| e.data1).collect();
+        assert!(!ons.is_empty(), "the knob was not audible until the next note-on");
+        for n in &ons {
+            assert!(!held.contains(n), "a common tone was re-struck: {n}");
+        }
+        for n in &offs {
+            assert!(held.contains(n), "an off for a note that never sounded: {n}");
+        }
+
+        // Releasing the key now closes the NEW voicing exactly — no hangs.
+        out.clear();
+        dev.process(&[off(48)], &mut out, &ctx);
+        let closed = out.iter().filter(|e| e.status == 0x80).count();
+        let expect = held.len() - offs.len() + ons.len();
+        assert_eq!(closed, expect, "the release did not match the revoiced chord");
+    }
+
+    /// A knob with nothing sounding stays silent, and the same value twice
+    /// does not re-voice twice.
+    #[test]
+    fn revoice_is_quiet_when_nothing_sounds() {
+        let mut dev = ChordDevice::new();
+        dev.set_parameter(P_COLOR, 3.0);
+        let mut out = Vec::with_capacity(64);
+        let ctx = MidiFxContext::bare(SR, BLOCK);
+        dev.process(&[], &mut out, &ctx);
+        assert!(out.is_empty(), "a knob with no chords sounding made events");
+        // Same value again: not a change, no revoice flag.
+        dev.process(&[on(48, 100)], &mut out, &ctx);
+        out.clear();
+        dev.set_parameter(P_COLOR, 3.0);
+        dev.process(&[], &mut out, &ctx);
+        assert!(out.is_empty(), "an unchanged knob re-voiced");
+    }
+
+    /// Revoice during a running strum: the unfired old notes are cancelled,
+    /// the new voicing lands whole, and the release closes it clean.
+    #[test]
+    fn revoice_mid_strum_leaves_no_orphans() {
+        let mut dev = ChordDevice::new();
+        dev.set_parameter(P_BASS, 0.0);
+        dev.set_parameter(P_STRUM, 50.0);
+        let mut out = Vec::with_capacity(64);
+        let ctx = MidiFxContext::bare(SR, BLOCK);
+        let mut sounding: Vec<u8> = Vec::new();
+        let track = |out: &Vec<MidiEvent>, sounding: &mut Vec<u8>| {
+            for e in out {
+                match e.status {
+                    0x90 => sounding.push(e.data1),
+                    0x80 => {
+                        sounding.retain(|&n| n != e.data1);
+                    }
+                    _ => {}
+                }
+            }
+        };
+        dev.process(&[on(48, 100)], &mut out, &ctx);
+        track(&out, &mut sounding);
+        // Mid-strum: change the voicing.
+        dev.set_parameter(P_VOICING, 4.0); // quartal
+        for _ in 0..12 {
+            out.clear();
+            dev.process(&[], &mut out, &ctx);
+            track(&out, &mut sounding);
+        }
+        out.clear();
+        dev.process(&[off(48)], &mut out, &ctx);
+        track(&out, &mut sounding);
+        for _ in 0..12 {
+            out.clear();
+            dev.process(&[], &mut out, &ctx);
+            track(&out, &mut sounding);
+        }
+        assert!(sounding.is_empty(), "notes left hanging after a mid-strum revoice: {sounding:?}");
     }
 }

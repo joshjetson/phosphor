@@ -400,6 +400,27 @@ impl App {
         if clip.notes.is_empty() && clip.controls.is_empty() {
             return;
         }
+        // The split trap, said out loud: a chord device whose whole clip
+        // sits at or above the split transforms nothing, and every knob is
+        // silent by construction. One flash per clip, not a storm.
+        let chord_split = track
+            .midi_fx
+            .iter()
+            .find(|s| !s.bypass && s.fx_type == crate::state::MidiFxType::Chord)
+            .and_then(|s| s.params.get(4).copied());
+        if let Some(split) = chord_split {
+            let all_above =
+                !clip.notes.is_empty() && clip.notes.iter().all(|n| f32::from(n.note) >= split);
+            if all_above && self.nav.split_warned_for != target {
+                self.nav.split_warned_for = target;
+                let name = crate::state::MidiFxType::Chord.value_text(4, split);
+                self.flash(format!(
+                    "chord fx: every note here is at or above the split ({name}) \u{2014} they pass through unchanged"
+                ));
+            }
+        }
+        let Some(track) = self.nav.tracks.get(ti) else { return };
+        let Some(clip) = track.clips.get(ci) else { return };
         let events = crate::state::render_clip_through_rack(
             clip,
             &track.midi_fx,

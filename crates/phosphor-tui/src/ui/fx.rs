@@ -197,6 +197,19 @@ fn render_midi_fx_panel(
         Span::styled("\u{00b7} midi \u{00b7} plays live and on playback", theme::dim()),
         Span::styled(if instance.bypass { "  \u{00b7} bypassed" } else { "" }, theme::dim()),
     ]));
+    if fx_type == crate::state::MidiFxType::Chord {
+        // The zone, spelled out — the device is silent about notes above
+        // the split, and a player whose clip lives up there deserves to be
+        // told where the chords are.
+        let split = instance.params.get(4).copied().unwrap_or(60.0);
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  chords below {} \u{00b7} melody passes above",
+                crate::state::MidiFxType::Chord.value_text(4, split)
+            ),
+            theme::amber(),
+        )));
+    }
     lines.push(Line::from(""));
 
     for (row, info) in fx_type.params().iter().enumerate() {

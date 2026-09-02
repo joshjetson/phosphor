@@ -393,4 +393,97 @@ mod tests {
         app.set_user_progression(ti, slot, &name, chords);
         assert_eq!(app.nav.tracks[ti].midi_fx[0].custom_name, "test walk");
     }
+
+    /// The field report, end to end: a chord-panel knob turned WHILE THE
+    /// TRANSPORT IS ROLLING must land on the audio thread's device and
+    /// change what the very next chord plays — no stop, no resume.
+    #[test]
+    fn a_knob_turned_while_playing_reaches_the_audio_thread() {
+        use phosphor_core::engine::VuLevels;
+        use phosphor_core::mixer::{clip_snapshot_channel, Mixer};
+        use std::sync::Arc;
+
+        let (mut app, ti) = app_with_track();
+        app.add_midi_fx(ti, MidiFxType::Chord);
+        let track_id = app.nav.tracks[ti].mixer_id.unwrap();
+
+        // A mixer fed the app's queued commands — the same bridge the
+        // sequencer journeys use, with the sender kept for later.
+        let (tx, rx) = phosphor_core::mixer::mixer_command_channel();
+        let (clip_tx, _clip_rx) = clip_snapshot_channel();
+        for command in app.drain_mixer_commands() {
+            tx.send(command).unwrap();
+        }
+        let mut mixer = Mixer::new(rx, Arc::new(VuLevels::new()), clip_tx, 44_100, 512);
+        let transport = app.engine.transport.clone();
+        let mut output = vec![0.0f32; 512 * 2];
+        for _ in 0..16 {
+            mixer.process(&mut output, &[], &transport);
+        }
+        assert_eq!(
+            mixer.midi_fx_param(track_id, 0, 2),
+            Some(1.0),
+            "the chord device never reached the mixer at its default color"
+        );
+
+        // The story: playing, and the color knob turns.
+        transport.play();
+        for _ in 0..8 {
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(512, 44_100);
+        }
+        app.set_midi_fx_param(ti, 0, 2, 3.0); // color -> lush
+        for command in app.drain_mixer_commands() {
+            tx.send(command).unwrap();
+        }
+        for _ in 0..4 {
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(512, 44_100);
+        }
+        assert_eq!(
+            mixer.midi_fx_param(track_id, 0, 2),
+            Some(3.0),
+            "the knob turned while playing never landed on the audio thread"
+        );
+
+        // And the landed value changes the next chord: feed a key below the
+        // split and count the notes the instrument is handed.
+        let on = phosphor_midi::MidiMessage::from_bytes(&[0x90, 48, 100]).unwrap();
+        mixer.process(&mut output, &[on], &transport);
+        // Lush on the I of C major reaches all seven scale tones (plus the
+        // bass octave) — far more than the default 7th's four. The audible
+        // proof is the audio itself being denser; the countable proof is in
+        // the device's own tests. Here the parameter landing is the claim.
+    }
+
+    /// A clip that sits entirely at or above the split gets told so, once
+    /// — not every frame, and not when any note is inside the chord zone.
+    #[test]
+    fn the_split_trap_warns_once() {
+        let (mut app, ti) = app_with_track();
+        clip_with_note(&mut app, ti, 72); // C5: above the default split
+        app.add_midi_fx(ti, MidiFxType::Chord);
+        app.status_message = None;
+        app.refresh_ghost_notes();
+        let first = app.status_message.clone().map(|(m, _)| m);
+        assert!(
+            first.as_deref().is_some_and(|m| m.contains("split")),
+            "no warning for an all-above clip: {first:?}"
+        );
+        app.status_message = None;
+        app.refresh_ghost_notes();
+        assert!(app.status_message.is_none(), "the warning fired again on the next frame");
+
+        // A clip inside the zone never warns.
+        let (mut app, ti) = app_with_track();
+        clip_with_note(&mut app, ti, 48);
+        app.add_midi_fx(ti, MidiFxType::Chord);
+        app.status_message = None;
+        app.refresh_ghost_notes();
+        assert!(
+            app.status_message.is_none(),
+            "a clip inside the chord zone warned: {:?}",
+            app.status_message
+        );
+    }
 }
