@@ -99,11 +99,14 @@ impl App {
         let Some(track) = self.nav.tracks.get_mut(track_index) else { return };
         let Some(track_id) = track.mixer_id else { return };
         let Some(instance) = track.midi_fx.get_mut(slot) else { return };
-        let clamped = instance
-            .fx_type
-            .params()
-            .get(param)
-            .map_or(value, |info| value.clamp(info.min, info.max));
+        let table = instance.fx_type.params();
+        // An instance loaded from an older session may hold fewer values
+        // than the table now has; grow it to the canonical length so a new
+        // knob's setting has somewhere to live in the mirror too.
+        while instance.params.len() < table.len() {
+            instance.params.push(table[instance.params.len()].default);
+        }
+        let clamped = table.get(param).map_or(value, |info| value.clamp(info.min, info.max));
         if let Some(stored) = instance.params.get_mut(param) {
             *stored = clamped;
         }

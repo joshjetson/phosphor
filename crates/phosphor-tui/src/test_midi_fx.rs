@@ -242,4 +242,46 @@ mod tests {
         app.commit_midi_fx();
         assert_eq!(app.nav.tracks[ti].clips[0].notes.len(), 1, "a bypassed rack committed");
     }
+
+    /// The two appended chord parameters read in words, and a session
+    /// saved before they existed loads with the old behaviour exactly.
+    #[test]
+    fn progression_params_read_in_words_and_old_sessions_hold() {
+        assert_eq!(MidiFxType::Chord.value_text(7, 0.0), "scale");
+        assert_eq!(MidiFxType::Chord.value_text(7, 1.0), "prog");
+        assert_eq!(MidiFxType::Chord.value_text(8, 0.0), "2-5-1");
+        assert_eq!(MidiFxType::Chord.value_text(8, 7.0), "quality");
+
+        // A seven-parameter chord from a v0.3.56 session: the loader keeps
+        // what it finds and the two new knobs sit at their defaults.
+        let old = crate::session::SessionFx {
+            kind: "chord".into(),
+            bypass: false,
+            params: vec![0.0, 0.0, 1.0, 0.0, 60.0, 1.0, 0.0],
+        };
+        let (rack, dropped) = crate::session::midi_fx_from_session(&[old]);
+        assert_eq!(dropped, 0);
+        assert_eq!(rack[0].params.len(), 7, "the loader should keep the stored length");
+        // Installing pushes only the stored params; mode and prog stay at
+        // the effect's defaults, which are the pre-progression behaviour.
+        use phosphor_core::midi_fx::MidiEffect as _;
+        let mut fx = phosphor_core::midi_fx::ChordDevice::new();
+        for (i, &v) in rack[0].params.iter().enumerate() {
+            fx.set_parameter(i, v);
+        }
+        assert_eq!(fx.get_parameter(7), 0.0, "mode must default to scale");
+    }
+
+    /// Turning a new knob on an old-session instance grows its parameter
+    /// mirror to the canonical length instead of dropping the write.
+    #[test]
+    fn an_old_instance_accepts_the_new_knobs() {
+        let (mut app, ti) = app_with_track();
+        app.add_midi_fx(ti, MidiFxType::Chord);
+        app.nav.tracks[ti].midi_fx[0].params.truncate(7); // a v0.3.56 save
+        app.set_midi_fx_param(ti, 0, 7, 1.0); // mode -> prog
+        let inst = &app.nav.tracks[ti].midi_fx[0];
+        assert_eq!(inst.params.len(), 9, "the mirror did not grow");
+        assert!((inst.params[7] - 1.0).abs() < 1e-6, "the write was dropped");
+    }
 }

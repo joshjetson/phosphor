@@ -6,8 +6,8 @@
 
 use phosphor_core::fx::FxParamInfo;
 use phosphor_core::midi_fx::{
-    ARP_PARAMS, CHORD_PARAMS, COLOR_LABELS, NOTE_NAMES, RATE_LABELS, SCALE_LABELS, STYLE_LABELS,
-    VOICING_LABELS,
+    ARP_PARAMS, CHORD_PARAMS, COLOR_LABELS, MODE_LABELS, NOTE_NAMES, PROG_LABELS, RATE_LABELS,
+    SCALE_LABELS, STYLE_LABELS, VOICING_LABELS,
 };
 
 /// Which MIDI effect a slot holds.
@@ -82,6 +82,8 @@ impl MidiFxType {
             (Self::Chord, 2) => COLOR_LABELS.get(idx).copied(),
             (Self::Chord, 3) => VOICING_LABELS.get(idx).copied(),
             (Self::Chord, 5) => Some(["off", "root -1 oct", "root -2 oct"][idx.min(2)]),
+            (Self::Chord, 7) => MODE_LABELS.get(idx).copied(),
+            (Self::Chord, 8) => PROG_LABELS.get(idx).copied(),
             _ => None,
         }
     }
