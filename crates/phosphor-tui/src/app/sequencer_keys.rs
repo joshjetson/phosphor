@@ -432,8 +432,8 @@ impl App {
                 self.sequencer_op(SeqOp::ClearChain);
                 self.status_message = Some(("chain cleared".into(), std::time::Instant::now()));
             }
-            KeyCode::Char('y') => self.yank_pattern(),
-            KeyCode::Char('p') => self.paste_pattern(),
+            KeyCode::Char('y') => self.sequencer_yank(),
+            KeyCode::Char('p') => self.sequencer_paste(),
             KeyCode::Char('X') => self.clear_pattern(),
             _ => {}
         }
@@ -521,32 +521,70 @@ impl App {
         self.sequencer_op(op);
     }
 
-    fn yank_pattern(&mut self) {
+    /// `y`, by where the cursor stands. On the grid it takes the one step
+    /// under it — chord, voicing, gate, accent, all of it. Anywhere else it
+    /// takes the whole pattern, as a block, so `p` can land it on another
+    /// slot or another track entirely.
+    pub(crate) fn sequencer_yank(&mut self) {
+        let band = self.nav.clip_view.sequencer.band;
         let Some(state) = self.nav.current_track().and_then(|t| t.sequencer.as_deref()) else {
             return;
         };
-        let slot = state.selected_slot();
-        self.nav.clip_view.sequencer.copy_from = Some(slot);
-        self.status_message = Some((
-            format!("pattern {} yanked", (b'A' + slot) as char),
-            std::time::Instant::now(),
-        ));
+        if band == crate::state::SeqBand::Grid {
+            let step = *state.step();
+            if !step.on {
+                self.flash("nothing on this step");
+                return;
+            }
+            self.seq_step_clip = Some(step);
+            self.flash("step yanked \u{00b7} p drops it on the cursor");
+        } else {
+            let slot = state.selected_slot();
+            self.seq_pattern_clip = Some(Box::new(state.block(slot as usize)));
+            self.flash(format!(
+                "pattern {} yanked \u{00b7} p pastes it, any track",
+                (b'A' + slot) as char
+            ));
+        }
     }
 
-    fn paste_pattern(&mut self) {
-        let Some(from) = self.nav.clip_view.sequencer.copy_from else {
-            self.status_message = Some(("no pattern yanked".into(), std::time::Instant::now()));
+    /// `p`, by where the cursor stands: a yanked step onto the grid
+    /// position, or a yanked pattern into the selected slot — of whichever
+    /// track's sequencer the cursor is on.
+    pub(crate) fn sequencer_paste(&mut self) {
+        let band = self.nav.clip_view.sequencer.band;
+        if band == crate::state::SeqBand::Grid {
+            let Some(step) = self.seq_step_clip else {
+                self.flash("nothing yanked \u{00b7} y on a step first");
+                return;
+            };
+            self.sequencer_op(SeqOp::PasteStep(step));
+            self.flash("step pasted");
+            return;
+        }
+        let Some(block) = self.seq_pattern_clip.clone() else {
+            self.flash("nothing yanked \u{00b7} y on the instrument row first");
             return;
         };
-        let Some(state) = self.nav.current_track().and_then(|t| t.sequencer.as_deref()) else {
+        let track_idx = self.nav.track_cursor;
+        let before = self.nav.undo_checkpoint(
+            crate::state::undo::UndoScope::Sequencer { track_idx },
+        );
+        let syncs = self.nav.paste_sequencer_pattern(track_idx, &block);
+        if syncs.is_empty() {
+            self.flash("no sequencer here to paste into");
             return;
-        };
-        let to = state.selected_slot();
-        self.sequencer_op(SeqOp::CopyPattern { from, to });
-        self.status_message = Some((
-            format!("pattern {} → {}", (b'A' + from) as char, (b'A' + to) as char),
-            std::time::Instant::now(),
-        ));
+        }
+        for sync in syncs {
+            let _ = self.engine.shared.mixer_command_tx.send(sync.command());
+        }
+        self.nav.commit_undo(before, "paste pattern");
+        let slot = self
+            .nav
+            .current_track()
+            .and_then(|t| t.sequencer.as_deref())
+            .map_or('A', |s| (b'A' + s.selected_slot()) as char);
+        self.flash(format!("pattern pasted \u{2192} {slot}"));
     }
 
     fn clear_pattern(&mut self) {

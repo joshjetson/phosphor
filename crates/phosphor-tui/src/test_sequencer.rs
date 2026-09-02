@@ -1439,3 +1439,101 @@ mod screen {
         );
     }
 }
+
+#[test]
+fn a_step_yanks_and_pastes_with_everything_on_it() {
+    use phosphor_app::state::SeqBand;
+    let mut app = headless();
+    app.create_instrument_track(InstrumentType::Sequencer);
+    // A melodic child, so the step carries pitch and chord.
+    app.sequencer_op(SeqOp::SetChild(InstrumentType::Synth));
+
+    // Dress step 2: on, up a third, a chord, a longer gate, accented.
+    app.sequencer_op(SeqOp::SelectStep(2));
+    app.sequencer_op(SeqOp::ToggleStep);
+    app.sequencer_op(SeqOp::NudgePitch(4));
+    app.sequencer_op(SeqOp::CycleChord(2));
+    app.sequencer_op(SeqOp::NudgeGate(2));
+    app.sequencer_op(SeqOp::ToggleAccent);
+    let source = *app
+        .nav
+        .current_track()
+        .and_then(|t| t.sequencer.as_deref())
+        .unwrap()
+        .step();
+
+    // Yank on the grid, walk away, paste.
+    app.nav.clip_view.sequencer.band = SeqBand::Grid;
+    app.sequencer_yank();
+    app.sequencer_op(SeqOp::SelectStep(9));
+    app.sequencer_paste();
+
+    let state = app.nav.current_track().and_then(|t| t.sequencer.as_deref()).unwrap();
+    let pasted = state.pattern().lanes[state.lane_cursor()].steps[9];
+    assert_eq!(pasted, source, "the step did not travel whole");
+
+    // One undo lifts the paste and leaves the original.
+    app.perform_undo();
+    let state = app.nav.current_track().and_then(|t| t.sequencer.as_deref()).unwrap();
+    assert!(!state.pattern().lanes[state.lane_cursor()].steps[9].on, "undo left the paste");
+    assert!(state.pattern().lanes[state.lane_cursor()].steps[2].on, "undo took the original");
+}
+
+#[test]
+fn yanking_an_empty_step_refuses() {
+    use phosphor_app::state::SeqBand;
+    let mut app = headless();
+    app.create_instrument_track(InstrumentType::Sequencer);
+    app.nav.clip_view.sequencer.band = SeqBand::Grid;
+    app.sequencer_yank();
+    assert!(app.seq_step_clip.is_none(), "an empty step landed in the clipboard");
+    app.sequencer_paste();
+    let state = app.nav.current_track().and_then(|t| t.sequencer.as_deref()).unwrap();
+    assert!(!state.step().on, "a refused paste still wrote something");
+}
+
+#[test]
+fn a_pattern_yanked_from_the_instrument_row_crosses_tracks() {
+    use phosphor_app::state::SeqBand;
+    let mut app = headless();
+    app.create_instrument_track(InstrumentType::Sequencer);
+    let first = app.nav.track_cursor;
+    for step in [0u8, 4, 8, 12] {
+        app.sequencer_op(SeqOp::SelectStep(step));
+        app.sequencer_op(SeqOp::ToggleStep);
+    }
+    app.sequencer_op(SeqOp::CycleLength(-1)); // a non-default length travels too
+    let source = app
+        .nav
+        .current_track()
+        .and_then(|t| t.sequencer.as_deref())
+        .map(|s| s.block(s.selected_slot() as usize))
+        .unwrap();
+
+    // Yank from the pattern band — where the instrument knob lives.
+    app.nav.clip_view.sequencer.band = SeqBand::Pattern;
+    app.sequencer_yank();
+
+    // A second sequencer track; paste there.
+    app.create_instrument_track(InstrumentType::Sequencer);
+    let second = app.nav.track_cursor;
+    assert_ne!(first, second);
+    app.nav.clip_view.sequencer.band = SeqBand::Pattern;
+    app.sequencer_paste();
+
+    let landed = app
+        .nav
+        .current_track()
+        .and_then(|t| t.sequencer.as_deref())
+        .map(|s| s.block(s.selected_slot() as usize))
+        .unwrap();
+    assert_eq!(landed, source, "the pattern did not cross whole — midi, length and all");
+
+    // One undo puts the second track's pattern back to empty.
+    app.perform_undo();
+    let state = app.nav.current_track().and_then(|t| t.sequencer.as_deref()).unwrap();
+    assert!(
+        state.pattern().lanes.iter().all(|l| l.steps.iter().all(|s| !s.on)),
+        "undo did not clear the pasted pattern"
+    );
+}

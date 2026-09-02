@@ -86,6 +86,12 @@ pub struct App {
     /// label. Each clip keeps its own `start_tick`, which is what lets `P`
     /// lay the set onto another track on exactly the bars it came from.
     pub(crate) yanked_clips: Vec<crate::state::Clip>,
+    /// One sequencer step, yanked with everything on it — chord, voicing,
+    /// gate, accent — waiting for `p` on another grid position.
+    pub(crate) seq_step_clip: Option<phosphor_core::pattern::Step>,
+    /// A whole pattern, yanked from the instrument row, waiting for `p` on
+    /// any sequencer — this track's or another's.
+    pub(crate) seq_pattern_clip: Option<Box<phosphor_core::pattern::PatternBlock>>,
     /// The UI's tap on MIDI input, for step record.
     ///
     /// The audio thread's ring has one consumer and this is not it: the
@@ -315,6 +321,8 @@ impl App {
             // over by the UI — and silence is how the mismatch went unnoticed.
             status_message: format_notice.map(|m| (m, std::time::Instant::now())),
             yanked_clips: Vec::new(),
+            seq_step_clip: None,
+            seq_pattern_clip: None,
             midi_ui_rx: enable_midi.then_some(midi_ui_rx),
             held_notes: Vec::new(),
             recorded_notes: Vec::new(),

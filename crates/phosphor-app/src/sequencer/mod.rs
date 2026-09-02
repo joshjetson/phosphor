@@ -219,6 +219,12 @@ impl SequencerState {
         &self.lane().steps[self.step_cursor()]
     }
 
+    /// Overwrite one slot with a whole block — the cross-track pattern
+    /// paste's write half.
+    pub fn write_pattern(&mut self, slot: usize, block: PatternBlock) {
+        self.patterns[slot.min(SLOTS - 1)] = block;
+    }
+
     /// The chain, as far as it is filled in.
     #[must_use]
     pub fn chain(&self) -> &[ChainEntry] {
@@ -397,6 +403,28 @@ impl crate::state::NavState {
             .slots()
             .map(|slot| PatternSync { track_id, slot, block: state.block(slot as usize) })
             .collect()
+    }
+
+    /// Paste a whole pattern block into a track's selected slot and hand
+    /// back the blocks the audio thread now needs — the cross-track half of
+    /// pattern yank, which travels as a block precisely so it can land on a
+    /// different track than it came from.
+    #[must_use]
+    pub fn paste_sequencer_pattern(
+        &mut self,
+        track_idx: usize,
+        block: &PatternBlock,
+    ) -> Vec<PatternSync> {
+        let Some(state) = self
+            .tracks
+            .get_mut(track_idx)
+            .and_then(|t| t.sequencer.as_deref_mut())
+        else {
+            return Vec::new();
+        };
+        let slot = state.selected_slot();
+        state.write_pattern(slot as usize, *block);
+        self.sequencer_syncs(track_idx, ops::SeqEffect::slot(slot))
     }
 
     /// Every block a track has, for when the audio thread has none of them:

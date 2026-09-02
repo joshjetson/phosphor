@@ -82,6 +82,9 @@ pub enum SeqOp {
     // ── The step under the cursor ──
     ToggleStep,
     SetStep(bool),
+    /// Overwrite the step under the cursor with a yanked one — chord,
+    /// voicing, gate, accent and all.
+    PasteStep(Step),
     ClearStep,
     ToggleAccent,
     /// Move the pitch by semitones, or by scale degrees when the pattern is
@@ -181,6 +184,7 @@ impl SeqOp {
                 | Self::CycleMode(_)
                 | Self::SetTonic(_)
                 | Self::ClearPattern
+                | Self::PasteStep(_)
                 | Self::CopyPattern { .. }
                 | Self::PushChainEntry { .. }
                 | Self::SetChainRepeats { .. }
@@ -234,6 +238,7 @@ impl SeqOp {
             Self::NudgeDefaultGate(_) => "default gate",
             Self::CycleMode(_) | Self::SetTonic(_) => "scale",
             Self::ClearPattern => "clear pattern",
+            Self::PasteStep(_) => "paste step",
             Self::CopyPattern { .. } => "copy pattern",
             Self::PushChainEntry { .. }
             | Self::SetChainRepeats { .. }
@@ -413,6 +418,10 @@ fn apply(state: &mut SequencerState, op: SeqOp) -> SeqEffect {
         }
         SeqOp::SetStep(on) => {
             set_step(state, lane_index, step_index, on);
+            here
+        }
+        SeqOp::PasteStep(step) => {
+            *step_mut(state, lane_index, step_index) = step;
             here
         }
         SeqOp::ClearStep => {

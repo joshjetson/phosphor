@@ -441,8 +441,6 @@ pub struct SequencerView {
     /// Enter was pressed on a control: `h`/`l` now adjust it and nothing else
     /// gets a look at the key. The fader's contract, applied to a knob.
     pub locked: bool,
-    /// The slot `y` picked up, for `p` to paste.
-    pub copy_from: Option<u8>,
     /// Digits typed towards a step or slot number.
     pub digits: String,
 }

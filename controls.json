@@ -247,5 +247,9 @@
     "progression_editor": "e in the chord panel opens the progression editor: j/k picks a chord row, tab picks the column (root/quality/bass), h/l turns it; a adds a chord (copies the cursor's), d removes, [ ] browses your saved library, n names it, s saves to the library (~/.phosphor/progressions.json), enter loads it into the device (flips mode to prog, prog to 'user'). 16 qualities to pick from — maj7/maj9/6-9/maj13, m7/m9/m11/m6-9, 7/9/13/9sus4, 7b9/7#9/mMaj7/dim7 — plus a slash bass per chord. Sessions store the resolved chords, so editing the library later never changes a saved song",
     "humanize": "the 'human' knob on both devices (0-100%): generated notes drag up to 10ms late and vary up to ±12 in velocity, like hands instead of a machine — steps never fire early, ghosts/commit stay deterministic",
     "learn": "r in the progression editor arms learn: play any chord on the controller and lift — the row becomes exactly that voicing, spread and all (root = lowest key). Turning its quality knob afterwards returns it to the dictionary. Learned chords save to the library and into sessions like any other"
+  },
+  "sequencer_yank_paste": {
+    "step": "y with the cursor on the grid yanks the one step under it — pitch, chord, voicing, gate, accent; p on any grid position drops it there (one undo step). y on an empty step refuses",
+    "pattern": "y anywhere off the grid (the pattern/instrument row, the slots row) yanks the whole pattern as a block; p pastes it into the selected slot of whichever track's sequencer you're on — it crosses tracks and carries the notes, the length, the rate, everything (one undo step)"
   }
 }
