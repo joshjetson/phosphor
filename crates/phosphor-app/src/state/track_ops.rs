@@ -420,6 +420,30 @@ impl NavState {
             None => return None,
         };
 
+        // Record quantize: the take's notes snap to the chosen grid on the
+        // way in, before the player ever sees them — and two hits pulled
+        // onto the same line collapse to the harder one, the same rule the
+        // editor's quantize obeys.
+        let mut snap = snap;
+        if let Some(grid) = self.clip_view.piano_roll.record_quantize {
+            let ppq = phosphor_core::transport::Transport::PPQ;
+            let total_beats = ((snap.length_ticks as f64 / ppq as f64).ceil() as usize).max(1);
+            for n in &mut snap.notes {
+                n.start_frac = grid
+                    .snap(n.start_frac, total_beats)
+                    .clamp(0.0, (1.0 - n.duration_frac).max(0.0));
+            }
+            snap.notes.sort_by(|a, b| {
+                a.note
+                    .cmp(&b.note)
+                    .then(a.start_frac.total_cmp(&b.start_frac))
+                    .then(b.velocity.cmp(&a.velocity))
+            });
+            snap.notes.dedup_by(|a, b| {
+                a.note == b.note && (a.start_frac - b.start_frac).abs() < 1e-9
+            });
+        }
+
         // Every accepted commit is one take on the undo stack — the layer
         // `u` peels while the transport is still recording, and the same
         // layer it peels after the stop. One rule for both, so the habit a

@@ -554,6 +554,10 @@ pub struct PianoRollState {
     pub grid: GridResolution,
     pub snap_enabled: bool,
     pub default_velocity: u8,
+    /// Quantize applied to a take as it commits — the grid its notes snap
+    /// to on the way in, before the player ever sees them. `None` records
+    /// exactly what was played.
+    pub record_quantize: Option<GridResolution>,
     /// Settings panel cursor (for the Settings tab).
     pub settings_cursor: usize,
     // ── Automation lane ──
@@ -600,6 +604,7 @@ impl PianoRollState {
             grid: GridResolution::Eighth,
             snap_enabled: true,
             default_velocity: 100,
+            record_quantize: None,
             settings_cursor: 0,
             automation_open: false,
             automation_focus: false,

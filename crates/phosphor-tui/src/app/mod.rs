@@ -565,7 +565,7 @@ impl App {
             // Say that a layer landed, and that it is one keypress deep. An
             // invisible take stack is a take stack nobody trusts.
             if committed_while_recording && self.nav.undo_stack.top_is_take() {
-                self.flash("take committed · u undoes");
+                self.flash(format!("take {} · u undoes", self.nav.take_count));
             }
 
             let snapshot = self.engine.transport.snapshot();

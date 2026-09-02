@@ -248,6 +248,37 @@ impl RecordBuffer {
             notes.push((note, vel, on, length));
         }
 
+        // The sustain pedal becomes note length. A pianist's take reads
+        // staccato and sounds sustained if the pedal is left as data the
+        // roll cannot show; resolving it at commit makes the notes say what
+        // the performance meant. Every release that lands while the pedal
+        // is down slides to the next pedal-up — or to the clip's end — and
+        // the pedal events themselves are consumed.
+        let mut pedal: Vec<(i64, bool)> = controls
+            .iter()
+            .filter(|e| e.status & 0xF0 == 0xB0 && e.data1 == 64)
+            .map(|e| (e.tick, e.data2 >= 64))
+            .collect();
+        if !pedal.is_empty() {
+            pedal.sort_by_key(|&(tick, _)| tick);
+            let down_at = |t: i64| -> bool {
+                pedal.iter().rev().find(|&&(pt, _)| pt <= t).map(|&(_, d)| d).unwrap_or(false)
+            };
+            let next_up_after = |t: i64| -> i64 {
+                pedal
+                    .iter()
+                    .find(|&&(pt, d)| pt > t && !d)
+                    .map(|&(pt, _)| pt)
+                    .unwrap_or(length)
+            };
+            for (_, _, _, off) in &mut notes {
+                if *off < length && down_at(*off) {
+                    *off = next_up_after(*off);
+                }
+            }
+            controls.retain(|e| !(e.status & 0xF0 == 0xB0 && e.data1 == 64));
+        }
+
         for (_, _, on, off) in &mut notes {
             *off = (*on + Self::MIN_NOTE_TICKS).max(*off).min(length).max(*on + 1);
         }
@@ -556,6 +587,46 @@ mod tests {
         assert_eq!(snap.controls.len(), 1, "the controller missed the snapshot");
         assert_eq!(snap.controls[0].tick, 200);
         assert_eq!(snap.controls[0].data2, 75);
+    }
+
+    /// The sustain pedal becomes note length at commit: a release under the
+    /// pedal slides to the pedal-up, the pedal events are consumed, and a
+    /// note released after the pedal lifted keeps its own timing.
+    #[test]
+    fn sustain_pedal_resolves_into_note_lengths() {
+        let mut buf = RecordBuffer::new();
+        buf.start(0);
+        buf.record(0, 0xB0, 64, 127);      // pedal down
+        buf.record(100, 0x90, 60, 100);    // note on
+        buf.record(300, 0x80, 60, 0);      // released under the pedal
+        buf.record(2000, 0xB0, 64, 0);     // pedal up
+        buf.record(2500, 0x90, 62, 90);    // second note, pedal already up
+        buf.record(2700, 0x80, 62, 0);     // its own release stands
+        let clip = buf.commit(BAR).unwrap();
+
+        let off_60 = clip.events.iter().find(|e| e.status == 0x80 && e.data1 == 60).unwrap();
+        assert_eq!(off_60.tick, 2000, "the pedalled release did not slide to the pedal-up");
+        let off_62 = clip.events.iter().find(|e| e.status == 0x80 && e.data1 == 62).unwrap();
+        assert_eq!(off_62.tick, 2700, "an unpedalled release was moved");
+        assert!(
+            !clip.events.iter().any(|e| e.status & 0xF0 == 0xB0 && e.data1 == 64),
+            "the consumed pedal events were kept as data"
+        );
+    }
+
+    /// A note held under the pedal into the end of the take rings to the
+    /// clip's end, exactly like a note held by hand.
+    #[test]
+    fn sustain_holds_to_the_end_when_never_lifted() {
+        let mut buf = RecordBuffer::new();
+        buf.start(0);
+        buf.record(0, 0xB0, 64, 127);
+        buf.record(100, 0x90, 60, 100);
+        buf.record(200, 0x80, 60, 0);
+        // pedal never lifts
+        let clip = buf.commit(BAR).unwrap();
+        let off = clip.events.iter().find(|e| e.status == 0x80 && e.data1 == 60).unwrap();
+        assert_eq!(off.tick, BAR, "the never-lifted pedal did not hold to the end");
     }
 
     /// A downbeat played a hair before the wrap comes out of the old pass

@@ -7,7 +7,7 @@ use std::path::Path;
 use serde::{Serialize, Deserialize};
 use anyhow::Result;
 
-use crate::state::{FxInstance, FxType, InstrumentType, NavState, TrackState};
+use crate::state::{FxInstance, FxType, GridResolution, InstrumentType, NavState, TrackState};
 use phosphor_core::fx::SendSlot;
 use phosphor_core::transport::Transport;
 
@@ -51,6 +51,14 @@ pub struct SessionTransport {
     /// the count-in existed, which is the same as off.
     #[serde(default)]
     pub count_in_bars: u32,
+    /// Record quantize: 0 off, 1 = 1/32, 2 = 1/16, 3 = 1/8. Absent in
+    /// older files, which is off.
+    #[serde(default)]
+    pub record_quantize: u8,
+    /// Whether R clears the loop range before recording (re-record) rather
+    /// than layering onto it (overdub, the default and the absent value).
+    #[serde(default)]
+    pub record_replace: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -406,6 +414,13 @@ fn extract_session(nav: &NavState, transport: &Transport) -> SessionFile {
             loop_end_bar: nav.loop_editor.end_bar,
             metronome: transport.is_metronome_on(),
             count_in_bars: transport.count_in_bars(),
+            record_replace: nav.record_replace,
+            record_quantize: match nav.clip_view.piano_roll.record_quantize {
+                None => 0,
+                Some(GridResolution::ThirtySecond) => 1,
+                Some(GridResolution::Sixteenth) => 2,
+                _ => 3,
+            },
         },
         tracks,
         buses: (!buses.is_default()).then_some(buses),
@@ -520,6 +535,8 @@ mod tests {
                 loop_end_bar: 5,
                 metronome: true,
                 count_in_bars: 0,
+                record_quantize: 0,
+                record_replace: false,
             },
             buses: Some(SessionBuses {
                 send_a: vec![SessionFx {
@@ -618,6 +635,8 @@ mod tests {
                 loop_end_bar: 2,
                 metronome: false,
                 count_in_bars: 0,
+                record_quantize: 0,
+                record_replace: false,
             },
             buses: None,
             tracks: vec![SessionTrack {

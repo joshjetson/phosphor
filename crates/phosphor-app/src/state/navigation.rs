@@ -144,7 +144,7 @@ impl NavState {
                         }
                     }
                     ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::Settings => {
-                        const SETTINGS_COUNT: usize = 3; // grid, snap, velocity
+                        const SETTINGS_COUNT: usize = 4; // grid, snap, velocity, rec quantize
                         if self.clip_view.piano_roll.settings_cursor + 1 < SETTINGS_COUNT {
                             self.clip_view.piano_roll.settings_cursor += 1;
                         }
@@ -247,6 +247,23 @@ impl NavState {
                 // Default velocity
                 let v = self.clip_view.piano_roll.default_velocity as i32 + direction * 5;
                 self.clip_view.piano_roll.default_velocity = v.clamp(1, 127) as u8;
+            }
+            3 => {
+                // Record quantize: off, and the three grids a take is worth
+                // snapping to. Off by default — what was played is what
+                // lands, until the player asks the grid to catch it.
+                let order = [
+                    None,
+                    Some(GridResolution::ThirtySecond),
+                    Some(GridResolution::Sixteenth),
+                    Some(GridResolution::Eighth),
+                ];
+                let cur = order
+                    .iter()
+                    .position(|&g| g == self.clip_view.piano_roll.record_quantize)
+                    .unwrap_or(0) as i32;
+                let next = (cur + direction).rem_euclid(order.len() as i32) as usize;
+                self.clip_view.piano_roll.record_quantize = order[next];
             }
             _ => {}
         }

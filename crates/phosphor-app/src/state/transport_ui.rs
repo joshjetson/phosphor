@@ -10,6 +10,8 @@ pub enum TransportElement {
     Loop,
     Metronome,
     CountIn,
+    /// Overdub or re-record — what R does to the bars it lands on.
+    RecordMode,
 }
 
 impl TransportElement {
@@ -19,7 +21,8 @@ impl TransportElement {
             Self::Record => Self::Loop,
             Self::Loop => Self::Metronome,
             Self::Metronome => Self::CountIn,
-            Self::CountIn => Self::CountIn,
+            Self::CountIn => Self::RecordMode,
+            Self::RecordMode => Self::RecordMode,
         }
     }
 
@@ -30,6 +33,7 @@ impl TransportElement {
             Self::Loop => Self::Record,
             Self::Metronome => Self::Loop,
             Self::CountIn => Self::Metronome,
+            Self::RecordMode => Self::CountIn,
         }
     }
 
@@ -40,6 +44,7 @@ impl TransportElement {
             Self::Loop => "loop",
             Self::Metronome => "met",
             Self::CountIn => "count",
+            Self::RecordMode => "take",
         }
     }
 }
@@ -77,11 +82,13 @@ mod tests {
         assert_eq!(e.move_right().move_right(), TransportElement::Loop);
         assert_eq!(e.move_right().move_right().move_right(), TransportElement::Metronome);
         assert_eq!(TransportElement::Metronome.move_right(), TransportElement::CountIn);
-        assert_eq!(TransportElement::CountIn.move_right(), TransportElement::CountIn);
+        assert_eq!(TransportElement::CountIn.move_right(), TransportElement::RecordMode);
+        assert_eq!(TransportElement::RecordMode.move_right(), TransportElement::RecordMode);
     }
 
     #[test]
     fn element_left_navigation() {
+        assert_eq!(TransportElement::RecordMode.move_left(), TransportElement::CountIn);
         assert_eq!(TransportElement::CountIn.move_left(), TransportElement::Metronome);
         assert_eq!(TransportElement::Metronome.move_left(), TransportElement::Loop);
         assert_eq!(TransportElement::Loop.move_left(), TransportElement::Record);

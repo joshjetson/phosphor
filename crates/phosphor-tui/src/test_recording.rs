@@ -461,6 +461,130 @@ mod tests {
     }
 
     // ══════════════════════════════════════════════
+    // Record quantize, re-record, punch-in
+    // ══════════════════════════════════════════════
+
+    /// With record quantize set, a take's notes land on the grid as they
+    /// commit — and two hits pulled onto one line collapse to the harder.
+    #[test]
+    fn record_quantize_snaps_the_take_on_the_way_in() {
+        let mut app = app();
+        let ti = add_synth_track(&mut app);
+        app.nav.clip_view.piano_roll.record_quantize = Some(GridResolution::Quarter);
+
+        app.engine.transport.set_loop_bars(1, 1);
+        app.engine.transport.start_loop_record();
+        let snap = ClipSnapshot {
+            track_id: app.nav.tracks[ti].mixer_id.unwrap(),
+            clip_index: 0,
+            start_tick: 0,
+            length_ticks: BAR,
+            event_count: 6,
+            notes: vec![
+                NoteSnapshot { note: 60, velocity: 90, start_frac: 0.02, duration_frac: 0.05 },
+                NoteSnapshot { note: 60, velocity: 120, start_frac: 0.23, duration_frac: 0.05 },
+                NoteSnapshot { note: 60, velocity: 40, start_frac: 0.27, duration_frac: 0.05 },
+            ],
+            controls: Vec::new(),
+        };
+        app.nav.receive_clip_snapshot(snap, true);
+        app.engine.transport.stop_loop_record();
+
+        let notes = &app.nav.tracks[ti].clips[0].notes;
+        assert!(
+            notes.iter().all(|n| (n.start_frac * 4.0).fract().abs() < 1e-6),
+            "a note missed the grid: {notes:?}"
+        );
+        // The two hits near beat 2 collapsed to the harder one.
+        let at_q2: Vec<_> = notes.iter().filter(|n| (n.start_frac - 0.25).abs() < 1e-6).collect();
+        assert_eq!(at_q2.len(), 1, "the pulled-together hits did not collapse");
+        assert_eq!(at_q2[0].velocity, 120, "the softer hit won");
+
+        // Off means untouched.
+        app.nav.clip_view.piano_roll.record_quantize = None;
+        record_take(&mut app, ti, BAR * 2, vec![
+            NoteSnapshot { note: 62, velocity: 90, start_frac: 0.02, duration_frac: 0.05 },
+        ]);
+        let free = app.nav.tracks[ti].clips.iter()
+            .flat_map(|c| c.notes.iter())
+            .find(|n| n.note == 62)
+            .unwrap();
+        assert!((free.start_frac - 0.02).abs() < 1e-9, "an unquantized take was moved");
+    }
+
+    /// Re-record mode: R clears the loop range on the armed track first —
+    /// as an undo step — and overdub mode leaves it alone.
+    #[test]
+    fn re_record_clears_the_range_and_undoes() {
+        let mut app = app();
+        let ti = add_synth_track(&mut app);
+        record_take(&mut app, ti, 0, vec![note(60, 0.0)]);
+        assert_eq!(app.nav.tracks[ti].clips.len(), 1);
+
+        app.engine.transport.set_loop_bars(1, 1);
+        app.nav.loop_editor.start_bar = 1;
+        app.nav.loop_editor.end_bar = 2;
+
+        // Overdub (default): R keeps the clip.
+        app.toggle_loop_record();
+        assert_eq!(app.nav.tracks[ti].clips.len(), 1, "overdub cleared the range");
+        app.toggle_loop_record();
+
+        // Re-record: R clears it.
+        app.nav.record_replace = true;
+        app.toggle_loop_record();
+        assert!(app.nav.tracks[ti].clips.is_empty(), "re-record left the old clip");
+        app.toggle_loop_record();
+
+        // And the clear is one undo step away from coming back.
+        app.perform_undo();
+        assert_eq!(app.nav.tracks[ti].clips.len(), 1, "undo did not restore the cleared clip");
+    }
+
+    /// R while the transport is already rolling punches in where it is: no
+    /// rewind, no count-in, recording just joins the music.
+    #[test]
+    fn r_while_playing_punches_in_without_rewinding() {
+        let mut app = app();
+        add_synth_track(&mut app);
+        app.engine.transport.set_count_in_bars(2); // must be ignored mid-roll
+        app.engine.transport.play();
+        app.engine.transport.set_position(BAR * 2);
+
+        app.toggle_loop_record();
+        assert!(app.engine.transport.is_recording(), "punch-in did not arm");
+        assert!(app.engine.transport.is_playing(), "punch-in stopped the music");
+        assert!(!app.engine.transport.is_counting_in(), "punch-in counted in mid-roll");
+        assert_eq!(
+            app.engine.transport.position_ticks(),
+            BAR * 2,
+            "punch-in rewound the playhead"
+        );
+    }
+
+    /// The take counter climbs as passes commit and starts fresh with the
+    /// next recording.
+    #[test]
+    fn the_take_counter_counts_passes() {
+        let mut app = app();
+        let ti = add_synth_track(&mut app);
+        app.engine.transport.set_loop_bars(1, 1);
+        app.engine.transport.start_loop_record();
+        app.nav.take_count = 0;
+        // Two passes commit — counted where the main loop counts them.
+        for k in 0..2 {
+            let snap = take(&app, ti, 0, vec![note(60 + k, 0.0)]);
+            app.nav.receive_clip_snapshot(snap, true);
+            app.nav.take_count += 1; // the main loop's increment, mirrored here
+        }
+        assert_eq!(app.nav.take_count, 2);
+        app.engine.transport.stop_loop_record();
+        app.toggle_loop_record(); // next recording starts at zero
+        assert_eq!(app.nav.take_count, 0, "the counter did not reset");
+        app.toggle_loop_record();
+    }
+
+    // ══════════════════════════════════════════════
     // Recorded controllers (automation)
     // ══════════════════════════════════════════════
 

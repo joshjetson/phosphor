@@ -794,6 +794,7 @@ fn render_settings(frame: &mut Frame, area: Rect, nav: &NavState) {
         ("Grid", pr.grid.label().to_string()),
         ("Snap", if pr.snap_enabled { "on".into() } else { "off".into() }),
         ("Velocity", format!("{}", pr.default_velocity)),
+        ("Rec quant", pr.record_quantize.map_or("off".to_string(), |g| g.label().to_string())),
     ];
 
     let mut lines: Vec<Line> = Vec::new();

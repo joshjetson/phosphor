@@ -65,6 +65,38 @@ impl App {
         self.log_transport_state();
     }
 
+    /// Clear the current track's clips where they overlap the loop range —
+    /// the re-record mode's clean slate, taken as one undo step.
+    fn clear_loop_range_clips(&mut self) {
+        let track_idx = self.nav.track_cursor;
+        let start = self.nav.loop_editor.start_ticks();
+        let end = self.nav.loop_editor.end_ticks();
+        let undo_before = self.nav.undo_checkpoint(
+            crate::state::undo::UndoScope::TrackClips { track_idx },
+        );
+        let Some(track) = self.nav.tracks.get_mut(track_idx) else { return };
+        let audio_len = track.clips.len();
+        let before = track.clips.len();
+        track.clips.retain(|c| {
+            let c_end = c.start_tick + c.length_ticks;
+            !(c.start_tick < end && start < c_end)
+        });
+        let cleared = before - track.clips.len();
+        if cleared == 0 {
+            return;
+        }
+        for (i, c) in track.clips.iter_mut().enumerate() {
+            c.number = i + 1;
+        }
+        self.nav.clamp_clip_selection(track_idx);
+        self.nav.commit_undo(undo_before, "clear for re-record");
+        self.resync_track_clips_to_audio(track_idx, audio_len);
+        self.flash(format!(
+            "re-record \u{00b7} cleared {cleared} clip{} (u restores)",
+            if cleared == 1 { "" } else { "s" }
+        ));
+    }
+
     /// How many tracks will actually commit a take when recording stops:
     /// the armed ones the MIDI is routed to, which is zero or one. Counting
     /// every armed track here used to leave the grace counter holding
@@ -181,6 +213,24 @@ impl App {
             // Sync loop range from editor to transport, then start
             self.sync_loop_to_transport();
             self.live_take_notes = 0;
+            self.nav.take_count = 0;
+
+            // Re-record: the loop range starts clean. The clear is an undo
+            // step of its own, so `u` after a change of heart brings the
+            // old material straight back.
+            if self.nav.record_replace {
+                self.clear_loop_range_clips();
+            }
+
+            // Punch in: the music is already rolling — recording joins it
+            // where it is. No rewind, no count-in; the band was the count.
+            if self.engine.transport.is_playing() {
+                self.engine.transport.toggle_record();
+                self.flash("punched in \u{00b7} recording");
+                self.log_transport_state();
+                return;
+            }
+
             let bars = self.engine.transport.count_in_bars();
             if bars > 0 {
                 // R is record intent and play in one press, so the count-in's

@@ -421,6 +421,14 @@ impl App {
                         self.engine.transport.toggle_metronome();
                         dbg::system(&format!("metronome={}", self.engine.transport.is_metronome_on()));
                     }
+                    TransportElement::RecordMode => {
+                        self.nav.record_replace = !self.nav.record_replace;
+                        self.flash(if self.nav.record_replace {
+                            "take mode: re-record · R clears the loop range first"
+                        } else {
+                            "take mode: overdub · passes layer up"
+                        });
+                    }
                     TransportElement::CountIn => {
                         let bars = self.engine.transport.cycle_count_in();
                         dbg::system(&format!("count-in bars={bars}"));

@@ -122,6 +122,27 @@ pub(super) fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap
             .bg(if cnt_sel { hi } else { theme::bg_val() }))
     };
 
+    // Take mode: dub layers passes up, new clears the range first. While
+    // recording it shows the running pass count instead — the stack's
+    // visible depth. Silent in the default state: a cell that always says
+    // "dub" is noise, and the bar's width belongs to the limiter readout.
+    let mode_sel = tp && te == TransportElement::RecordMode;
+    let take = if snap.recording && nav.take_count > 0 {
+        Some(Span::styled(
+            format!("take {}", nav.take_count),
+            theme::amber_bright().add_modifier(Modifier::BOLD),
+        ))
+    } else if nav.record_replace || mode_sel {
+        Some(Span::styled(
+            if nav.record_replace { "take:new" } else { "take:dub" },
+            Style::default()
+                .fg(if nav.record_replace { theme::amber_val() } else { theme::normal_val() })
+                .bg(if mode_sel { hi } else { theme::bg_val() }),
+        ))
+    } else {
+        None
+    };
+
     let mut middle = vec![
         seq,
         Span::styled(format!("  {bpm_label}"), theme::normal()),
@@ -135,6 +156,10 @@ pub(super) fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap
         Span::styled("  ", theme::bg()),
         cnt,
     ];
+    if let Some(take) = take {
+        middle.push(Span::styled("  ", theme::bg()));
+        middle.push(take);
+    }
     middle.extend(lim);
     frame.render_widget(
         Paragraph::new(Line::from(middle)).alignment(Alignment::Center),

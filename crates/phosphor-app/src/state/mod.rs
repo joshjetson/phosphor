@@ -129,6 +129,13 @@ pub struct NavState {
     /// Decremented as each valid snapshot is accepted. Prevents stale snapshots
     /// while allowing final recording commits from all tracks to come through.
     pub recording_grace: usize,
+    /// Takes committed since this recording started — the "pass 3" the top
+    /// of the roll reads out, so the layer stack has a visible depth.
+    pub take_count: usize,
+    /// What R does to the loop range it is about to record over: `false`
+    /// layers onto what is there (overdub, the default), `true` clears the
+    /// range first so the take starts clean (re-record).
+    pub record_replace: bool,
     /// What the master limiter is taking off, ready to draw.
     ///
     /// The audio thread's end of this is in `Mixer`; the ballistics have
@@ -193,6 +200,8 @@ impl NavState {
             preset_modal: PresetModal::new(),
             element_locked: false,
             recording_grace: 0,
+            take_count: 0,
+            record_replace: false,
             limiter_gr: std::sync::Arc::new(phosphor_core::fx::GrMeter::new()),
             sample_rate: 48_000,
             tempo_bpm: 120.0,

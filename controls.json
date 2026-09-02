@@ -9,7 +9,8 @@
     "Shift+Tab": "prev pane",
     "Esc": "back / close / clear / unlock",
     "+/-": "adjust BPM",
-    "recording_automation": "mod wheel, pitch bend and channel aftertouch are recorded with the notes, survive every edit and the session file, and play back; X in the piano roll erases them from a clip"
+    "recording_automation": "mod wheel, pitch bend and channel aftertouch are recorded with the notes, survive every edit and the session file, and play back; X in the piano roll erases them from a clip",
+    "sustain_pedal": "CC64 held during recording becomes note length at commit: releases under the pedal slide to the pedal-up"
   },
   "space_menu": {
     "1": "focus transport",
@@ -92,7 +93,8 @@
     },
     "settings_tab": {
       "j/k": "navigate settings (grid, snap, velocity)",
-      "h/l": "adjust setting value"
+      "h/l": "adjust setting value",
+      "rec_quant": "record quantize: off / 1/32 / 1/16 / 1/8 — takes snap to this grid as they commit; hits pulled onto one line collapse to the harder"
     }
   },
   "piano_roll_navigation": {
@@ -187,7 +189,9 @@
     "Enter": "activate element (edit BPM, toggle record, etc.)",
     "h/l_while_editing_bpm": "decrease/increase BPM",
     "Esc": "release element",
-    "count_in": "Enter on the count element cycles off → 1 bar → 2 bars. With count-in set AND record armed (Space+r) AND play pressed — all three — the bars click down before recording rolls. R counts in too; any transport key during the countdown cancels it."
+    "count_in": "Enter on the count element cycles off → 1 bar → 2 bars. With count-in set AND record armed (Space+r) AND play pressed — all three — the bars click down before recording rolls. R counts in too; any transport key during the countdown cancels it.",
+    "take_mode": "Enter on the take element toggles overdub (passes layer up) vs re-record (R clears the loop range first, undoable); while recording the cell shows the running pass count",
+    "punch_in": "R while the transport is already playing punches recording in at the playhead — no rewind, no count-in"
   },
   "grid_settings": {
     "resolutions": [

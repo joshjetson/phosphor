@@ -163,6 +163,13 @@ impl App {
         self.engine.transport.set_tempo(session.transport.tempo_bpm);
         self.nav.tempo_bpm = session.transport.tempo_bpm as f32;
         self.engine.transport.set_count_in_bars(session.transport.count_in_bars);
+        self.nav.record_replace = session.transport.record_replace;
+        self.nav.clip_view.piano_roll.record_quantize = match session.transport.record_quantize {
+            1 => Some(crate::state::GridResolution::ThirtySecond),
+            2 => Some(crate::state::GridResolution::Sixteenth),
+            3 => Some(crate::state::GridResolution::Eighth),
+            _ => None,
+        };
         if session.transport.metronome != self.engine.transport.is_metronome_on() {
             self.engine.transport.toggle_metronome();
         }
