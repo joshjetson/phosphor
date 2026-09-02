@@ -708,10 +708,7 @@ impl App {
         };
         let value = (current + step * direction as f32).clamp(info.min, info.max);
         self.set_midi_fx_param(track_idx, slot, row, value);
-        let shown = fx_type
-            .value_label(row, value)
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("{value:.0}{}", info.unit));
+        let shown = fx_type.value_text(row, value);
         self.flash(format!("{}: {shown}", info.name));
     }
 

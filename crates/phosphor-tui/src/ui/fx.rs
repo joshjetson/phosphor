@@ -199,10 +199,7 @@ fn render_midi_fx_panel(
     for (row, info) in fx_type.params().iter().enumerate() {
         let here = cursor == row;
         let value = instance.params.get(row).copied().unwrap_or(info.default);
-        let shown = fx_type
-            .value_label(row, value)
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("{value:.0}{}", info.unit));
+        let shown = fx_type.value_text(row, value);
         let style = if here && locked {
             theme::amber_bright().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else if here {

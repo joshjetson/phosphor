@@ -22,8 +22,10 @@ use phosphor_plugin::MidiEvent;
 use crate::fx::FxParamInfo;
 
 mod arp;
+mod chord;
 
 pub use arp::{Arpeggiator, ARP_PARAMS, RATE_LABELS, STYLE_LABELS};
+pub use chord::{ChordDevice, CHORD_PARAMS, COLOR_LABELS, NOTE_NAMES, SCALE_LABELS, VOICING_LABELS};
 
 /// How many MIDI effects one track holds. Two is the canonical chain —
 /// a chord device feeding an arpeggiator — and what fits on the panel.
@@ -128,6 +130,7 @@ pub struct MidiFxSlot {
 pub fn build_midi_fx(name: &str) -> Option<Box<dyn MidiEffect>> {
     match name {
         "arp" => Some(Box::new(Arpeggiator::new())),
+        "chord" => Some(Box::new(ChordDevice::new())),
         _ => None,
     }
 }

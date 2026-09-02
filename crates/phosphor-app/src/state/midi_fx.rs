@@ -5,22 +5,27 @@
 //! the one path that also tells the mixer.
 
 use phosphor_core::fx::FxParamInfo;
-use phosphor_core::midi_fx::{ARP_PARAMS, RATE_LABELS, STYLE_LABELS};
+use phosphor_core::midi_fx::{
+    ARP_PARAMS, CHORD_PARAMS, COLOR_LABELS, NOTE_NAMES, RATE_LABELS, SCALE_LABELS, STYLE_LABELS,
+    VOICING_LABELS,
+};
 
 /// Which MIDI effect a slot holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MidiFxType {
+    Chord,
     Arp,
 }
 
 impl MidiFxType {
-    /// Every type, in menu order.
-    pub const ALL: [MidiFxType; 1] = [MidiFxType::Arp];
+    /// Every type, in menu order — chord first, because it leads the chain.
+    pub const ALL: [MidiFxType; 2] = [MidiFxType::Chord, MidiFxType::Arp];
 
     /// What the menu and the chain list call it.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
+            Self::Chord => "chord",
             Self::Arp => "arp",
         }
     }
@@ -30,6 +35,7 @@ impl MidiFxType {
     #[must_use]
     pub fn menu_label(self) -> &'static str {
         match self {
+            Self::Chord => "chord \u{00b7} midi",
             Self::Arp => "arp \u{00b7} midi",
         }
     }
@@ -38,6 +44,7 @@ impl MidiFxType {
     #[must_use]
     pub fn key(self) -> &'static str {
         match self {
+            Self::Chord => "chord",
             Self::Arp => "arp",
         }
     }
@@ -45,6 +52,7 @@ impl MidiFxType {
     #[must_use]
     pub fn from_key(key: &str) -> Option<Self> {
         match key {
+            "chord" => Some(Self::Chord),
             "arp" => Some(Self::Arp),
             _ => None,
         }
@@ -54,6 +62,7 @@ impl MidiFxType {
     #[must_use]
     pub fn params(self) -> &'static [FxParamInfo] {
         match self {
+            Self::Chord => &CHORD_PARAMS,
             Self::Arp => &ARP_PARAMS,
         }
     }
@@ -62,13 +71,39 @@ impl MidiFxType {
     /// numbers name things rather than measure them.
     #[must_use]
     pub fn value_label(self, param: usize, value: f32) -> Option<&'static str> {
+        let idx = value.round() as usize;
         match (self, param) {
-            (Self::Arp, 0) => STYLE_LABELS.get(value.round() as usize).copied(),
-            (Self::Arp, 1) => RATE_LABELS.get(value.round() as usize).copied(),
+            (Self::Arp, 0) => STYLE_LABELS.get(idx).copied(),
+            (Self::Arp, 1) => RATE_LABELS.get(idx).copied(),
             (Self::Arp, 4) => Some(if value >= 0.5 { "hold" } else { "off" }),
             (Self::Arp, 5) if value < 0.5 => Some("as played"),
+            (Self::Chord, 0) => NOTE_NAMES.get(idx % 12).copied(),
+            (Self::Chord, 1) => SCALE_LABELS.get(idx).copied(),
+            (Self::Chord, 2) => COLOR_LABELS.get(idx).copied(),
+            (Self::Chord, 3) => VOICING_LABELS.get(idx).copied(),
+            (Self::Chord, 5) => Some(["off", "root -1 oct", "root -2 oct"][idx.min(2)]),
             _ => None,
         }
+    }
+}
+
+impl MidiFxType {
+    /// The words a parameter's value reads as on the panel — the label
+    /// where the number names a thing, the note name for the split, the
+    /// plain number with its unit for everything else.
+    #[must_use]
+    pub fn value_text(self, param: usize, value: f32) -> String {
+        if let Some(label) = self.value_label(param, value) {
+            return label.to_string();
+        }
+        if self == Self::Chord && param == 4 {
+            let n = value.round() as i32;
+            let name = NOTE_NAMES[(n.rem_euclid(12)) as usize];
+            let octave = n / 12 - 1;
+            return format!("{name}{octave}");
+        }
+        let unit = self.params().get(param).map(|p| p.unit).unwrap_or("");
+        format!("{value:.0}{unit}")
     }
 }
 

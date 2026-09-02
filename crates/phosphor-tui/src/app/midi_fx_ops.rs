@@ -17,6 +17,10 @@ impl App {
             self.flash("the midi rack is full");
             return;
         }
+        if track.midi_fx.iter().any(|s| s.fx_type == fx_type) {
+            self.flash(format!("{} is already in the rack", fx_type.label()));
+            return;
+        }
         if track.mixer_id.is_none() {
             self.flash("midi fx live on instrument tracks");
             return;
@@ -24,10 +28,17 @@ impl App {
         let before = self.nav.undo_checkpoint(
             crate::state::undo::UndoScope::TrackMidiFx { track_idx: track_index },
         );
+        // Canonical order: the chord device leads and the arp follows —
+        // the arp needs a chord to arpeggiate. Adding in either order
+        // lands them the right way round.
         let slot = {
             let track = &mut self.nav.tracks[track_index];
-            track.midi_fx.push(MidiFxInstance::new(fx_type));
-            track.midi_fx.len() - 1
+            let at = match fx_type {
+                MidiFxType::Chord => 0,
+                MidiFxType::Arp => track.midi_fx.len(),
+            };
+            track.midi_fx.insert(at, MidiFxInstance::new(fx_type));
+            at
         };
         self.send_add_midi_fx(track_index, slot);
         self.nav.commit_undo(before, "add midi effect");

@@ -123,4 +123,32 @@ mod tests {
         assert_eq!(copy.midi_fx.len(), 1, "the rack did not copy");
         assert!((copy.midi_fx[0].params[6] - 58.0).abs() < 1e-6, "the settings did not copy");
     }
+
+    /// Chord and arp land in signal order — chord first — whichever order
+    /// they were added in, and a second copy of either is refused.
+    #[test]
+    fn the_rack_keeps_chord_before_arp() {
+        let (mut app, ti) = app_with_track();
+        app.add_midi_fx(ti, MidiFxType::Arp);
+        app.add_midi_fx(ti, MidiFxType::Chord);
+        let types: Vec<MidiFxType> =
+            app.nav.tracks[ti].midi_fx.iter().map(|s| s.fx_type).collect();
+        assert_eq!(types, vec![MidiFxType::Chord, MidiFxType::Arp], "order: {types:?}");
+
+        app.add_midi_fx(ti, MidiFxType::Chord);
+        assert_eq!(app.nav.tracks[ti].midi_fx.len(), 2, "a duplicate device slipped in");
+    }
+
+    /// The chord panel speaks music, not numbers: the root reads as a note
+    /// name, the split as a note with its octave, the scale by name.
+    #[test]
+    fn the_chord_panel_reads_in_words() {
+        assert_eq!(MidiFxType::Chord.value_text(0, 0.0), "C");
+        assert_eq!(MidiFxType::Chord.value_text(1, 0.0), "major");
+        assert_eq!(MidiFxType::Chord.value_text(2, 3.0), "lush");
+        assert_eq!(MidiFxType::Chord.value_text(3, 4.0), "quartal");
+        assert_eq!(MidiFxType::Chord.value_text(4, 60.0), "C4");
+        assert_eq!(MidiFxType::Chord.value_text(5, 1.0), "root -1 oct");
+        assert_eq!(MidiFxType::Chord.value_text(6, 25.0), "25ms");
+    }
 }
