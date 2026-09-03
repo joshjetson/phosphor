@@ -28,11 +28,26 @@ impl App {
     /// Take everything the MIDI tap has seen since the last frame.
     pub(crate) fn poll_step_record(&mut self) {
         let Some(rx) = self.midi_ui_rx.as_ref() else { return };
-        let mut events: Vec<MidiMessageType> = Vec::new();
+        let mut events: Vec<(MidiMessageType, Option<u64>)> = Vec::new();
         while let Ok(message) = rx.try_recv() {
-            events.push(message.message_type);
+            events.push((message.message_type, message.received_micros));
         }
-        for event in events {
+        for (event, stamp) in events {
+            // The practice room hears everything while it is running: the
+            // judge needs the arrival stamp, and a drilled note should not
+            // also step-record.
+            if self.nav.practice.open && self.nav.practice.run.is_some() {
+                match event {
+                    MidiMessageType::NoteOn { note, velocity: 0, .. }
+                    | MidiMessageType::NoteOff { note, .. } => self.nav.practice.note_off(note),
+                    MidiMessageType::NoteOn { note, .. } => {
+                        let at = stamp.unwrap_or_else(phosphor_midi::clock::now_micros);
+                        self.nav.practice.note_on(note, at);
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             // The progression editor's learn mode takes the stream while it
             // is listening — a chord played to be captured should not also
             // step-record.

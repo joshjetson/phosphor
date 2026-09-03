@@ -139,6 +139,10 @@ pub enum MixerCommand {
         slot: usize,
         bypassed: bool,
     },
+    /// The practice room's click: a free metronome at `bpm`, transport
+    /// ignored. `bpm` 0.0 turns it off. `pattern` 0 = every beat with a
+    /// downbeat accent, 1 = beats 2 and 4 only.
+    SetPracticeClick { bpm: f64, pattern: u8 },
     /// Hand a MIDI effect a user progression. The Vec travels in and is
     /// copied into the effect's own storage; dropping it here frees it,
     /// the same road `UpdateClip` events already take.
@@ -260,6 +264,7 @@ fn command_cost(cmd: &MixerCommand) -> u32 {
         // a handful of note-offs into a buffer that already exists.
         | MixerCommand::SetMidiFxParam { .. }
         | MixerCommand::SetMidiFxBypass { .. }
+        | MixerCommand::SetPracticeClick { .. }
         // Clearing a record buffer keeps its capacity: a store and a length
         // reset, nothing for the allocator.
         | MixerCommand::DiscardRecording => 1,
@@ -627,6 +632,10 @@ pub struct Mixer {
     command_rx: Receiver<MixerCommand>,
     clip_tx: Sender<ClipSnapshot>,
     metronome: Metronome,
+    /// The practice click, when the practice room asked for one:
+    /// (bpm, pattern), plus its own beat phase.
+    practice_click: Option<(f64, u8)>,
+    practice_beat_phase: f64,
     sample_rate: u32,
     max_buffer_size: usize,
     /// Pre-allocated scratch buffers for mix — avoids allocation in process().
@@ -705,6 +714,8 @@ impl Mixer {
             command_rx,
             clip_tx,
             metronome: Metronome::new(sample_rate as f64),
+            practice_click: None,
+            practice_beat_phase: 0.0,
             sample_rate,
             max_buffer_size,
             scratch_l: vec![0.0; max_buffer_size],
@@ -1313,6 +1324,15 @@ impl Mixer {
             self.metronome.count_in(output, elapsed, transport);
             let fired = transport.consume_count_in(num_frames as u32, self.sample_rate);
             self.was_counting = !fired;
+        } else if let Some((bpm, pattern)) = self.practice_click {
+            // The practice room's click owns the metronome while it is set:
+            // free-running on its own beat phase, transport ignored, so a
+            // player can drill with the song stopped — or with it playing,
+            // where the ordinary metronome would double it.
+            self.was_counting = false;
+            let mut phase = self.practice_beat_phase;
+            self.metronome.practice_click(output, bpm, pattern, &mut phase);
+            self.practice_beat_phase = phase;
         } else {
             self.was_counting = false;
             self.metronome.process(output, transport);
@@ -1554,6 +1574,15 @@ impl Mixer {
                     if let Some(s) = track.midi_fx.get_mut(slot) {
                         s.fx.set_parameter(param_index, value);
                     }
+                }
+            }
+            MixerCommand::SetPracticeClick { bpm, pattern } => {
+                if bpm > 0.0 {
+                    self.practice_click = Some((bpm, pattern));
+                    self.practice_beat_phase = 0.0;
+                    self.metronome.reset();
+                } else {
+                    self.practice_click = None;
                 }
             }
             MixerCommand::SetMidiFxProgression { track_id, slot, chords } => {
@@ -2018,6 +2047,49 @@ mod tests {
             }
         }
         assert!(tail < 1.0e-3, "a note hung after bypass: tail peak {tail}");
+    }
+
+    /// The practice click runs with the transport parked, and pattern 1
+    /// clicks half as often — beats 2 and 4 only, the jazz convention.
+    #[test]
+    fn the_practice_click_runs_without_the_transport() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let mut output = vec![0.0f32; 512];
+        // Two bars at 120: 4 seconds = 689 blocks of 256 frames.
+        let count_clicks = |mixer: &mut Mixer, transport: &Transport| -> usize {
+            let mut clicks = 0usize;
+            let mut above = false;
+            for _ in 0..689 {
+                let mut out = vec![0.0f32; 512];
+                mixer.process(&mut out, &[], transport);
+                let peak = out.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+                if peak > 0.01 && !above {
+                    clicks += 1;
+                    above = true;
+                } else if peak < 0.001 {
+                    above = false;
+                }
+            }
+            clicks
+        };
+
+        tx.send(MixerCommand::SetPracticeClick { bpm: 120.0, pattern: 0 }).unwrap();
+        mixer.process(&mut output, &[], &transport);
+        let all_beats = count_clicks(&mut mixer, &transport);
+        assert!((7..=9).contains(&all_beats), "expected ~8 clicks in 2 bars, got {all_beats}");
+
+        tx.send(MixerCommand::SetPracticeClick { bpm: 120.0, pattern: 1 }).unwrap();
+        mixer.process(&mut output, &[], &transport);
+        let two_and_four = count_clicks(&mut mixer, &transport);
+        assert!(
+            (3..=5).contains(&two_and_four),
+            "2&4 should click half as often: {two_and_four} vs {all_beats}"
+        );
+
+        tx.send(MixerCommand::SetPracticeClick { bpm: 0.0, pattern: 0 }).unwrap();
+        mixer.process(&mut output, &[], &transport);
+        let off = count_clicks(&mut mixer, &transport);
+        assert_eq!(off, 0, "the click kept going after off");
     }
 
     /// The stop edge flushes the MIDI-FX layer: an arp still holding keys

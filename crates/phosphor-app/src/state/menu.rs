@@ -403,6 +403,8 @@ pub enum SpaceAction {
     EditMode,
     Quantize,
     Presets,
+    /// The practice room.
+    Fingers,
 }
 
 // ── Confirmation Modal ──
@@ -822,6 +824,7 @@ pub const SPACE_ACTIONS: &[(&str, &str, &str)] = &[
     ("spc+q", "quantize",  "snap notes to grid"),
     ("spc+w", "presets",   "save / load instrument presets"),
     ("spc+v", "vibe",      "cycle color theme"),
+    ("spc+f", "fingers",   "practice room: technique drills"),
     ("spc+h", "help",      "open help topics"),
 ];
 
@@ -1161,6 +1164,33 @@ pub const HELP_TOPICS: &[HelpTopic] = &[
             Key("r", "step record: a played key writes and moves on"),
             Key(". / _", "recording: a rest \u{00b7} tie the step before"),
             Key("b", "bounce the pattern or chain to a clip"),
+        ],
+    },
+    HelpTopic {
+        title: "fingers",
+        summary: "the practice room: technique drills",
+        body: &[
+            Note("spc+f, on any instrument track. Your controller"),
+            Note("sounds that track's synth while the room listens"),
+            Note("and judges \u{2014} scales, arpeggios, jazz voicings,"),
+            Note("bebop lines, all generated in any key with real"),
+            Note("published fingerings drawn on the keys."),
+            Gap,
+            Heading("in the room"),
+            Key("j / k", "choose a drill \u{00b7} < > walk keys in 4ths"),
+            Key("h", "RH \u{2192} LH \u{2192} hands together"),
+            Key("w", "wait (pauses for you) / flow (the clock rolls)"),
+            Key("c", "click: every beat \u{00b7} 2&4 \u{00b7} off"),
+            Key("[ / ]", "tempo down / up"),
+            Key("enter", "start \u{00b7} esc stops, esc again leaves"),
+            Gap,
+            Heading("the ladder"),
+            Note("Three clean reps in a row and the tempo climbs 5."),
+            Note("Your best clean tempo is saved per drill, per key,"),
+            Note("per hand \u{2014} next time you start where you left off."),
+            Note("Flow judges every note against the grid: bias says"),
+            Note("rushing or dragging, spread says consistency, and"),
+            Note("evenness under 8% is what a conservatory hand does."),
         ],
     },
     HelpTopic {
