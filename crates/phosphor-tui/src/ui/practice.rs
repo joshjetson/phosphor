@@ -24,6 +24,24 @@ pub(super) fn render_practice(frame: &mut Frame, area: Rect, nav: &NavState) {
     }
 }
 
+/// Center a block of lines in the area: the widest line decides the left
+/// margin, and a third of the spare height sits above — a page, not a log.
+fn centered(mut lines: Vec<Line<'static>>, area: Rect) -> Vec<Line<'static>> {
+    let widest = lines.iter().map(Line::width).max().unwrap_or(0);
+    let pad = (area.width as usize).saturating_sub(widest) / 2;
+    if pad > 0 {
+        let indent = " ".repeat(pad);
+        for line in &mut lines {
+            line.spans.insert(0, Span::raw(indent.clone()));
+        }
+    }
+    let spare = (area.height as usize).saturating_sub(lines.len());
+    let above = (spare / 3).min(4);
+    let mut out = vec![Line::from(""); above];
+    out.extend(lines);
+    out
+}
+
 fn render_browse(frame: &mut Frame, area: Rect, nav: &NavState) {
     let room = &nav.practice;
     let mut lines: Vec<Line> = Vec::new();
@@ -99,6 +117,7 @@ fn render_browse(frame: &mut Frame, area: Rect, nav: &NavState) {
         theme::dim(),
     )));
 
+    let mut lines = centered(lines, area);
     lines.truncate(area.height as usize);
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -170,6 +189,10 @@ fn render_run(frame: &mut Frame, area: Rect, nav: &NavState) {
         lines.push(line);
     }
     lines.push(Line::from(""));
+    for line in hand_diagrams(run, focus) {
+        lines.push(line);
+    }
+    lines.push(Line::from(""));
 
     // ── Feedback ──
     let mut fb = vec![Span::styled("  ", theme::dim())];
@@ -199,6 +222,7 @@ fn render_run(frame: &mut Frame, area: Rect, nav: &NavState) {
         theme::dim(),
     )));
 
+    let mut lines = centered(lines, area);
     lines.truncate(area.height as usize);
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -252,6 +276,20 @@ fn white_index(lo: u8, note: u8) -> usize {
 /// The keyboard band: five rows. The upper three carry the black keys,
 /// the lower two the white; targets carry their finger number on the key,
 /// pressed keys flip green (right) or red (wrong).
+/// The keys the player should have down *now*: the wait group, or the
+/// pending flow targets nearest the focus tick.
+fn wanted_now(run: &phosphor_app::practice::Run, focus: usize) -> Vec<(u8, u8, Hand)> {
+    let targets = run.judge.targets();
+    let focus_tick = targets.get(focus).map(|t| t.tick).unwrap_or(0);
+    let mut wanted: Vec<(u8, u8, Hand)> = Vec::new();
+    for (i, t) in targets.iter().enumerate() {
+        if t.tick == focus_tick && matches!(run.judge.status(i), HitState::Pending) {
+            wanted.push((t.note, t.finger, t.hand));
+        }
+    }
+    wanted
+}
+
 fn keyboard_band(
     lo: u8,
     hi: u8,
@@ -260,15 +298,7 @@ fn keyboard_band(
     focus: usize,
 ) -> Vec<Line<'static>> {
     let targets = run.judge.targets();
-    // The keys the player should have down *now*: the wait group, or the
-    // pending flow targets nearest the focus tick.
-    let focus_tick = targets.get(focus).map(|t| t.tick).unwrap_or(0);
-    let mut wanted: Vec<(u8, u8, Hand)> = Vec::new();
-    for (i, t) in targets.iter().enumerate() {
-        if t.tick == focus_tick && matches!(run.judge.status(i), HitState::Pending) {
-            wanted.push((t.note, t.finger, t.hand));
-        }
-    }
+    let wanted = wanted_now(run, focus);
 
     let white_total = white_index(lo, hi) + 1;
     let cell = 2usize;
@@ -362,9 +392,13 @@ fn keyboard_band(
                     " ".to_string(),
                     Style::default().bg(key_color(w, false).0),
                 ));
+                // A lit black key carries its digit in near-black on the
+                // bright key colour — light-on-amber washed out.
+                let lit = bc != bg_black;
+                let fg = if lit { Color::Rgb(12, 12, 12) } else { Color::Rgb(230, 230, 230) };
                 rows[row].push(Span::styled(
                     text,
-                    Style::default().bg(bc).fg(Color::Rgb(230, 230, 230)).add_modifier(Modifier::BOLD),
+                    Style::default().bg(bc).fg(fg).add_modifier(Modifier::BOLD),
                 ));
             } else {
                 rows[row].push(Span::styled(
@@ -377,4 +411,90 @@ fn keyboard_band(
         shown += 1;
     }
     rows.into_iter().map(Line::from).collect()
+}
+/// Finger column heights on a four-row hand: a hand seen palm-down, the
+/// middle finger tallest, the thumb a low nub at the side.
+const FINGER_ROWS: [usize; 5] = [1, 3, 4, 3, 2]; // thumb, index, middle, ring, pinky
+
+/// Two hands under the keyboard, each finger a column that lights — with
+/// its number — when the current target asks for it. The right hand reads
+/// thumb-first left to right; the left hand mirrors, exactly as hands do.
+fn hand_diagrams(run: &phosphor_app::practice::Run, focus: usize) -> Vec<Line<'static>> {
+    let wanted = wanted_now(run, focus);
+    let uses = |hand: Hand| {
+        run.judge.targets().iter().any(|t| t.hand == hand)
+    };
+    let show_left = uses(Hand::Left);
+    let show_right = uses(Hand::Right);
+    let lit = |hand: Hand, finger: u8| -> bool {
+        wanted.iter().any(|&(_, f, h)| h == hand && f == finger)
+    };
+
+    let amber = theme::amber_bright_val();
+    let lh_blue = Color::Rgb(70, 130, 200);
+    let dark = Color::Rgb(12, 12, 12);
+
+    // One hand as a 4-row grid of 5 three-wide finger columns.
+    let hand_rows = |hand: Hand| -> Vec<Vec<Span<'static>>> {
+        let color = if hand == Hand::Left { lh_blue } else { amber };
+        // Finger order across the diagram: RH thumb→pinky, LH pinky→thumb.
+        let order: [u8; 5] = match hand {
+            Hand::Right => [1, 2, 3, 4, 5],
+            Hand::Left => [5, 4, 3, 2, 1],
+        };
+        let mut rows: Vec<Vec<Span<'static>>> = vec![Vec::new(); 4];
+        for (row, spans) in rows.iter_mut().enumerate() {
+            for &finger in &order {
+                let height = FINGER_ROWS[usize::from(finger) - 1];
+                let visible = height >= 4 - row;
+                let top = height == 4 - row;
+                if !visible {
+                    spans.push(Span::raw("    "));
+                    continue;
+                }
+                let is_lit = lit(hand, finger);
+                let text = if top { format!(" {finger} ") } else { " \u{2502} ".to_string() };
+                let style = if is_lit {
+                    if top {
+                        Style::default().bg(color).fg(dark).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(color).add_modifier(Modifier::BOLD)
+                    }
+                } else {
+                    theme::dim()
+                };
+                // A lit column body reads as a solid bar.
+                let text = if is_lit && !top { " \u{2503} ".to_string() } else { text };
+                spans.push(Span::styled(text, style));
+                spans.push(Span::raw(" "));
+            }
+        }
+        rows
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let left = show_left.then(|| hand_rows(Hand::Left));
+    let right = show_right.then(|| hand_rows(Hand::Right));
+    for row in 0..4 {
+        let mut spans: Vec<Span<'static>> = vec![Span::raw("  ")];
+        if let Some(l) = &left {
+            spans.extend(l[row].clone());
+            spans.push(Span::raw("      "));
+        }
+        if let Some(r) = &right {
+            spans.extend(r[row].clone());
+        }
+        lines.push(Line::from(spans));
+    }
+    // Labels under the palms.
+    let mut label: Vec<Span<'static>> = vec![Span::raw("  ")];
+    if show_left {
+        label.push(Span::styled(format!("{:^20}", "left hand"), theme::dim()));
+        label.push(Span::raw("      "));
+    }
+    if show_right {
+        label.push(Span::styled(format!("{:^20}", "right hand"), theme::dim()));
+    }
+    lines.push(Line::from(label));
+    lines
 }
