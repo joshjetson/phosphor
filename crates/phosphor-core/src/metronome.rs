@@ -121,6 +121,53 @@ impl Metronome {
         ((sine + noise) * decay * volume as f64) as f32
     }
 
+    /// The practice click: a free-running metronome on its own sample
+    /// clock, nothing to do with the transport. `beat_phase` is advanced by
+    /// the caller between blocks. `pattern` 0 clicks every beat with a
+    /// downbeat accent; 1 clicks beats 2 and 4 only — the jazz convention,
+    /// where the click is the drummer's hi-hat and beats 1 and 3 are yours
+    /// to feel.
+    pub fn practice_click(
+        &mut self,
+        output: &mut [f32],
+        bpm: f64,
+        pattern: u8,
+        beat_phase: &mut f64,
+    ) {
+        let num_frames = output.len() / 2;
+        let beats_per_sample = bpm / (60.0 * self.sample_rate);
+        for i in 0..num_frames {
+            let beat_now = *beat_phase + i as f64 * beats_per_sample;
+            let abs_beat = beat_now.floor() as i64;
+            if abs_beat != self.last_beat && beat_now >= 0.0 {
+                self.last_beat = abs_beat;
+                let beat_in_bar = abs_beat.rem_euclid(4);
+                let sounds = match pattern {
+                    1 => beat_in_bar == 1 || beat_in_bar == 3,
+                    _ => true,
+                };
+                if sounds {
+                    self.clicking = true;
+                    self.click_phase = 0.0;
+                    self.is_downbeat = pattern == 0 && beat_in_bar == 0;
+                }
+            }
+            if self.clicking {
+                let t = self.click_phase / self.sample_rate;
+                if t > CLICK_DURATION {
+                    self.clicking = false;
+                } else {
+                    let sample = self.generate_click(t);
+                    let idx = i * 2;
+                    output[idx] += sample;
+                    output[idx + 1] += sample;
+                }
+                self.click_phase += 1.0;
+            }
+        }
+        *beat_phase += num_frames as f64 * beats_per_sample;
+    }
+
     /// Reset state (e.g., on transport stop).
     pub fn reset(&mut self) {
         self.clicking = false;

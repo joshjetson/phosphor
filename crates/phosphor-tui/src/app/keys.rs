@@ -66,6 +66,7 @@ impl App {
             && !self.nav.instrument_modal.open && !self.nav.fx_menu.open
             && !self.nav.preset_modal.open
             && !self.nav.prog_editor.open
+            && !self.nav.practice.open
             && !self.nav.clip_view.piano_roll.edit_mode
         {
             if key.code == KeyCode::Char('u') && !key.modifiers.contains(KeyModifiers::SHIFT) {
@@ -98,6 +99,16 @@ impl App {
         }
 
         // Quantize modal — j/k navigate, h/l adjust, Enter applies
+        // The practice room's keys, when it is open. Unclaimed keys fall
+        // through, so the space menu and the transport stay reachable.
+        if self.nav.practice.open
+            && !self.nav.input_modal.open
+            && !self.nav.space_menu.open
+            && self.handle_practice_keys(key)
+        {
+            return;
+        }
+
         // After the input modal's check by way of the guard here: the name
         // prompt opens over the editor, and typing must land in the field.
         if self.nav.prog_editor.open && !self.nav.input_modal.open {

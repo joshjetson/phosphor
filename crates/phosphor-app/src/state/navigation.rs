@@ -35,6 +35,7 @@ impl NavState {
             'e' => Some(SpaceAction::EditMode),
             'q' => Some(SpaceAction::Quantize),
             'w' => Some(SpaceAction::Presets),
+            'f' => Some(SpaceAction::Fingers),
             'v' => Some(SpaceAction::CycleTheme),
             'n' => Some(SpaceAction::NewTrack),
             'h' => {

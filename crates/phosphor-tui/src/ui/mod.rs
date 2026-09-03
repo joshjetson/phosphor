@@ -19,6 +19,7 @@ use clip_view::*;
 mod overlays;
 use overlays::*;
 pub(crate) mod fx;
+mod practice;
 pub(crate) use fx::is_wide as fx_panel_is_wide;
 pub(crate) mod meters;
 mod params;
@@ -65,6 +66,20 @@ pub fn render(
     ));
     frame.render_widget(Clear, area);
     frame.render_widget(Block::default().style(theme::bg()), area);
+
+    // The practice room takes the whole screen under the top bar: the
+    // drill is the thing being looked at, and the transport strip above it
+    // still says what sound it is running on.
+    if nav.practice.open {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(8), Constraint::Length(1)])
+            .split(area);
+        render_top_bar(frame, chunks[0], nav, transport);
+        practice::render_practice(frame, chunks[1], nav);
+        render_bottom_bar(frame, chunks[2], nav, status);
+        return;
+    }
 
     let actual_track_count = nav.visible_tracks().len().min(MAX_VISIBLE_TRACKS);
     let tracks_h = (actual_track_count as u16) * TRACK_H;

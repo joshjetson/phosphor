@@ -37,6 +37,7 @@ mod presets;
 mod session_io;
 mod clips;
 mod midi_fx_ops;
+mod practice_ops;
 mod tracks;
 mod transport;
 mod undo_redo;
@@ -540,6 +541,7 @@ impl App {
             self.nav.tick();
             self.nav.sync_clip_view_target();
             self.refresh_ghost_notes();
+            self.tick_practice();
             // Which pattern is playing, and where in it — decided on the
             // audio thread, so it is read back rather than guessed at.
             self.nav.sync_sequencers_from_audio();

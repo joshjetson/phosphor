@@ -465,6 +465,7 @@ mod help {
                 "clips",
                 "piano roll",
                 "step sequencer",
+                "fingers",
                 "effects",
                 "instruments",
                 "presets & sessions",
