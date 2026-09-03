@@ -95,7 +95,10 @@ impl App {
                 Some(RackSlot::Audio(slot)) => self.open_fx_panel(slot),
                 None => {}
             },
-            KeyCode::Char('b') if len > 0 => match here {
+            // `m` and `b` are one switch: every other mutable thing in the
+            // application answers to `m`, and a bypassed effect IS a muted
+            // effect as far as the player's intent goes.
+            KeyCode::Char('b') | KeyCode::Char('m') if len > 0 => match here {
                 Some(RackSlot::Midi(slot)) => self.toggle_midi_fx_bypass(slot),
                 Some(RackSlot::Audio(slot)) => self.toggle_fx_bypass(slot),
                 None => {}
@@ -431,7 +434,7 @@ impl App {
                 }
             }
             KeyCode::Char('n') => self.toggle_fx_band(),
-            KeyCode::Char('b') => {
+            KeyCode::Char('b') | KeyCode::Char('m') => {
                 let slot = self.nav.clip_view.fx.slot.unwrap_or(0);
                 self.toggle_fx_bypass(slot);
             }
@@ -626,7 +629,7 @@ impl App {
                     self.nav.clip_view.focus = ClipViewFocus::FxPanel;
                 }
             }
-            KeyCode::Char('b') => {
+            KeyCode::Char('b') | KeyCode::Char('m') => {
                 let slot = self.nav.clip_view.fx.slot.unwrap_or(0);
                 self.toggle_fx_bypass(slot);
             }
@@ -673,7 +676,7 @@ impl App {
                     self.nav.clip_view.focus = ClipViewFocus::FxPanel;
                 }
             }
-            KeyCode::Char('b') => {
+            KeyCode::Char('b') | KeyCode::Char('m') => {
                 let slot = self.nav.clip_view.fx.midi_slot.unwrap_or(0);
                 self.toggle_midi_fx_bypass(slot);
             }
@@ -983,7 +986,7 @@ impl App {
                     self.nav.clip_view.focus = ClipViewFocus::FxPanel;
                 }
             }
-            KeyCode::Char('b') => {
+            KeyCode::Char('b') | KeyCode::Char('m') => {
                 let slot = self.nav.clip_view.fx.slot.unwrap_or(0);
                 self.toggle_fx_bypass(slot);
             }
@@ -1156,7 +1159,7 @@ impl App {
                     self.nav.clip_view.focus = ClipViewFocus::FxPanel;
                 }
             }
-            KeyCode::Char('b') => {
+            KeyCode::Char('b') | KeyCode::Char('m') => {
                 let slot = self.nav.clip_view.fx.slot.unwrap_or(0);
                 self.toggle_fx_bypass(slot);
             }
@@ -1289,7 +1292,7 @@ impl App {
                     self.set_key_listen(None);
                 }
             }
-            KeyCode::Char('b') => {
+            KeyCode::Char('b') | KeyCode::Char('m') => {
                 let slot = self.nav.clip_view.fx.slot.unwrap_or(0);
                 self.toggle_fx_bypass(slot);
             }

@@ -166,7 +166,7 @@ pub(super) fn render_fx_chain(frame: &mut Frame, area: Rect, nav: &NavState, foc
 
     if focused {
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("  enter open  b bypass", theme::dim())));
+        lines.push(Line::from(Span::styled("  enter open  m/b mute", theme::dim())));
         lines.push(Line::from(Span::styled("  [ ] order  d remove", theme::dim())));
         if !midi.is_empty() {
             lines.push(Line::from(Span::styled("  c commit midi \u{2192} notes", theme::dim())));
@@ -231,7 +231,7 @@ fn render_midi_fx_panel(
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  j/k knob \u{00b7} h/l adjust \u{00b7} b bypass \u{00b7} esc back",
+        "  j/k knob \u{00b7} h/l adjust \u{00b7} m mute \u{00b7} esc back",
         theme::dim(),
     )));
     if fx_type == crate::state::MidiFxType::Arp {

@@ -486,4 +486,26 @@ mod tests {
             app.status_message
         );
     }
+
+    /// m mutes the effect under the cursor — the chain list and the open
+    /// panel both — because every other mutable thing answers to m.
+    #[test]
+    fn m_mutes_an_effect_like_everything_else() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+        let (mut app, ti) = app_with_track();
+        app.add_midi_fx(ti, MidiFxType::Chord);
+        app.nav.clip_view.focus = crate::state::ClipViewFocus::FxPanel;
+        app.nav.clip_view.fx_panel_tab = crate::state::FxPanelTab::TrackFx;
+        app.nav.clip_view.fx_cursor = 0;
+        let m = KeyEvent {
+            code: KeyCode::Char('m'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        assert!(app.handle_fx_chain_keys(m), "the chain list ignored m");
+        assert!(app.nav.tracks[ti].midi_fx[0].bypass, "m did not mute the effect");
+        assert!(app.handle_fx_chain_keys(m));
+        assert!(!app.nav.tracks[ti].midi_fx[0].bypass, "m did not unmute it");
+    }
 }
