@@ -29,6 +29,7 @@
 - [Quick Start](#quick-start)
 - [Instruments](#instruments)
 - [Features](#features)
+- [Fingers — the practice room](#fingers--the-practice-room)
 - [Controls](#controls)
 - [Themes](#themes)
 - [Architecture](#architecture)
@@ -234,6 +235,10 @@ program with `program`.
 - **Little Phatty**: the Stage II's whole front panel, plus the eight per-preset parameters Moog put in its Advanced Preset menus. The headline is the **wave control**: each oscillator morphs continuously from triangle through sawtooth through square to a skinny pulse, and the positions between the four labelled shapes are real waveforms rather than crossfades of two others — the oscillator is one trapezoid whose rise, top, fall and bottom move with the knob, band-limited by polyBLAMP at all four corners, and WAVE is a modulation destination because it is voltage-controlled on the hardware. Hard sync with a sub-sample-accurate reset; a transistor ladder whose slope switches between 6, 12, 18 and 24 dB/octave by tapping the ladder rather than shortening it, so a two-pole Phatty still resonates as players describe; pre- and post-filter asymmetric overload with the documented +6 dB at full; two ADSRs with the three gate modes (legato on, legato off, envelope reset); a pitch wheel whose two directions are ranged independently; the one-bus modulation matrix with its six sources, four destinations and the secondary destination the menu adds; constant-rate glide measured against the manual's own five-seconds-across-the-keyboard figure; low, high and last-note keyboard priority; and velocity on the filter and nowhere else, which is most of why an LP feels the way it does. Every range is the manual's — 20 Hz to 16 kHz cutoff (audibly darker than a vintage Moog's, as Sound On Sound notes), 1 ms to 10 s envelopes, 0.2 Hz to 500 Hz LFO, ±7 semitones on oscillator 2
 - **Drum Rack**: 18 kits — circuit-accurate 808/909/707/606/727/CR-78, companded-PCM LinnDrum and DMX, the analog SDS-V, the creative 777, the warm tape-saturated tsty series, and three **live acoustic kits** that are physics rather than voicing. An acoustic kick is two membranes coupled through the air inside the shell, and that coupling — not a filter — is what puts two low modes a sixth apart where a drum machine has one; the front head's muffling is a knob that moves the interval between them. The snare's strands are a bouncing-contact model, so they choke on a hard backbeat and ring on after the drum instead of being a noise burst under an envelope. Cymbals are banks of forty complex resonators with frequency gating, so hitting one harder brings in modes that were not there at all, and with a modal cascade that carries energy from the low modes up into the high ones — bow, bell and edge are one plate struck in three places, and a hi-hat is two plates that clamp
 
+**Fingers — the practice room**
+- A generative jazz-piano technique trainer over your own instruments — see
+  [its section below](#fingers--the-practice-room)
+
 **Session Management**
 - Save/load projects as `.phos` files (human-readable JSON)
 - `Ctrl+S` quick save, `Space+S` save as, `Space+O` open
@@ -303,6 +308,100 @@ program with `program`.
 - Command channel pattern for UI-to-audio communication
 - Plugin trait for instruments and effects — same interface for built-in and third-party
 - 873 tests covering DSP, MIDI, engine, mixer, navigation, and persistence, run on Linux, macOS and Windows in CI
+
+---
+
+## Fingers — the practice room
+
+A jazz-piano technique trainer built into the DAW. Press **`Space+F`** on any
+instrument track and the practice room opens over it: your MIDI controller
+keeps sounding that track's synth — the Rhodes, the DX7, whatever you chose —
+while the room listens to what you play and judges it, from the same
+microsecond arrival timestamps the recorder uses. Close it and you're back in
+the session; nothing you had going is touched.
+
+Everything in the room is **generated, in any key** — no canned lesson
+content. The fingerings are the published standards (verified against
+conservatory charts), and they're drawn **on the keys**: every target key
+lights up with the finger number that belongs on it, 1 = thumb through
+5 = pinky, right hand amber, left hand blue.
+
+### Getting started
+
+1. Add or select an instrument track (`Space+A` if you don't have one).
+2. Press `Space+F`. The drill list opens.
+3. Pick **major scale · C** (the top row), leave it on **RH** and **wait**
+   mode, and press `Enter`.
+4. Play the scale on your controller. Time stops until you play the right
+   note — wrong notes flash, right notes advance. The on-screen keyboard
+   shows the next key and the finger to use.
+5. When a rep is clean, it rolls straight into the next. Three clean reps in
+   a row and the tempo climbs 5 BPM on its own. That's the whole game.
+6. When wait mode feels easy, press `w` for **flow**: a metronome rolls and
+   every note is judged against the beat — early, late, or on it.
+
+### The drills
+
+| Drill | What it teaches | Level |
+|-------|-----------------|-------|
+| Major scales (12 keys) | The standard fingerings; thumb-under technique | 1 |
+| Harmonic minor scales (12 keys) | Same, with the raised-7th colour | 2 |
+| Chromatic scale | The French fingering: 3 on every black key | 2 |
+| Hanon no. 1 | Finger independence; the weak 4-5 pair | 2 |
+| Major arpeggios | Arm-led hand shifts across octaves | 3 |
+| Shell 2-5-1 (cycle of fourths) | Root-3-7 voicings; one voice moves per change | 3 |
+| Charleston comp | The first jazz comping rhythm: beat 1 + and-of-2 | 4 |
+| Bebop dominant scale | The 8-note scale; chord tones land on downbeats | 4 |
+| Rootless 2-5-1 (cycle of fourths) | Bill Evans A/B voicings near middle C | 5 |
+| 6th-diminished chords | Barry Harris' moving stairway, harmonized | 5 |
+| Enclosures on 3rds | Surround the target, land it on the beat | 5 |
+
+The jazz drills default the click to **beats 2 and 4** — the click is the
+drummer's hi-hat, and beats 1 and 3 are yours to feel. `c` cycles the click
+through every-beat, 2&4, and off.
+
+### The two modes
+
+- **wait** — time stops until you play the right note. Chords wait for every
+  voice to be down. Learn the shapes and the fingerings here.
+- **flow** — the metronome rolls (with a four-beat count-in) and every note
+  you play is judged against the grid within a ±90 ms window: on it, early,
+  or late, each hit marked as it lands.
+
+### The numbers
+
+After every rep the room reports:
+
+- **bias** — your average signed timing error. Negative means you rush,
+  positive means you drag.
+- **spread** — how consistent you are around your own bias. A steady player
+  with a lean beats a wobbly player centred on the beat.
+- **evenness** — the variation of the gaps between your notes, as a
+  percentage. Conservatory hands measure about 7%; below 8% is what
+  "perfectly even" sounds like to a listener.
+
+### Progress
+
+- **Three clean reps in a row → the tempo climbs 5 BPM automatically.**
+- Your **best clean tempo is saved per drill, per key, per hand** in
+  `~/.phosphor/practice.json` — that number is your progress bar, and next
+  session each drill starts at your record, not back at the floor.
+- `<` / `>` walk the key through the **circle of fourths** (C → F → Bb …),
+  the order jazz players practice all twelve keys in.
+
+### Keys in the room
+
+| Key | Action |
+|-----|--------|
+| `Space+F` | Open the room (on an instrument track) |
+| `j` / `k` | Choose a drill |
+| `<` / `>` | Walk the key, in fourths |
+| `h` | Cycle hands: RH → LH → hands together |
+| `w` | Toggle wait / flow |
+| `c` | Click: every beat → 2&4 → off |
+| `[` / `]` | Tempo down / up 5 BPM |
+| `Enter` | Start / stop the drill |
+| `Esc` | Stop the drill; again to leave the room |
 
 ---
 
