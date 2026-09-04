@@ -24,23 +24,30 @@ pub(super) fn render_practice(frame: &mut Frame, area: Rect, nav: &NavState) {
     }
 }
 
-/// Center a block of lines in the area: the widest line decides the left
-/// margin, and a third of the spare height sits above — a page, not a log.
-fn centered(mut lines: Vec<Line<'static>>, area: Rect) -> Vec<Line<'static>> {
-    let widest = lines.iter().map(Line::width).max().unwrap_or(0);
-    let pad = (area.width as usize).saturating_sub(widest) / 2;
+/// Center a block of lines on a FIXED page width with a FIXED top margin.
+///
+/// Fixed, not measured: measuring the widest line re-centers the page
+/// every time a verdict changes length, and the whole screen jitters
+/// under the player's eyes. The page width is decided once per view, so
+/// the margin holds still while the content inside it changes.
+fn centered(mut lines: Vec<Line<'static>>, area: Rect, page_w: usize) -> Vec<Line<'static>> {
+    let pad = (area.width as usize).saturating_sub(page_w) / 2;
     if pad > 0 {
         let indent = " ".repeat(pad);
         for line in &mut lines {
             line.spans.insert(0, Span::raw(indent.clone()));
         }
     }
-    let spare = (area.height as usize).saturating_sub(lines.len());
-    let above = (spare / 3).min(4);
-    let mut out = vec![Line::from(""); above];
+    let mut out = vec![Line::from(""); 2];
     out.extend(lines);
     out
 }
+
+/// The browse view's page width — its widest fixed line.
+const BROWSE_PAGE_W: usize = 78;
+
+/// How many target cells the lane always shows.
+const LANE_CELLS: usize = 16;
 
 fn render_browse(frame: &mut Frame, area: Rect, nav: &NavState) {
     let room = &nav.practice;
@@ -117,7 +124,7 @@ fn render_browse(frame: &mut Frame, area: Rect, nav: &NavState) {
         theme::dim(),
     )));
 
-    let mut lines = centered(lines, area);
+    let mut lines = centered(lines, area, BROWSE_PAGE_W);
     lines.truncate(area.height as usize);
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -125,6 +132,12 @@ fn render_browse(frame: &mut Frame, area: Rect, nav: &NavState) {
 fn render_run(frame: &mut Frame, area: Rect, nav: &NavState) {
     let room = &nav.practice;
     let Some(run) = &room.run else { return };
+    // The page width is the keyboard's width (stable for the whole run) or
+    // the lane's fixed width, whichever is wider — decided here, once, so
+    // nothing measured later can move the margin.
+    let (pklo, pkhi) = keyboard_range(run.judge.targets());
+    let kbd_w = (white_index(pklo, pkhi) + 1) * 2 + 2;
+    let page_w = kbd_w.max(LANE_CELLS * 5 + 2);
     let mut lines: Vec<Line> = Vec::new();
 
     // ── Header ──
@@ -153,7 +166,7 @@ fn render_run(frame: &mut Frame, area: Rect, nav: &NavState) {
     let targets = run.judge.targets();
     let focus = lane_focus(&run.judge, targets);
     let lo = focus.saturating_sub(3);
-    let hi = (lo + 16).min(targets.len());
+    let hi = (lo + LANE_CELLS).min(targets.len());
     let mut finger_row = vec![Span::styled("  ", theme::dim())];
     let mut note_row = vec![Span::styled("  ", theme::dim())];
     for i in lo..hi {
@@ -178,6 +191,12 @@ fn render_run(frame: &mut Frame, area: Rect, nav: &NavState) {
         finger_row.push(Span::styled(format!("{finger:^5}"), fg_style));
         note_row.push(Span::styled(format!("{name:^5}"), fg_style));
     }
+    // Pad the lane to its fixed width so the end of an exercise does not
+    // narrow the page.
+    for _ in (hi - lo)..LANE_CELLS {
+        finger_row.push(Span::raw("     "));
+        note_row.push(Span::raw("     "));
+    }
     lines.push(Line::from(finger_row));
     lines.push(Line::from(note_row));
     lines.push(Line::from(""));
@@ -189,7 +208,7 @@ fn render_run(frame: &mut Frame, area: Rect, nav: &NavState) {
         lines.push(line);
     }
     lines.push(Line::from(""));
-    for line in hand_diagrams(run, focus) {
+    for line in hand_diagrams(run, focus, page_w) {
         lines.push(line);
     }
     lines.push(Line::from(""));
@@ -222,7 +241,7 @@ fn render_run(frame: &mut Frame, area: Rect, nav: &NavState) {
         theme::dim(),
     )));
 
-    let mut lines = centered(lines, area);
+    let mut lines = centered(lines, area, page_w);
     lines.truncate(area.height as usize);
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -419,7 +438,7 @@ const FINGER_ROWS: [usize; 5] = [1, 3, 4, 3, 2]; // thumb, index, middle, ring, 
 /// Two hands under the keyboard, each finger a column that lights — with
 /// its number — when the current target asks for it. The right hand reads
 /// thumb-first left to right; the left hand mirrors, exactly as hands do.
-fn hand_diagrams(run: &phosphor_app::practice::Run, focus: usize) -> Vec<Line<'static>> {
+fn hand_diagrams(run: &phosphor_app::practice::Run, focus: usize, page_w: usize) -> Vec<Line<'static>> {
     let wanted = wanted_now(run, focus);
     let uses = |hand: Hand| {
         run.judge.targets().iter().any(|t| t.hand == hand)
@@ -472,27 +491,40 @@ fn hand_diagrams(run: &phosphor_app::practice::Run, focus: usize) -> Vec<Line<'s
         rows
     };
 
+    // Each hand is anchored to its own side of the page — the left hand
+    // in the left half, the right hand in the right half — whether or not
+    // the other one is drawn. A right hand sitting at the left margin
+    // reads as the wrong hand at a glance, which is worse than no diagram.
+    let hand_w = 20usize; // five fingers, four columns each
+    let lh_off = page_w / 4;
+    let rh_off = (page_w * 3 / 4).saturating_sub(hand_w);
     let mut lines: Vec<Line<'static>> = Vec::new();
     let left = show_left.then(|| hand_rows(Hand::Left));
     let right = show_right.then(|| hand_rows(Hand::Right));
     for row in 0..4 {
-        let mut spans: Vec<Span<'static>> = vec![Span::raw("  ")];
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut col = 0usize;
         if let Some(l) = &left {
+            spans.push(Span::raw(" ".repeat(lh_off.saturating_sub(hand_w / 2))));
+            col = lh_off.saturating_sub(hand_w / 2) + hand_w;
             spans.extend(l[row].clone());
-            spans.push(Span::raw("      "));
         }
         if let Some(r) = &right {
+            spans.push(Span::raw(" ".repeat(rh_off.saturating_sub(col))));
             spans.extend(r[row].clone());
         }
         lines.push(Line::from(spans));
     }
-    // Labels under the palms.
-    let mut label: Vec<Span<'static>> = vec![Span::raw("  ")];
+    let mut label: Vec<Span<'static>> = Vec::new();
+    let mut col = 0usize;
     if show_left {
+        let off = lh_off.saturating_sub(hand_w / 2);
+        label.push(Span::raw(" ".repeat(off)));
         label.push(Span::styled(format!("{:^20}", "left hand"), theme::dim()));
-        label.push(Span::raw("      "));
+        col = off + 20;
     }
     if show_right {
+        label.push(Span::raw(" ".repeat(rh_off.saturating_sub(col))));
         label.push(Span::styled(format!("{:^20}", "right hand"), theme::dim()));
     }
     lines.push(Line::from(label));
