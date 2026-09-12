@@ -187,4 +187,71 @@ mod tests {
         app.slide_loop_brace(true, false);
         assert_eq!(app.nav.loop_editor.start, BAR + app.nav.loop_editor.step.ticks() + 0);
     }
+
+    /// The full undo contract, both directions: a cut undoes and REDOES
+    /// through the same stack as everything else.
+    #[test]
+    fn a_cut_redoes_too() {
+        let (mut app, a, b) = two_track_app();
+        app.nav.loop_editor.set_region(0, BAR);
+        app.cut_loop_section();
+        app.perform_undo();
+        assert_eq!(app.nav.tracks[a].clips[0].notes.len(), 2);
+        app.perform_redo();
+        assert!(app.nav.tracks[a].clips[0].notes.is_empty(), "redo did not re-cut track a");
+        assert!(app.nav.tracks[b].clips[0].notes.is_empty(), "redo did not re-cut track b");
+        app.perform_undo();
+        assert_eq!(app.nav.tracks[a].clips[0].notes.len(), 2, "the second undo lost notes");
+    }
+
+    /// The destructive case: a replace-stamp overwrites standing material,
+    /// and one undo brings the OVERWRITTEN material back — the Song slice
+    /// photographed the target before the stamp cleared it.
+    #[test]
+    fn undoing_a_replace_stamp_restores_what_it_cleared() {
+        let (mut app, a, _b) = two_track_app();
+        // Standing material at the target that the stamp will destroy.
+        give_clip(&mut app, a, 4 * BAR, BAR, vec![note(72, 100), note(74, 500)]);
+        app.nav.loop_editor.set_region(0, BAR);
+        app.yank_loop_section();
+        app.nav.loop_editor.set_region(4 * BAR, 5 * BAR);
+        app.paste_loop_section(true);
+
+        let has_72 = |app: &App| {
+            app.nav.tracks[a]
+                .clips
+                .iter()
+                .any(|c| c.notes.iter().any(|n| n.note == 72))
+        };
+        assert!(!has_72(&app), "the replace stamp did not clear the target");
+
+        app.perform_undo();
+        assert!(has_72(&app), "undo did not restore what the stamp destroyed");
+        let restored = app.nav.tracks[a]
+            .clips
+            .iter()
+            .find(|c| c.start_tick == 4 * BAR)
+            .expect("the overwritten clip did not come back");
+        assert_eq!(restored.notes.len(), 2, "the restored clip is missing notes");
+
+        app.perform_redo();
+        assert!(!has_72(&app), "redo did not re-apply the stamp");
+    }
+
+    /// Brace slides ride the coalesced LoopRange gesture: a walk of five
+    /// steps is ONE undo back to where the walk began.
+    #[test]
+    fn a_brace_walk_coalesces_to_one_undo() {
+        let (mut app, _a, _b) = two_track_app();
+        app.nav.loop_editor.set_region(0, BAR);
+        for _ in 0..5 {
+            app.slide_loop_brace(true, false);
+        }
+        assert_ne!(app.nav.loop_editor.start, 0);
+        app.perform_undo();
+        assert_eq!(
+            app.nav.loop_editor.start, 0,
+            "one undo should return the whole walk, not one step of it"
+        );
+    }
 }
