@@ -720,11 +720,11 @@ mod tests {
     #[test]
     fn loop_range_undoes_but_the_switch_survives() {
         let mut app = app();
-        let start = app.nav.loop_editor.end_bar;
+        let start = app.nav.loop_editor.end;
 
         app.edit_loop_range(|l| l.move_end_left());
         app.edit_loop_range(|l| l.move_end_left());
-        assert_ne!(app.nav.loop_editor.end_bar, start);
+        assert_ne!(app.nav.loop_editor.end, start);
 
         // The player switches the loop on after the edit.
         app.nav.loop_editor.toggle_enabled();
@@ -733,7 +733,7 @@ mod tests {
 
         app.perform_undo();
         assert_eq!(
-            app.nav.loop_editor.end_bar, start,
+            app.nav.loop_editor.end, start,
             "the range move did not undo whole"
         );
         assert_eq!(

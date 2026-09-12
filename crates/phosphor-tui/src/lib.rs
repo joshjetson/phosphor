@@ -31,6 +31,8 @@ mod test_midi_fx;
 #[cfg(test)]
 mod test_practice;
 #[cfg(test)]
+mod test_section;
+#[cfg(test)]
 mod test_panels;
 #[cfg(test)]
 mod test_presets;

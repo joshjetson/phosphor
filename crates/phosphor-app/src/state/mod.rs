@@ -10,6 +10,7 @@
 
 mod automation;
 mod midi_fx;
+mod section;
 mod clip_view;
 mod input;
 mod loop_editor;
@@ -20,6 +21,7 @@ pub mod undo;
 
 pub use automation::*;
 pub use midi_fx::*;
+pub use section::*;
 pub use clip_view::*;
 pub use input::*;
 pub use loop_editor::*;
@@ -155,6 +157,8 @@ pub struct NavState {
     pub split_warned_for: Option<(usize, usize)>,
     /// The practice room — the "fingers" trainer.
     pub practice: crate::practice::Room,
+    /// The lifted loop section, waiting for `p`.
+    pub section_clip: Option<SectionClipboard>,
     /// What the master limiter is taking off, ready to draw.
     ///
     /// The audio thread's end of this is in `Mixer`; the ballistics have
@@ -227,6 +231,7 @@ impl NavState {
             prog_editor: ProgEditor::default(),
             split_warned_for: None,
             practice: crate::practice::Room::default(),
+            section_clip: None,
             limiter_gr: std::sync::Arc::new(phosphor_core::fx::GrMeter::new()),
             sample_rate: 48_000,
             tempo_bpm: 120.0,

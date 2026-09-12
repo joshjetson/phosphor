@@ -176,6 +176,11 @@ impl App {
                 let chain = chain.clone();
                 self.apply_midi_fx_slice(*track_idx, &chain);
             }
+            StateSlice::Song { tracks } => {
+                for (track_idx, clips) in tracks.clone() {
+                    self.apply_clips_slice(track_idx, &clips);
+                }
+            }
             StateSlice::ClipsAndMidiFx { track_idx, clips, chain } => {
                 self.apply_clips_slice(*track_idx, clips);
                 let chain = chain.clone();
@@ -236,9 +241,8 @@ impl App {
                 self.engine.transport.set_tempo(f64::from(*bpm));
                 self.nav.tempo_bpm = *bpm;
             }
-            StateSlice::LoopRange { start_bar, end_bar } => {
-                self.nav.loop_editor.start_bar = *start_bar;
-                self.nav.loop_editor.end_bar = *end_bar;
+            StateSlice::LoopRange { start, end } => {
+                self.nav.loop_editor.set_region(*start, *end);
                 self.sync_loop_to_transport();
             }
         }

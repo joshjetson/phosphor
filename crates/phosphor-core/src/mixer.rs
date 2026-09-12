@@ -2049,6 +2049,52 @@ mod tests {
         assert!(tail < 1.0e-3, "a note hung after bypass: tail peak {tail}");
     }
 
+    /// A loop smaller than a bar — one beat — wraps cleanly and keeps
+    /// striking its note every pass: the chop-a-quarter-bar case.
+    #[test]
+    fn a_one_beat_loop_keeps_striking() {
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let _handle = add_armed_synth(&tx, 0);
+        tx.send(MixerCommand::CreateClip { track_id: 0, start_tick: 0, length_ticks: Transport::PPQ })
+            .unwrap();
+        tx.send(MixerCommand::UpdateClip {
+            track_id: 0,
+            clip_index: 0,
+            events: vec![
+                ClipEvent { tick: 0, status: 0x90, data1: 60, data2: 110 },
+                ClipEvent { tick: Transport::PPQ / 2, status: 0x80, data1: 60, data2: 0 },
+            ],
+        })
+        .unwrap();
+        transport.set_loop_range(0, Transport::PPQ);
+        if !transport.is_looping() {
+            transport.toggle_loop();
+        }
+        transport.play();
+
+        // One beat at 120 = 0.5 s = 86 blocks of 256. Run twenty beats and
+        // count the strikes by watching the level rise from silence.
+        let mut output = vec![0.0f32; 512];
+        let mut strikes = 0usize;
+        let mut quiet = true;
+        for _ in 0..(86 * 20) {
+            output.fill(0.0);
+            mixer.process(&mut output, &[], &transport);
+            transport.advance(256, 44_100);
+            let peak = output.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+            if peak > 0.02 && quiet {
+                strikes += 1;
+                quiet = false;
+            } else if peak < 0.002 {
+                quiet = true;
+            }
+        }
+        assert!(
+            (15..=22).contains(&strikes),
+            "a one-beat loop should strike ~20 times in 20 beats, got {strikes}"
+        );
+    }
+
     /// The practice click runs with the transport parked, and pattern 1
     /// clicks half as often — beats 2 and 4 only, the jazz convention.
     #[test]

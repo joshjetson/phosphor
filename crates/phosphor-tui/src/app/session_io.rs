@@ -173,8 +173,16 @@ impl App {
         if session.transport.metronome != self.engine.transport.is_metronome_on() {
             self.engine.transport.toggle_metronome();
         }
-        self.nav.loop_editor.start_bar = session.transport.loop_start_bar;
-        self.nav.loop_editor.end_bar = session.transport.loop_end_bar;
+        let bar = phosphor_core::transport::Transport::PPQ * 4;
+        let (ls, le) = match (session.transport.loop_start_ticks, session.transport.loop_end_ticks) {
+            (Some(s), Some(e)) => (s, e),
+            // A session from before the brace went tick-native: bars.
+            _ => (
+                (i64::from(session.transport.loop_start_bar) - 1) * bar,
+                (i64::from(session.transport.loop_end_bar) - 1) * bar,
+            ),
+        };
+        self.nav.loop_editor.set_region(ls, le);
         self.nav.loop_editor.enabled = session.transport.loop_enabled;
         self.sync_loop_to_transport();
 

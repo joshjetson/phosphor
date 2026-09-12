@@ -38,6 +38,7 @@ mod session_io;
 mod clips;
 mod midi_fx_ops;
 mod practice_ops;
+mod section_ops;
 mod tracks;
 mod transport;
 mod undo_redo;

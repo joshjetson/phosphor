@@ -261,5 +261,13 @@
     "modes": "wait = time stops until you play the right note (chords need every voice down); flow = the metronome rolls and every onset is judged: perfect/good/early/late within a ±90ms window",
     "ladder": "3 clean reps in a row → tempo +5 BPM automatically; your best clean tempo is saved per drill+key+hand in ~/.phosphor/practice.json and you resume there next session",
     "metrics": "bias (mean signed ms — rushing vs dragging), spread (consistency), evenness (IOI CV — under ~8% is conservatory-even), per-note verdict glyphs"
+  },
+  "loop_section": {
+    "_about": "the loop brace is both a selection and a cursor: spc+l focuses it, and what's between the markers can be lifted and stamped anywhere",
+    "grid": "g cycles the marker grid: bar / beat / 1/8 / 1/16 — the brace can shrink to a single 1/16 (below that a loop is a buzz); display reads bars ('1-4') or positions ('1.2-1.3' = bar.beat, '1.1.2' adds the 16th)",
+    "move": "h/l move the start, H/L (or shift+h/l) the end, j/k slide the whole brace by one grid step, J/K leap it by its own length",
+    "yank_cut": "y lifts the section (all instrument tracks, notes+controllers whose ONSET is inside; tails travel whole); x (or d) lifts and removes — one undo step across every track",
+    "paste": "p stamps the lifted section at the brace start, REPLACING what's under the stamped span (and only the span — a track silent in the lift stamps its silence, tape-drop style), then leapfrogs the brace by the section length so p p p lays copies back to back; P layers instead of clearing (MPC-merge style). Clips union on landing, never overlap",
+    "session": "loop markers now save in ticks; old bar-based sessions load exactly as before"
   }
 }

@@ -42,6 +42,10 @@ pub enum UndoScope {
     TrackFx { track_idx: usize },
     /// A track's pre-instrument MIDI effects.
     TrackMidiFx { track_idx: usize },
+    /// Every instrument track's clips at once — the section clipboard's
+    /// scope, whose cut and paste land on all tracks in one gesture and
+    /// must come back the same way.
+    Song,
     /// A track's clips and its MIDI rack together — the commit gesture,
     /// which prints the rack's output into a clip and bypasses the rack in
     /// the same breath, and must come back the same way.
@@ -89,6 +93,9 @@ pub enum StateSlice {
         clips: Vec<Clip>,
         chain: Vec<super::MidiFxInstance>,
     },
+    Song {
+        tracks: Vec<(usize, Vec<Clip>)>,
+    },
     SynthParams { track_idx: usize, params: Vec<f32> },
     TrackMix { track_idx: usize, volume: f32, pan: f32, sends: [f32; 2], muted: bool },
     /// `None` when the track had no sequencer — captured for completeness,
@@ -103,7 +110,7 @@ pub enum StateSlice {
     },
     TrackName { track_idx: usize, name: String },
     Tempo { bpm: f32 },
-    LoopRange { start_bar: u32, end_bar: u32 },
+    LoopRange { start: i64, end: i64 },
 }
 
 impl StateSlice {
@@ -125,6 +132,15 @@ impl StateSlice {
             UndoScope::TrackMidiFx { track_idx } => Self::TrackMidiFx {
                 track_idx,
                 chain: nav.tracks.get(track_idx).map(|t| t.midi_fx.clone()).unwrap_or_default(),
+            },
+            UndoScope::Song => Self::Song {
+                tracks: nav
+                    .tracks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.mixer_id.is_some())
+                    .map(|(i, t)| (i, t.clips.clone()))
+                    .collect(),
             },
             UndoScope::ClipsAndMidiFx { track_idx } => Self::ClipsAndMidiFx {
                 track_idx,
@@ -170,8 +186,8 @@ impl StateSlice {
             },
             UndoScope::Tempo => Self::Tempo { bpm: nav.tempo_bpm },
             UndoScope::LoopRange => Self::LoopRange {
-                start_bar: nav.loop_editor.start_bar,
-                end_bar: nav.loop_editor.end_bar,
+                start: nav.loop_editor.start,
+                end: nav.loop_editor.end,
             },
         }
     }
@@ -187,6 +203,7 @@ impl StateSlice {
             Self::ClipsAndMidiFx { track_idx, .. } => {
                 UndoScope::ClipsAndMidiFx { track_idx: *track_idx }
             }
+            Self::Song { .. } => UndoScope::Song,
             Self::SynthParams { track_idx, .. } => UndoScope::SynthParams { track_idx: *track_idx },
             Self::TrackMix { track_idx, .. } => UndoScope::TrackMix { track_idx: *track_idx },
             Self::Sequencer { track_idx, .. } => UndoScope::Sequencer { track_idx: *track_idx },
@@ -222,6 +239,7 @@ impl StateSlice {
                 Self::ClipsAndMidiFx { track_idx: a, clips: la, chain: ca },
                 Self::ClipsAndMidiFx { track_idx: b, clips: lb, chain: cb },
             ) => a == b && la == lb && ca == cb,
+            (Self::Song { tracks: a }, Self::Song { tracks: b }) => a == b,
             (
                 Self::SynthParams { track_idx: a, params: pa },
                 Self::SynthParams { track_idx: b, params: pb },
@@ -248,8 +266,8 @@ impl StateSlice {
             ) => a == b && na == nb,
             (Self::Tempo { bpm: a }, Self::Tempo { bpm: b }) => a == b,
             (
-                Self::LoopRange { start_bar: sa, end_bar: ea },
-                Self::LoopRange { start_bar: sb, end_bar: eb },
+                Self::LoopRange { start: sa, end: ea },
+                Self::LoopRange { start: sb, end: eb },
             ) => sa == sb && ea == eb,
             _ => false,
         }

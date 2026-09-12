@@ -247,6 +247,23 @@ impl App {
                     self.edit_loop_range(|l| l.move_end_right());
                     dbg::system(&format!("loop range: {}", self.nav.loop_editor.display()));
                 }
+                // The brace is the cursor: j/k walk it along the song by
+                // one grid step, J/K leap it by its own length.
+                KeyCode::Char('j') | KeyCode::Down => self.slide_loop_brace(true, false),
+                KeyCode::Char('k') | KeyCode::Up => self.slide_loop_brace(false, false),
+                KeyCode::Char('J') => self.slide_loop_brace(true, true),
+                KeyCode::Char('K') => self.slide_loop_brace(false, true),
+                KeyCode::Char('y') => self.yank_loop_section(),
+                KeyCode::Char('x') | KeyCode::Char('d') => self.cut_loop_section(),
+                KeyCode::Char('p') => self.paste_loop_section(true),
+                KeyCode::Char('P') => self.paste_loop_section(false),
+                KeyCode::Char('g') => {
+                    self.nav.loop_editor.cycle_step();
+                    self.flash(format!(
+                        "loop grid: {} \u{00b7} markers move by it",
+                        self.nav.loop_editor.step.label()
+                    ));
+                }
                 _ => {
                     dbg::user(&format!("loop editor: ignored key {:?}", key.code));
                 }

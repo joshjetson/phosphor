@@ -522,8 +522,7 @@ mod tests {
         assert_eq!(app.nav.tracks[ti].clips.len(), 1);
 
         app.engine.transport.set_loop_bars(1, 1);
-        app.nav.loop_editor.start_bar = 1;
-        app.nav.loop_editor.end_bar = 2;
+        app.nav.loop_editor.set_region(0, 3840);
 
         // Overdub (default): R keeps the clip.
         app.toggle_loop_record();

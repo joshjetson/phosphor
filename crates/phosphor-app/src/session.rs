@@ -44,8 +44,16 @@ pub struct SessionFile {
 pub struct SessionTransport {
     pub tempo_bpm: f64,
     pub loop_enabled: bool,
+    /// Legacy whole-bar markers; still read so old sessions load, no
+    /// longer authoritative when the tick fields are present.
     pub loop_start_bar: u32,
     pub loop_end_bar: u32,
+    /// The markers in ticks — the form every save writes now, and the
+    /// one that can sit inside a bar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_start_ticks: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_end_ticks: Option<i64>,
     pub metronome: bool,
     /// Bars of count-in before recording. Absent in files written before
     /// the count-in existed, which is the same as off.
@@ -482,8 +490,10 @@ fn extract_session(nav: &NavState, transport: &Transport) -> SessionFile {
         transport: SessionTransport {
             tempo_bpm: transport.tempo_bpm(),
             loop_enabled: nav.loop_editor.enabled,
-            loop_start_bar: nav.loop_editor.start_bar,
-            loop_end_bar: nav.loop_editor.end_bar,
+            loop_start_bar: (nav.loop_editor.start / (phosphor_core::transport::Transport::PPQ * 4)) as u32 + 1,
+            loop_end_bar: (nav.loop_editor.end / (phosphor_core::transport::Transport::PPQ * 4)) as u32 + 1,
+            loop_start_ticks: Some(nav.loop_editor.start),
+            loop_end_ticks: Some(nav.loop_editor.end),
             metronome: transport.is_metronome_on(),
             count_in_bars: transport.count_in_bars(),
             record_replace: nav.record_replace,
@@ -662,6 +672,8 @@ mod tests {
                 loop_enabled: true,
                 loop_start_bar: 1,
                 loop_end_bar: 5,
+                loop_start_ticks: None,
+                loop_end_ticks: None,
                 metronome: true,
                 count_in_bars: 0,
                 record_quantize: 0,
@@ -775,6 +787,8 @@ mod tests {
                 loop_enabled: false,
                 loop_start_bar: 1,
                 loop_end_bar: 2,
+                loop_start_ticks: None,
+                loop_end_ticks: None,
                 metronome: false,
                 count_in_bars: 0,
                 record_quantize: 0,

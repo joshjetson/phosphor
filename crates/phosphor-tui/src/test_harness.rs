@@ -68,13 +68,13 @@ pub mod tests {
         assert!(!t.is_looping());
 
         // Default is bars 1-4
-        assert_eq!(t.loop_editor().start_bar, 1);
-        assert_eq!(t.loop_editor().end_bar, 5);
+        assert_eq!(t.loop_editor().start, 0);
+        assert_eq!(t.loop_editor().end, 4 * 3840);
 
         // Move end marker left twice: 5→4→3 (display "1-2")
         t.do_action(Action::LoopEndLeft);
         t.do_action(Action::LoopEndLeft);
-        assert_eq!(t.loop_editor().end_bar, 3);
+        assert_eq!(t.loop_editor().end, 2 * 3840);
         assert_eq!(t.loop_editor().display(), "1-2");
 
         // Activate the loop
@@ -107,8 +107,8 @@ pub mod tests {
         t.do_action(Action::LoopToggleEnabled);
         t.do_action(Action::LoopUnfocus);
 
-        assert_eq!(t.loop_editor().start_bar, 3);
-        assert_eq!(t.loop_editor().end_bar, 5);
+        assert_eq!(t.loop_editor().start, 2 * 3840);
+        assert_eq!(t.loop_editor().end, 4 * 3840);
         assert_eq!(t.loop_editor().display(), "3-4");
         assert!(t.is_looping());
 
@@ -142,14 +142,14 @@ pub mod tests {
         for _ in 0..20 {
             t.do_action(Action::LoopStartRight);
         }
-        assert!(t.loop_editor().start_bar < t.loop_editor().end_bar,
+        assert!(t.loop_editor().start < t.loop_editor().end,
             "Start must be less than end");
 
         // Try to move end past start
         for _ in 0..20 {
             t.do_action(Action::LoopEndLeft);
         }
-        assert!(t.loop_editor().end_bar > t.loop_editor().start_bar,
+        assert!(t.loop_editor().end > t.loop_editor().start,
             "End must be greater than start");
     }
 
@@ -160,7 +160,7 @@ pub mod tests {
         for _ in 0..20 {
             t.do_action(Action::LoopStartLeft);
         }
-        assert_eq!(t.loop_editor().start_bar, 1);
+        assert_eq!(t.loop_editor().start, 0);
     }
 
     // ── Transport ──

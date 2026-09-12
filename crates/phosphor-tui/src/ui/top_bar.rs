@@ -198,8 +198,10 @@ pub(super) fn render_ruler(frame: &mut Frame, area: Rect, nav: &NavState, snap: 
     if bw == 0 { return; }
 
     let ph = snap.position_ticks as f64 / (Transport::PPQ * 4) as f64;
-    let loop_start = nav.loop_editor.start_bar as usize;
-    let loop_end = nav.loop_editor.end_bar as usize; // exclusive
+    let bar_ticks = (Transport::PPQ * 4) as usize;
+    let loop_start = nav.loop_editor.start as usize / bar_ticks + 1;
+    // Exclusive, covering every bar the brace touches.
+    let loop_end = (nav.loop_editor.end as usize + bar_ticks - 1) / bar_ticks + 1;
     let loop_focused = nav.loop_editor.active;
     let loop_enabled = nav.loop_editor.enabled;
 

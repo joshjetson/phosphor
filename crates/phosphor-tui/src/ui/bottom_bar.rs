@@ -115,7 +115,10 @@ pub(super) fn render_bottom_bar(
     let d = "\u{00B7}";
     let keys: Vec<(&str, &str)> = if nav.loop_editor.active {
         let toggle = if nav.loop_editor.enabled { "off" } else { "on" };
-        vec![("hl","start"),("H/L","end"),("enter", toggle),("esc","done")]
+        vec![
+            ("hl","start"),("H/L","end"),("jk","slide"),("g","grid"),
+            ("y","lift"),("x","cut"),("p/P","stamp/layer"),("enter", toggle),("esc","done"),
+        ]
     } else {
         match nav.focused_pane {
             Pane::Transport if nav.transport_ui.editing => vec![("hl","adjust"),("enter","done"),("esc","done")],
