@@ -269,8 +269,6 @@ pub struct ChordDevice {
 
     active: [ActiveChord; MAX_ACTIVE],
     active_len: usize,
-    /// Where the last voicing sat, for the register lock's walk.
-    last_center: Option<f32>,
     strum_pending: [(i64, u8, u8); MAX_STRUM_PENDING],
     strum_len: usize,
 }
@@ -301,7 +299,6 @@ impl ChordDevice {
             revoice: false,
             active: [ActiveChord { key: 0, vel: 0, notes: [0; MAX_CHORD], count: 0 }; MAX_ACTIVE],
             active_len: 0,
-            last_center: None,
             strum_pending: [(0, 0, 0); MAX_STRUM_PENDING],
             strum_len: 0,
         }
@@ -486,9 +483,16 @@ impl ChordDevice {
         bass_override: Option<i32>,
     ) -> ([u8; MAX_CHORD], usize) {
         let count = offsets.len().max(1);
-        // The register lock: slide the whole voicing by octaves toward
-        // where the last chord sat, so consecutive chords walk.
-        let target = self.last_center.unwrap_or(HOME_CENTER);
+        // The register lock is a FIXED window, not a follower. It used to
+        // aim each voicing at wherever the previous one sat, and every
+        // chord moved that anchor — play upward for a minute and the same
+        // key came back an octave high. History-dependent output reads as
+        // instability under the hands. Levine's actual rule is a fixed
+        // register (keep the voicing around middle C), and a fixed target
+        // makes the device a function: one key, one voicing, forever.
+        // Consecutive chords still land close together, because they are
+        // all pulled to the same home.
+        let target = HOME_CENTER;
         let mut best_shift = 0i32;
         let mut best_dist = f32::MAX;
         for shift in -3..=3i32 {
@@ -524,13 +528,6 @@ impl ChordDevice {
         }
         notes[..len].sort_unstable();
 
-        // Remember where this voicing sat (bass excluded — it is an anchor,
-        // not a hand position).
-        let body = &notes[usize::from(self.bass > 0).min(len)..len];
-        if !body.is_empty() {
-            let sum: f32 = body.iter().map(|&p| f32::from(p)).sum();
-            self.last_center = Some(sum / body.len() as f32);
-        }
         (notes, len)
     }
 
@@ -771,7 +768,6 @@ impl MidiEffect for ChordDevice {
     fn reset(&mut self) {
         self.active_len = 0;
         self.strum_len = 0;
-        self.last_center = None;
         self.rng = 0x2545_F491;
         self.revoice = false;
     }
@@ -1320,5 +1316,24 @@ mod tests {
             track(&out, &mut sounding);
         }
         assert!(sounding.is_empty(), "notes left hanging after a mid-strum revoice: {sounding:?}");
+    }
+
+    /// The field report: after playing for a while, the same key starts
+    /// sounding in a different octave. The device must be history-blind —
+    /// one key, one voicing, forever, no matter what was played between.
+    #[test]
+    fn the_same_key_always_voices_the_same() {
+        let mut dev = ChordDevice::new();
+        dev.set_parameter(P_BASS, 0.0);
+        let first = chord_for(&mut dev, 48);
+        // A long walk up the zone and back — the drift bait.
+        for key in [50u8, 52, 53, 55, 57, 59, 55, 57, 59, 53, 55, 57, 59] {
+            let _ = chord_for(&mut dev, key);
+        }
+        let again = chord_for(&mut dev, 48);
+        assert_eq!(
+            again, first,
+            "the same key voiced differently after a walk — the register drifted"
+        );
     }
 }
