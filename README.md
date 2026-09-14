@@ -53,13 +53,17 @@ Each instrument track gets its own synthesizer instance with independent paramet
 ## Quick Start
 
 ```bash
-# Install from crates.io
-cargo install phosphor-studio
+# Install from crates.io — the --locked flag is required. It builds with
+# the exact dependency versions the release was tested with; without it
+# cargo picks newer ones, which now demand a newer Rust than the crate's,
+# and the build fails.
+cargo install phosphor-studio --locked
 
-# Or clone and build
+# Or clone and build — this is how to get the newest version, which may
+# be ahead of the one published on crates.io
 git clone https://github.com/joshjetson/phosphor.git
 cd phosphor
-cargo build --release
+cargo install --path . --locked
 
 # Run (TUI is the default)
 cargo run --release
@@ -1201,7 +1205,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace  # 873 tests
+cargo test --workspace  # 1,790+ tests
 ```
 
 ---
