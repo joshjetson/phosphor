@@ -184,8 +184,15 @@
   },
   "loop_editor": {
     "enter_via": "Space+L",
-    "h/l": "move loop start left/right",
-    "H/L": "move loop end left/right",
+    "h/l": "move loop start left/right by one grid step",
+    "H/L": "move loop end left/right by one grid step",
+    "g": "cycle the marker grid: bar / beat / 1/8 / 1/16",
+    "j/k": "slide the whole brace forward/back by one grid step",
+    "J/K": "leap the brace by its own length",
+    "y": "lift the section (all tracks)",
+    "x_or_d": "cut the section (one undo across all tracks)",
+    "p": "stamp at the brace (replaces under the stamp), then leapfrog",
+    "P": "layer at the brace (merges)",
     "Enter": "toggle loop enabled/disabled",
     "Esc": "exit loop editor"
   },
