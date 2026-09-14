@@ -164,7 +164,25 @@ pub fn find_session(input: &Path) -> PathBuf {
 
 /// [`find_session`] with the application directory supplied.
 pub fn find_session_in(input: &Path, app: Option<&Path>) -> PathBuf {
-    if input.is_absolute() || input.exists() {
+    // Saving appends `.phos` to whatever was typed; opening owes the
+    // player the same forgiveness. A name without the extension tries
+    // `.phos` at every step, so `open mysong` finds `mysong.phos` exactly
+    // as `save mysong` wrote it.
+    let with_ext: Option<PathBuf> =
+        (input.extension().is_none()).then(|| input.with_extension("phos"));
+    let candidates = |p: &Path| -> Vec<PathBuf> {
+        let mut v = vec![p.to_path_buf()];
+        if let Some(e) = &with_ext {
+            v.push(if p == input { e.clone() } else { p.with_extension("phos") });
+        }
+        v
+    };
+    for c in candidates(input) {
+        if c.is_absolute() || c.exists() {
+            return c;
+        }
+    }
+    if input.is_absolute() {
         return input.to_path_buf();
     }
     let Some(app) = app else {
@@ -172,9 +190,10 @@ pub fn find_session_in(input: &Path, app: Option<&Path>) -> PathBuf {
     };
     // `sessions/take3.phos` first, then a bare `take3.phos`.
     for base in [app.to_path_buf(), app.join(LOCAL_SESSIONS)] {
-        let candidate = base.join(input);
-        if candidate.exists() {
-            return candidate;
+        for c in candidates(&base.join(input)) {
+            if c.exists() {
+                return c;
+            }
         }
     }
     input.to_path_buf()
@@ -487,5 +506,25 @@ mod tests {
         assert_eq!(NATIVE, Convention::Windows);
         #[cfg(not(windows))]
         assert_eq!(NATIVE, Convention::Unix);
+    }
+
+    /// Opening owes the same forgiveness saving gives: a name typed
+    /// without `.phos` finds the file save wrote with it.
+    #[test]
+    fn open_forgives_a_missing_extension() {
+        let dir = std::env::temp_dir().join(format!("phos_ext_test_{}", std::process::id()));
+        let sessions = dir.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("jam.phos"), "{}").unwrap();
+
+        let found = find_session_in(Path::new("sessions/jam"), Some(&dir));
+        assert_eq!(found, sessions.join("jam.phos"), "the bare name missed the file");
+        let found = find_session_in(Path::new("jam"), Some(&dir));
+        assert_eq!(found, sessions.join("jam.phos"), "the bare basename missed it too");
+        // An exact name still wins over the extension guess.
+        std::fs::write(sessions.join("take"), "{}").unwrap();
+        let found = find_session_in(Path::new("sessions/take"), Some(&dir));
+        assert_eq!(found, sessions.join("take"), "the literal file lost to the guess");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

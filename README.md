@@ -559,11 +559,10 @@ sequencer grid, `n` toggles steps the same way.
 **Octaves** — In the piano roll, `{`/`}` move the cursor a whole octave;
 `[`/`]` snap it to the nearest pitch above/below that already has a note.
 
-**Open / save** — `Space+O` opens a project (type the name, `Enter`),
-`Space+S` saves as, `Ctrl+S` quick-saves (first time it prompts, after
-that it saves straight back to the same file). Names get `.phos`
-appended automatically; files land in `sessions/` unless you type a
-path — see [Where files live](#where-files-live).
+**Open / save** — `Space+S`, type a name like `myjam`, `Enter`: phosphor
+adds `.phos` and saves into `sessions/`. `Ctrl+S` then saves that same
+file instantly. `Space+O`, type the name — with or without `.phos` —
+and `Enter` opens it. See [Where files live](#where-files-live).
 
 **Panic** — `Space+!` from anywhere: all sound stops immediately.
 
@@ -1115,12 +1114,24 @@ Inside it:
 <app dir>/practice.json                  practice-room records (clean BPM per drill)
 ```
 
-### How sessions are named
+### How to save and open — the short version
+
+**To save:** press `Space+S`, type a name — just the name, like `myjam` —
+and press `Enter`. Phosphor adds **`.phos`** to the end for you and puts
+the file in the `sessions/` folder. From then on `Ctrl+S` saves that same
+file instantly.
+
+**To open:** press `Space+O`, type the name — `myjam` or `myjam.phos`,
+either works — and press `Enter`. Every session file ends in **`.phos`**;
+that's the extension to look for when you're browsing your files outside
+phosphor.
+
+### The details
 
 - A session is one file with the **`.phos`** extension — human-readable JSON.
-- You never have to type the extension. Whatever name you enter at the save
-  prompt gets `.phos` appended (and a wrong extension is corrected: typing
-  `mysong.txt` saves `mysong.phos`).
+- You never have to type the extension — saving appends `.phos` to whatever
+  you enter (a wrong extension is corrected: `mysong.txt` saves as
+  `mysong.phos`), and opening a bare name finds the `.phos` file it wrote.
 - The first `Space+S` (or `Ctrl+S` on an unsaved session) prompts with a dim
   suggestion — `sessions/untitled.phos`. The suggestion is a fallback, not
   pre-typed text: type a name and it replaces the `untitled` part; press
