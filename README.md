@@ -560,7 +560,10 @@ sequencer grid, `n` toggles steps the same way.
 `[`/`]` snap it to the nearest pitch above/below that already has a note.
 
 **Open / save** — `Space+O` opens a project (type the name, `Enter`),
-`Space+S` saves as, `Ctrl+S` quick-saves.
+`Space+S` saves as, `Ctrl+S` quick-saves (first time it prompts, after
+that it saves straight back to the same file). Names get `.phos`
+appended automatically; files land in `sessions/` unless you type a
+path — see [Where files live](#where-files-live).
 
 **Panic** — `Space+!` from anywhere: all sound stops immediately.
 
@@ -1108,7 +1111,24 @@ Inside it:
 <app dir>/config.json                    theme preference
 <app dir>/presets/<instrument>.json      one user preset bank per instrument
 <app dir>/sessions/                      sessions saved without a path
+<app dir>/progressions.json              your chord-progression library
+<app dir>/practice.json                  practice-room records (clean BPM per drill)
 ```
+
+### How sessions are named
+
+- A session is one file with the **`.phos`** extension — human-readable JSON.
+- You never have to type the extension. Whatever name you enter at the save
+  prompt gets `.phos` appended (and a wrong extension is corrected: typing
+  `mysong.txt` saves `mysong.phos`).
+- The first `Space+S` (or `Ctrl+S` on an unsaved session) prompts with a dim
+  suggestion — `sessions/untitled.phos`. The suggestion is a fallback, not
+  pre-typed text: type a name and it replaces the `untitled` part; press
+  `Enter` on an untouched prompt and the suggestion is used as-is.
+- After the first save, `Ctrl+S` saves straight back to the same file, no
+  prompt. `Space+S` always prompts, for saving a copy under a new name.
+- Names have no other rules — anything your filesystem accepts works. Paths
+  are allowed: typing `ideas/jam.phos` saves into an `ideas` folder.
 
 The save and open prompts start in `sessions/` when the working directory has
 one — running from a checkout, which is where the sessions in this repository
