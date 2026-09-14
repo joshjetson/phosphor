@@ -408,175 +408,228 @@ After every rep the room reports:
 
 ## Shortcuts, A to Z
 
-Every shortcut in the application, organized by what you're trying to do.
-Find the task alphabetically — Loop under L, Record under R — and each entry
-tells you where to be and what to press.
+Every shortcut, organized by what you're trying to do — Loop under L, Record
+under R. Each entry is the complete path from anywhere in the app, no steps
+assumed. Four moves cover all the getting-around, so learn these first:
 
-**Add a track** — Press `Space+A`, pick an instrument with `j`/`k`, `Enter`.
-The new track lands selected with its panel open.
+- **`Space+1` / `Space+2` / `Space+3`** jump to the three panes: transport,
+  tracks, clip view. You can always start from one of these.
+- **In the tracks pane, `j`/`k` choose a track and `Enter` selects it.**
+  Selecting a track is the important act: it routes your MIDI keyboard to
+  that instrument and opens its panels in the clip view. Once selected,
+  `h`/`l` walk along its cells: label → fx → volume → mute → solo → arm →
+  clips.
+- **In the clip view, `Tab` cycles its tabs**: `[trk fx]` → `[synth]` →
+  `[inst]` → `[piano roll]` → `[settings]`, then round again. Keep pressing
+  `Tab` until the one you want is lit.
+- **`Esc` always backs out one level** — releases a held knob, drops a
+  selection, closes a panel, leaves a mode. Lost? Press `Esc` a few times
+  and you're back on solid ground.
 
-**Add an effect** — Select a track, put the cursor on its `fx` cell and press
-`Enter` (or press `a` inside the `[trk fx]` tab). The menu lists the audio
-effects first, then `chord · midi` and `arp · midi` — the two that transform
-notes before the instrument.
+Below, "select the track" always means: `Space+2`, `j`/`k` to it, `Enter`.
+"Open the piano roll" always means: select the track, then `Space+3` and
+`Tab` until `[piano roll]` is lit.
 
-**Arm for recording** — On a track, press `r`. The dot glows bright only on
-the selected track, because MIDI records onto the selected track — dim means
-armed-but-not-receiving.
+**Add a track** — From anywhere: `Space+A`, choose an instrument with
+`j`/`k`, `Enter`. The track arrives selected, panel open, MIDI routed to it.
 
-**Arpeggiator** — Add `arp · midi` from the effect menu, `Enter` opens its
-panel: `j`/`k` picks a knob, `h`/`l` turns it, and `1`–`4` are instant feels
-(rhodes 8ths, dilla 16ths, wide updown, chord pulse). The latch knob keeps a
-chord running after your hands leave.
+**Add an effect** — Select the track, then `h`/`l` to its `fx` cell and
+`Enter`: the effect menu opens. `j`/`k` to choose — audio effects first,
+then `chord · midi` and `arp · midi`, which transform notes before the
+instrument — and `Enter` adds it. (The same menu opens with `a` from inside
+the `[trk fx]` tab.)
 
-**Automation** — In the piano roll, press `A` to open the controller lane.
-`k`/`j` draw the value up/down (`K`/`J` in big steps), `h`/`l` walk columns,
-`[`/`]` switch which controller you're drawing, `r` fills a straight ramp
-back to your last point, `d` clears a point, `Esc` closes. Mod wheel, pitch
-bend and aftertouch you *play* while recording are captured automatically —
-`X` in the piano roll erases a clip's recorded controllers.
+**Arm for recording** — Select the track (arming and selecting go together:
+MIDI records onto the *selected* track), then press `r`. The dot glows
+bright when the track will really receive notes, dim when it's armed but
+not selected.
 
-**Chord device** — Add `chord · midi` from the effect menu. Below the split
-(C4) one key plays that scale degree's whole chord; knobs pick the key,
-scale, color (triad → 7th → 9th → lush) and voicing. Press `e` in its panel
-to write your own progressions (see Progressions).
+**Arpeggiator** — Add `arp · midi` (see Add an effect). To reach its knobs:
+`Space+3`, `Tab` until `[trk fx]`, `j`/`k` onto the arp row, `Enter`. Then
+`j`/`k` picks a knob, `h`/`l` turns it, `1`–`4` load instant feels (rhodes
+8ths, dilla 16ths, wide updown, chord pulse), `Esc` backs out. The latch
+knob keeps a chord running after your hands lift.
 
-**Chords on steps** — In the sequencer, `Enter` on a step opens its panel;
-walk to the chord and voicing knobs with `h`/`l`.
+**Automation** — Open the piano roll, press `A`: a controller lane opens
+under the notes and takes the keys. `k`/`j` draw the value up/down (`K`/`J`
+bigger), `h`/`l` walk columns, `[`/`]` switch controllers (mod, bend,
+aftertouch), `r` fills a straight ramp back to your last point, `d` clears
+a point, `Esc` closes the lane. Wheels you *play* while recording are
+captured automatically; `X` in the piano roll erases a clip's recorded
+controllers.
 
-**Clips** — On a track's clip: `Enter` locks it, then `h`/`l` moves it,
-`Shift+H/L` stretches the right edge, `Ctrl+H/L` trims the left, `d`
-duplicates, `Esc` releases. Shrinking hides notes rather than deleting them —
+**Chord device** — Add `chord · midi` (see Add an effect), then open its
+panel exactly like the arpeggiator's: `Space+3`, `Tab` to `[trk fx]`,
+`j`/`k` to the chord row, `Enter`. Knobs set the key, scale, color
+(triad → 7th → 9th → lush) and voicing; below the split (C4) one key on
+your controller plays that degree's whole chord, above it the keyboard
+plays normally. Press `e` in this panel for your own progressions (see
+Progressions).
+
+**Clips (move, stretch, trim)** — Select the track, `h`/`l` along to its
+clips, and on a clip press `Enter` to lock it. Now `h`/`l` moves it,
+`Shift+H/L` stretches its right edge, `Ctrl+H/L` trims its left, `d`
+duplicates it, `Esc` releases. Shrinking hides notes rather than deleting —
 stretch back out and they return.
 
-**Copy a clip** — `y` on a clip yanks it, `p` pastes it after the current
-clip, `P` pastes onto another track at the same bars (layering). Pastes
-refuse to overlap rather than eat what's there.
+**Copy a clip** — Lock the clip as above (or just stand on it), `y` yanks
+it, `p` pastes it after the current clip, `P` pastes onto *another* track
+at the same bars. Pastes refuse to overlap existing clips.
 
-**Copy an arrangement** — `y` on a track's *label* yanks every clip on it;
-`P` on another track lays the whole arrangement at the same bars — the
-layering move.
+**Copy an arrangement** — Select the track, `h`/`l` to its *label* cell,
+`y` yanks every clip on the track. Then select the destination track,
+`h`/`l` to its label, `P` lays the whole arrangement at the same bars —
+the layering move.
 
-**Copy the loop section** — See Loop. `y` lifts, `p` stamps.
+**Copy the loop section** — See Loop: the brace lifts and stamps sections.
 
-**Count-in** — `Space+1` to the transport, `Enter` on the `cnt` element
-cycles off → 1 bar → 2 bars. With count-in set, arming record and pressing
-play clicks you in first. Any transport key cancels it.
+**Count-in** — `Space+1` to the transport, `h`/`l` to the `cnt` element,
+`Enter` cycles off → 1 bar → 2 bars. With it set, arm recording
+(`Space+R`) and press play (`Space+P`): the bars click down before the
+take rolls. Any transport key cancels mid-count.
 
-**Delete** — `Space+D` deletes the selected track or clip (with confirmation).
-`d` deletes a note in edit mode, an effect in the chain (confirmed), a chord
-row in the progression editor.
+**Delete** — `Space+D` deletes whatever is selected — track or clip — with
+a y/n confirmation. Inside modes, `d` deletes the thing under the cursor:
+a note in edit mode, an effect in the chain, a chord row in the
+progression editor.
 
-**Duplicate a track** — `D` on a track copies everything — instrument, panel,
-effects, mix, clips — onto a fresh track directly below. One undo lifts it.
+**Duplicate a track** — Select the track, press `D` (capital). Instrument,
+panel, effects, mix and clips all copy to a fresh track directly below,
+unarmed. One `u` removes it.
 
-**Edit notes** — In the piano roll, press `Space+E`. `h`/`j`/`k`/`l` hop
-between notes by proximity, `Enter` selects the note under the cursor,
-`Shift+direction` selects as you go, then plain directions *move* the
-selection (`h`/`l` by grid, `j`/`k` by semitone). `Shift+H/L` stretches,
-`,`/`.` rides velocity (`<`/`>` in strides), `m` mutes a note without
-deleting it, `d` deletes, `Esc` backs out.
+**Edit notes** — Open the piano roll, then `Space+E`. The cursor now hops
+*between notes*: `h`/`l` nearest note left/right, `j`/`k` nearest above/
+below. `Enter` selects the note under the cursor; `Shift+direction`
+selects as you sweep. With notes selected, plain `h`/`l` moves them by a
+grid step and `j`/`k` by a semitone; `Shift+H/L` stretches them. `,`/`.`
+nudge velocity (`<`/`>` in strides), `m` mutes a note without deleting it,
+`d` deletes, `Esc` steps back out, and `Esc` again leaves edit mode.
 
-**Effects panels** — `Enter` on an effect in the `[trk fx]` chain opens its
-panel: `j`/`k` picks a control, `h`/`l` adjusts (`H`/`L` strides), `Enter`
-holds a knob so nothing else hears the keys, `m` mutes the effect, `Esc`
-goes back.
+**Effect panels** — `Space+3`, `Tab` until `[trk fx]`: the chain lists
+every effect on the selected track, MIDI effects on top. `j`/`k` chooses a
+row, `Enter` opens its panel (`j`/`k` control, `h`/`l` adjust, `H`/`L`
+strides, `Enter` holds a knob, `Esc` releases then closes), `m` mutes the
+effect in place, `[`/`]` reorder audio effects, `d` removes with a
+confirmation, `c` prints the MIDI effects into the clip as real notes.
 
-**Fingers (practice room)** — `Space+F` on any instrument track. `j`/`k`
-pick a drill, `<`/`>` walk the key through the circle of fourths, `h` cycles
-hands, `w` toggles wait/flow, `c` cycles the click (every beat / 2&4 / off),
-`[`/`]` set the tempo, `Enter` starts. Three clean reps raise the tempo;
-your best clean tempo per drill is remembered.
+**Fingers (practice room)** — Select an instrument track, then `Space+F`
+from anywhere. `j`/`k` pick a drill, `<`/`>` walk the key through the
+circle of fourths, `h` cycles RH → LH → hands together, `w` toggles wait
+mode (time stops until you play the right note) and flow mode (the click
+rolls and you're judged), `c` cycles the click (every beat / 2&4 / off),
+`[`/`]` set the tempo, `Enter` starts, `Esc` stops and then leaves. Three
+clean reps in a row raise the tempo 5 BPM; your best clean tempo is
+remembered per drill, per key, per hand.
 
-**Grid** — Piano roll grid and snap live in the `[settings]` tab (`j`/`k`
-rows, `h`/`l` values) along with default velocity and record quantize. The
-loop editor's marker grid is `g` (see Loop).
+**Grid and snap** — Select the track, `Space+3`, `Tab` until `[settings]`:
+`j`/`k` between grid, snap, default velocity and record quantize; `h`/`l`
+change each. The loop brace's own grid is `g` inside the loop editor (see
+Loop).
 
-**Help** — `Space+H`. Topics by area, with every key explained.
+**Help** — `Space+H` from anywhere. `j`/`k` picks a topic, `Enter` opens
+it, `Esc` closes.
 
-**Jump** — `g` in the piano roll jumps the cursor to the playhead, landing
-on a sounding note. Digits `1`–`9` jump to a clip (tracks pane), a column
-(piano roll), or a step (sequencer).
+**Jump** — In the piano roll, `g` jumps the cursor to the playhead's
+column, landing on a sounding note. Digits `1`–`9` jump straight to a
+numbered clip (selected track), column (piano roll), or step (sequencer).
 
-**Loop** — `Space+L` focuses the loop brace. `Enter` turns looping on/off,
-`h`/`l` move the start, `H`/`L` the end, `g` cycles the marker grid (bar /
-beat / 1/8 / 1/16 — the brace shrinks to a single sixteenth), `j`/`k` slide
-the whole brace, `J`/`K` leap it by its own length. Then the scissors: `y`
-lifts everything between the markers on every track, `x` cuts it (one undo
-brings it all back), `p` stamps it at the brace — replacing what's under the
-stamp, then leapfrogging so `p p p` lays copies back to back — and `P`
-layers instead of replacing.
+**Loop** — `Space+L` from anywhere focuses the loop brace; `Enter` toggles
+looping on/off. `h`/`l` move the start marker, `H`/`L` the end, and `g`
+cycles the marker grid — bar → beat → 1/8 → 1/16 — so the brace can close
+down to a single sixteenth. `j`/`k` slide the whole brace along the song;
+`J`/`K` leap it by its own length. Then the scissors: `y` lifts everything
+between the markers on every track, `x` cuts it (one `u` restores every
+track at once), `p` stamps the lifted section at the brace — replacing
+what's under the stamp, then leapfrogging forward so `p p p` lays copies
+back to back — and `P` layers it over what's there instead. `Esc` leaves
+the brace focused where you put it.
 
-**Metronome** — `Space+M` toggles the click. The practice room has its own
-(see Fingers).
+**Metronome** — `Space+M` toggles the click while playing. The practice
+room's click is its own (see Fingers).
 
-**Mute** — `m` mutes whatever you're on: a track, a sequencer lane, an
-effect (audio or MIDI), or a single note in edit mode. `s` solos tracks and
-lanes.
+**Mute** — `m` mutes whatever you're standing on: a selected track, a
+sequencer lane, an effect in the chain or its open panel, a single note in
+edit mode. `s` solos tracks and lanes the same way.
 
-**Notes (writing)** — `n` writes or erases a note at the cursor — in the
-piano roll and on the sequencer grid alike. Drawing the first note on an
-empty track creates the clip for you.
+**Notes (writing)** — Open the piano roll. `h`/`l` walk columns, `j`/`k`
+change pitch, and `n` writes a note at the cursor (`n` again erases it).
+On an empty track the first note conjures its clip automatically. On the
+sequencer grid, `n` toggles steps the same way.
 
-**Octaves** — `{`/`}` jump the piano-roll cursor a whole octave; `[`/`]`
-snap it to the nearest pitch that actually has a note.
+**Octaves** — In the piano roll, `{`/`}` move the cursor a whole octave;
+`[`/`]` snap it to the nearest pitch above/below that already has a note.
 
-**Open / save** — `Space+O` opens a project, `Space+S` saves as, `Ctrl+S`
-quick-saves.
+**Open / save** — `Space+O` opens a project (type the name, `Enter`),
+`Space+S` saves as, `Ctrl+S` quick-saves.
 
-**Panic** — `Space+!` kills all sound immediately.
+**Panic** — `Space+!` from anywhere: all sound stops immediately.
 
-**Play / stop** — `Space+P` toggles play, `Space+0` stops and returns to
-bar 1.
+**Play / stop** — `Space+P` toggles play; `Space+0` stops and returns the
+playhead to bar 1.
 
-**Presets** — `Space+W` on an instrument track browses its presets: `Enter`
-loads, the save row names a new one, `d` deletes.
+**Presets** — Select an instrument track, `Space+W`: its preset browser
+opens. `j`/`k` rows, `Enter` on a preset loads it, `Enter` on the save row
+names and saves the current panel, `d` deletes (confirmed), `Esc` closes.
 
-**Progressions** — `e` in the chord device's panel opens the editor: `j`/`k`
-picks a chord, `Tab` the column, `h`/`l` turns root/quality/bass, `a` adds a
-chord, `d` removes, `r` listens to your controller and captures the exact
-voicing you play, `[`/`]` browse your saved library, `n` names, `s` saves,
-`Enter` loads it into the device.
+**Progressions** — Open the chord device's panel (see Chord device), press
+`e`: the progression editor opens. `j`/`k` picks a chord row, `Tab` the
+column (root / quality / bass), `h`/`l` turns it. `a` adds a chord, `d`
+removes one, `r` arms learn — play any chord on your controller, lift, and
+that exact voicing lands in the row. `[`/`]` browse your saved library,
+`n` names the progression, `s` saves it, `Enter` loads it into the device,
+`Esc` closes.
 
-**Quantize** — `Space+Q` opens the quantize modal (grid and strength,
-25–100%). Record quantize — snapping as you record — lives in the
+**Quantize** — Open the piano roll on the clip, then `Space+Q`: `j`/`k`
+between grid, strength (25–100%) and apply, `h`/`l` adjusts, `Enter` on
+apply commits. To quantize *as you record*, set record quantize in the
 `[settings]` tab.
 
-**Record** — `Space+R` arms recording, then `Space+P` rolls (count-in first
-if set). `R` on a track loop-records; `R` while already playing punches in
-without rewinding. The transport's `take` element picks overdub (layers each
-pass) or re-record (clears the loop range first). Press `u` *while
-recording* to scrap the pass you're playing and go again without stopping.
+**Record** — Arm a track (see Arm), press `Space+R` to arm the transport,
+then `Space+P` to roll — with a count-in first if you set one. `R` on a
+selected track starts loop-recording; `R` while already playing punches in
+right there, no rewind. `Space+1` → the `take` element chooses overdub
+(each pass layers) or re-record (the loop range clears first). While
+recording, `u` scraps the pass under your fingers and the loop keeps
+rolling.
 
-**Redo** — `Ctrl+R`. Undo is `u`, everywhere.
+**Redo** — `Ctrl+R`, everywhere.
 
-**Rename a track** — `n` on the track's label. Names cap at 8 characters.
+**Rename a track** — Select the track, `h`/`l` to its label cell, press
+`n`, type the name (8 characters max), `Enter`.
 
-**Sequencer** — Add the Step Sequencer as a track. On the grid: `n` writes a
-step, `a` accents it, `x` clears it, `[`/`]` change rows, `y`/`p` copy a
-step with everything on it. Off the grid: `y`/`p` copy whole patterns —
-across tracks too. `c` chains patterns, `t` runs/stops, `r` step-records
-(`.` rest, `_` tie), `b` bounces the pattern to a clip, `X` clears it.
+**Sequencer** — `Space+A` and choose *Step Sequencer*: it arrives with its
+grid open. On the grid `j`/`k`/`h`/`l` move, `n` writes a step, `a`
+accents it, `x` clears it, `[`/`]` jump rows, and `y`/`p` copy one step
+with its chord, gate and accent to another spot. `j` below the grid
+reaches the panels: the step's pitch/chord/voicing/gate, the lane's sound,
+the pattern's length/rate/swing — `h`/`l` between knobs, `Enter` holds
+one. On the slots row, `h`/`l` picks one of eight patterns, `Enter` queues
+it, `c` chains it (`c` again for ×2), `C` clears the chain, and `y`/`p`
+copy a whole pattern — onto another sequencer track too. `t` runs/stops,
+`r` step-records from your controller (`.` writes a rest, `_` ties), `b`
+bounces the pattern to a clip, `X` clears the pattern.
 
-**Solo** — `s`, on tracks and sequencer lanes.
+**Solo** — `s`, on a selected track or a sequencer lane.
 
-**Tempo** — `+`/`-` anywhere, or `Enter` on the transport's BPM element and
-`h`/`l`.
+**Tempo** — `+`/`-` from anywhere. Or `Space+1`, `Enter` on the BPM
+element, `h`/`l` to walk it, `Esc` to release.
 
 **Theme** — `Space+V` cycles the color theme.
 
-**Undo** — `u`, for everything: notes, knobs, effects, takes, cuts, pastes.
-Sweeps of one control fold into a single step. While recording, `u` scraps
-the in-flight pass first, then peels takes newest-first.
+**Undo** — `u`, for everything: notes, knobs, effects, takes, cuts,
+stamps. A sweep of one knob folds into a single step. While recording,
+`u` scraps the in-flight pass first, then peels committed takes
+newest-first.
 
-**Velocity** — Notes draw brighter the harder they were hit. In edit mode
-`,`/`.` nudge velocity and `<`/`>` stride it; new-note velocity is in the
-`[settings]` tab.
+**Velocity** — Notes draw brighter the harder they were hit, so dynamics
+are visible at a glance. To change them: edit mode (see Edit notes),
+`,`/`.` nudges, `<`/`>` strides, and the header reads the value out. The
+velocity new notes get is in the `[settings]` tab.
 
-**Yank** — `y`, everywhere something can be lifted: a clip, an arrangement
-(on the label), piano-roll highlights, a sequencer step or pattern, the loop
-section. `p` puts it back down; where two flavors exist, `P` is the layering
-one.
+**Yank** — `y` lifts, everywhere: a clip, a whole arrangement (from the
+label cell), highlighted piano-roll notes, a sequencer step or pattern,
+the loop section. `p` puts it down; wherever two flavors exist, lowercase
+`p` replaces and capital `P` layers.
 
 ---
 
