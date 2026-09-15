@@ -114,6 +114,52 @@ pub fn session_dir() -> Option<PathBuf> {
     app_dir().map(|dir| dir.join(LOCAL_SESSIONS))
 }
 
+/// Where the sampler looks for sound files by default —
+/// `<app dir>/samples`. A kit dropped in here loads by bare name from
+/// any session.
+pub fn samples_dir() -> Option<PathBuf> {
+    app_dir().map(|dir| dir.join("samples"))
+}
+
+/// Where to look for a sample the player named in the pad prompt.
+///
+/// The same shape as [`find_session`], with the sampler's own homes: as
+/// typed, then against the working directory, then `<app dir>/samples`,
+/// then the app dir itself — and a name with no extension tries `.wav`
+/// at every step, so `kick` finds `kick.wav` wherever it lives.
+pub fn find_sample(input: &Path) -> PathBuf {
+    find_sample_in(input, app_dir().as_deref())
+}
+
+/// [`find_sample`] with the application directory supplied.
+pub fn find_sample_in(input: &Path, app: Option<&Path>) -> PathBuf {
+    let candidates = |p: &Path| -> Vec<PathBuf> {
+        let mut v = vec![p.to_path_buf()];
+        if p.extension().is_none() {
+            v.push(p.with_extension("wav"));
+        }
+        v
+    };
+    for c in candidates(input) {
+        if c.exists() {
+            return c;
+        }
+    }
+    if input.is_absolute() {
+        return input.to_path_buf();
+    }
+    if let Some(app) = app {
+        for base in [app.join("samples"), app.to_path_buf()] {
+            for c in candidates(&base.join(input)) {
+                if c.exists() {
+                    return c;
+                }
+            }
+        }
+    }
+    input.to_path_buf()
+}
+
 // ── Session prompts ──
 
 /// The text a save or open prompt starts the field with.
@@ -525,6 +571,26 @@ mod tests {
         std::fs::write(sessions.join("take"), "{}").unwrap();
         let found = find_session_in(Path::new("sessions/take"), Some(&dir));
         assert_eq!(found, sessions.join("take"), "the literal file lost to the guess");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A sample typed by bare name is found in `<app dir>/samples`, with
+    /// the `.wav` guess the session prompt's `.phos` guess taught.
+    #[test]
+    fn a_bare_sample_name_finds_the_samples_directory() {
+        let dir = std::env::temp_dir().join(format!("phos_smp_test_{}", std::process::id()));
+        let samples = dir.join("samples");
+        std::fs::create_dir_all(&samples).unwrap();
+        std::fs::write(samples.join("kick.wav"), b"riff").unwrap();
+
+        let found = find_sample_in(Path::new("kick"), Some(&dir));
+        assert_eq!(found, samples.join("kick.wav"), "the bare name missed the kit");
+        let found = find_sample_in(Path::new("kick.wav"), Some(&dir));
+        assert_eq!(found, samples.join("kick.wav"));
+        // A path that resolves nowhere comes back as typed, so the error
+        // the loader shows names what the player wrote.
+        let found = find_sample_in(Path::new("ghost.wav"), Some(&dir));
+        assert_eq!(found, Path::new("ghost.wav"));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

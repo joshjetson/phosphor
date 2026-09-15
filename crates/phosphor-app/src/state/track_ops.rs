@@ -189,6 +189,9 @@ impl NavState {
         track.handle = Some(handle);
         track.instrument_type = Some(instrument);
         track.synth_params = crate::preset::defaults(instrument);
+        if instrument == InstrumentType::Sampler {
+            track.sampler = Some(Box::new(crate::sampler::SamplerState::new()));
+        }
         // Sync the initial armed state to audio
         track.sync_to_audio();
         self.tracks.insert(insert_pos, track);

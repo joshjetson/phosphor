@@ -25,9 +25,11 @@ pub(super) fn names(instrument: Option<InstrumentType>) -> &'static [&'static st
         Some(InstrumentType::LittlePhatty) => &phosphor_dsp::phatty::PARAM_NAMES,
         Some(InstrumentType::Prophet6) => &phosphor_dsp::prophet6::PARAM_NAMES,
         Some(InstrumentType::Teo5) => &phosphor_dsp::teo5::PARAM_NAMES,
-        // The phosphor synth and the sampler share a panel; a track with no
-        // instrument on it has none, and gets that one's names rather than an
-        // empty list, since it also has no values to draw under them.
+        // The sampler's flat panel is its globals; the pads carry the rest.
+        Some(InstrumentType::Sampler) => &phosphor_dsp::sampler::PARAM_NAMES,
+        // A track with no instrument on it has no names of its own, and
+        // gets the phosphor synth's rather than an empty list, since it
+        // also has no values to draw under them.
         _ => &phosphor_dsp::synth::PARAM_NAMES,
     }
 }
@@ -54,6 +56,9 @@ pub(super) fn discrete_label(
         Some(InstrumentType::LittlePhatty) => phosphor_dsp::phatty::discrete_label(index, value),
         Some(InstrumentType::Prophet6) => phosphor_dsp::prophet6::discrete_label(params, index),
         Some(InstrumentType::Teo5) => phosphor_dsp::teo5::discrete_label(params, index),
+        // No selectors on the sampler's panel — falling through to the
+        // synth here made the level knob wear a patch name.
+        Some(InstrumentType::Sampler) => None,
         _ => phosphor_dsp::synth::discrete_label(index, value),
     }
 }
@@ -73,6 +78,9 @@ pub(super) fn value_text(
     let value = params.get(index).copied().unwrap_or(0.0);
     let seconds = match instrument {
         Some(InstrumentType::DX7) => None,
+        // Level and velocity depth are both percentages; the synth's
+        // answer for the same indices is a time.
+        Some(InstrumentType::Sampler) => None,
         Some(InstrumentType::Prophet6) => phosphor_dsp::prophet6::param_seconds(index, value),
         Some(InstrumentType::Teo5) => phosphor_dsp::teo5::param_seconds(index, value),
         Some(InstrumentType::Juno60) => phosphor_dsp::juno::param_seconds(index, value),

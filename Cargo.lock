@@ -2062,6 +2062,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
+name = "hound"
+version = "3.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
+
+[[package]]
 name = "icu_collections"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3125,9 +3131,10 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phosphor-app"
-version = "0.3.71"
+version = "0.3.72"
 dependencies = [
  "anyhow",
+ "hound",
  "phosphor-core",
  "phosphor-dsp",
  "phosphor-plugin",
@@ -3139,7 +3146,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-core"
-version = "0.3.71"
+version = "0.3.72"
 dependencies = [
  "anyhow",
  "assert_no_alloc",
@@ -3157,7 +3164,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-dsp"
-version = "0.3.71"
+version = "0.3.72"
 dependencies = [
  "criterion",
  "dasp",
@@ -3169,7 +3176,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-gui"
-version = "0.3.71"
+version = "0.3.72"
 dependencies = [
  "anyhow",
  "eframe",
@@ -3181,7 +3188,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-midi"
-version = "0.3.71"
+version = "0.3.72"
 dependencies = [
  "anyhow",
  "midir",
@@ -3194,7 +3201,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-plugin"
-version = "0.3.71"
+version = "0.3.72"
 dependencies = [
  "proptest",
  "thiserror 2.0.18",
@@ -3202,7 +3209,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-studio"
-version = "0.3.71"
+version = "0.3.72"
 dependencies = [
  "anyhow",
  "clap",
@@ -3215,11 +3222,12 @@ dependencies = [
 
 [[package]]
 name = "phosphor-tui"
-version = "0.3.71"
+version = "0.3.72"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
  "crossterm",
+ "hound",
  "midir",
  "phosphor-app",
  "phosphor-core",

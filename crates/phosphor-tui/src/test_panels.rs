@@ -121,6 +121,7 @@ mod tests {
                 InstrumentType::LittlePhatty => &phosphor_dsp::phatty::PARAM_NAMES[..],
                 InstrumentType::Prophet6 => &phosphor_dsp::prophet6::PARAM_NAMES[..],
                 InstrumentType::Teo5 => &phosphor_dsp::teo5::PARAM_NAMES[..],
+                InstrumentType::Sampler => &phosphor_dsp::sampler::PARAM_NAMES[..],
                 _ => &phosphor_dsp::synth::PARAM_NAMES[..],
             };
             let count = params(&app).len().min(names.len());

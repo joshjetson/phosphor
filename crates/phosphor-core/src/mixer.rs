@@ -151,6 +151,19 @@ pub enum MixerCommand {
         slot: usize,
         chords: Vec<crate::midi_fx::UserChord>,
     },
+    /// Hand the sampler one pad, whole: config plus layers.
+    ///
+    /// The `Arc`s inside the layers are refcount handles — the UI side
+    /// keeps a reference to every buffer it has ever sent, so the clones
+    /// and drops here never touch the allocator's free path. The `Vec`
+    /// itself is copied into slots the engine already owns and freed on
+    /// this thread, the road `UpdateClip` events already take.
+    SetSamplerPad {
+        track_id: usize,
+        pad: u8,
+        config: phosphor_plugin::sample::PadConfig,
+        layers: Vec<phosphor_plugin::sample::PadLayer>,
+    },
     /// Take the effect out of a slot. Frees on the audio thread, as
     /// `RemoveTrack` and `UpdateClip` already do.
     RemoveFx {
@@ -282,6 +295,9 @@ fn command_cost(cmd: &MixerCommand) -> u32 {
         | MixerCommand::AddMidiFx { .. }
         | MixerCommand::RemoveMidiFx { .. }
         | MixerCommand::SetMidiFxProgression { .. }
+        // A pad delivery is Arc traffic plus a Vec freed here — allocator
+        // business on the drop side even when the copy itself is cheap.
+        | MixerCommand::SetSamplerPad { .. }
         | MixerCommand::MoveFx { .. }
         // Only the first pattern a track receives allocates — it builds the
         // player — and the cost is charged before the command is opened, so
@@ -1592,6 +1608,13 @@ impl Mixer {
                     }
                 }
             }
+            MixerCommand::SetSamplerPad { track_id, pad, config, layers } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    if let Some(instrument) = track.instrument.as_mut() {
+                        instrument.set_sampler_pad(pad, &config, &layers);
+                    }
+                }
+            }
             MixerCommand::SetMidiFxBypass { track_id, slot, bypassed } => {
                 if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
                     if let Some(s) = track.midi_fx.get_mut(slot) {
@@ -1912,6 +1935,49 @@ mod tests {
         // Threshold is "not silence", not a level check — the instruments
         // carry a deep headroom trim on their output.
         assert!(peak > 0.001, "Should produce sound, peak={peak}");
+    }
+
+    #[test]
+    fn a_sampler_pad_travels_to_the_engine_and_speaks() {
+        use phosphor_plugin::sample::{PadConfig, PadLayer, SamplePcm};
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let handle = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
+        handle.config.midi_active.store(true, std::sync::atomic::Ordering::Relaxed);
+        handle.config.armed.store(true, std::sync::atomic::Ordering::Relaxed);
+        tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle: handle.clone() })
+            .unwrap();
+        tx.send(MixerCommand::SetInstrument {
+            track_id: 0,
+            instrument: Box::new(phosphor_dsp::sampler::Sampler::new()),
+        })
+        .unwrap();
+
+        // A 220 Hz-ish sine on C3's pad, delivered the way the UI will.
+        let data: Vec<f32> =
+            (0..44_100).map(|i| (std::f32::consts::TAU * 220.0 * i as f32 / 44_100.0).sin()).collect();
+        let pcm = Arc::new(SamplePcm { data, channels: 1, sample_rate: 44_100.0 });
+        tx.send(MixerCommand::SetSamplerPad {
+            track_id: 0,
+            pad: 39, // note 60
+            config: PadConfig::for_key(60),
+            layers: vec![PadLayer::from_pcm(pcm)],
+        })
+        .unwrap();
+        // A pad off the bed must be shrugged off, not panicked over.
+        tx.send(MixerCommand::SetSamplerPad {
+            track_id: 0,
+            pad: 200,
+            config: PadConfig::for_key(60),
+            layers: Vec::new(),
+        })
+        .unwrap();
+
+        transport.play();
+        let midi = vec![make_note_on(60, 100)];
+        let mut output = vec![0.0f32; 2_048];
+        mixer.process(&mut output, &midi, &transport);
+        let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(peak > 0.01, "the delivered pad made no sound, peak={peak}");
     }
 
     #[test]

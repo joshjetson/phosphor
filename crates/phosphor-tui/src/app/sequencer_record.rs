@@ -72,6 +72,10 @@ impl App {
                 MidiMessageType::NoteOn { note, velocity: 0, .. }
                 | MidiMessageType::NoteOff { note, .. } => self.step_record_note_off(note),
                 MidiMessageType::NoteOn { note, .. } => {
+                    // The sampler's pad cursor follows the keys — an
+                    // observation, not a capture: the note still plays
+                    // and still records.
+                    self.sampler_follow_note(note);
                     self.observe_note_for_recording_undo();
                     self.step_record_note_on(note);
                 }

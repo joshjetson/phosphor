@@ -62,7 +62,11 @@ impl NavState {
                 // index off the end of itself.
                 if is_program_selector {
                     let new_params: Option<Vec<f32>> = match track.instrument_type {
-                        Some(InstrumentType::Synth | InstrumentType::Sampler) => {
+                        // Not the sampler: its knob 0 is an output level,
+                        // and a level move that rewrote the whole panel
+                        // from the synth's patch table was the bug waiting
+                        // in the old shared arm.
+                        Some(InstrumentType::Synth) => {
                             Some(phosphor_dsp::synth::PhosphorSynth::params_for_patch(new_val).to_vec())
                         }
                         Some(InstrumentType::Jupiter8) => {

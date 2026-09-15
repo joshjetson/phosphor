@@ -246,7 +246,12 @@ mod tests {
                 .collect();
             let stored: Vec<usize> = track.discrete.iter().map(|s| s.param).collect();
             assert_eq!(stored, expected, "{instrument:?}");
-            assert!(!expected.is_empty(), "{instrument:?} has no selector at all");
+            // The sampler's flat panel is two faders; its selector-shaped
+            // state lives on the pads, outside the parameter system.
+            assert!(
+                !expected.is_empty() || saved == InstrumentType::Sampler,
+                "{instrument:?} has no selector at all"
+            );
             assert_eq!(
                 track.sequencer.is_some(),
                 instrument.is_sequencer(),

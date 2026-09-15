@@ -91,6 +91,11 @@ pub struct SessionTrack {
     /// existed. That is what `session_digest` is run against.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sequencer: Option<crate::sequencer::SessionSequencer>,
+    /// The sampler's pads, when this track's instrument is one. Absent on
+    /// every other track, and only paths and settings — PCM never enters
+    /// the JSON. See [`crate::sampler::session`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampler: Option<crate::sampler::session::SessionSampler>,
     /// This track's insert chain, in order. Each effect by name, so that a
     /// build which reorders its menu — or gains an effect between it and the
     /// one that wrote the file — still loads the right thing.
@@ -474,6 +479,13 @@ fn extract_session(nav: &NavState, transport: &Transport) -> SessionFile {
                     &track.synth_params,
                 )
             }),
+            sampler: track
+                .sampler
+                .as_ref()
+                .map(|s| crate::sampler::session::SessionSampler::from_state(s))
+                // An untouched sampler writes nothing — the byte-stability
+                // rule every optional block follows.
+                .filter(|s| !s.pads.is_empty()),
             fx: chain_to_session(&track.fx_chain),
             midi_fx: midi_fx_to_session(&track.midi_fx),
             pan: track.pan,
@@ -706,6 +718,7 @@ mod tests {
                     volume: 0.75,
                     color_index: 2,
                     sequencer: None,
+                    sampler: None,
                     midi_fx: Vec::new(),
                     fx: vec![
                         SessionFx {
@@ -807,6 +820,7 @@ mod tests {
                 color_index: 0,
                 clips: Vec::new(),
                 sequencer: None,
+                sampler: None,
                 midi_fx: Vec::new(),
                 fx: Vec::new(),
                 pan: 0.0,
@@ -816,7 +830,7 @@ mod tests {
             }],
         };
         let json = serde_json::to_string_pretty(&session).unwrap();
-        for absent in ["\"fx\"", "\"pan\"", "\"send_a\"", "\"send_b\"", "\"key_track\"", "\"buses\""] {
+        for absent in ["\"fx\"", "\"pan\"", "\"send_a\"", "\"send_b\"", "\"key_track\"", "\"buses\"", "\"sampler\""] {
             assert!(
                 !json.contains(absent),
                 "an unused {absent} was written into the file:\n{json}"

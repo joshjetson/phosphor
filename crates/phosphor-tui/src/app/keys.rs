@@ -160,6 +160,7 @@ impl App {
                                     self.nav.prog_editor.name = trimmed;
                                 }
                             }
+                            InputModalKind::SamplePath => self.do_load_sample(&path),
                         }
                     }
                 }
@@ -730,6 +731,11 @@ impl App {
                     self.nav.move_right();
                     self.send_synth_param_update();
                 }
+                // A sampler's panel is also where sounds go on — and this
+                // strip is where a fresh, clipless track lands, so the
+                // gesture works from the first moment the track exists.
+                // A no-op on every other instrument.
+                KeyCode::Char('a') => self.open_sample_prompt(),
                 _ => {}
             }
             return;
@@ -776,6 +782,10 @@ impl App {
                     self.nav.move_right();
                     self.send_synth_param_update();
                 }
+                // On a sampler, the panel is also where sounds go on: `a`
+                // asks for a file for the current pad — the pad the keys
+                // last played. Other instruments have nothing to add.
+                KeyCode::Char('a') => self.open_sample_prompt(),
                 _ => {}
             }
             return;

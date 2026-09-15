@@ -11,6 +11,7 @@ pub mod paths;
 pub mod preset;
 pub mod practice;
 pub mod progressions;
+pub mod sampler;
 pub mod sequencer;
 pub mod session;
 pub mod state;

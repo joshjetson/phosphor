@@ -602,9 +602,8 @@ pub(crate) fn build_plugin(
     instrument: InstrumentType,
 ) -> Box<dyn phosphor_plugin::Plugin + Send> {
     match instrument {
-        InstrumentType::Synth | InstrumentType::Sampler | InstrumentType::Sequencer => {
-            Box::new(PhosphorSynth::new())
-        }
+        InstrumentType::Synth | InstrumentType::Sequencer => Box::new(PhosphorSynth::new()),
+        InstrumentType::Sampler => Box::new(phosphor_dsp::sampler::Sampler::new()),
         InstrumentType::DrumRack => Box::new(phosphor_dsp::drum_rack::DrumRack::new()),
         InstrumentType::DX7 => Box::new(phosphor_dsp::dx7::Dx7Synth::new()),
         InstrumentType::Jupiter8 => Box::new(phosphor_dsp::jupiter::Jupiter8Synth::new()),

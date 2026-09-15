@@ -184,6 +184,13 @@ pub struct TrackState {
     /// the track list grows. A track with no sequencer should pay a pointer
     /// for the possibility, not a pattern bank.
     pub sequencer: Option<Box<crate::sequencer::SequencerState>>,
+    /// The sampler's pads, when this track's instrument is one.
+    ///
+    /// Boxed for the same reason the sequencer is: 88 pads of config are
+    /// kilobytes a `TrackState` clone should pay for by the pointer. The
+    /// PCM behind the layers is `Arc`-shared, so even a clone that walks
+    /// in here copies handles, never audio.
+    pub sampler: Option<Box<crate::sampler::SamplerState>>,
 }
 
 impl TrackState {
@@ -237,6 +244,7 @@ impl TrackState {
             instrument_type: None,
             synth_params: Vec::new(),
             sequencer: None,
+            sampler: None,
         }
     }
 

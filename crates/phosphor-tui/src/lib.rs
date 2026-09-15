@@ -43,6 +43,8 @@ mod test_automation;
 #[cfg(test)]
 mod test_recording;
 #[cfg(test)]
+mod test_sampler;
+#[cfg(test)]
 mod test_session;
 #[cfg(test)]
 mod test_undo;

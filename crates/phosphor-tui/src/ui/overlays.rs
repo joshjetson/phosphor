@@ -275,6 +275,7 @@ pub(super) fn render_input_modal(frame: &mut Frame, nav: &NavState) {
         InputModalKind::PresetName => " name preset ",
         InputModalKind::RenameTrack => " rename track ",
         InputModalKind::ProgressionName => " name progression ",
+        InputModalKind::SamplePath => " load sample ",
     };
     let block = Block::default()
         .style(Style::default().bg(theme::overlay_bg()))
@@ -291,6 +292,7 @@ pub(super) fn render_input_modal(frame: &mut Frame, nav: &NavState) {
         InputModalKind::PresetName => "name: ",
         InputModalKind::RenameTrack => "name: ",
         InputModalKind::ProgressionName => "name: ",
+        InputModalKind::SamplePath => "path: ",
     };
 
     // The field, as characters rather than bytes: a path can contain any of

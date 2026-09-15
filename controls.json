@@ -276,5 +276,13 @@
     "yank_cut": "y lifts the section (all instrument tracks, notes+controllers whose ONSET is inside; tails travel whole); x (or d) lifts and removes — one undo step across every track",
     "paste": "p stamps the lifted section at the brace start, REPLACING what's under the stamped span (and only the span — a track silent in the lift stamps its silence, tape-drop style), then leapfrogs the brace by the section length so p p p lays copies back to back; P layers instead of clearing (MPC-merge style). Clips union on landing, never overlap",
     "session": "loop markers now save in ticks; old bar-based sessions load exactly as before"
+  },
+  "sampler": {
+    "_about": "the sampler puts a sound on every piano key: 88 pads, each stacking up to eight wav layers; per-pad trigger/poly/choke/pitch/ADSR and per-layer trim/tune/reverse are in the data model now and grow a full pad view soon",
+    "create": "space then a opens the instrument menu — pick Sampler; the track opens on its panel (level · vel)",
+    "pick_a_pad": "play a key on your MIDI controller — the pad under that key becomes the current pad (C3 to start)",
+    "load": "a on the sampler's panel asks for a file: type a path and press enter — a bare name like 'kick' looks in ~/.phosphor/samples/ and tries .wav for you; each load stacks another layer on the current pad, up to eight",
+    "hear_it": "press the same key — the pad plays its layers together; one-shot pads play whole, retriggers cut the last hit with a fade",
+    "sessions": "saving stores each layer's path (never the audio); a file that moved is kept on its pad and named in the log — fix the path or drop the file in samples/ and reopen"
   }
 }

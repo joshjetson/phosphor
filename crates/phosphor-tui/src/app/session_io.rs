@@ -257,6 +257,7 @@ impl App {
         // quietly. See `crate::session::FORMAT_VERSION`.
         let legacy_selectors = session.version < crate::session::FORMAT_VERSION;
         let mut clamped_selectors = 0usize;
+        let mut missing_samples = 0usize;
         // The mixer id each saved track ended up with, in the file's own
         // order and with a hole where a track was skipped. Sidechain keys are
         // stored as a position in that list, so this is what turns them back
@@ -399,6 +400,29 @@ impl App {
                     let _ = self.engine.shared.mixer_command_tx.send(sync.command());
                 }
             }
+
+            // The sampler's pads: decode every layer's file and replay the
+            // occupied pads to the engine. A path that resolves nowhere
+            // keeps its layer with no PCM behind it — the pad stays, with
+            // its settings, and the count reaches the status bar. Dropping
+            // it would punish the player for moving a folder.
+            if let Some(stored) = &st.sampler {
+                let state = stored.into_state(|path| {
+                    let resolved = phosphor_app::paths::find_sample(path);
+                    match phosphor_app::sampler::wav::load_wav(&resolved) {
+                        Ok(pcm) => Some(pcm),
+                        Err(message) => {
+                            tracing::warn!("track '{}': sample not loaded — {message}", st.name);
+                            None
+                        }
+                    }
+                });
+                missing_samples += state.missing_layers();
+                if let Some(track) = self.nav.tracks.get_mut(track_idx) {
+                    track.sampler = Some(Box::new(state));
+                }
+                self.restore_sampler_pads(track_idx);
+            }
         }
 
         // ── Sidechain keys ──
@@ -446,7 +470,12 @@ impl App {
         // Both notes are about the same thing — a patch that may not be the
         // one the session named — and the bottom bar is the only place the
         // player would ever find that out.
-        let note = if legacy_selectors {
+        let note = if missing_samples > 0 {
+            // The most actionable problem wins the one line there is: a
+            // pad with no sound behind it is louder news than a renamed
+            // patch.
+            " (sample file(s) missing — pads kept, paths in the log)"
+        } else if legacy_selectors {
             " (older format: check each track's patch)"
         } else if clamped_selectors > 0 {
             " (a patch it names is no longer in the bank)"

@@ -462,6 +462,8 @@ pub enum InputModalKind {
     RenameTrack,
     /// Naming the progression in the progression editor.
     ProgressionName,
+    /// A sample file to put on the sampler's current pad.
+    SamplePath,
 }
 
 #[derive(Debug)]

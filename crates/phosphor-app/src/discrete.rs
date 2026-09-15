@@ -43,7 +43,8 @@ const MAX_POSITIONS: usize = 1_024;
 #[must_use]
 pub fn is_discrete(instrument: InstrumentType, param: usize) -> bool {
     match instrument {
-        InstrumentType::Synth | InstrumentType::Sampler => phosphor_dsp::synth::is_discrete(param),
+        InstrumentType::Synth => phosphor_dsp::synth::is_discrete(param),
+        InstrumentType::Sampler => phosphor_dsp::sampler::is_discrete(param),
         InstrumentType::DrumRack => phosphor_dsp::drum_rack::is_discrete(param),
         InstrumentType::DX7 => phosphor_dsp::dx7::is_discrete(param),
         InstrumentType::Jupiter8 => phosphor_dsp::jupiter::is_discrete(param),
@@ -65,9 +66,8 @@ pub fn is_discrete(instrument: InstrumentType, param: usize) -> bool {
 #[must_use]
 pub fn step(instrument: InstrumentType, param: usize, value: f32, up: bool) -> f32 {
     match instrument {
-        InstrumentType::Synth | InstrumentType::Sampler => {
-            phosphor_dsp::synth::step_discrete(param, value, up)
-        }
+        InstrumentType::Synth => phosphor_dsp::synth::step_discrete(param, value, up),
+        InstrumentType::Sampler => phosphor_dsp::sampler::step_discrete(param, value, up),
         InstrumentType::DrumRack => phosphor_dsp::drum_rack::step_discrete(param, value, up),
         InstrumentType::DX7 => phosphor_dsp::dx7::step_discrete(param, value, up),
         InstrumentType::Jupiter8 => phosphor_dsp::jupiter::step_discrete(param, value, up),
@@ -228,12 +228,11 @@ mod tests {
             positions(InstrumentType::Synth, synth::P_PATCH).unwrap().len(),
             synth::PATCH_COUNT
         );
-        // The phosphor synth is also the one instrument whose panel the
-        // sampler shares, so both have to walk the same way.
-        assert_eq!(
-            positions(InstrumentType::Sampler, synth::P_PATCH).unwrap().len(),
-            synth::PATCH_COUNT
-        );
+        // The sampler's panel has no selectors at all: both of its
+        // globals are faders, and a knob 0 that walked like the synth's
+        // patch selector was the old aliasing bug.
+        assert!(positions(InstrumentType::Sampler, 0).is_none());
+        assert!(positions(InstrumentType::Sampler, 1).is_none());
         // Its coarse tune is the longest selector in the project: 49
         // positions, two octaves either way in semitones.
         assert_eq!(positions(InstrumentType::Synth, synth::P_A_TUNE).unwrap().len(), 49);

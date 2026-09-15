@@ -24,3 +24,5 @@ serde_json.workspace = true
 
 [dev-dependencies]
 phosphor-core = { workspace = true, features = ["test-introspection"] }
+# The sampler journeys fabricate real WAV files to load.
+hound.workspace = true

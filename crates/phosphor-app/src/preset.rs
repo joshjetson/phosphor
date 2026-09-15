@@ -164,12 +164,13 @@ pub enum StoreOutcome {
 
 /// The parameter names for an instrument, in panel order.
 ///
-/// The sampler shares the phosphor synth's engine and therefore its panel;
-/// its presets still live in their own file, because the two are separate
-/// instruments as far as the player is concerned.
+/// The sampler's flat panel is only its globals — level and velocity
+/// depth. Everything per-pad travels outside the parameter system, the
+/// way the sequencer's patterns do.
 pub fn param_names(instrument: InstrumentType) -> &'static [&'static str] {
     match instrument {
-        InstrumentType::Synth | InstrumentType::Sampler => &phosphor_dsp::synth::PARAM_NAMES,
+        InstrumentType::Synth => &phosphor_dsp::synth::PARAM_NAMES,
+        InstrumentType::Sampler => &phosphor_dsp::sampler::PARAM_NAMES,
         InstrumentType::DrumRack => &phosphor_dsp::drum_rack::PARAM_NAMES,
         InstrumentType::DX7 => &phosphor_dsp::dx7::PARAM_NAMES,
         InstrumentType::Jupiter8 => &phosphor_dsp::jupiter::PARAM_NAMES,
@@ -233,9 +234,8 @@ pub fn param_count(instrument: InstrumentType) -> usize {
 /// constant.
 pub fn defaults(instrument: InstrumentType) -> Vec<f32> {
     match instrument {
-        InstrumentType::Synth | InstrumentType::Sampler => {
-            phosphor_dsp::synth::PARAM_DEFAULTS.to_vec()
-        }
+        InstrumentType::Synth => phosphor_dsp::synth::PARAM_DEFAULTS.to_vec(),
+        InstrumentType::Sampler => phosphor_dsp::sampler::PARAM_DEFAULTS.to_vec(),
         InstrumentType::DrumRack => phosphor_dsp::drum_rack::PARAM_DEFAULTS.to_vec(),
         InstrumentType::DX7 => phosphor_dsp::dx7::PARAM_DEFAULTS.to_vec(),
         InstrumentType::Jupiter8 => phosphor_dsp::jupiter::PARAM_DEFAULTS.to_vec(),
@@ -723,8 +723,14 @@ mod tests {
                 .filter(|&p| crate::discrete::is_discrete(*instrument, p))
                 .collect();
             assert_eq!(stored, wanted, "{instrument:?} did not store all of its selectors");
+            // The sequencer has no panel, and the sampler's flat panel is
+            // two faders — its selectors-worth of state lives on the pads,
+            // outside the parameter system. Every other panel has at least
+            // one switch.
+            let has_no_selectors =
+                instrument.is_sequencer() || *instrument == InstrumentType::Sampler;
             assert!(
-                !wanted.is_empty() || instrument.is_sequencer(),
+                !wanted.is_empty() || has_no_selectors,
                 "{instrument:?} has no selectors at all"
             );
         }
@@ -799,16 +805,11 @@ mod tests {
             assert_eq!(fp.len(), 16, "{fp} is not a 64-bit fingerprint");
             seen.push((inst, fp));
         }
-        // The sampler shares the phosphor synth's panel, so those two match by
-        // design; every other pair is a different panel.
+        // Every pair is a different panel — the sampler grew its own, so
+        // the old shared-with-the-synth exception is gone.
         for (a, fa) in &seen {
             for (b, fb) in &seen {
-                let shared_panel = matches!(
-                    (a, b),
-                    (InstrumentType::Synth, InstrumentType::Sampler)
-                        | (InstrumentType::Sampler, InstrumentType::Synth)
-                );
-                if a != b && !shared_panel {
+                if a != b {
                     assert_ne!(fa, fb, "{a:?} and {b:?} fingerprint the same");
                 }
             }
@@ -966,7 +967,7 @@ mod tests {
         assert_eq!(param_count(InstrumentType::Rhodes), phosphor_dsp::rhodes::PARAM_COUNT);
         assert_eq!(param_count(InstrumentType::DrumRack), phosphor_dsp::drum_rack::PARAM_COUNT);
         assert_eq!(param_count(InstrumentType::Synth), phosphor_dsp::synth::PARAM_COUNT);
-        assert_eq!(param_count(InstrumentType::Sampler), phosphor_dsp::synth::PARAM_COUNT);
+        assert_eq!(param_count(InstrumentType::Sampler), phosphor_dsp::sampler::PARAM_COUNT);
         assert_eq!(param_count(InstrumentType::LittlePhatty), phosphor_dsp::phatty::PARAM_COUNT);
         assert_eq!(param_count(InstrumentType::Prophet6), phosphor_dsp::prophet6::PARAM_COUNT);
     }
