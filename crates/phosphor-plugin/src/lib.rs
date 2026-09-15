@@ -6,6 +6,8 @@
 
 use std::fmt;
 
+pub mod sample;
+
 /// Plugin category — determines where it appears in the UI and how it's routed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
@@ -97,6 +99,22 @@ pub trait Plugin: Send {
 
     /// Reset internal state (clear delay lines, reset envelopes, etc).
     fn reset(&mut self);
+
+    /// Hand a sampler one pad's configuration and layers. A default no-op,
+    /// because most instruments have no notion of a pad.
+    ///
+    /// Real-time contract: the implementation copies into storage it
+    /// already owns — the `Arc` clones inside the layers are refcount
+    /// increments, and the `Arc`s it replaces drop as refcount decrements,
+    /// because the caller's side retains a reference to every buffer it
+    /// has ever sent (see the ownership contract in [`sample`]).
+    fn set_sampler_pad(
+        &mut self,
+        _pad: u8,
+        _config: &sample::PadConfig,
+        _layers: &[sample::PadLayer],
+    ) {
+    }
 }
 
 /// Clamp a parameter value to the valid range.
