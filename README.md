@@ -9,7 +9,7 @@
 
 <p align="center">
   <strong>A terminal-native DAW built in Rust</strong><br/>
-  9 built-in synthesizers, 18 drum kits, 1,531 patches, 9 color themes, animated splash screen, session save/load, undo/redo, and a plugin system designed for extensibility.
+  9 built-in synthesizers, 18 drum kits, a sampler, 1,531 patches, 9 color themes, animated splash screen, session save/load, undo/redo, and a plugin system designed for extensibility.
 </p>
 
 <p align="center">
@@ -29,6 +29,7 @@
 - [Quick Start](#quick-start)
 - [Instruments](#instruments)
 - [Features](#features)
+- [Sampler — a sound on every key](#sampler--a-sound-on-every-key)
 - [Fingers — the practice room](#fingers--the-practice-room)
 - [Shortcuts, A to Z](#shortcuts-a-to-z)
 - [Controls](#controls)
@@ -107,6 +108,17 @@ cargo run --release -- --no-midi
 | **Little Phatty** | Mono Moog | 1 | **100** | Continuously morphing oscillators (triangle→saw→square→pulse, band-limited at every position in between), hard sync, 1/2/3/4-pole ladder, pre- and post-filter overload, the one-bus mod matrix with its spare destination, glide, and the three keyboard priorities |
 | **Prophet-6** | Analog poly | 6 | **500** | All 500 factory programs, decoded from Sequential's own SysEx. Morphing oscillators with a triangle sub, resonant high-pass *and* SSM2040-lineage low-pass in series, poly mod (filter envelope and oscillator 2 into oscillator 1's frequency, shape and width and into both filters, at audio rate), per-oscillator slop, unison with chord memory, aftertouch, analog distortion |
 | **TEO-5** | Analog poly | 5 | **256** | All 256 factory programs, decoded from Oberheim's own SysEx. The SEM state-variable filter, whose state control morphs continuously from low pass through notch to high pass with band pass on a switch; through-zero FM between the oscillators; three independently mixable waveshapes each, hard sync, a square sub and white or pink noise; two OB-8-curve DADSR envelopes; a global LFO and a per-voice one; a 16-slot modulation matrix of 20 sources against 65 destinations; twelve effect algorithms; unison with stored chord memory |
+
+### Sampler
+
+| Instrument | Type | Voices | Sounds | Description |
+|-----------|------|--------|--------|-------------|
+| **Sampler** | Sample playback | 64 | yours | 88 pads, one per piano key, eight sounds stacked on each with their own tune, trim, reverse and mute; per-pad trigger, poly, choke group, pitch, ADSR, level, pan, root and keytracking; a trim strip with a zero-crossing snap; **keys mode**, where stretches of keys become chromatic zones playing one sound from a root; and resampling — record any instrument in the box onto a pad, free or cut to whole bars |
+
+64 is the number of voices allowed to sound at once, across the whole
+instrument rather than per pad; the pool behind it holds 80, so a voice that
+gets cut has somewhere to finish its fade. The per-pad limit is `poly`, which
+runs 1–8 and counts *hits*.
 
 ### Drum Rack
 
@@ -240,6 +252,12 @@ program with `program`.
 - **Little Phatty**: the Stage II's whole front panel, plus the eight per-preset parameters Moog put in its Advanced Preset menus. The headline is the **wave control**: each oscillator morphs continuously from triangle through sawtooth through square to a skinny pulse, and the positions between the four labelled shapes are real waveforms rather than crossfades of two others — the oscillator is one trapezoid whose rise, top, fall and bottom move with the knob, band-limited by polyBLAMP at all four corners, and WAVE is a modulation destination because it is voltage-controlled on the hardware. Hard sync with a sub-sample-accurate reset; a transistor ladder whose slope switches between 6, 12, 18 and 24 dB/octave by tapping the ladder rather than shortening it, so a two-pole Phatty still resonates as players describe; pre- and post-filter asymmetric overload with the documented +6 dB at full; two ADSRs with the three gate modes (legato on, legato off, envelope reset); a pitch wheel whose two directions are ranged independently; the one-bus modulation matrix with its six sources, four destinations and the secondary destination the menu adds; constant-rate glide measured against the manual's own five-seconds-across-the-keyboard figure; low, high and last-note keyboard priority; and velocity on the filter and nowhere else, which is most of why an LP feels the way it does. Every range is the manual's — 20 Hz to 16 kHz cutoff (audibly darker than a vintage Moog's, as Sound On Sound notes), 1 ms to 10 s envelopes, 0.2 Hz to 500 Hz LFO, ±7 semitones on oscillator 2
 - **Drum Rack**: 18 kits — circuit-accurate 808/909/707/606/727/CR-78, companded-PCM LinnDrum and DMX, the analog SDS-V, the creative 777, the warm tape-saturated tsty series, and three **live acoustic kits** that are physics rather than voicing. An acoustic kick is two membranes coupled through the air inside the shell, and that coupling — not a filter — is what puts two low modes a sixth apart where a drum machine has one; the front head's muffling is a knob that moves the interval between them. The snare's strands are a bouncing-contact model, so they choke on a hard backbeat and ring on after the drum instead of being a noise burst under an envelope. Cymbals are banks of forty complex resonators with frequency gating, so hitting one harder brings in modes that were not there at all, and with a modal cascade that carries energy from the low modes up into the high ones — bow, bell and edge are one plate struck in three places, and a hi-hat is two plates that clamp
 
+**Sampler**
+- 88 pads, eight sounds on each, loaded from WAV or recorded off any
+  instrument in the box; `K` turns the same bed into chromatic zones, so one
+  sample can play a whole keyboard — see
+  [its section below](#sampler--a-sound-on-every-key)
+
 **Fingers — the practice room**
 - A generative jazz-piano technique trainer over your own instruments — see
   [its section below](#fingers--the-practice-room)
@@ -273,7 +291,12 @@ program with `program`.
 
 **Undo/Redo**
 - `u` undoes the last action, `Ctrl+R` redoes
-- Works for: note draw/remove, highlight delete, paste, clip delete, track delete
+- Works for everything that changes the session: notes and highlights, yanks
+  and pastes, clips and whole tracks, knobs on any panel, the effect chain,
+  recorded takes, loop-section cuts and stamps, sequencer patterns, and the
+  sampler — a sound removed from a pad comes back with its audio, and a zone
+  comes back with the keys it covered
+- A sweep of one knob, or a whole run of trim nudges, folds into a single step
 - Full track restoration on undo (instruments, params, clips, audio routing)
 - 100-action undo stack
 
@@ -312,7 +335,374 @@ program with `program`.
 - Shared domain models via atomics (no locks between threads)
 - Command channel pattern for UI-to-audio communication
 - Plugin trait for instruments and effects — same interface for built-in and third-party
-- 1,790+ tests covering DSP, MIDI, engine, mixer, navigation, and persistence, run on Linux, macOS and Windows in CI
+- 2,047+ tests covering DSP, MIDI, engine, mixer, navigation, and persistence, run on Linux, macOS and Windows in CI
+
+---
+
+## Sampler — a sound on every key
+
+An instrument like the others, except the sound is yours. **`Space+A`**,
+choose **Sampler**, and the track opens on its **`[pads]`** tab with a
+keyboard drawn across it: eighty-eight pads, one per piano key, each holding
+up to eight sounds stacked on top of one another, each with its own trigger,
+polyphony, choke group, pitch, envelope, level, pan and root — in
+milliseconds and semitones, not in percentages of a knob.
+
+Sounds arrive two ways. You type a path and a WAV lands on the pad. Or you
+point the pad at one of the synths in this box — the Rhodes, the DX7, any of
+them — play it, and keep what you played as audio. Either way you can then
+trim it by eye and by ear, and what plays is a region of the file rather than
+a new copy of it.
+
+The same eighty-eight keys read two ways, and `K` swaps between them: a **pad
+map**, where every key is its own sound with its own settings, and **keys
+mode**, where a stretch of keys is one zone playing one sound transposed from
+a root. Drum kit or piano, on the same bed.
+
+### Getting started
+
+1. Press `Space+A`, `j`/`k` to **Sampler**, `Enter`. The track arrives
+   selected, the pad map open, your controller routed to it.
+2. Play a key. The caret `▼` on the keyboard band moves to that pad — on an
+   88-key controller that is the fastest pad selector there is. Without one,
+   `h`/`l` walk the bed a key at a time and `H`/`L` an octave. The caret
+   starts at C3, under your hand.
+3. Press `a`. Type a path and press `Enter` — a bare name like `kick` looks
+   in `<app dir>/samples/` and tries `.wav` for you, so `kick` finds
+   `kick.wav`.
+4. Play that key again. The pad sounds. Press `a` again to stack a second
+   sound on the same pad, up to eight; they play together.
+5. `j`/`k` picks a control on the panel, `Enter` holds it, `h`/`l` turns it,
+   `H`/`L` strides, `Esc` lets go. Holding is what tells the two jobs of
+   `h`/`l` apart: free they walk the keyboard, held they turn the control and
+   nothing else sees the key.
+6. `t` opens the trim strip over the sound under the cursor. `i` records the
+   pad off another instrument. `K` turns the bed into zones.
+
+### The bed, the list and the panel
+
+The keyboard band across the top **is** the kit. A key with sounds on it
+lights in the track's colour and carries the number of them on its face; a
+key whose file has gone missing is red; the caret marks the pad you are
+editing. On a narrow terminal the band scrolls to keep the caret in sight,
+and below twelve rows it goes entirely — the panel is what your keys are
+typing into, and a keyboard you can see while the control you are turning is
+off-screen is the wrong half to keep.
+
+Under it, two columns: every filled pad as a row — its key, what is on it,
+how many, how it triggers — and the panel for the pad under the caret, with
+the layer list beneath it. The mode tag in the bottom bar reads `-- PADS --`,
+`-- HOLD --` while a control is held, `-- TRIM --` in the strip,
+`-- SOURCE --` and a blinking `-- TAKE --` while you are recording.
+
+### Keys mode — zones across the keyboard — `K`
+
+`K` switches the bed between **pads**, where every key is its own sound, and
+**keys**, where a stretch of them is a **zone**: one sound, transposed from a
+root, the loop brace's shape laid along the keyboard instead of along the
+bar. The tag reads `-- KEYS --`. It is a capital on purpose — lowercase `k`
+walks the control cursor, and a kit that changed shape under a key you press
+all day would change it by accident.
+
+Nothing is destroyed either way. The pad map is still underneath while the
+zones play, the zones are still there when you press `K` again, and a session
+stores both.
+
+**A sampled piano across the whole keyboard, from a fresh app:**
+
+1. `Space+A`, `j`/`k` to **Sampler**, `Enter`.
+2. Press `K`. The bar reads `-- KEYS --` and the panel says there is no zone
+   on this key yet, naming the three keys that make one.
+3. Press `w`. A zone covers the whole bed. (`o` covers just the octave the
+   caret is standing in.) It takes the sound from the pad under the caret if
+   that pad has one; on a fresh track it has none, and the panel says
+   `a loads a sound into it`.
+4. Press `a`, type the path, `Enter`. Because a zone always tracks the
+   keyboard, a file name ending in a note teaches the zone its root as the
+   sound arrives — `Piano_C3.wav`, `kick_A#1.wav`, `Strings Eb2.wav` — and
+   the flash names the root it learned. A name that is not a note changes
+   nothing: `07_Kick`, `TR808` and `C3loop` all leave the root alone, because
+   a wrong root retunes every key in the zone.
+5. Play. Every key sounds that sample, transposed by its distance from the
+   root.
+6. If the root is wrong, or the file name taught nothing, press `R` and play
+   the key the sound was actually recorded at. The bar blinks `-- ROOT? --`
+   while it waits; the key you play becomes the root and does not move the
+   caret. `Esc` disarms and changes nothing.
+
+**Splitting the keyboard into ranges.** Walk the caret to the key where the
+next sound should start and press `s`. The zone under the caret splits there:
+the left half keeps its sound and the root it was tuned to, the right half
+starts as the same audio — the same buffers, not a copy — rooted at its own
+first key, ready to be retuned with `R` or reloaded with `a`. Split again for
+as many ranges as you want. `s` on a zone's own first key is refused in
+words, because there is nothing to its left.
+
+**Resizing a zone — the span brace.** `span` is the first control on the
+panel, and making or splitting a zone leaves the cursor on it. `Enter` holds it;
+then `h`/`l` move the **low** edge and `H`/`L` the **high** one. That is the
+loop brace's grammar, so `H`/`L` are the other end of the zone rather than a
+bigger stride. An edge stops where its neighbour begins and never pushes it,
+and stops at the ends of the bed — when it stops, the bar says which. The
+caret rides the edge it is pushing, so the panel never loses the zone you are
+moving. A whole run of presses is one press of `u`. `Esc` lets go. Inside a
+zone, `w` and `o` throw that same brace across the whole bed or the current
+octave rather than laying a second zone over it.
+
+**What the screen adds.** A rule under the keyboard draws each zone as a
+brace — `├──┼───┤` — with the tick where its root is, and the root key itself
+wears `◆` on the band instead of a layer count. The zone under the caret is
+amber; the others are the track's colour. The column that lists filled pads
+in pads mode becomes the **zone list**: span, sound, how many layers, root,
+and how many keys.
+
+**Everything else is the same keys pointed at the zone instead of the pad.**
+`j`/`k` walks its controls, `[`/`]` picks a sound inside it, `a` stacks
+another, `t` trims, `n` normalizes, `i` records into it, `m` and `d` mute and
+remove a layer. Only two controls differ: `span` is added at the top, and
+`keytrk` is gone — a zone always tracks the keyboard, so the switch would be
+a control with nothing on the other side of it.
+
+**`D` takes the zone under the caret off the bed**, after a y/n. Capital,
+because lowercase `d` still removes one sound from the zone. `u` brings the
+whole zone back with its audio.
+
+**Zones may overlap.** Where they do, the leftmost zone covering a key owns
+that key's settings — trigger, poly, envelope, level — because a key cannot
+have two envelopes, and the zones over it lend only their layers. A lent
+layer is retuned by the distance between the two roots, so it still sounds
+the pitch you pressed rather than the one the owning zone's root would have
+transposed it to. Eight layers is still the ceiling on any one key; past it
+the rest are turned away, and the edit that caused it says how many. An edge
+that already overlaps its neighbour can move the way that mends the overlap,
+never the way that deepens it.
+
+`w`, `o` and `s` pressed in pads mode do not quietly do nothing — they say
+`K puts the bed into zones`, which is the key you wanted.
+
+### What a pad does
+
+`j`/`k` walks these, pad controls first and then the selected layer's. In
+keys mode the same list belongs to the zone, with `span` at the top of it and
+`keytrk` absent.
+
+| Control | What it does |
+|---------|--------------|
+| `span` | *(keys mode only)* the zone's two edges, low and high. `Enter` holds it and `h`/`l` / `H`/`L` move them |
+| `trig` | **one-shot** plays the trimmed region to its end and ignores the key coming up; **gate** sounds while the key is held and runs the release when you let go |
+| `poly` | 1–8 simultaneous hits on this pad. Past the limit the oldest is cut with a fade, never a truncation |
+| `choke` | mute group, `off` or 1–8. A hit silences every sounding voice on *other* pads in the same group — the closed hat stopping the open one |
+| `pitch` / `fine` | ±48 semitones, ±50 cents |
+| `attack` `decay` `sustain` `release` | up to 10 s a stage, sustain as a percentage. Release is floored at 5 ms by the engine, because a zero release is a click |
+| `level` | the pad's gain, from silence through −40 dB up to +12 dB |
+| `pan` | twenty detents from the centre to either end |
+| `root` | the key that plays the sound untransposed. Defaults to the pad's own key |
+| `keytrk` | *(pads mode only)* on, the pad transposes the sound by its own distance from `root` — set `root` to the note the sample actually is and the pad plays it in tune on whatever key it sits on; off, the sound plays untransposed |
+
+A fresh pad is one-shot, poly 1, no choke, no pitch offset, attack 0, decay
+400 ms, sustain 100%, release 60 ms, unity, centred, rooted on its own key
+with keytracking off.
+
+### The sounds on a pad
+
+The layer controls — `level`, `pan`, `tune` (±48 st), `fine` (±50 ct), `rev`,
+`mute` — are the last six on the panel, and they appear only once the pad has
+a sound: a gain knob for a sound that is not there is a control that answers
+keys and changes nothing.
+
+`[` and `]` pick which sound they address; `1`–`8` jumps straight to one.
+Moving the layer cursor **auditions** that sound on its own, outside the pad's
+poly and its choke — a stack of eight is eight names in a list until you can
+hear which is which. A muted layer stays silent, and the audition stops the
+moment you leave the pads tab.
+
+`m` mutes the sound without taking it off the pad. `d` removes it and asks
+first. `u` brings it back with its audio, `Ctrl+R` takes it off again.
+
+Sampler tracks are ordinary tracks in every other respect: draw notes in the
+piano roll, record from your controller, put effects in front of them. A note
+on the track fires the pad for its key.
+
+### The trim strip — `t`
+
+`t` on a sound draws the whole file as a waveform, the region that plays lit
+and the cut ends dark, with `[` and `]` on a ruler beneath it sitting over the
+two edges. The header names the layer, the nudge unit, the snap and where both
+markers are.
+
+- `h`/`l` move the **start**, `H`/`L` move the **end** — the loop brace's
+  grammar, so `H`/`L` are the other end rather than a stride.
+- `j`/`k` walk how far one press moves: **bar · beat · 1/16 · 10 ms · 1 ms ·
+  1 sample** (`j` deeper, `k` wider; it opens on 10 ms). The musical units
+  come from the transport's tempo measured against the layer's *own* sample
+  rate, so a bar of a 48 kHz loop is a bar wherever it is played.
+- Every start nudge plays the region from its new start. A marker is a
+  position in a waveform nobody can hear by looking at it.
+- `z` toggles the zero-crossing snap, on by default: an edge lands on the
+  nearest sign change within 5 ms, and keeps the exact frame you asked for
+  when there is none.
+- `r` plays the region backwards. The region, not the file — a trim found
+  forwards still means the same audio flipped.
+- `t` loops the region while you work on it.
+- `Esc` goes back to the pad map and stops the sound.
+
+Trim is never a rewrite: the buffer keeps every sample and the markers say
+what plays. The edges cannot cross and stop a millisecond apart, which the
+bar says in words. A whole nudge run — however long you hold the key — is one
+press of `u`. A sound whose file has gone missing is refused rather than
+opened onto an empty pane.
+
+<!-- [M8] phrases — the slicing/phrase keys slot in here, after the trim
+     strip and before "Recording the machine into itself". -->
+
+### Recording the machine into itself — `i`
+
+`i` on a pad asks which instrument to record it from — everything in the
+house except the step sequencer and the sampler itself. `Enter` and the track
+slips into **source mode**: the sampler steps out of the slot and that
+instrument plays in its place, through the track's own MIDI effects, inserts,
+fader and sends. What you hear is what will be recorded, because it *is* the
+track. The pad cursor freezes while the mode is on — your keys are a
+performance now — and the banner names the pad waiting underneath.
+
+`r` arms. Play. `r` again ends the take and lands it on the pad as a new
+sound, selected, named `take 1`, `take 2`, in one undo step, with its length
+and its peak in the flash.
+
+**Stopped, the take is free.** Time zero is your first note-on, it ends when
+you disarm, and the instrument's tail is rendered out to silence — two
+seconds at most. The result is auto-trimmed: the start backed 8 ms off the
+first sample above −48 dB so nothing clips a transient, the tail cut 20 ms
+past the last sample above −60 dB. It stops itself at 60 seconds and says so.
+
+**Rolling, the take is bars.** The window opens at the next bar line and
+closes at the end of the bar you disarm in, so the file is a whole musical
+length. Nothing past the loop point is kept and nothing is trimmed — the seam
+is the point, and a take that loops has to be cut exactly where the next pass
+begins. It stops itself at 64 bars.
+
+- Stopping the transport ends a running take. So does `Esc`, which ends it
+  before it leaves the mode — a performance is too expensive to throw away on
+  a key that means "back". The second `Esc` is the one that leaves, and
+  leaving puts the sampler back with the whole kit replayed onto it.
+- A performance on **one** key teaches the pad its root. Keytracking is left
+  alone: a root is a fact, keytracking is a decision. A chord leaves the root
+  where it was.
+- The pad remembers what it was recorded from *and* the panel you recorded it
+  with, so `i` again reopens the picker standing on that instrument and the
+  next take of the same sound costs one `Enter`.
+- A full pad refuses the arm before you play, not after. Finding out that a
+  pad was full once the playing is over is losing the take.
+- Nothing is recorded from the audio thread. What is captured is MIDI with
+  its arrival stamps; the audio is rendered afterwards, offline, through a
+  fresh copy of the instrument and the track's own chord and arp devices.
+  That is why a take can never glitch a performance, why it is bar-exact
+  rather than however long the buffer happened to be, and why the same
+  performance renders the same file every time.
+- Source mode takes three keys — `r`, `i`, `Esc` — and answers the rest in
+  words. While it is on, every key that edits a pad would be editing
+  something you cannot hear.
+
+Recording into a **zone** works the same way, and it is how a multisampled
+instrument gets built: split the bed with `s`, stand in each range and record
+it from the same synth. The one-key performance that teaches a pad its root
+teaches a zone its root too, which is exactly the number that range needs.
+
+### Normalize — `n`
+
+`n` on a sound sets its level so the **trimmed** region peaks at −0.5 dB.
+That is a gain value, never a rewrite of the audio: the buffer is shared with
+the engine and with undo history, and rewriting it would change all of them
+destructively for a decision you may want back. `n` again puts the level back
+to unity, and each throw is its own undo step.
+
+The level control's ceiling is the ceiling here, because this *is* that
+control. Our instruments render with a lot of headroom, so a single quiet
+note can want more than the twelve decibels there are — then it goes as far
+as it goes and the flash says how far short that left it.
+
+### Files, and what a session keeps
+
+A session stores each sound's **path**, as you typed it — never the audio. A
+bare name stays a bare name and keeps resolving against `samples/` on any
+machine. Both beds are stored: the pad map, the zones, and which of the two
+the track was in when you saved.
+
+A recorded take has no file until you save. Saving writes it as a 32-bit
+float WAV into **`<session>.samples/`**, beside the session file, and stores
+the path relative to it — so a project folder can be moved, copied or handed
+to somebody else whole. Takes already on disk are not rewritten, so a session
+with forty recordings in it does not rewrite forty WAVs every save, and
+*Save As* gives the new project its own copies rather than a reference into
+the old one's folder. The audio is written before the JSON: the worst crash
+leaves an orphan WAV nobody notices, rather than a session naming audio that
+is not there.
+
+A file that has moved is not dropped. The pad keeps it with all its settings,
+the key goes red on the bed, the layer list says `missing`, and the status bar
+says so on open — the paths are in the debug log. Fix the path or drop the
+file into `samples/` and reopen.
+
+WAV in, 16-, 24- or 32-bit integer or float, mono or stereo (anything past two
+channels is dropped), up to ten minutes a file.
+
+### Keys on the pads
+
+| Key | Action |
+|-----|--------|
+| `Space+A` → *Sampler* | Make a sampler track; it opens on `[pads]` |
+| `h` / `l` | Walk the bed one key |
+| `H` / `L` | Walk the bed an octave |
+| *play a key* | Jump the caret to that pad |
+| `j` / `k` | Pick a control |
+| `Enter` | Hold the control — now `h`/`l` turn it, `H`/`L` stride |
+| `Esc` (held) | Let go of the control — `Enter` releases it too |
+| `[` / `]` | Pick which sound on the pad the layer controls address |
+| `1`–`8` | Jump to that sound, and play it |
+| `a` | Load a WAV onto this pad |
+| `t` | Trim the sound under the cursor |
+| `i` | Record this pad from an instrument |
+| `n` | Normalize the sound, or put it back to unity |
+| `m` | Mute the sound, keeping its seat on the pad |
+| `d` | Remove the sound (y/n) |
+| `K` | Switch the bed between pads and keys |
+| `u` / `Ctrl+R` | Undo / redo — a removed sound comes back with its audio |
+| `Esc` | Back to the track list |
+
+### Keys in keys mode
+
+Everything above still means what it means; these are the four keys a pad map
+has no word for, plus the brace.
+
+| Key | Action |
+|-----|--------|
+| `K` | Back to pads — nothing is lost either way |
+| `w` | A zone over the whole bed; inside one, throw its brace that wide |
+| `o` | The same for the octave the caret is standing in |
+| `s` | Split the zone under the caret at the caret key |
+| `D` | Take the zone off the bed (y/n) — `u` brings it back with its audio |
+| `R` | Learn the root from the next key you play; `Esc` disarms |
+| `Enter` on `span` | Hold the brace — then `h`/`l` move the low edge, `H`/`L` the high one |
+
+### Keys in the trim strip
+
+| Key | Action |
+|-----|--------|
+| `h` / `l` | Move the start |
+| `H` / `L` | Move the end |
+| `j` / `k` | Nudge unit: bar · beat · 1/16 · 10 ms · 1 ms · 1 sample |
+| `z` | Zero-crossing snap on/off |
+| `r` | Play the region backwards |
+| `t` | Loop the region while you work |
+| `Esc` | Back to the pad map, quiet |
+
+### Keys in source mode
+
+| Key | Action |
+|-----|--------|
+| `r` | Arm the take; again to end it and land it |
+| `i` | Change the instrument |
+| `Esc` | End a running take; again to put the sampler back |
 
 ---
 
@@ -424,15 +814,18 @@ assumed. Four moves cover all the getting-around, so learn these first:
   `h`/`l` walk along its cells: label → fx → volume → mute → solo → arm →
   clips.
 - **In the clip view, `Tab` cycles its tabs**: `[trk fx]` → `[synth]` →
-  `[inst]` → `[piano roll]` → `[settings]`, then round again. Keep pressing
-  `Tab` until the one you want is lit.
+  `[inst]` → `[piano roll]` → `[settings]`, then round again — with `[seq]`
+  after `[synth]` on a sequencer track, and `[pads]` there on a sampler. Keep
+  pressing `Tab` until the one you want is lit.
 - **`Esc` always backs out one level** — releases a held knob, drops a
   selection, closes a panel, leaves a mode. Lost? Press `Esc` a few times
   and you're back on solid ground.
 
 Below, "select the track" always means: `Space+2`, `j`/`k` to it, `Enter`.
 "Open the piano roll" always means: select the track, then `Space+3` and
-`Tab` until `[piano roll]` is lit.
+`Tab` until `[piano roll]` is lit. "Open the pad map" always means: select a
+sampler track — it opens on `[pads]` by itself — or, if you have tabbed away,
+`Space+3` then `Tab` until `[pads]` is lit.
 
 **Add a track** — From anywhere: `Space+A`, choose an instrument with
 `j`/`k`, `Enter`. The track arrives selected, panel open, MIDI routed to it.
@@ -495,7 +888,7 @@ take rolls. Any transport key cancels mid-count.
 **Delete** — `Space+D` deletes whatever is selected — track or clip — with
 a y/n confirmation. Inside modes, `d` deletes the thing under the cursor:
 a note in edit mode, an effect in the chain, a chord row in the
-progression editor.
+progression editor, a sound on a sampler pad.
 
 **Duplicate a track** — Select the track, press `D` (capital). Instrument,
 panel, effects, mix and clips all copy to a fresh track directly below,
@@ -537,6 +930,23 @@ it, `Esc` closes.
 column, landing on a sounding note. Digits `1`–`9` jump straight to a
 numbered clip (selected track), column (piano roll), or step (sequencer).
 
+**Layers (stacking sounds on a pad)** — Open the pad map, walk to a pad with
+`h`/`l` (or play its key), and press `a` once for each sound you want on it —
+up to eight, and they play together. `[`/`]` pick which one the panel's
+bottom six controls address and `1`–`8` jump straight to one; either way the
+sound you land on plays once on its own, so you can hear which is which. `m`
+mutes one without taking it off the pad, `d` removes it after a y/n, and `u`
+brings it back with its audio. The pad's `poly` control says how many hits
+can overlap and `choke` puts pads in a mute group, the way a closed hat stops
+an open one.
+
+**Load a sound onto a pad** — Open the pad map, put the caret on a pad —
+`h`/`l` walk a key, `H`/`L` an octave, or just play the key on your
+controller — and press `a`. Type a path and press `Enter`. A bare name like
+`kick` looks in `<app dir>/samples/` and tries `.wav` for you; `Esc` cancels.
+The sound lands as a new layer and the panel points at it. WAV files only, up
+to ten minutes. See [Sampler](#sampler--a-sound-on-every-key).
+
 **Loop** — `Space+L` from anywhere focuses the loop brace; `Enter` toggles
 looping on/off. `h`/`l` move the start marker, `H`/`L` the end, and `g`
 cycles the marker grid — bar → beat → 1/8 → 1/16 — so the brace can close
@@ -553,7 +963,13 @@ room's click is its own (see Fingers).
 
 **Mute** — `m` mutes whatever you're standing on: a selected track, a
 sequencer lane, an effect in the chain or its open panel, a single note in
-edit mode. `s` solos tracks and lanes the same way.
+edit mode, a sound on a sampler pad. `s` solos tracks and lanes the same way.
+
+**Normalize a sound** — Open the pad map, `[`/`]` to the sound you mean,
+press `n`: its level is set so the trimmed region peaks at −0.5 dB. It is a
+gain, never a rewrite — `n` again puts the level back to unity, and `u`
+undoes either throw. A very quiet take can want more than the +12 dB the
+level control has, and the flash says how far short it landed.
 
 **Notes (writing)** — Open the piano roll. `h`/`l` walk columns, `j`/`k`
 change pitch, and `n` writes a note at the cursor (`n` again erases it).
@@ -603,6 +1019,27 @@ rolling.
 **Rename a track** — Select the track, `h`/`l` to its label cell, press
 `n`, type the name (8 characters max), `Enter`.
 
+**Resample (record an instrument onto a pad)** — Open the pad map, stand on
+the pad you want, press `i`, `j`/`k` to an instrument, `Enter`. The track now
+plays that instrument instead of the sampler, through its own effects and
+fader, and your keys are a performance. `r` arms, you play, `r` lands the
+take on the pad — named, selected, one `u` away. Stopped, the take starts on
+your first note and rings out to silence; rolling (`Space+P`), it is cut to
+whole bars so it loops. Playing one pitch teaches the pad its root. `i`
+changes the instrument, `Esc` ends a running take and `Esc` again puts the
+sampler back with its kit.
+
+**Sampler** — `Space+A` and choose *Sampler*: the track arrives with its pad
+map open and the keyboard drawn across it, eighty-eight pads, one per key.
+`h`/`l` walk the bed and `H`/`L` an octave — or play a key and the caret goes
+there. `a` loads a WAV onto the pad under the caret, `t` trims it, `i`
+records it off another instrument, `n` normalizes it, `d` removes it. `j`/`k`
+picks a control — trigger, polyphony, choke group, pitch, ADSR, level, pan,
+root, keytracking, then the selected sound's own six — `Enter` holds it,
+`h`/`l` turns it, `H`/`L` strides, `Esc` lets go. Holding is the only time
+`h`/`l` stop walking the keyboard. `K` turns the same bed into zones (see
+Zones). Full section: [Sampler](#sampler--a-sound-on-every-key).
+
 **Sequencer** — `Space+A` and choose *Step Sequencer*: it arrives with its
 grid open. On the grid `j`/`k`/`h`/`l` move, `n` writes a step, `a`
 accents it, `x` clears it, `[`/`]` jump rows, and `y`/`p` copy one step
@@ -622,8 +1059,16 @@ element, `h`/`l` to walk it, `Esc` to release.
 
 **Theme** — `Space+V` cycles the color theme.
 
+**Trim a sound (sampler)** — Open the pad map, `[`/`]` to the sound you mean,
+press `t`. The file is drawn as a waveform with the part that plays lit:
+`h`/`l` move the start, `H`/`L` move the end, and `j`/`k` walk how far one
+press moves — bar, beat, 1/16, 10 ms, 1 ms, one sample. Every start nudge
+plays the region from its new start. `z` toggles the zero-crossing snap, `r`
+plays it backwards, `t` loops it while you work, `Esc` goes back. The audio
+is never rewritten, and a whole run of nudges is one press of `u`.
+
 **Undo** — `u`, for everything: notes, knobs, effects, takes, cuts,
-stamps. A sweep of one knob folds into a single step. While recording,
+stamps, pads and zones. A sweep of one knob folds into a single step. While recording,
 `u` scraps the in-flight pass first, then peels committed takes
 newest-first.
 
@@ -636,6 +1081,21 @@ velocity new notes get is in the `[settings]` tab.
 label cell), highlighted piano-roll notes, a sequencer step or pattern,
 the loop section. `p` puts it down; wherever two flavors exist, lowercase
 `p` replaces and capital `P` layers.
+
+**Zones (a sampler across the keyboard)** — Open the pad map and press `K`:
+the bed stops being one sound per key and becomes zones, a stretch of keys
+playing one sound transposed from a root. The bar reads `-- KEYS --`. `w`
+throws a zone across the whole bed, `o` across the octave the caret is in,
+and `a` then loads a sound into it — a file name ending in a note
+(`Piano_C3.wav`, `kick_A#1.wav`) sets the root on the way in, and `R` learns
+it instead from the next key you play. `s` splits the zone at the caret, so a
+keyboard can be several samples wide; the left half keeps its root, the right
+is rooted at its own first key. To resize one, `Enter` on the `span` control
+at the top of the panel, then `h`/`l` for the low edge and `H`/`L` for the
+high. `D` takes a zone off the bed after a y/n, and `u` brings it back with
+its audio. `K` again returns to pads — neither bed destroys the other, and a
+session keeps both. Full section:
+[Sampler](#sampler--a-sound-on-every-key).
 
 ---
 
@@ -674,7 +1134,7 @@ the loop section. `p` puts it down; wherever two flavors exist, lowercase
 | `Space` `q` | Quantize notes to grid |
 | `Space` `w` | Instrument presets — save / load / delete |
 | `Space` `v` | Cycle color theme |
-| `Space` `h` | Open help — ten topics, `Enter` opens one as a reference card, `j`/`k` scrolls it |
+| `Space` `h` | Open help — twelve topics, `Enter` opens one as a reference card, `j`/`k` scrolls it |
 
 ### Preset Browser (Space+W, on an instrument track)
 
@@ -711,8 +1171,9 @@ patch when one does.
 ### Step Sequencer (a track type — drives any instrument)
 
 A pattern sequencer in the TR/Elektron lineage. It makes no sound of its own:
-it drives a **child instrument** — the drum rack by default, or any synth in
-the rack — and it is sample-locked to the transport, so a pattern step and a
+it drives a **child instrument** — the drum rack by default, or any other
+instrument in the rack, the sampler included — and it is sample-locked to the
+transport, so a pattern step and a
 clip note on the same beat land on the same sample.
 
 **First beat in thirty seconds:**
@@ -1113,10 +1574,19 @@ Inside it:
 ```
 <app dir>/config.json                    theme preference
 <app dir>/presets/<instrument>.json      one user preset bank per instrument
+<app dir>/samples/                       WAVs a bare sampler path resolves against
 <app dir>/sessions/                      sessions saved without a path
 <app dir>/progressions.json              your chord-progression library
 <app dir>/practice.json                  practice-room records (clean BPM per drill)
 ```
+
+A bare sampler path is looked for as you typed it first, then in the working
+directory, then in `<app dir>/samples/`, then in the app directory itself,
+with `.wav` tried at each step — so `kick` finds `samples/kick.wav`.
+
+Recorded takes are the one thing that does not live here. They are written
+beside the session that holds them, in `<session>.samples/` — so `myjam.phos`
+keeps its recordings in `myjam.samples/`, and the two move together.
 
 ### How to save and open — the short version
 
@@ -1144,6 +1614,9 @@ phosphor.
   prompt. `Space+S` always prompts, for saving a copy under a new name.
 - Names have no other rules — anything your filesystem accepts works. Paths
   are allowed: typing `ideas/jam.phos` saves into an `ideas` folder.
+- A sampler stores each sound's **path**, never its audio, and both beds —
+  the pad map and the zones. A path that has moved keeps its pad rather than
+  being dropped: the key goes red and the layer list says `missing`.
 
 The save and open prompts start in `sessions/` when the working directory has
 one — running from a checkout, which is where the sessions in this repository
@@ -1205,7 +1678,7 @@ cargo build --release
 ### Test
 
 ```bash
-cargo test --workspace  # 1,790+ tests
+cargo test --workspace  # 2,047+ tests
 ```
 
 ---
@@ -1232,6 +1705,7 @@ phosphor/
 │   │       ├── p6_programs.bin # The factory programs, from Sequential's SysEx
 │   │       ├── teo5.rs        # Oberheim TEO-5, SEM morphing filter + TZFM (256 factory programs)
 │   │       ├── teo5_programs.bin # The factory programs, from Oberheim's SysEx
+│   │       ├── sampler/       # Sampler: pads, voices, preview playback
 │   │       ├── drum_rack/     # Drum machine (18 kits)
 │   │       │   ├── mod.rs     # Shared types, voice, plugin impl
 │   │       │   └── racks/     # Per-kit synthesis: 808, 909, 707, 606, 727, CR-78,
@@ -1249,6 +1723,7 @@ phosphor/
 │   │       │   ├── clips.rs   # Clip manipulation (move, stretch, duplicate)
 │   │       │   ├── tracks.rs  # Track creation, space actions
 │   │       │   ├── transport.rs   # Playback, recording, loop sync
+│   │       │   ├── sampler_*.rs   # Pad map, keys mode, trim strip, resampling
 │   │       │   ├── delete.rs  # Delete with confirmation
 │   │       │   ├── undo_redo.rs   # Undo/redo system
 │   │       │   └── session_io.rs  # Save/load .phos files
