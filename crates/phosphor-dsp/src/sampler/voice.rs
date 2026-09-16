@@ -313,6 +313,7 @@ impl SamplerVoice {
         self.elapsed += 1.0;
         if self.pos >= self.end || self.pos < self.start {
             self.stage = EnvStage::Dead;
+            self.pcm = None;
             return result;
         }
 
@@ -356,6 +357,19 @@ impl SamplerVoice {
                 self.kill = 0.0;
                 self.stage = EnvStage::Dead;
             }
+        }
+
+        // A voice that died this sample lets go of its buffer now rather
+        // than when the slot is next reused. Holding on stretched the
+        // engine's claim on a deleted layer's audio from "while it sounds"
+        // to "until slot reuse" — long enough for the undo history to be
+        // the only other holder and then evict, which would have made this
+        // slot's eventual drop the one that frees megabytes on the audio
+        // thread. The decrement here is refcount-only under the ownership
+        // contract; shrinking the window is what keeps the contract's
+        // other side easy to honour.
+        if self.stage == EnvStage::Dead {
+            self.pcm = None;
         }
 
         result
@@ -658,6 +672,31 @@ mod tests {
         // 3 ms at 44.1 kHz is ~132 samples.
         let dead_from = out.iter().rposition(|s| s.abs() > 1e-6).unwrap();
         assert!((100..200).contains(&dead_from), "fade lasted {dead_from} samples");
+    }
+
+    #[test]
+    fn a_dead_voice_lets_go_of_its_buffer() {
+        // The audit's C2: every death path used to park the Arc until the
+        // slot was reused, stretching the engine's claim on deleted audio
+        // indefinitely. Both ways to die must release it.
+        let pcm = mono_pcm(vec![0.5; 441], SR as f32);
+        let cfg = flat_config();
+
+        // Death by running off the end of the region.
+        let mut v = SamplerVoice::new();
+        v.start(60, 0, 0, 0, &cfg, &trigger(&pcm), 1.0, SR);
+        assert_eq!(Arc::strong_count(&pcm), 2);
+        run(&mut v, 1_000);
+        assert!(!v.is_sounding());
+        assert_eq!(Arc::strong_count(&pcm), 1, "the boundary death kept the Arc");
+
+        // Death by kill fade.
+        let mut v = SamplerVoice::new();
+        v.start(60, 0, 0, 0, &cfg, &trigger(&pcm), 1.0, SR);
+        v.kill();
+        run(&mut v, 300);
+        assert!(!v.is_sounding());
+        assert_eq!(Arc::strong_count(&pcm), 1, "the kill death kept the Arc");
     }
 
     #[test]

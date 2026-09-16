@@ -101,6 +101,18 @@ impl DcBlocker {
     #[inline]
     fn process(&mut self, x: f32) -> f32 {
         let y = x - self.x1 + self.r * self.y1;
+        // One non-finite input used to latch `y1` forever, and a filter
+        // that has eaten a NaN silences everything after it until reset —
+        // the whole track, for the rest of the session. The decoder now
+        // guards the front door, but PCM reaches this line from more
+        // places than the decoder, and a filter should not be one bad
+        // sample away from permanent. The check is a bit test, cheaper
+        // than the multiply above it.
+        if !y.is_finite() {
+            self.x1 = 0.0;
+            self.y1 = 0.0;
+            return 0.0;
+        }
         self.x1 = x;
         self.y1 = y;
         y
@@ -931,6 +943,47 @@ mod tests {
         process(&mut s, &[cc(123, 0)], 8_192);
         assert_eq!(s.sounding_on(39), 0, "the gate ignored all-notes-off");
         assert_eq!(s.sounding_on(41), 1, "the one-shot obeyed a note-off");
+    }
+
+    #[test]
+    fn a_finished_once_audition_releases_its_audio() {
+        // The parked PreviewLayer was the audit's other Arc leak: a Once
+        // that ended kept its buffer claimed for the life of the plugin.
+        let pcm = sine_pcm(0.5, 2_000);
+        let mut s = sampler_with(60, PadConfig::for_key(60), &[PadLayer::from_pcm(Arc::clone(&pcm))]);
+        let before = Arc::strong_count(&pcm);
+        s.set_sampler_preview(Some(&preview(PadLayer::from_pcm(Arc::clone(&pcm)), PreviewMode::Once)));
+        assert!(Arc::strong_count(&pcm) > before, "the audition never took the buffer");
+        // 2,000 frames of audio, then silence: run well past the end.
+        for _ in 0..10 {
+            process(&mut s, &[], 512);
+        }
+        assert_eq!(
+            Arc::strong_count(&pcm),
+            before,
+            "the finished audition still holds the buffer"
+        );
+    }
+
+    #[test]
+    fn the_dc_blocker_heals_after_a_nan_instead_of_latching() {
+        // The audit's C1, at the engine layer: the decoder now guards its
+        // door, but PCM reaches the blocker from more places than the
+        // decoder, and one bad sample must cost one sample, not the track.
+        let mut bad = vec![0.5f32; 4_410];
+        bad[100] = f32::NAN;
+        let poisoned = Arc::new(SamplePcm { data: bad, channels: 1, sample_rate: SR as f32 });
+        let mut s = sampler_with(60, PadConfig::for_key(60), &[PadLayer::from_pcm(poisoned)]);
+        load(&mut s, 62, PadConfig::for_key(62), &[PadLayer::from_pcm(sine_pcm(0.5, 44_100))]);
+
+        process(&mut s, &[note_on(60, 127, 0)], 2_048);
+        let (l, _) = process(&mut s, &[cc(120, 0)], 1_024);
+        assert!(l.iter().all(|x| x.is_finite()), "the NaN escaped the plugin");
+
+        // The clean pad afterwards must speak — this exact sequence used
+        // to render 0.000000 forever.
+        let (l, _) = process(&mut s, &[note_on(62, 127, 0)], 2_048);
+        assert!(peak(&l[500..]) > 0.05, "the track stayed silent after the NaN: {}", peak(&l[500..]));
     }
 
     #[test]

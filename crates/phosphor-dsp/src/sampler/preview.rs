@@ -140,12 +140,20 @@ impl Preview {
             self.fire(engine_sr);
         }
         let mut sum = (0.0f32, 0.0f32);
+        let mut sounding = false;
         for v in &mut self.voices {
             if v.is_sounding() {
+                sounding = true;
                 let (l, r) = v.tick();
                 sum.0 += l;
                 sum.1 += r;
             }
+        }
+        // A finished Once lets go of its layer: keeping it parked here was
+        // the engine holding an Arc to audio nothing would ever play
+        // again, for as long as the plugin lived.
+        if !sounding && !self.looping && self.layer.is_some() {
+            self.layer = None;
         }
         sum
     }
