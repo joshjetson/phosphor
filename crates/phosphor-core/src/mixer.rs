@@ -175,6 +175,30 @@ pub enum MixerCommand {
         track_id: usize,
         preview: Option<phosphor_plugin::sample::PreviewLayer>,
     },
+    /// Give the sampler the one child instrument its phrase layers play
+    /// through, or `None` to take it away.
+    ///
+    /// The box travels exactly as `SetInstrument`'s does, and the note there
+    /// applies whole: the UI thread builds it because it is the only thread
+    /// allowed to allocate, the audio thread calls `init` on it, and the
+    /// child it replaces is freed here. That free is what this command is
+    /// charged [`HEAVY_COMMAND`] for.
+    SetSamplerChild {
+        track_id: usize,
+        child: Option<Box<dyn Plugin + Send>>,
+    },
+    /// Hand the sampler one pad's phrase layers, whole.
+    ///
+    /// The `Arc` inside each phrase is a refcount handle on the road
+    /// `SetSamplerPad`'s buffers already take: the UI keeps a reference to
+    /// every event list it has sent, so the clones and drops on the far side
+    /// never reach the allocator's free path. The `Vec` itself is copied into
+    /// slots the engine already owns and freed on this thread.
+    SetSamplerPhrases {
+        track_id: usize,
+        pad: u8,
+        phrases: Vec<phosphor_plugin::sample::PadPhrase>,
+    },
     /// Take the effect out of a slot. Frees on the audio thread, as
     /// `RemoveTrack` and `UpdateClip` already do.
     RemoveFx {
@@ -313,6 +337,11 @@ fn command_cost(cmd: &MixerCommand) -> u32 {
         // the budget exists to spread.
         | MixerCommand::SetSamplerPad { .. }
         | MixerCommand::SetSamplerPreview { .. }
+        // A child is a whole instrument arriving and, usually, another one
+        // leaving: an `init` and a free, which is `SetInstrument`'s bill
+        // under a different name. Phrases are the pad road exactly.
+        | MixerCommand::SetSamplerChild { .. }
+        | MixerCommand::SetSamplerPhrases { .. }
         | MixerCommand::MoveFx { .. }
         // Only the first pattern a track receives allocates — it builds the
         // player — and the cost is charged before the command is opened, so
@@ -1637,6 +1666,22 @@ impl Mixer {
                     }
                 }
             }
+            MixerCommand::SetSamplerChild { track_id, child } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    if let Some(instrument) = track.instrument.as_mut() {
+                        // The sampler starts it, because the sampler is what
+                        // knows the rate and the block size it was given.
+                        instrument.set_sampler_child(child.map(|c| c as Box<dyn Plugin>));
+                    }
+                }
+            }
+            MixerCommand::SetSamplerPhrases { track_id, pad, phrases } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    if let Some(instrument) = track.instrument.as_mut() {
+                        instrument.set_sampler_phrases(pad, &phrases);
+                    }
+                }
+            }
             MixerCommand::SetMidiFxBypass { track_id, slot, bypassed } => {
                 if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
                     if let Some(s) = track.midi_fx.get_mut(slot) {
@@ -2000,6 +2045,85 @@ mod tests {
         mixer.process(&mut output, &midi, &transport);
         let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         assert!(peak > 0.01, "the delivered pad made no sound, peak={peak}");
+    }
+
+    /// A phrase layer is a recording played through an instrument rather
+    /// than a buffer, so the proof that it arrived is that a synth the
+    /// sampler was handed makes a sound the sampler was never given audio
+    /// for.
+    #[test]
+    fn a_sampler_phrase_travels_to_the_engine_and_sounds_through_its_child() {
+        use phosphor_plugin::sample::{PadConfig, PadPhrase, PhraseEvent};
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let handle = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
+        handle.config.midi_active.store(true, std::sync::atomic::Ordering::Relaxed);
+        handle.config.armed.store(true, std::sync::atomic::Ordering::Relaxed);
+        tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle: handle.clone() })
+            .unwrap();
+        tx.send(MixerCommand::SetInstrument {
+            track_id: 0,
+            instrument: Box::new(phosphor_dsp::sampler::Sampler::new()),
+        })
+        .unwrap();
+        tx.send(MixerCommand::SetSamplerChild {
+            track_id: 0,
+            child: Some(Box::new(PhosphorSynth::new())),
+        })
+        .unwrap();
+
+        // The pad carries no audio at all: a config with no layers, and a
+        // phrase holding one long note.
+        tx.send(MixerCommand::SetSamplerPad {
+            track_id: 0,
+            pad: 39, // note 60
+            config: PadConfig::for_key(60),
+            layers: Vec::new(),
+        })
+        .unwrap();
+        let events: Arc<[PhraseEvent]> = Arc::from(vec![
+            PhraseEvent { frame: 0, status: 0x90, data1: 64, data2: 100 },
+            PhraseEvent { frame: 200_000, status: 0x80, data1: 64, data2: 0 },
+        ]);
+        tx.send(MixerCommand::SetSamplerPhrases {
+            track_id: 0,
+            pad: 39,
+            phrases: vec![PadPhrase::from_events(events.clone(), 200_001)],
+        })
+        .unwrap();
+        // A pad off the bed and a track that is not there are both shrugs.
+        tx.send(MixerCommand::SetSamplerPhrases {
+            track_id: 0,
+            pad: 200,
+            phrases: vec![PadPhrase::from_events(events, 200_001)],
+        })
+        .unwrap();
+        tx.send(MixerCommand::SetSamplerPhrases { track_id: 99, pad: 0, phrases: Vec::new() })
+            .unwrap();
+        tx.send(MixerCommand::SetSamplerChild { track_id: 99, child: None }).unwrap();
+
+        transport.play();
+        // Eight allocating commands are three callbacks' worth of budget,
+        // so the kit is let land before the key is pressed — which is what
+        // happens in the application too, where the edits go down long
+        // before anything is played.
+        let mut output = vec![0.0f32; 256];
+        for _ in 0..3 {
+            mixer.process(&mut output, &[], &transport);
+        }
+
+        let midi = vec![make_note_on(60, 100)];
+        let mut output = vec![0.0f32; 4_096];
+        mixer.process(&mut output, &midi, &transport);
+        // One more block, so the synth's attack has time to arrive.
+        let mut output = vec![0.0f32; 4_096];
+        mixer.process(&mut output, &[], &transport);
+        let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(peak > 0.001, "the phrase never reached the child, peak={peak}");
+
+        // And the pad off the bed stored nothing: its own key is silent.
+        let mut output = vec![0.0f32; 1_024];
+        mixer.process(&mut output, &[make_note_on(21, 100)], &transport);
+        assert!(output.iter().all(|s| s.is_finite()));
     }
 
     /// The audition takes the same road as a pad and needs no note: the UI

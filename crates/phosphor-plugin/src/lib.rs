@@ -128,6 +128,31 @@ pub trait Plugin: Send {
     /// the layer is cloned into storage the implementation already owns, and
     /// the one it replaces drops as a refcount decrement.
     fn set_sampler_preview(&mut self, _preview: Option<&sample::PreviewLayer>) {}
+
+    /// Give a sampler the one child instrument its phrase layers play
+    /// through, or `None` to take it away.
+    ///
+    /// One child per sampler, not one per pad: every phrase on every pad
+    /// sounds through this instrument, so it is rendered once per block
+    /// however many phrases are running.
+    ///
+    /// The box travels exactly as `MixerCommand::SetInstrument`'s does. It
+    /// is built on the UI thread because that is the only thread allowed to
+    /// allocate, the implementation calls `init` on it because that is where
+    /// its voices are built, and the child it replaces is dropped — freed —
+    /// on the audio thread. That last part is the accepted `SetInstrument`
+    /// precedent: the command that carries it is charged the heavy rate
+    /// precisely so the callback's budget has already paid for the free.
+    fn set_sampler_child(&mut self, _child: Option<Box<dyn Plugin>>) {}
+
+    /// Hand a sampler one pad's phrase layers, whole.
+    ///
+    /// Real-time contract is [`Plugin::set_sampler_pad`]'s: the `Arc` inside
+    /// each phrase is cloned into fixed storage the implementation already
+    /// owns, and the ones it replaces drop as refcount decrements, because
+    /// the caller retains a reference to every event list it has sent (see
+    /// the ownership contract in [`sample`]).
+    fn set_sampler_phrases(&mut self, _pad: u8, _phrases: &[sample::PadPhrase]) {}
 }
 
 /// Clamp a parameter value to the valid range.

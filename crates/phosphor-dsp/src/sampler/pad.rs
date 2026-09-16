@@ -10,7 +10,9 @@
 
 use std::sync::Arc;
 
-use phosphor_plugin::sample::{PadConfig, PadLayer, SamplePcm};
+use phosphor_plugin::sample::{PadConfig, PadLayer, PadPhrase, SamplePcm};
+
+use super::phrase::{PhraseSlot, MAX_PHRASES};
 
 /// One pad per piano key, A0..C8.
 pub const NUM_PADS: usize = 88;
@@ -31,6 +33,42 @@ pub fn pad_index(note: u8) -> Option<usize> {
         Some(usize::from(note - PAD_BASE_NOTE))
     } else {
         None
+    }
+}
+
+/// Repair a delivered velocity window.
+///
+/// Inverted ranges are the interesting case: a UI that lets a player drag
+/// the low edge past the high one would otherwise deliver a sound that can
+/// never be heard, so `hi` is lifted to `lo` rather than the pair being
+/// refused. Shared by layers and phrases because a velocity window means the
+/// same thing to both, and two repairs would eventually disagree.
+pub(crate) fn repair_vel(lo: u8, hi: u8) -> (u8, u8) {
+    let lo = lo.min(127);
+    (lo, hi.min(127).max(lo))
+}
+
+/// Whether a hit at `vel` falls inside a repaired window, inclusive.
+#[inline]
+pub(crate) fn in_vel_window(lo: u8, hi: u8, vel: u8) -> bool {
+    vel >= lo && vel <= hi
+}
+
+/// Copy a delivered list into fixed slots, sanitizing each entry and
+/// clearing the slots past its end.
+///
+/// The one place the delivery rule lives: extras past the cap are dropped
+/// rather than trusted, and a slot the new list does not reach is emptied
+/// rather than left holding what used to be there. Both halves matter —
+/// forgetting the second is how a pad keeps playing a layer the player
+/// deleted.
+fn fill_slots<T, S>(slots: &mut [Option<S>], src: &[T], sanitize: impl Fn(&T) -> Option<S>) {
+    for (slot, item) in slots.iter_mut().zip(src.iter()) {
+        *slot = sanitize(item);
+    }
+    let kept = src.len().min(slots.len());
+    for slot in slots.iter_mut().skip(kept) {
+        *slot = None;
     }
 }
 
@@ -69,6 +107,7 @@ impl LayerSlot {
         }
         let start = layer.start_frame.min(frames - 1);
         let end = layer.end_frame.clamp(start + 1, frames);
+        let (vel_lo, vel_hi) = repair_vel(layer.vel_lo, layer.vel_hi);
         Some(Self {
             pcm: Arc::clone(&layer.pcm),
             gain: layer.gain.clamp(0.0, 4.0),
@@ -79,8 +118,8 @@ impl LayerSlot {
             end: end as f64,
             reverse: layer.reverse,
             mute: layer.mute,
-            vel_lo: layer.vel_lo.min(127),
-            vel_hi: layer.vel_hi.min(127).max(layer.vel_lo.min(127)),
+            vel_lo,
+            vel_hi,
         })
     }
 
@@ -101,13 +140,17 @@ impl LayerSlot {
     /// Whether this layer answers a hit at `vel`. A muted layer answers
     /// nothing; a velocity-switched one answers only its own range.
     pub fn answers(&self, vel: u8) -> bool {
-        !self.mute && vel >= self.vel_lo && vel <= self.vel_hi
+        !self.mute && in_vel_window(self.vel_lo, self.vel_hi, vel)
     }
 }
 
 pub(crate) struct Pad {
     pub config: PadConfig,
     pub layers: [Option<LayerSlot>; MAX_LAYERS],
+    /// The pad's phrase layers, beside its sampled ones. A pad can carry
+    /// both: a sampled kick under a phrase that plays the bassline, on one
+    /// key, is the arrangement the feature exists for.
+    pub phrases: [Option<PhraseSlot>; MAX_PHRASES],
 }
 
 impl Pad {
@@ -115,6 +158,7 @@ impl Pad {
         Self {
             config: PadConfig::for_key(note),
             layers: std::array::from_fn(|_| None),
+            phrases: std::array::from_fn(|_| None),
         }
     }
 
@@ -134,12 +178,18 @@ impl Pad {
         cfg.pan = cfg.pan.clamp(-1.0, 1.0);
         self.config = cfg;
 
-        for (slot, layer) in self.layers.iter_mut().zip(layers.iter()) {
-            *slot = LayerSlot::from_layer(layer);
-        }
-        for slot in self.layers.iter_mut().skip(layers.len().min(MAX_LAYERS)) {
-            *slot = None;
-        }
+        fill_slots(&mut self.layers, layers, LayerSlot::from_layer);
+    }
+
+    /// Replace this pad's phrase layers with a sanitized copy.
+    ///
+    /// Separate from [`Pad::set`] because the two arrive separately: a pad's
+    /// sampled layers and its phrases are edited by different parts of the
+    /// UI, and a phrase edit that had to re-send the pad's config would make
+    /// every phrase edit a chance to overwrite a pad setting with a stale
+    /// one. Same delivery rule, same audio thread, no allocation.
+    pub fn set_phrases(&mut self, phrases: &[PadPhrase]) {
+        fill_slots(&mut self.phrases, phrases, PhraseSlot::from_phrase);
     }
 }
 
@@ -221,6 +271,75 @@ mod tests {
         assert_eq!(pad.config.pitch_cents, -50);
         assert_eq!(pad.config.sustain, 1.0);
         assert_eq!(pad.config.pan, -1.0);
+    }
+
+    fn phrase(events: usize, frames: u64) -> PadPhrase {
+        let list: Vec<phosphor_plugin::sample::PhraseEvent> = (0..events)
+            .map(|i| phosphor_plugin::sample::PhraseEvent {
+                frame: i as u64 * 100,
+                status: 0x90,
+                data1: 60,
+                data2: 100,
+            })
+            .collect();
+        PadPhrase::from_events(Arc::from(list), frames)
+    }
+
+    #[test]
+    fn a_phrase_with_no_events_never_reaches_a_runner() {
+        let mut pad = Pad::for_note(60);
+        pad.set_phrases(&[PadPhrase::from_events(Arc::from(Vec::new()), 44_100)]);
+        assert!(pad.phrases[0].is_none());
+    }
+
+    #[test]
+    fn a_fifth_phrase_is_dropped_and_old_slots_are_cleared() {
+        let mut pad = Pad::for_note(60);
+        let five: Vec<PadPhrase> = (0..5).map(|_| phrase(2, 1_000)).collect();
+        pad.set_phrases(&five);
+        assert!(pad.phrases.iter().all(Option::is_some));
+
+        pad.set_phrases(&[phrase(2, 1_000)]);
+        assert!(pad.phrases[0].is_some());
+        assert!(pad.phrases[1..].iter().all(Option::is_none), "a deleted phrase survived");
+    }
+
+    #[test]
+    fn a_phrase_is_never_shorter_than_the_notes_in_it() {
+        let mut pad = Pad::for_note(60);
+        // Events out to frame 400, a length of 10 claimed: the runner would
+        // otherwise end before its own last note-off.
+        pad.set_phrases(&[phrase(5, 10)]);
+        let slot = pad.phrases[0].as_ref().unwrap();
+        assert!(slot.length() > 400, "phrase length {} cuts its own events", slot.length());
+    }
+
+    #[test]
+    fn a_wild_phrase_is_tamed() {
+        let mut pad = Pad::for_note(60);
+        let mut p = phrase(2, 1_000);
+        p.gain = f32::NAN;
+        p.vel_lo = 200;
+        p.vel_hi = 3;
+        pad.set_phrases(&[p]);
+        let slot = pad.phrases[0].as_ref().unwrap();
+        // A NaN gain multiplies every velocity into a NaN, which rounds to
+        // zero and silently drops the phrase's notes — so it is caught here.
+        assert_eq!(slot.velocity_scale(), 0.0);
+        assert!(slot.answers(127), "a repaired window answers its own edge");
+        assert!(!slot.answers(0));
+    }
+
+    #[test]
+    fn a_muted_phrase_answers_nothing() {
+        let mut pad = Pad::for_note(60);
+        let mut p = phrase(2, 1_000);
+        p.mute = true;
+        pad.set_phrases(&[p]);
+        let slot = pad.phrases[0].as_ref().unwrap();
+        for vel in [1u8, 64, 127] {
+            assert!(!slot.answers(vel), "a muted phrase answered velocity {vel}");
+        }
     }
 
     #[test]
