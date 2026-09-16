@@ -158,6 +158,83 @@ impl PadLayer {
     }
 }
 
+/// One note event of a recorded performance, at its offset in frames from
+/// the start of that performance.
+///
+/// `status` is a note-on (`0x90`) or a note-off (`0x80`); the channel nibble
+/// is ignored by the player, which addresses one instrument. A note-on with
+/// `data2 == 0` is a note-off, the convention every MIDI source uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhraseEvent {
+    /// Frames since the performance began.
+    pub frame: u64,
+    pub status: u8,
+    /// Note number.
+    pub data1: u8,
+    /// Velocity.
+    pub data2: u8,
+}
+
+/// A recorded performance stacked on a pad, played back through the
+/// sampler's child instrument instead of being rendered to audio.
+///
+/// The memory-cheap sibling of a sampled layer: the capture machinery that
+/// would have rendered a take to PCM keeps the plan instead, so a
+/// four-bar phrase costs a few hundred events rather than a few megabytes.
+///
+/// # Frame offsets are baked at capture
+///
+/// `frame` is engine frames, not ticks — the tempo the phrase was played at
+/// is baked into it exactly as it is baked into an audio take. A phrase does
+/// not follow a tempo change, and that is the settled design rather than a
+/// gap: a phrase is a recording, and the sibling it has to sound like is the
+/// recording on the pad beside it.
+///
+/// Ownership contract is [`SamplePcm`]'s: the side that builds the event
+/// list keeps an `Arc` to it for as long as any plugin might hold one, so
+/// every clone and drop on the audio thread is refcount-only.
+#[derive(Debug, Clone)]
+pub struct PadPhrase {
+    pub events: Arc<[PhraseEvent]>,
+    /// Performance length in frames — how long the pad plays before the
+    /// phrase is over, which is not the same as the frame of its last
+    /// note-off (a phrase can end in silence).
+    pub frames: u64,
+    /// Scales the velocity of every note the phrase sends, linear.
+    ///
+    /// Velocity rather than audio gain because the child instrument is
+    /// shared by every phrase on every pad: there is one render per block
+    /// for all of them, so there is no per-phrase place to put a fader.
+    /// Scaling what is played is the control that survives that.
+    pub gain: f32,
+    /// When on, notes shift by the distance between the played key and the
+    /// pad's root — the chromatic half of a phrase, the same bargain
+    /// `keytrack` makes for a sampled layer.
+    pub transpose_with_key: bool,
+    pub mute: bool,
+    /// Velocity range this phrase answers to, inclusive. Full range by
+    /// default; here from day one so velocity-switched phrases never need
+    /// a session migration.
+    pub vel_lo: u8,
+    pub vel_hi: u8,
+}
+
+impl PadPhrase {
+    /// A phrase covering its whole event list at unity, answering every
+    /// velocity and keyed to the pad it sits on.
+    pub fn from_events(events: Arc<[PhraseEvent]>, frames: u64) -> Self {
+        Self {
+            events,
+            frames,
+            gain: 1.0,
+            transpose_with_key: false,
+            mute: false,
+            vel_lo: 0,
+            vel_hi: 127,
+        }
+    }
+}
+
 /// How long an auditioned layer plays for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewMode {
@@ -206,6 +283,18 @@ mod tests {
     fn zero_channels_cannot_divide_by_zero() {
         let broken = SamplePcm { data: vec![0.0; 10], channels: 0, sample_rate: 44_100.0 };
         assert_eq!(broken.frames(), 10);
+    }
+
+    #[test]
+    fn a_phrase_from_events_answers_every_velocity_at_unity() {
+        let events: Arc<[PhraseEvent]> =
+            Arc::from(vec![PhraseEvent { frame: 0, status: 0x90, data1: 60, data2: 100 }]);
+        let phrase = PadPhrase::from_events(events, 44_100);
+        assert_eq!((phrase.vel_lo, phrase.vel_hi), (0, 127));
+        assert_eq!(phrase.gain, 1.0);
+        assert!(!phrase.mute);
+        assert!(!phrase.transpose_with_key);
+        assert_eq!(phrase.frames, 44_100);
     }
 
     #[test]

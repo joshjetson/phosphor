@@ -19,22 +19,29 @@
 //! * At most [`ACTIVE_CAP`] voices count as sounding; the pool holds
 //!   [`VOICE_POOL`] so that cut voices have somewhere to finish their
 //!   fades. Past the cap the oldest voice anywhere is cut.
+//! * A pad's [`phrase`] layers share all of that: they are part of the same
+//!   hit, so poly cuts them, a choke stops them, and a gate releases them.
+//!   What they do not share is the voice pool — a phrase plays an
+//!   instrument, not a buffer.
 //! * The UI's audition ([`preview`]) is none of the above — see that
 //!   module for why it is deliberately outside all three rules.
 
 mod pad;
+mod phrase;
 mod preview;
 mod voice;
 
 pub use pad::{pad_index, MAX_LAYERS, NUM_PADS, PAD_BASE_NOTE};
+pub use phrase::{MAX_PHRASES, PHRASE_RUNNERS};
 
 use std::sync::Arc;
 
-use phosphor_plugin::sample::{PadConfig, PadLayer, PreviewLayer};
+use phosphor_plugin::sample::{PadConfig, PadLayer, PadPhrase, PreviewLayer, TrigMode};
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
 use crate::level::soft_saturate;
 use pad::Pad;
+use phrase::{ChildEvents, ChildHost, RunnerPool, RunnerStart};
 use preview::Preview;
 use voice::SamplerVoice;
 
@@ -116,6 +123,17 @@ pub struct Sampler {
     hit_counter: u64,
     /// The UI's audition, on voices of its own.
     preview: Preview,
+    /// The playing phrases, and the one instrument they all play through.
+    runners: RunnerPool,
+    child: ChildHost,
+    /// The sample voices' own mix, held back until the child's audio can be
+    /// summed into it. The child is rendered once per block and can only be
+    /// rendered after the block's notes are known, so the sampler's own
+    /// output cannot be finished a sample at a time any more — it is written
+    /// here, joined by the child, and then taken through the blocker and the
+    /// saturator in one pass.
+    mix_l: Vec<f32>,
+    mix_r: Vec<f32>,
     dc_l: DcBlocker,
     dc_r: DcBlocker,
 }
@@ -130,12 +148,16 @@ impl Sampler {
             age_counter: 0,
             hit_counter: 0,
             preview: Preview::new(),
+            runners: RunnerPool::new(),
+            child: ChildHost::new(),
+            mix_l: Vec::new(),
+            mix_r: Vec::new(),
             dc_l: DcBlocker::new(),
             dc_r: DcBlocker::new(),
         }
     }
 
-    fn note_on(&mut self, note: u8, vel: u8) {
+    fn note_on(&mut self, note: u8, vel: u8, offset: u32, out: &mut ChildEvents) {
         let Some(pad_idx) = pad_index(note) else { return };
         let depth = self.params[P_VEL];
         let v = f32::from(vel) / 127.0;
@@ -146,7 +168,9 @@ impl Sampler {
             (cfg.poly, cfg.choke)
         };
 
-        // Choke: this hit silences the rest of its mute group.
+        // Choke: this hit silences the rest of its mute group, phrases
+        // included — a phrase on the open hat is as much the open hat as a
+        // sample of one is.
         if choke > 0 {
             let pads = &self.pads;
             for voice in &mut self.voices {
@@ -157,13 +181,33 @@ impl Sampler {
                     voice.kill();
                 }
             }
+            self.runners.choke(
+                pad_idx,
+                choke,
+                |p| pads.get(p).map_or(0, |pad| pad.config.choke),
+                offset,
+                out,
+            );
         }
 
         // Poly: make room for this hit among the pad's own.
-        self.enforce_poly(pad_idx, poly);
+        self.enforce_poly(pad_idx, poly, offset, out);
 
         self.hit_counter += 1;
         let hit = self.hit_counter;
+
+        let ctx = {
+            let pad = &self.pads[pad_idx];
+            RunnerStart {
+                pad: pad_idx,
+                hit,
+                note,
+                root: pad.config.root,
+                vel_gain,
+                gate: pad.config.trig == TrigMode::Gate,
+            }
+        };
+        self.start_phrases(&ctx, vel, offset, out);
 
         for layer_idx in 0..MAX_LAYERS {
             let Some(trigger) = ({
@@ -192,25 +236,42 @@ impl Sampler {
         }
     }
 
+    /// Start a runner for every phrase on the pad that answers this hit.
+    ///
+    /// Before the layers rather than after, so that a hit which has to steal
+    /// a runner steals from the phrases already playing rather than from
+    /// itself — and so that a phrase's first notes and its pad's samples
+    /// land on the same sample offset.
+    fn start_phrases(
+        &mut self,
+        ctx: &RunnerStart,
+        vel: u8,
+        offset: u32,
+        out: &mut ChildEvents,
+    ) {
+        if !self.child.is_loaded() {
+            // No instrument to play through: a phrase would take a runner,
+            // hold notes nothing hears, and count against the pad's poly.
+            return;
+        }
+        for i in 0..MAX_PHRASES {
+            let Some(slot) = self.pads[ctx.pad].phrases[i].as_ref().filter(|p| p.answers(vel))
+            else {
+                continue;
+            };
+            self.runners.start(slot, ctx, offset, out);
+        }
+    }
+
     /// Cut the oldest hits on a pad until a new one fits under `poly`.
-    fn enforce_poly(&mut self, pad_idx: usize, poly: u8) {
+    fn enforce_poly(&mut self, pad_idx: usize, poly: u8, offset: u32, out: &mut ChildEvents) {
+        // A poly of zero would ask for room that cutting cannot make, and
+        // the loop below would never end. The pad table clamps it to at
+        // least one; this is the guard for the day something else does not.
+        let poly = usize::from(poly.max(1));
         loop {
-            let mut hits = 0usize;
-            let mut oldest = u64::MAX;
-            for i in 0..self.voices.len() {
-                let v = &self.voices[i];
-                if !v.is_active() || v.pad != pad_idx {
-                    continue;
-                }
-                let seen = self.voices[..i]
-                    .iter()
-                    .any(|e| e.is_active() && e.pad == pad_idx && e.hit == v.hit);
-                if !seen {
-                    hits += 1;
-                    oldest = oldest.min(v.hit);
-                }
-            }
-            if hits < usize::from(poly) {
+            let (hits, oldest) = self.hit_census(pad_idx);
+            if hits < poly {
                 return;
             }
             for v in &mut self.voices {
@@ -218,7 +279,39 @@ impl Sampler {
                     v.kill();
                 }
             }
+            self.runners.stop_hit(pad_idx, oldest, offset, out);
         }
+    }
+
+    /// Every hit sounding on a pad, samples and phrases together.
+    ///
+    /// One iterator over both because a hit is a *gesture*, not a voice: a
+    /// pad whose only layer is a phrase still has hits, and poly has to cut
+    /// them exactly as it cuts sampled ones.
+    fn pad_hits(&self, pad_idx: usize) -> impl Iterator<Item = u64> + '_ {
+        self.voices
+            .iter()
+            .filter(move |v| v.is_active() && v.pad == pad_idx)
+            .map(|v| v.hit)
+            .chain(self.runners.hits_on(pad_idx))
+    }
+
+    /// How many distinct hits a pad has sounding, and the oldest of them.
+    ///
+    /// Distinct: one hit spreads across a voice per layer and a runner per
+    /// phrase, and poly counts the gesture once. The dedupe is a scan of
+    /// what came before rather than a set, because the list is short, the
+    /// deadline is not negotiable, and a set is an allocation.
+    fn hit_census(&self, pad_idx: usize) -> (usize, u64) {
+        let mut hits = 0usize;
+        let mut oldest = u64::MAX;
+        for (i, hit) in self.pad_hits(pad_idx).enumerate() {
+            if !self.pad_hits(pad_idx).take(i).any(|seen| seen == hit) {
+                hits += 1;
+                oldest = oldest.min(hit);
+            }
+        }
+        (hits, oldest)
     }
 
     /// Keep the sounding population under the global cap.
@@ -271,29 +364,47 @@ impl Sampler {
         }
     }
 
-    fn note_off(&mut self, note: u8) {
+    fn note_off(&mut self, note: u8, offset: u32, out: &mut ChildEvents) {
         let Some(pad_idx) = pad_index(note) else { return };
         for v in &mut self.voices {
             if v.pad == pad_idx {
                 v.note_off();
             }
         }
+        self.runners.note_off(pad_idx, offset, out);
     }
 
     /// All-sound-off: the panic gesture and the transport's stop edge. The
     /// audition goes with it — a preview left looping after a panic is the
     /// one sound in the box the player has no way to reach.
-    fn kill_all(&mut self) {
+    ///
+    /// The child gets both halves: every note its runners were holding, so
+    /// the sampler's own books are straight, and the panic itself, so the
+    /// child's voices die even if one of them is ringing from a note the
+    /// sampler has already given back.
+    fn kill_all(&mut self, offset: u32, out: &mut ChildEvents) {
         for v in &mut self.voices {
             v.kill();
         }
         self.preview.stop();
+        // The panic goes first, and goes even when the block's event list is
+        // nearly full: it is one message, it silences the child whatever its
+        // voices are doing, and the note-offs behind it are bookkeeping that
+        // the next block can finish if this one runs out of room.
+        out.push_cc(offset, 120);
+        self.runners.stop_all(offset, out);
     }
 
-    fn release_all(&mut self) {
+    /// All-notes-off: gates release, one-shots play on.
+    ///
+    /// Nothing is forwarded to the child, and nothing needs to be: the only
+    /// notes it is holding are the ones its runners put there, and releasing
+    /// those runners releases exactly those notes.
+    fn release_all(&mut self, offset: u32, out: &mut ChildEvents) {
         for v in &mut self.voices {
             v.note_off();
         }
+        self.runners.release_gates(offset, out);
     }
 
     #[cfg(test)]
@@ -309,6 +420,18 @@ impl Sampler {
     #[cfg(test)]
     fn sounding_on(&self, pad_idx: usize) -> usize {
         self.voices.iter().filter(|v| v.is_sounding() && v.pad == pad_idx).count()
+    }
+
+    #[cfg(test)]
+    pub(super) fn playing_phrases(&self) -> usize {
+        self.runners.playing()
+    }
+
+    /// Whether any runner still believes the child is holding a note. The
+    /// hung-note assertion, asked of the books rather than of the audio.
+    #[cfg(test)]
+    pub(super) fn phrases_hold_notes(&self) -> bool {
+        self.runners.holds_any_note()
     }
 }
 
@@ -328,9 +451,15 @@ impl Plugin for Sampler {
         }
     }
 
-    fn init(&mut self, sample_rate: f64, _max_buffer_size: usize) {
+    fn init(&mut self, sample_rate: f64, max_buffer_size: usize) {
         self.sample_rate = sample_rate;
         self.voices = (0..VOICE_POOL).map(|_| SamplerVoice::new()).collect();
+        self.mix_l = vec![0.0; max_buffer_size];
+        self.mix_r = vec![0.0; max_buffer_size];
+        // A child delivered before the sampler was started has been waiting
+        // for this: it is started here, with the rate and the block size the
+        // sampler itself was just given.
+        self.child.init(sample_rate, max_buffer_size);
         self.dc_l.set_rate(sample_rate);
         self.dc_r.set_rate(sample_rate);
         self.dc_l.reset();
@@ -366,33 +495,56 @@ impl Plugin for Sampler {
 
         let stereo = outputs.len() >= 2;
 
+        // The child's note traffic for this block. Written as the block is
+        // walked, so it comes out already in timeline order.
+        let mut child_events = ChildEvents::new();
+        // Note-offs a stopping runner could not hand over last block go
+        // first, at offset zero: a key held down on the child is the one
+        // thing that must never wait for anything else.
+        self.runners.flush_owed(&mut child_events);
+
+        // Dead in practice, alive in principle: a device that hands the
+        // callback more frames than it promised finds the mix buffer grown
+        // rather than the block truncated. The mixer's own buffers carry the
+        // same branch.
+        if self.mix_l.len() < buf_len {
+            self.mix_l.resize(buf_len, 0.0);
+            self.mix_r.resize(buf_len, 0.0);
+        }
+
         for i in 0..buf_len {
+            let offset = i as u32;
             while ei < event_count && midi_events[event_indices[ei]].sample_offset as usize <= i {
                 let ev = &midi_events[event_indices[ei]];
                 match ev.status & 0xF0 {
                     0x90 => {
                         if ev.data2 > 0 {
-                            self.note_on(ev.data1, ev.data2);
+                            self.note_on(ev.data1, ev.data2, offset, &mut child_events);
                         } else {
-                            self.note_off(ev.data1);
+                            self.note_off(ev.data1, offset, &mut child_events);
                         }
                     }
-                    0x80 => self.note_off(ev.data1),
+                    0x80 => self.note_off(ev.data1, offset, &mut child_events),
                     0xB0 => match ev.data1 {
                         // All sound off: the panic gesture and the
                         // transport's stop edge. A fade, not a truncation
                         // — but a fast one.
-                        120 => self.kill_all(),
+                        120 => self.kill_all(offset, &mut child_events),
                         // All notes off: gates release musically. A
                         // one-shot ignores a note-off by definition, and
                         // this is a note-off.
-                        123 => self.release_all(),
+                        123 => self.release_all(offset, &mut child_events),
                         _ => {}
                     },
                     _ => {}
                 }
                 ei += 1;
             }
+
+            // Phrases move a frame, handing the child whatever fell due at
+            // this sample — after the block's own notes, so a phrase
+            // triggered at this offset starts here rather than a sample late.
+            self.runners.advance(offset, &mut child_events);
 
             let (mut sum_l, mut sum_r) = self.preview.tick(self.sample_rate);
             for v in &mut self.voices {
@@ -402,7 +554,24 @@ impl Plugin for Sampler {
                     sum_r += r;
                 }
             }
+            self.mix_l[i] = sum_l;
+            self.mix_r[i] = sum_r;
+        }
 
+        // One render for every phrase on every pad, its events already in
+        // order. Summed in before the blocker and the saturator, so a child
+        // with a standing offset is treated exactly like a sample with one.
+        let child_played =
+            self.child.render(buf_len, child_events.events(), self.runners.busy());
+        let (child_l, child_r) = self.child.block(buf_len);
+
+        for i in 0..buf_len {
+            let mut sum_l = self.mix_l[i];
+            let mut sum_r = self.mix_r[i];
+            if child_played {
+                sum_l += child_l[i];
+                sum_r += child_r[i];
+            }
             let left = soft_saturate(self.dc_l.process(sum_l) * gain);
             let right = soft_saturate(self.dc_r.process(sum_r) * gain);
 
@@ -447,6 +616,11 @@ impl Plugin for Sampler {
             v.silence();
         }
         self.preview.silence();
+        // The runners let go of their notes without sending anything, which
+        // is honest only because the child is reset in the same breath: a
+        // reset instrument holds nothing, so there is nothing to give back.
+        self.runners.silence();
+        self.child.reset();
         self.dc_l.reset();
         self.dc_r.reset();
         self.age_counter = 0;
@@ -462,6 +636,20 @@ impl Plugin for Sampler {
     fn set_sampler_preview(&mut self, preview: Option<&PreviewLayer>) {
         self.preview.set(preview, self.sample_rate);
     }
+
+    fn set_sampler_child(&mut self, child: Option<Box<dyn Plugin>>) {
+        // Whatever the runners were playing was being played by the child
+        // that is leaving. They let go of it here rather than keeping notes
+        // held on an instrument that no longer exists.
+        self.runners.silence();
+        self.child.set(child);
+    }
+
+    fn set_sampler_phrases(&mut self, pad: u8, phrases: &[PadPhrase]) {
+        if let Some(p) = self.pads.get_mut(usize::from(pad)) {
+            p.set_phrases(phrases);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -470,21 +658,21 @@ mod tests {
     use crate::synth::tests::allocations_during;
     use phosphor_plugin::sample::{PreviewMode, SamplePcm, TrigMode};
 
-    const SR: f64 = 44_100.0;
+    pub(super) const SR: f64 = 44_100.0;
 
-    fn note_on(note: u8, vel: u8, offset: u32) -> MidiEvent {
+    pub(super) fn note_on(note: u8, vel: u8, offset: u32) -> MidiEvent {
         MidiEvent { sample_offset: offset, status: 0x90, data1: note, data2: vel }
     }
 
-    fn note_off(note: u8, offset: u32) -> MidiEvent {
+    pub(super) fn note_off(note: u8, offset: u32) -> MidiEvent {
         MidiEvent { sample_offset: offset, status: 0x80, data1: note, data2: 0 }
     }
 
-    fn cc(controller: u8, offset: u32) -> MidiEvent {
+    pub(super) fn cc(controller: u8, offset: u32) -> MidiEvent {
         MidiEvent { sample_offset: offset, status: 0xB0, data1: controller, data2: 0 }
     }
 
-    fn constant_pcm(value: f32, frames: usize) -> Arc<SamplePcm> {
+    pub(super) fn constant_pcm(value: f32, frames: usize) -> Arc<SamplePcm> {
         Arc::new(SamplePcm { data: vec![value; frames], channels: 1, sample_rate: SR as f32 })
     }
 
@@ -492,26 +680,26 @@ mod tests {
     /// audio-band signal: the DC blocker is *supposed* to bleed a
     /// constant buffer to nothing, so a constant is only fit for testing
     /// the blocker itself.
-    fn sine_pcm(amp: f32, frames: usize) -> Arc<SamplePcm> {
+    pub(super) fn sine_pcm(amp: f32, frames: usize) -> Arc<SamplePcm> {
         let data = (0..frames)
             .map(|i| amp * (core::f32::consts::TAU * 220.0 * i as f32 / SR as f32).sin())
             .collect();
         Arc::new(SamplePcm { data, channels: 1, sample_rate: SR as f32 })
     }
 
-    fn sampler_with(pad_note: u8, config: PadConfig, layers: &[PadLayer]) -> Sampler {
+    pub(super) fn sampler_with(pad_note: u8, config: PadConfig, layers: &[PadLayer]) -> Sampler {
         let mut s = Sampler::new();
         s.init(SR, 512);
         s.set_sampler_pad(pad_note - PAD_BASE_NOTE, &config, layers);
         s
     }
 
-    fn load(s: &mut Sampler, pad_note: u8, config: PadConfig, layers: &[PadLayer]) {
+    pub(super) fn load(s: &mut Sampler, pad_note: u8, config: PadConfig, layers: &[PadLayer]) {
         s.set_sampler_pad(pad_note - PAD_BASE_NOTE, &config, layers);
     }
 
     /// Run one stereo block and return (left, right).
-    fn process(s: &mut Sampler, events: &[MidiEvent], n: usize) -> (Vec<f32>, Vec<f32>) {
+    pub(super) fn process(s: &mut Sampler, events: &[MidiEvent], n: usize) -> (Vec<f32>, Vec<f32>) {
         let mut l = vec![0.0f32; n];
         let mut r = vec![0.0f32; n];
         {
@@ -521,7 +709,7 @@ mod tests {
         (l, r)
     }
 
-    fn peak(buf: &[f32]) -> f32 {
+    pub(super) fn peak(buf: &[f32]) -> f32 {
         buf.iter().fold(0.0f32, |a, s| a.max(s.abs()))
     }
 
