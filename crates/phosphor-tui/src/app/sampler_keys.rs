@@ -21,6 +21,7 @@
 //!            t loops the region · esc goes back to the map
 //!
 //! source     r starts the take · r again ends it · i swaps the instrument
+//!            p swaps what r lands: audio, or the phrase itself
 //!            esc puts the sampler back · the pad is fixed
 //! ```
 //!
@@ -160,10 +161,15 @@ impl App {
             KeyCode::Char('R') if self.sampler_mode() == MapMode::Keys => {
                 self.toggle_root_learn();
             }
-            // `r` outside source mode is a key with nowhere to go, and the
-            // thing a player pressing it wants is one key away.
+            // `r` and `p` outside source mode are keys with nowhere to go,
+            // and the thing a player pressing either wants is one key away.
             KeyCode::Char('r') => {
                 self.flash("i picks an instrument to record this pad from");
+            }
+            KeyCode::Char('p') => {
+                self.flash(
+                    "audio or phrase is a source-mode choice \u{00b7} i picks an instrument first",
+                );
             }
             KeyCode::Esc | KeyCode::Char('q') => self.nav.escape(),
             _ => {}
@@ -183,6 +189,7 @@ impl App {
             .is_some_and(phosphor_app::sampler::capture::SourceMode::is_armed);
         match key.code {
             KeyCode::Char('r') => self.toggle_sampler_take(),
+            KeyCode::Char('p') => self.toggle_sampler_take_kind(),
             KeyCode::Char('i') => self.open_pad_source_picker(),
             // Esc ends a running take before it leaves — a performance is
             // too expensive to throw away on a key that means "back". The
@@ -201,8 +208,13 @@ impl App {
                     .as_deref()
                     .map(|mode| phosphor_app::sampler::SamplerState::pad_label(mode.pad))
                     .unwrap_or_default();
+                let take = self
+                    .nav
+                    .sampler_source
+                    .as_deref()
+                    .map_or("", |mode| mode.take.label());
                 self.flash(format!(
-                    "source mode is on pad {pad} \u{00b7} r {} \u{00b7} esc puts the sampler back",
+                    "source mode is on pad {pad} \u{00b7} take: {take} \u{00b7} r {} \u{00b7} p swaps \u{00b7} esc puts the sampler back",
                     if armed { "ends the take" } else { "records" },
                 ));
             }

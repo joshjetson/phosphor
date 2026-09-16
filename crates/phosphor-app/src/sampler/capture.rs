@@ -330,6 +330,10 @@ pub struct SourceMode {
     pub pad: usize,
     pub instrument: InstrumentType,
     pub params: Vec<f32>,
+    /// What `r` will land: audio, or the performance itself. Seeded from
+    /// what the pad remembers and swapped by `p`, and written back to the
+    /// pad when it changes so the next visit opens the way this one left.
+    pub take: super::TakeKind,
     /// The capture, while one is armed.
     pub capture: Option<TakeCapture>,
 }
@@ -341,8 +345,9 @@ impl SourceMode {
         pad: usize,
         instrument: InstrumentType,
         params: Vec<f32>,
+        take: super::TakeKind,
     ) -> Self {
-        Self { track_idx, pad, instrument, params, capture: None }
+        Self { track_idx, pad, instrument, params, take, capture: None }
     }
 
     #[must_use]

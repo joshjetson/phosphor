@@ -344,15 +344,17 @@ program with `program`.
 An instrument like the others, except the sound is yours. **`Space+A`**,
 choose **Sampler**, and the track opens on its **`[pads]`** tab with a
 keyboard drawn across it: eighty-eight pads, one per piano key, each holding
-up to eight sounds stacked on top of one another, each with its own trigger,
+up to eight sampled sounds stacked on top of one another, each with its own trigger,
 polyphony, choke group, pitch, envelope, level, pan and root — in
 milliseconds and semitones, not in percentages of a knob.
 
-Sounds arrive two ways. You type a path and a WAV lands on the pad. Or you
+Sounds arrive three ways. You type a path and a WAV lands on the pad. Or you
 point the pad at one of the synths in this box — the Rhodes, the DX7, any of
-them — play it, and keep what you played as audio. Either way you can then
-trim it by eye and by ear, and what plays is a region of the file rather than
-a new copy of it.
+them — play it, and keep what you played as audio; you can then trim it by
+eye and by ear, and what plays is a region of the file rather than a new copy
+of it. Or you keep the same performance as a **phrase** — the notes rather
+than the audio, replayed live through one instrument, for a pad that costs a
+few hundred events instead of a few megabytes.
 
 The same eighty-eight keys read two ways, and `K` swaps between them: a **pad
 map**, where every key is its own sound with its own settings, and **keys
@@ -552,8 +554,73 @@ bar says in words. A whole nudge run — however long you hold the key — is on
 press of `u`. A sound whose file has gone missing is refused rather than
 opened onto an empty pane.
 
-<!-- [M8] phrases — the slicing/phrase keys slot in here, after the trim
-     strip and before "Recording the machine into itself". -->
+### Phrases — the performance instead of the audio
+
+A **phrase** is a take that was never rendered. The notes are kept exactly as
+you played them and replayed, live, through one instrument. Four bars cost a
+few hundred events instead of a few megabytes, and the sound comes from a
+synth rather than a buffer — so it is still the synth, with its filter still
+open, and not a photograph of one.
+
+In source mode (see below), `p` swaps what `r` will land. The banner reads
+`take: audio` or `take: phrase` the whole time, because it is the difference
+between a pad that costs a buffer and one that costs an instrument, and
+finding out afterwards is finding out too late. The pad remembers which,
+along with the instrument it was recorded from, so coming back to it a week
+later opens the way you left it.
+
+`r`, play, `r` again: the notes land on the pad as a **`phr` row** in the
+sound list, named `phrase 1`, `phrase 2`, in one undo step. Four phrases fit
+on a pad; the fifth is refused before you play, in words, the same as a full
+layer bed. The track's chord and arp devices are baked in exactly as they are
+for audio — a phrase recorded over an arpeggiator holds the arpeggio — and a
+one-finger phrase teaches the pad its root the way a take does.
+
+**One child instrument per sampler.** Not one per pad: eighty-eight pads with
+an instrument each is eighty-eight voice pools, and this one is rendered once
+per block however many phrases are running. It is what makes the feature
+affordable, and it is the thing to know about it. Landing a phrase points the
+child at the instrument that phrase was played on, with the panel you played
+it with. Record the next phrase from something else and the child is
+*replaced* — every phrase on the kit now plays through the new one — and the
+flash says `child is now Rhodes · every phrase plays through it`, because a
+silent change to how a whole kit sounds is the kind of thing you discover a
+week later.
+
+A phrase's own controls are three, and the three are all there are:
+
+| Control | What it does |
+|---------|--------------|
+| `vel` | 0–400%, what every recorded velocity is multiplied by. A percentage and not decibels, because it scales what is *played* rather than how loud the result is — there is one shared render for every phrase on the kit, so there is nowhere per-phrase to put a fader |
+| `mute` | out of the pad's sound, still in the list |
+| `keytrk` | *(pads mode only)* the notes shift by the played key's distance from the pad's `root`. A zone's phrases always transpose, so the switch is not offered there |
+
+The pad's `level`, `pan` and envelope do **not** reach a phrase, and neither
+do a layer's `pan`, `tune` or `rev`. They are not greyed out; they are not
+there, the same way an empty pad has no layer knobs. What does reach a phrase
+is everything about *when* it plays: `trig`, `poly`, `choke`, the transport
+stopping and the panic key all treat it exactly as they treat a sample, and
+every note a phrase put down is handed back the moment it is cut.
+
+`phr` rows sit after the wav and rec rows in the same list, so `[`/`]`,
+`1`–`8`, `m` and `d` are the keys they already were. A row reads its name,
+its length in seconds, its `vel` percentage and `phr`; `d` asks before it
+removes one, and `u` brings it back with its notes.
+
+Two things a phrase does not do. Moving the cursor onto a `phr` row does not
+**audition** it — there is nothing to sound on its own — so it says to press
+the pad's key instead of going quietly silent, which would read as an
+audition that had broken. And `t` on one says a phrase is notes rather than
+opening a waveform of nothing.
+
+**Tempo is baked.** Event offsets are frames, decided when you played, the
+same as an audio take. A phrase does not follow a tempo change — it is a
+recording, and the sibling it has to sound like is the recording on the pad
+beside it.
+
+Phrases go into the session inline, notes and all, with the child instrument
+and its panel. Nothing is written beside the file: a phrase has no audio, so
+it has no sidecar.
 
 ### Recording the machine into itself — `i`
 
@@ -567,7 +634,9 @@ performance now — and the banner names the pad waiting underneath.
 
 `r` arms. Play. `r` again ends the take and lands it on the pad as a new
 sound, selected, named `take 1`, `take 2`, in one undo step, with its length
-and its peak in the flash.
+and its peak in the flash. `p` swaps what `r` will land — audio, or the
+performance itself as a phrase (see above); the banner reads which the whole
+time, and the pad remembers it.
 
 **Stopped, the take is free.** Time zero is your first note-on, it ends when
 you disarm, and the instrument's tail is rendered out to silence — two
@@ -657,7 +726,7 @@ channels is dropped), up to ten minutes a file.
 | `j` / `k` | Pick a control |
 | `Enter` | Hold the control — now `h`/`l` turn it, `H`/`L` stride |
 | `Esc` (held) | Let go of the control — `Enter` releases it too |
-| `[` / `]` | Pick which sound on the pad the layer controls address |
+| `[` / `]` | Pick which sound on the pad the row controls address — layers first, phrases after |
 | `1`–`8` | Jump to that sound, and play it |
 | `a` | Load a WAV onto this pad |
 | `t` | Trim the sound under the cursor |
@@ -701,6 +770,7 @@ has no word for, plus the brace.
 | Key | Action |
 |-----|--------|
 | `r` | Arm the take; again to end it and land it |
+| `p` | Swap what `r` lands: `take: audio` or `take: phrase` |
 | `i` | Change the instrument |
 | `Esc` | End a running take; again to put the sampler back |
 
@@ -932,11 +1002,12 @@ numbered clip (selected track), column (piano roll), or step (sequencer).
 
 **Layers (stacking sounds on a pad)** — Open the pad map, walk to a pad with
 `h`/`l` (or play its key), and press `a` once for each sound you want on it —
-up to eight, and they play together. `[`/`]` pick which one the panel's
-bottom six controls address and `1`–`8` jump straight to one; either way the
-sound you land on plays once on its own, so you can hear which is which. `m`
-mutes one without taking it off the pad, `d` removes it after a y/n, and `u`
-brings it back with its audio. The pad's `poly` control says how many hits
+up to eight, and they play together. Any phrases on the pad (see Phrases)
+sit in the same list after them, four more at most. `[`/`]` pick which row
+the panel's bottom controls address and `1`–`8` jump straight to one; a
+sampled row you land on plays once on its own, so you can hear which is
+which. `m` mutes one without taking it off the pad, `d` removes it after a
+y/n, and `u` brings it back with its audio. The pad's `poly` control says how many hits
 can overlap and `choke` puts pads in a mute group, the way a closed hat stops
 an open one.
 
@@ -985,6 +1056,17 @@ file instantly. `Space+O`, type the name — with or without `.phos` —
 and `Enter` opens it. See [Where files live](#where-files-live).
 
 **Panic** — `Space+!` from anywhere: all sound stops immediately.
+
+**Phrases** — A take kept as notes instead of audio, replayed through one
+instrument. Open the pad map, press `i` and pick an instrument, then `p`
+until the banner reads `take: phrase`. `r` arms, play, `r` again: the notes
+land as a `phr` row in the sound list, four to a pad, one `u` deep. The
+sampler has **one** child instrument for all of them — landing a phrase
+points it at what you just played, and a phrase from a different instrument
+replaces it for every phrase on the kit, which the flash says out loud. A
+phrase's controls are `vel`, `mute` and `keytrk` and nothing else; `[`/`]`,
+`1`–`8`, `m` and `d` reach its row the same as any other. See
+[Phrases](#phrases--the-performance-instead-of-the-audio).
 
 **Play / stop** — `Space+P` toggles play; `Space+0` stops and returns the
 playhead to bar 1.

@@ -32,7 +32,7 @@ use super::*;
 
 use phosphor_app::sampler::knobs::PadKnob;
 use phosphor_app::sampler::{
-    LayerState, MapMode, PadState, SamplerState, Zone, NUM_PADS, PAD_BASE_NOTE,
+    MapMode, PadRow, PadState, SamplerState, Zone, NUM_PADS, PAD_BASE_NOTE,
 };
 
 use super::keyboard::{self, KeyPaint, INK};
@@ -84,6 +84,9 @@ struct Map<'a> {
     colour: Color,
     /// Source mode, when this track is in it — the banner's subject.
     source: Option<&'a phosphor_app::sampler::capture::SourceMode>,
+    /// The engine's rate. A phrase's length is frames, so the seconds the
+    /// list prints are the seconds it will actually play for here.
+    rate: f32,
 }
 
 impl Map<'_> {
@@ -103,26 +106,27 @@ impl Map<'_> {
         }
     }
 
-    /// How many sounds are stacked on what is being edited.
-    fn layer_count(&self) -> usize {
-        self.pad().map_or(0, |state| state.layers.len())
+    /// How many rows the sound list has: the layers and the phrases as one
+    /// list, which is what `[`/`]` walks.
+    fn row_count(&self) -> usize {
+        self.pad().map_or(0, PadState::rows)
     }
 
-    /// The layer the layer cursor is on, when there is one.
-    fn layer(&self) -> Option<&LayerState> {
-        self.pad()?.layers.get(self.layer_cursor())
+    /// The sound the row cursor is on, when there is one.
+    fn row(&self) -> Option<PadRow<'_>> {
+        self.pad()?.row(self.layer_cursor())
     }
 
-    /// The layer cursor, pulled inside what this sound actually holds. The
+    /// The sound cursor, pulled inside what this pad actually holds. The
     /// keys clamp it too; this is the frame's own guard, because what is
     /// under the cursor can change without a key being pressed — playing a
     /// note moves it.
     fn layer_cursor(&self) -> usize {
-        self.view.layer.min(self.layer_count().saturating_sub(1))
+        self.view.layer.min(self.row_count().saturating_sub(1))
     }
 
     fn knobs(&self) -> &'static [PadKnob] {
-        PadKnob::visible(self.layer_count() > 0, self.state.mode)
+        PadKnob::visible(self.row().map(PadRow::kind), self.state.mode)
     }
 
     /// Which control the cursor is on, inside the list this pad offers.
@@ -171,6 +175,18 @@ impl Row {
         }
         self.used += cells;
         self.spans.push(Span::styled(text, style));
+    }
+
+    /// The first of these that fits, widest first.
+    ///
+    /// For the marks that say something is wrong: `no instrument` in a wide
+    /// pane, `!` in a narrow one. [`Row::push`] drops what does not fit,
+    /// which is right for a column and wrong for a warning — a warning that
+    /// vanishes at 57 columns is a warning nobody gets.
+    fn push_widest(&mut self, options: &[&str], style: Style) {
+        if let Some(text) = options.iter().find(|t| t.chars().count() <= self.left()) {
+            self.push(*text, style);
+        }
     }
 
     fn line(self) -> Line<'static> {
@@ -232,12 +248,17 @@ fn key_paint(map: &Map, note: u8) -> KeyPaint {
     if map.state.is_zone_root(index) {
         return paint.with_glyph(ROOT_MARK, INK);
     }
-    // The number of sounds stacked on the key, on the key. Past nine cannot
-    // happen — eight layers is the bed — so one digit always tells the
-    // truth.
-    match char::from_digit(count as u32, 10).filter(|_| count > 0) {
-        Some(digit) => paint.with_glyph(digit, INK),
-        None => paint,
+    // The number of sounds stacked on the key, on the key. Eight layers and
+    // four phrases is twelve, which no digit can say — so past nine the key
+    // wears a `+` and the list beside it gives the count. A truncated digit
+    // would be a lie about a kit the player built.
+    match count {
+        0 => paint,
+        1..=9 => match char::from_digit(count as u32, 10) {
+            Some(digit) => paint.with_glyph(digit, INK),
+            None => paint,
+        },
+        _ => paint.with_glyph('+', INK),
     }
 }
 
@@ -267,24 +288,29 @@ fn source_banner(map: &Map, width: usize) -> Option<Line<'static>> {
     let mode = map.source?;
     let red = Style::default().fg(theme::rec_active_val()).bg(theme::bg_val());
     let pad = SamplerState::pad_label(mode.pad);
+    // What `r` will land, always on the banner and never only in a flash:
+    // it is the difference between a pad that costs megabytes and one that
+    // costs an instrument, and a player who cannot see which is armed finds
+    // out after the performance.
+    let take = format!("take: {}", mode.take.label());
     let (mark, text, style) = match mode.capture.as_ref() {
         None => (
             "\u{25B8}",
             format!(
-                "source \u{00b7} {} \u{00b7} pad {pad} \u{00b7} r records \u{00b7} esc puts the sampler back",
+                "source \u{00b7} {} \u{00b7} pad {pad} \u{00b7} {take} \u{00b7} p swaps \u{00b7} r records \u{00b7} esc puts the sampler back",
                 mode.instrument.label(),
             ),
             theme::amber_bright(),
         ),
         Some(capture) if !capture.open_at(phosphor_midi::clock::now_micros()) => (
             "\u{25CF}",
-            format!("armed \u{00b7} pad {pad} \u{00b7} the take opens at the next bar line"),
+            format!("armed \u{00b7} pad {pad} \u{00b7} {take} \u{00b7} it opens at the next bar line"),
             red,
         ),
         Some(capture) => (
             "\u{25CF}",
             format!(
-                "recording \u{00b7} pad {pad} \u{00b7} {} note{} \u{00b7} {} \u{00b7} r ends the take",
+                "recording \u{00b7} pad {pad} \u{00b7} {take} \u{00b7} {} note{} \u{00b7} {} \u{00b7} r ends it",
                 capture.note_count(),
                 if capture.note_count() == 1 { "" } else { "s" },
                 if capture.is_bars() { "whole bars" } else { "free" },
@@ -325,6 +351,7 @@ pub(super) fn render_pads(frame: &mut Frame, area: Rect, nav: &NavState) {
             .sampler_source
             .as_deref()
             .filter(|mode| mode.track_idx == nav.track_cursor),
+        rate: nav.sample_rate as f32,
     };
 
     let mut body = area;
@@ -456,7 +483,14 @@ pub(super) mod tests {
         state: &'a SamplerState,
         view: &'a SamplerView,
     ) -> Map<'a> {
-        Map { state, view, focused: true, colour: theme::track_color(0), source: None }
+        Map {
+            state,
+            view,
+            focused: true,
+            colour: theme::track_color(0),
+            source: None,
+            rate: 44_100.0,
+        }
     }
 
     pub(in crate::ui::sampler) fn text(lines: &[Line<'static>]) -> String {

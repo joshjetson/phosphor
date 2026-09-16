@@ -15,7 +15,7 @@ use phosphor_plugin::sample::TrigMode;
 
 use crate::format::{db_text, ms_text, note_name, pan_label};
 
-use super::{LayerState, MapMode, PadState, Zone, NUM_PADS};
+use super::{MapMode, PadRow, PadState, RowKind, Zone, NUM_PADS};
 
 /// The top of an envelope stage. Ten seconds is longer than any sampler
 /// envelope a player reaches for and short enough that the dial's travel
@@ -40,6 +40,10 @@ const FLOOR_DB: f32 = -40.0;
 /// end. The strip's feel, chosen again here rather than borrowed, because a
 /// pad's pan and a track's pan are different controls that happen to agree.
 const PAN_STEP: f32 = 0.05;
+
+/// What a control with nothing under it reads. Never a zero: a number is a
+/// claim about a value, and there is no value here.
+const DASH: &str = "\u{2014}";
 
 /// One control on the pad panel.
 ///
@@ -78,83 +82,157 @@ pub enum PadKnob {
     LayerTuneCents,
     LayerReverse,
     LayerMute,
+    // ── The phrase under the row cursor ──
+    /// What every recorded velocity is multiplied by.
+    ///
+    /// A velocity scale rather than a fader, because every phrase on the
+    /// kit sounds through one child instrument rendered once a block: there
+    /// is no per-phrase place in a shared render to put a fader. Which is
+    /// also why it reads as a percentage and is called `vel`.
+    PhraseGain,
+    PhraseMute,
+    PhraseKeytrack,
+}
+
+/// How many controls a pad or a zone offers before the row cursor's own.
+const PAD_CONTROLS: usize = 13;
+
+/// The pad's own, in the order `j`/`k` walks them.
+const PAD: [PadKnob; PAD_CONTROLS] = [
+    PadKnob::Trig,
+    PadKnob::Poly,
+    PadKnob::Choke,
+    PadKnob::PitchSt,
+    PadKnob::PitchCents,
+    PadKnob::Attack,
+    PadKnob::Decay,
+    PadKnob::Sustain,
+    PadKnob::Release,
+    PadKnob::Level,
+    PadKnob::Pan,
+    PadKnob::Root,
+    PadKnob::Keytrack,
+];
+
+/// A zone's own. The span takes the top, and `keytrk` is gone: a zone
+/// always tracks the keyboard — one that did not would be a stretch of keys
+/// all playing one pitch, which is a pad with extra steps — so the switch
+/// would be a control with nothing on the other side of it. That leaves the
+/// same number of controls above the row cursor's, which is what lets one
+/// constant split every list here.
+const ZONE: [PadKnob; PAD_CONTROLS] = [
+    PadKnob::Span,
+    PadKnob::Trig,
+    PadKnob::Poly,
+    PadKnob::Choke,
+    PadKnob::PitchSt,
+    PadKnob::PitchCents,
+    PadKnob::Attack,
+    PadKnob::Decay,
+    PadKnob::Sustain,
+    PadKnob::Release,
+    PadKnob::Level,
+    PadKnob::Pan,
+    PadKnob::Root,
+];
+
+/// What a sampled layer adds under the pad's own.
+const LAYER_TAIL: [PadKnob; 6] = [
+    PadKnob::LayerGain,
+    PadKnob::LayerPan,
+    PadKnob::LayerTuneSt,
+    PadKnob::LayerTuneCents,
+    PadKnob::LayerReverse,
+    PadKnob::LayerMute,
+];
+
+/// What a phrase adds instead.
+///
+/// Three, not six. A phrase is note traffic for an instrument shared by
+/// every phrase on the kit, so it has no pan, no tune and nothing to play
+/// backwards — and a control that answers keys and changes nothing is worse
+/// than a control that is not there.
+///
+/// `keytrk` is last so that keys mode can take the first two: a zone's
+/// phrases always transpose with the keyboard, the same bargain that keeps
+/// `keytrk` off a zone's own list.
+const PHRASE_TAIL: [PadKnob; 3] =
+    [PadKnob::PhraseGain, PadKnob::PhraseMute, PadKnob::PhraseKeytrack];
+
+/// One head plus the layer tail, spelled once.
+const fn with_layer(head: [PadKnob; PAD_CONTROLS]) -> [PadKnob; PAD_CONTROLS + 6] {
+    let mut out = [PadKnob::Trig; PAD_CONTROLS + 6];
+    let mut i = 0;
+    while i < PAD_CONTROLS {
+        out[i] = head[i];
+        i += 1;
+    }
+    let mut j = 0;
+    while j < LAYER_TAIL.len() {
+        out[PAD_CONTROLS + j] = LAYER_TAIL[j];
+        j += 1;
+    }
+    out
+}
+
+/// The same, with the phrase tail. Two builders rather than one because
+/// the two tails are different lengths and an output size cannot be
+/// computed from an input's on stable Rust.
+const fn with_phrase(head: [PadKnob; PAD_CONTROLS]) -> [PadKnob; PAD_CONTROLS + 3] {
+    let mut out = [PadKnob::Trig; PAD_CONTROLS + 3];
+    let mut i = 0;
+    while i < PAD_CONTROLS {
+        out[i] = head[i];
+        i += 1;
+    }
+    let mut j = 0;
+    while j < PHRASE_TAIL.len() {
+        out[PAD_CONTROLS + j] = PHRASE_TAIL[j];
+        j += 1;
+    }
+    out
 }
 
 impl PadKnob {
-    /// Every control in pads mode, pad first.
-    pub const ALL: [PadKnob; 19] = [
-        Self::Trig,
-        Self::Poly,
-        Self::Choke,
-        Self::PitchSt,
-        Self::PitchCents,
-        Self::Attack,
-        Self::Decay,
-        Self::Sustain,
-        Self::Release,
-        Self::Level,
-        Self::Pan,
-        Self::Root,
-        Self::Keytrack,
-        Self::LayerGain,
-        Self::LayerPan,
-        Self::LayerTuneSt,
-        Self::LayerTuneCents,
-        Self::LayerReverse,
-        Self::LayerMute,
-    ];
+    /// Every control in pads mode, on a layer row.
+    pub const ALL: [PadKnob; PAD_CONTROLS + 6] = with_layer(PAD);
 
-    /// Every control in keys mode.
+    /// Every control in keys mode, on a layer row.
+    pub const KEYS: [PadKnob; PAD_CONTROLS + 6] = with_layer(ZONE);
+
+    /// Pads mode on a phrase row.
+    pub const PHRASES: [PadKnob; PAD_CONTROLS + 3] = with_phrase(PAD);
+
+    /// Keys mode on a phrase row — the first two of the phrase tail, for
+    /// the reason [`PHRASE_TAIL`] gives.
+    pub const KEYS_PHRASES: [PadKnob; PAD_CONTROLS + 3] = with_phrase(ZONE);
+
+    /// How many of any list belong to the pad or zone itself, rather than
+    /// to the row under the sound cursor.
+    pub const PAD_CONTROLS: usize = PAD_CONTROLS;
+
+    /// The controls the thing under the cursor offers right now.
     ///
-    /// The span takes the top, and `keytrk` is gone: a zone always tracks
-    /// the keyboard — one that did not would be a stretch of keys all
-    /// playing one pitch, which is a pad with extra steps — so the switch
-    /// would be a control with nothing on the other side of it. That
-    /// leaves the same number of controls above the layer's, which
-    /// [`PadKnob::PAD_CONTROLS`] counts for both lists.
-    pub const KEYS: [PadKnob; 19] = [
-        Self::Span,
-        Self::Trig,
-        Self::Poly,
-        Self::Choke,
-        Self::PitchSt,
-        Self::PitchCents,
-        Self::Attack,
-        Self::Decay,
-        Self::Sustain,
-        Self::Release,
-        Self::Level,
-        Self::Pan,
-        Self::Root,
-        Self::LayerGain,
-        Self::LayerPan,
-        Self::LayerTuneSt,
-        Self::LayerTuneCents,
-        Self::LayerReverse,
-        Self::LayerMute,
-    ];
-
-    /// How many of either list belong to the pad or zone itself, rather
-    /// than to the layer under the layer cursor.
-    pub const PAD_CONTROLS: usize = 13;
-
-    /// The controls the thing under the cursor offers right now. An empty
-    /// pad stops at its own: a gain knob for a sound that is not there is a
-    /// control that answers keys and changes nothing.
-    pub fn visible(has_layer: bool, mode: MapMode) -> &'static [PadKnob] {
-        let all: &'static [PadKnob] = match mode {
-            MapMode::Pads => &Self::ALL,
-            MapMode::Keys => &Self::KEYS,
-        };
-        if has_layer {
-            all
-        } else {
-            &all[..Self::PAD_CONTROLS]
+    /// `row` is what the sound list's cursor is standing on. On nothing at
+    /// all the list stops at the pad's own: a gain knob for a sound that is
+    /// not there is a control that answers keys and changes nothing — and
+    /// the same rule is why a phrase row offers three controls rather than
+    /// a layer's six.
+    pub fn visible(row: Option<RowKind>, mode: MapMode) -> &'static [PadKnob] {
+        match (row, mode) {
+            (None, MapMode::Pads) => &Self::ALL[..PAD_CONTROLS],
+            (None, MapMode::Keys) => &Self::KEYS[..PAD_CONTROLS],
+            (Some(RowKind::Layer), MapMode::Pads) => &Self::ALL,
+            (Some(RowKind::Layer), MapMode::Keys) => &Self::KEYS,
+            (Some(RowKind::Phrase), MapMode::Pads) => &Self::PHRASES,
+            (Some(RowKind::Phrase), MapMode::Keys) => {
+                &Self::KEYS_PHRASES[..Self::KEYS_PHRASES.len() - 1]
+            }
         }
     }
 
-    /// Whether this control belongs to the selected layer rather than to
-    /// the pad.
+    /// Whether this control belongs to the row under the sound cursor
+    /// rather than to the pad.
     pub fn is_layer(self) -> bool {
         matches!(
             self,
@@ -164,6 +242,9 @@ impl PadKnob {
                 | Self::LayerTuneCents
                 | Self::LayerReverse
                 | Self::LayerMute
+                | Self::PhraseGain
+                | Self::PhraseMute
+                | Self::PhraseKeytrack
         )
     }
 
@@ -185,24 +266,28 @@ impl PadKnob {
             Self::Level | Self::LayerGain => "level",
             Self::Pan | Self::LayerPan => "pan",
             Self::Root => "root",
-            Self::Keytrack => "keytrk",
+            Self::Keytrack | Self::PhraseKeytrack => "keytrk",
             Self::LayerTuneSt => "tune",
             Self::LayerTuneCents => "fine",
             Self::LayerReverse => "rev",
-            Self::LayerMute => "mute",
+            Self::LayerMute | Self::PhraseMute => "mute",
+            // Not `level`: it scales what the phrase plays rather than how
+            // loud the result is, and calling it a fader would be the one
+            // word on this panel that is not true.
+            Self::PhraseGain => "vel",
         }
     }
 
     /// What the control reads, in its own unit.
     ///
-    /// A layer control with no layer behind it reads as a dash rather than
-    /// as a lie, and so does the span with no zone behind it — the one
-    /// control here that is about the keyboard rather than about the sound,
-    /// which is why it is the one that needs `zone`.
+    /// A row control with no row behind it reads as a dash rather than as a
+    /// lie, and so does the span with no zone behind it — the one control
+    /// here that is about the keyboard rather than about the sound, which
+    /// is why it is the one that needs `zone`.
     pub fn value(
         self,
         pad: &PadState,
-        layer: Option<&LayerState>,
+        row: Option<PadRow<'_>>,
         zone: Option<&Zone>,
     ) -> String {
         let c = &pad.config;
@@ -210,7 +295,7 @@ impl PadKnob {
             // The span and nothing else: how many keys that is, the dial
             // beside it already says, and a value wider than the panel is
             // a knob cut in half by the right edge of the pane.
-            Self::Span => zone.map_or_else(|| "\u{2014}".into(), Zone::span_label),
+            Self::Span => zone.map_or_else(|| DASH.into(), Zone::span_label),
             Self::Trig => match c.trig {
                 TrigMode::OneShot => "one-shot".into(),
                 TrigMode::Gate => "gate".into(),
@@ -233,16 +318,28 @@ impl PadKnob {
             Self::Pan => pan_label(c.pan),
             Self::Root => note_name(c.root),
             Self::Keytrack => on_off(c.keytrack),
-            _ => match layer {
-                None => "\u{2014}".into(),
-                Some(l) => match self {
+            // A control the row under the cursor does not have reads as a
+            // dash rather than as a lie — and a phrase knob can never read
+            // a layer, because it is handed one row and not two options.
+            _ => match row {
+                Some(PadRow::Layer(l)) => match self {
                     Self::LayerGain => db_text(l.gain),
                     Self::LayerPan => pan_label(l.pan),
                     Self::LayerTuneSt => format!("{:+} st", l.tune_st),
                     Self::LayerTuneCents => format!("{:+} ct", l.tune_cents),
                     Self::LayerReverse => on_off(l.reverse),
-                    _ => on_off(l.mute),
+                    Self::LayerMute => on_off(l.mute),
+                    _ => DASH.into(),
                 },
+                Some(PadRow::Phrase(p)) => match self {
+                    // A percentage of what was played, because that is
+                    // what it scales. Unity reads 100%, not 0 dB.
+                    Self::PhraseGain => format!("{}%", (p.gain * 100.0).round() as i32),
+                    Self::PhraseMute => on_off(p.mute),
+                    Self::PhraseKeytrack => on_off(p.transpose_with_key),
+                    _ => DASH.into(),
+                },
+                None => DASH.into(),
             },
         }
     }
@@ -252,7 +349,7 @@ impl PadKnob {
     /// The envelope times take the square root of their travel: a dial that
     /// is linear over ten seconds does not move at all across the first
     /// fifty milliseconds, which is where most of a drum envelope lives.
-    pub fn frac(self, pad: &PadState, layer: Option<&LayerState>, zone: Option<&Zone>) -> f64 {
+    pub fn frac(self, pad: &PadState, row: Option<PadRow<'_>>, zone: Option<&Zone>) -> f64 {
         let c = &pad.config;
         match self {
             // How much of the bed the zone holds. The dial cannot show two
@@ -272,26 +369,36 @@ impl PadKnob {
             Self::Pan => centred(f64::from(c.pan), 1.0),
             Self::Root => f64::from(c.root) / 127.0,
             Self::Keytrack => f64::from(u8::from(c.keytrack)),
-            _ => match layer {
-                None => 0.0,
-                Some(l) => match self {
+            _ => match row {
+                Some(PadRow::Layer(l)) => match self {
                     Self::LayerGain => gain_frac(l.gain),
                     Self::LayerPan => centred(f64::from(l.pan), 1.0),
                     Self::LayerTuneSt => centred(f64::from(l.tune_st), 48.0),
                     Self::LayerTuneCents => centred(f64::from(l.tune_cents), 50.0),
                     Self::LayerReverse => f64::from(u8::from(l.reverse)),
-                    _ => f64::from(u8::from(l.mute)),
+                    Self::LayerMute => f64::from(u8::from(l.mute)),
+                    _ => 0.0,
                 },
+                Some(PadRow::Phrase(p)) => match self {
+                    // Full travel is four times what was played, so unity
+                    // sits a quarter of the way round — the same shape the
+                    // level controls have, in the unit a velocity is in.
+                    Self::PhraseGain => f64::from(p.gain / MAX_GAIN).clamp(0.0, 1.0),
+                    Self::PhraseMute => f64::from(u8::from(p.mute)),
+                    Self::PhraseKeytrack => f64::from(u8::from(p.transpose_with_key)),
+                    _ => 0.0,
+                },
+                None => 0.0,
             },
         }
     }
 
     /// Turn the control by one press, or by a stride under `H`/`L`.
     ///
-    /// `layer` is the layer cursor; a layer control with nothing under it
-    /// does nothing at all, rather than editing whichever layer happens to
-    /// be first.
-    pub fn adjust(self, pad: &mut PadState, layer: usize, delta: i32, stride: bool) {
+    /// `row` is the sound cursor, over the layers and the phrases as one
+    /// list; a row control with nothing under it does nothing at all,
+    /// rather than editing whichever sound happens to be first.
+    pub fn adjust(self, pad: &mut PadState, row: usize, delta: i32, stride: bool) {
         let up = delta > 0;
         let c = &mut pad.config;
         match self {
@@ -323,8 +430,22 @@ impl PadKnob {
             Self::Pan => c.pan = step_pan(c.pan, delta, stride),
             Self::Root => c.root = step_int(i32::from(c.root), delta * stride_by(stride, 12), 0, 127) as u8,
             Self::Keytrack => c.keytrack = up,
+            Self::PhraseGain | Self::PhraseMute | Self::PhraseKeytrack => {
+                let Some(p) = pad.phrase_at_row(row) else { return };
+                match self {
+                    // Ten points of velocity a press, fifty on a stride:
+                    // the smallest step a player can hear in a performance,
+                    // and the travel the dial is drawn over.
+                    Self::PhraseGain => {
+                        let step = 0.1 * stride_by(stride, 5) as f32;
+                        p.gain = (p.gain + delta as f32 * step).clamp(0.0, MAX_GAIN);
+                    }
+                    Self::PhraseKeytrack => p.transpose_with_key = up,
+                    _ => p.mute = up,
+                }
+            }
             _ => {
-                let Some(l) = pad.layers.get_mut(layer) else { return };
+                let Some(l) = pad.layers.get_mut(row) else { return };
                 match self {
                     Self::LayerGain => l.gain = step_gain(l.gain, delta, stride),
                     Self::LayerPan => l.pan = step_pan(l.pan, delta, stride),
@@ -448,26 +569,44 @@ mod tests {
         state.pads.remove(0)
     }
 
+    /// One layer and one phrase, so the same pad answers both kinds of row.
+    fn pad_with_both() -> PadState {
+        let mut pad = pad_with_layer();
+        let events = Arc::from(vec![phosphor_plugin::sample::PhraseEvent {
+            frame: 0,
+            status: 0x90,
+            data1: 60,
+            data2: 100,
+        }]);
+        pad.add_phrase(events, 1_000, "pad").unwrap();
+        pad
+    }
+
     #[test]
-    fn an_empty_pad_offers_no_layer_controls() {
+    fn an_empty_pad_offers_no_row_controls() {
         for mode in [MapMode::Pads, MapMode::Keys] {
-            assert_eq!(PadKnob::visible(false, mode).len(), PadKnob::PAD_CONTROLS);
-            assert_eq!(PadKnob::visible(true, mode).len(), PadKnob::ALL.len());
+            assert_eq!(PadKnob::visible(None, mode).len(), PadKnob::PAD_CONTROLS);
+            assert_eq!(PadKnob::visible(Some(RowKind::Layer), mode).len(), PadKnob::ALL.len());
             assert!(
-                PadKnob::visible(false, mode).iter().all(|k| !k.is_layer()),
-                "a layer control is reachable with no layers, in {mode:?}",
+                PadKnob::visible(None, mode).iter().all(|k| !k.is_layer()),
+                "a row control is reachable with no sounds, in {mode:?}",
             );
         }
     }
 
-    /// The two lists carry the same number of controls above the layer's,
-    /// which is what lets one constant split either of them. The defect
-    /// this catches is a control added to one list and not the other: the
-    /// panel would draw it under the layer heading, and `j`/`k` would
-    /// walk into a knob with the wrong name on it.
+    /// Every list carries the same number of controls above the row's,
+    /// which is what lets one constant split any of them. The defect this
+    /// catches is a control added to one list and not the other: the panel
+    /// would draw it under the row heading, and `j`/`k` would walk into a
+    /// knob with the wrong name on it.
     #[test]
-    fn both_control_lists_split_in_the_same_place() {
-        for list in [&PadKnob::ALL, &PadKnob::KEYS] {
+    fn every_control_list_splits_in_the_same_place() {
+        for list in [
+            &PadKnob::ALL[..],
+            &PadKnob::KEYS[..],
+            &PadKnob::PHRASES[..],
+            &PadKnob::KEYS_PHRASES[..],
+        ] {
             assert_eq!(
                 list.iter().position(|k| k.is_layer()),
                 Some(PadKnob::PAD_CONTROLS),
@@ -481,6 +620,69 @@ mod tests {
         assert!(!PadKnob::ALL.contains(&PadKnob::Span), "pads mode offers a span");
     }
 
+    /// A phrase has no pan, no tune and nothing to play backwards — and in
+    /// keys mode it has no keytrack switch either, because a zone's phrases
+    /// always transpose with the keyboard.
+    #[test]
+    fn a_phrase_row_offers_only_the_controls_a_phrase_has() {
+        let pads = PadKnob::visible(Some(RowKind::Phrase), MapMode::Pads);
+        assert_eq!(&pads[PadKnob::PAD_CONTROLS..], &PHRASE_TAIL);
+        for gone in [PadKnob::LayerPan, PadKnob::LayerTuneSt, PadKnob::LayerReverse] {
+            assert!(!pads.contains(&gone), "{gone:?} reached a phrase row");
+        }
+        let keys = PadKnob::visible(Some(RowKind::Phrase), MapMode::Keys);
+        assert_eq!(keys.len(), pads.len() - 1);
+        assert!(
+            !keys.contains(&PadKnob::PhraseKeytrack),
+            "keys mode offers a switch the materializer overrides",
+        );
+        assert!(keys.contains(&PadKnob::PhraseGain) && keys.contains(&PadKnob::PhraseMute));
+    }
+
+    /// The phrase controls turn the phrase under the row cursor, and the
+    /// layer controls cannot reach it. The defect this catches is a row
+    /// cursor past the layers quietly editing layer zero.
+    #[test]
+    fn the_phrase_controls_turn_the_phrase_the_cursor_is_on() {
+        let mut pad = pad_with_both();
+        let row = pad.layers.len(); // the first phrase
+        let layer_before = pad.layers[0].clone();
+
+        PadKnob::PhraseGain.adjust(&mut pad, row, -1, false);
+        assert!((pad.phrases[0].gain - 0.9).abs() < 1e-5, "{}", pad.phrases[0].gain);
+        assert_eq!(PadKnob::PhraseGain.value(&pad, pad.row(row), None), "90%");
+        PadKnob::PhraseKeytrack.adjust(&mut pad, row, 1, false);
+        assert!(pad.phrases[0].transpose_with_key);
+        PadKnob::PhraseMute.adjust(&mut pad, row, 1, false);
+        assert!(pad.phrases[0].mute);
+        assert_eq!(pad.layers[0], layer_before, "a phrase control turned a layer");
+
+        // ...and the layer controls, pointed at the phrase's row, turn
+        // nothing at all rather than the layer that shares the pad.
+        for knob in PHRASE_TAIL {
+            knob.adjust(&mut pad, 99, 1, false);
+        }
+        PadKnob::LayerGain.adjust(&mut pad, row, 1, false);
+        assert_eq!(pad.layers[0], layer_before, "a layer knob reached past its own row");
+    }
+
+    /// A phrase's velocity scale stops at both ends of its travel, and the
+    /// dial never leaves its own.
+    #[test]
+    fn the_velocity_scale_stops_at_both_ends() {
+        let mut pad = pad_with_both();
+        let row = pad.layers.len();
+        for direction in [-1, 1] {
+            for _ in 0..400 {
+                PadKnob::PhraseGain.adjust(&mut pad, row, direction, true);
+                let f = PadKnob::PhraseGain.frac(&pad, pad.row(row), None);
+                assert!((0.0..=1.0).contains(&f), "the dial left its travel at {f}");
+            }
+            assert!((0.0..=MAX_GAIN).contains(&pad.phrases[0].gain));
+        }
+        assert_eq!(pad.phrases[0].gain, MAX_GAIN);
+    }
+
     /// The span reads the zone and turns nothing on the sound it is drawn
     /// beside — its edges are the zone list's business, not a pad's.
     #[test]
@@ -488,7 +690,7 @@ mod tests {
         let mut pad = pad_with_layer();
         let zone = Zone::new(0, 11, PadState::empty(60));
         assert_eq!(PadKnob::Span.value(&pad, None, Some(&zone)), zone.span_label());
-        assert_eq!(PadKnob::Span.value(&pad, None, None), "\u{2014}");
+        assert_eq!(PadKnob::Span.value(&pad, None, None), DASH);
         assert!(PadKnob::Span.frac(&pad, None, Some(&zone)) > 0.0);
 
         let before = pad.clone();
@@ -498,17 +700,20 @@ mod tests {
         assert_eq!(pad, before, "the span turned a control on the sound");
     }
 
-    /// The defect this catches: a layer control turned on a pad whose layer
+    /// The defect this catches: a layer control turned on a pad whose row
     /// cursor points past the end, quietly editing layer zero instead.
     #[test]
-    fn a_layer_control_with_no_layer_under_it_changes_nothing() {
+    fn a_row_control_with_no_row_under_it_changes_nothing() {
         let mut pad = pad_with_layer();
         let before = pad.clone();
-        for knob in PadKnob::visible(true, MapMode::Pads).iter().filter(|k| k.is_layer()) {
+        let reachable = PadKnob::visible(Some(RowKind::Layer), MapMode::Pads)
+            .iter()
+            .chain(PadKnob::visible(Some(RowKind::Phrase), MapMode::Pads).iter());
+        for knob in reachable.filter(|k| k.is_layer()) {
             knob.adjust(&mut pad, MAX_LAYERS + 3, 1, false);
-            assert_eq!(knob.value(&pad, None, None), "\u{2014}", "{knob:?} invented a value");
+            assert_eq!(knob.value(&pad, None, None), DASH, "{knob:?} invented a value");
         }
-        assert_eq!(pad, before, "an out-of-range layer cursor edited a real layer");
+        assert_eq!(pad, before, "an out-of-range row cursor edited a real sound");
     }
 
     /// Every control stops at both ends of its travel, however long a key
@@ -539,7 +744,7 @@ mod tests {
                 assert!((-48..=48).contains(&l.tune_st));
                 assert!((-50..=50).contains(&l.tune_cents));
                 // And the dial never leaves its own travel either.
-                let f = knob.frac(&pad, pad.layers.first(), None);
+                let f = knob.frac(&pad, pad.row(0), None);
                 assert!((0.0..=1.0).contains(&f), "{knob:?} dial at {f}");
             }
         }
@@ -589,15 +794,23 @@ mod tests {
         assert!(step_pan(0.0, -1, false) < 0.0);
     }
 
-    /// Every control says something, on a pad with a layer and on one
-    /// without — a blank readout is a control the player cannot verify.
+    /// Every control says something, on a pad with a sound under the row
+    /// cursor and on one without — a blank readout is a control the player
+    /// cannot verify.
     #[test]
     fn no_control_reads_as_nothing() {
-        let pad = pad_with_layer();
-        let empty = PadState { config: pad.config, layers: Vec::new(), source: None };
-        for knob in PadKnob::ALL.iter().chain(PadKnob::KEYS.iter()).copied() {
+        let pad = pad_with_both();
+        let empty = PadState::empty(60);
+        let every = PadKnob::ALL
+            .iter()
+            .chain(PadKnob::KEYS.iter())
+            .chain(PadKnob::PHRASES.iter())
+            .chain(PadKnob::KEYS_PHRASES.iter());
+        for knob in every.copied() {
             assert!(!knob.label().is_empty());
-            assert!(!knob.value(&pad, pad.layers.first(), None).is_empty(), "{knob:?}");
+            for row in [pad.row(0), pad.row(1)] {
+                assert!(!knob.value(&pad, row, None).is_empty(), "{knob:?} on {row:?}");
+            }
             assert!(
                 !knob.value(&empty, None, None).is_empty(),
                 "{knob:?} on an empty pad",

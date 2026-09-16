@@ -187,6 +187,18 @@ pub enum MixerCommand {
         track_id: usize,
         child: Option<Box<dyn Plugin + Send>>,
     },
+    /// One control on the sampler's child instrument.
+    ///
+    /// A child arrives at its own defaults, and a phrase has to sound like
+    /// the thing it was played on, so the panel follows it across one of
+    /// these per control — `SetInstrument` and its parameter block, in
+    /// miniature. There is no panel for the child on the screen yet; this
+    /// is what the landing of a phrase sends.
+    SetSamplerChildParam {
+        track_id: usize,
+        param_index: usize,
+        value: f32,
+    },
     /// Hand the sampler one pad's phrase layers, whole.
     ///
     /// The `Arc` inside each phrase is a refcount handle on the road
@@ -312,6 +324,10 @@ fn command_cost(cmd: &MixerCommand) -> u32 {
         // a handful of note-offs into a buffer that already exists.
         | MixerCommand::SetMidiFxParam { .. }
         | MixerCommand::SetMidiFxBypass { .. }
+        // A control on the sampler's child is a clamp and a store inside an
+        // instrument that is already built — the same bill a track's own
+        // parameter pays, under a different name.
+        | MixerCommand::SetSamplerChildParam { .. }
         | MixerCommand::SetPracticeClick { .. }
         // Clearing a record buffer keeps its capacity: a store and a length
         // reset, nothing for the allocator.
@@ -1672,6 +1688,13 @@ impl Mixer {
                         // The sampler starts it, because the sampler is what
                         // knows the rate and the block size it was given.
                         instrument.set_sampler_child(child.map(|c| c as Box<dyn Plugin>));
+                    }
+                }
+            }
+            MixerCommand::SetSamplerChildParam { track_id, param_index, value } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    if let Some(instrument) = track.instrument.as_mut() {
+                        instrument.set_sampler_child_param(param_index, value);
                     }
                 }
             }

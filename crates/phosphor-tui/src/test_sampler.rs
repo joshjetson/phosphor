@@ -12,7 +12,8 @@ mod tests {
     use crate::app::App;
     use crate::state::*;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-    use phosphor_app::sampler::SamplerState;
+    use phosphor_app::sampler::capture::SourceMode;
+    use phosphor_app::sampler::{SamplerState, TakeKind};
     use phosphor_core::mixer::MixerCommand;
     use phosphor_core::EngineConfig;
 
@@ -173,9 +174,88 @@ mod tests {
         assert!(message.contains("not found"), "unhelpful message: {message}");
     }
 
+    /// The QA sweep's worst find: with a confirm on the screen, a played
+    /// key moved the cursor, and "remove kick from pad C3?" answered yes
+    /// removed the snare. A question freezes the pad it named.
     #[test]
-    fn the_ninth_layer_is_refused_at_the_prompt() {
-        let dir = scratch("full");
+    fn a_modal_freezes_the_pad_cursor() {
+        let dir = scratch("modalfreeze");
+        let wav = dir.join("kick.wav");
+        write_wav(&wav, 441);
+        let mut app = sampler_app();
+        app.sampler_follow_note(60);
+        press(&mut app, KeyCode::Char('a'));
+        type_line(&mut app, &wav.display().to_string());
+        press(&mut app, KeyCode::Enter);
+
+        // The delete confirm goes up on C3; a stray key must not move it.
+        press(&mut app, KeyCode::Char('d'));
+        assert!(app.nav.confirm_modal.open);
+        app.sampler_follow_note(62);
+        assert_eq!(
+            phosphor_app::sampler::SamplerState::note_of_pad(sampler_state(&app).cursor),
+            60,
+            "the confirm let the cursor walk"
+        );
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(sampler_state(&app).pads[60 - 21].layers.len(), 0, "the named pad kept its layer");
+
+        // The load prompt freezes it the same way.
+        press(&mut app, KeyCode::Char('a'));
+        assert!(app.nav.input_modal.open);
+        app.sampler_follow_note(64);
+        assert_eq!(
+            phosphor_app::sampler::SamplerState::note_of_pad(sampler_state(&app).cursor),
+            60,
+            "the prompt let the cursor walk"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session file that will not parse must cost nothing: source mode
+    /// used to be abandoned before the parse, and a failed open left the
+    /// sampler out of its slot — a silent kit with a normal screen.
+    #[test]
+    fn a_failed_open_leaves_source_mode_standing() {
+        let mut app = sampler_app();
+        press(&mut app, KeyCode::Char('i'));
+        assert!(app.nav.instrument_modal.open);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.nav.sampler_source.is_some(), "source mode never began");
+
+        app.do_load("/nowhere/at/all.phos");
+        let (message, _) = app.status_message.as_ref().expect("no word to the player");
+        assert!(message.contains("open failed"), "{message}");
+        assert!(
+            app.nav.sampler_source.is_some(),
+            "a failed open tore down source mode anyway"
+        );
+    }
+
+    /// Root-learn armed before source mode must not survive into it: the
+    /// banner hides the question, and the first note after leaving used
+    /// to retune the zone instead of being a note.
+    #[test]
+    fn root_learn_dies_at_the_source_door() {
+        let mut app = sampler_app();
+        press(&mut app, KeyCode::Char('K'));
+        press(&mut app, KeyCode::Char('w'));
+        press(&mut app, KeyCode::Char('R'));
+        assert!(app.nav.clip_view.sampler.root_learn, "R never armed the learn");
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            !app.nav.clip_view.sampler.root_learn,
+            "the learn survived into source mode"
+        );
+    }
+
+    /// A full pad still opens the prompt: refusing at `a` meant the path
+    /// being typed ran as key commands — QA watched the `d` in a filename
+    /// delete a layer. The refusal belongs at Enter, behind the field.
+    #[test]
+    fn a_full_pad_still_gets_its_prompt() {
+        let dir = scratch("fullprompt");
         let wav = dir.join("hat.wav");
         write_wav(&wav, 441);
         let mut app = sampler_app();
@@ -184,15 +264,14 @@ mod tests {
             type_line(&mut app, &wav.display().to_string());
             press(&mut app, KeyCode::Enter);
         }
-        // The ninth is refused at the door rather than after the typing:
-        // the prompt never opens, so nobody types a path for a sound that
-        // was never going to land.
         press(&mut app, KeyCode::Char('a'));
-        assert!(!app.nav.input_modal.open, "a full pad still opened the prompt");
-        let (message, _) = app.status_message.as_ref().unwrap();
-        assert!(message.contains("full"), "the refusal said: {message}");
+        assert!(app.nav.input_modal.open, "the full pad refused the prompt");
+        type_line(&mut app, "drums/yell.wav");
+        press(&mut app, KeyCode::Enter);
         let state = sampler_state(&app);
         assert_eq!(state.pads[state.cursor].layers.len(), phosphor_app::sampler::MAX_LAYERS);
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("full"), "the refusal said: {message}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2148,6 +2227,588 @@ mod tests {
         let (message, _) = app.status_message.as_ref().unwrap();
         assert!(message.contains("no zone"), "the root learn said: {message}");
         assert!(!app.nav.clip_view.sampler.root_learn, "a bare key armed a learn");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Phrases: the performance kept as notes ──
+
+    /// The phrases on the pad under the caret.
+    fn phrases(app: &App) -> &[phosphor_app::sampler::PhraseState] {
+        &sampler_state(app).current().phrases
+    }
+
+    /// Source mode with `p` already pressed, so `r` lands a phrase.
+    fn phrase_app() -> App {
+        let mut app = source_app();
+        press(&mut app, KeyCode::Char('p'));
+        app
+    }
+
+    /// A phrase landed on the pad under the caret, through the real keys.
+    fn record_phrase(app: &mut App, note: u8) {
+        press(app, KeyCode::Char('r'));
+        perform(app, note);
+        press(app, KeyCode::Char('r'));
+    }
+
+    /// `p` swaps what `r` lands, the banner says which, and the pad
+    /// remembers it — so coming back to the pad opens the way you left it.
+    #[test]
+    fn p_swaps_what_r_lands_and_the_pad_remembers() {
+        let mut app = source_app();
+        let pad = sampler_state(&app).cursor;
+        assert_eq!(sampler_state(&app).pads[pad].take, TakeKind::Audio, "phrases are the default");
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("take: audio"), "the banner does not say what r lands:\n{text}");
+
+        press(&mut app, KeyCode::Char('p'));
+        assert_eq!(sampler_state(&app).pads[pad].take, TakeKind::Phrase);
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("take: phrase"), "the banner did not follow p:\n{text}");
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("plays them back through"), "unhelpful: {message}");
+
+        press(&mut app, KeyCode::Char('p'));
+        assert_eq!(sampler_state(&app).pads[pad].take, TakeKind::Audio, "p did not swap back");
+
+        // The memory rides with the pad: leaving and coming back finds it.
+        press(&mut app, KeyCode::Char('p'));
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.nav.sampler_source.as_deref().map(|m| m.take),
+            Some(TakeKind::Phrase),
+            "the mode opened on audio after the pad was left on phrase",
+        );
+    }
+
+    /// A performance lands as a phrase: the notes are kept, nothing is
+    /// rendered, and the sampler's child is pointed at the instrument it
+    /// was played on — because a phrase with no child is silent.
+    #[test]
+    fn a_performance_lands_as_a_phrase_with_a_child_behind_it() {
+        let mut app = phrase_app();
+        let _ = app.drain_mixer_commands();
+        record_phrase(&mut app, 60);
+
+        assert_eq!(phrases(&app).len(), 1, "no phrase landed");
+        let phrase = &phrases(&app)[0];
+        assert_eq!(phrase.name, "phrase 1");
+        assert!(phrase.note_count() > 0, "the phrase holds no notes");
+        assert_eq!(phrase.events[0].status, 0x90);
+        assert!(phrase.frames > 0);
+        assert!(!phrase.transpose_with_key, "a phrase arrived transposing");
+        let pad = sampler_state(&app).cursor;
+        assert!(sampler_state(&app).pads[pad].layers.is_empty(), "a phrase rendered audio");
+        assert_eq!(sampler_state(&app).pads[pad].config.root, 60, "the root was not learned");
+
+        // The sampler now has a child, and the engine was told about it —
+        // instrument first, then the panel it was played with.
+        let child = sampler_state(&app).child.clone().expect("no child was set");
+        assert_eq!(child.instrument, InstrumentType::Synth);
+        assert_eq!(child.params, phosphor_app::preset::defaults(InstrumentType::Synth));
+        let commands = app.drain_mixer_commands();
+        assert!(
+            commands.iter().any(|c| matches!(
+                c,
+                MixerCommand::SetSamplerChild { child: Some(_), .. }
+            )),
+            "the engine never got the child",
+        );
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|c| matches!(c, MixerCommand::SetSamplerChildParam { .. }))
+                .count(),
+            child.params.len(),
+            "the child arrived with no panel behind it",
+        );
+        let shipped = commands.iter().find_map(|c| match c {
+            MixerCommand::SetSamplerPhrases { pad, phrases, .. } if !phrases.is_empty() => {
+                Some((*pad as usize, phrases.len()))
+            }
+            _ => None,
+        });
+        assert_eq!(shipped, Some((pad, 1)), "the phrase never reached the engine");
+
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("phrase 1"), "the flash does not name it: {message}");
+        assert!(message.contains("notes"), "the flash does not count them: {message}");
+        assert!(message.contains("child is now"), "the flash hid the child: {message}");
+    }
+
+    /// One child per sampler is the design, so a phrase recorded from a
+    /// second instrument replaces it — and says so, because it changes how
+    /// every phrase on the kit sounds.
+    #[test]
+    fn a_phrase_from_another_instrument_replaces_the_child_in_words() {
+        let mut app = phrase_app();
+        record_phrase(&mut app, 60);
+        assert_eq!(
+            sampler_state(&app).child.as_ref().map(|c| c.instrument),
+            Some(InstrumentType::Synth),
+        );
+
+        // Another pad, another instrument, another phrase.
+        app.sampler_follow_note(64);
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Char('j')); // Drum Rack
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('p'));
+        let _ = app.drain_mixer_commands();
+        record_phrase(&mut app, 64);
+
+        assert_eq!(
+            sampler_state(&app).child.as_ref().map(|c| c.instrument),
+            Some(InstrumentType::DrumRack),
+            "the child did not follow the second phrase",
+        );
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(
+            message.contains("child is now") && message.contains("Drum Rack"),
+            "the swap was silent: {message}",
+        );
+        assert!(
+            app.drain_mixer_commands()
+                .iter()
+                .any(|c| matches!(c, MixerCommand::SetSamplerChild { child: Some(_), .. })),
+            "the engine kept the old child",
+        );
+
+        // A third phrase from the same instrument with the same panel
+        // changes nothing, and must not rebuild the child under a phrase
+        // that is playing through it.
+        app.sampler_follow_note(67);
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Char('j')); // Drum Rack again
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('p'));
+        let _ = app.drain_mixer_commands();
+        record_phrase(&mut app, 67);
+        assert!(
+            !app.drain_mixer_commands()
+                .iter()
+                .any(|c| matches!(c, MixerCommand::SetSamplerChild { .. })),
+            "an unchanged child was rebuilt on the audio thread",
+        );
+    }
+
+    /// A pad with four phrases refuses the arm before the performance, in
+    /// words, naming the bed that is full.
+    #[test]
+    fn a_pad_full_of_phrases_refuses_the_arm_before_a_note_is_played() {
+        let mut app = phrase_app();
+        for _ in 0..phosphor_app::sampler::MAX_PHRASES {
+            record_phrase(&mut app, 60);
+        }
+        assert_eq!(phrases(&app).len(), phosphor_app::sampler::MAX_PHRASES);
+
+        press(&mut app, KeyCode::Char('r'));
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("four phrases"), "the refusal said: {message}");
+        assert!(
+            app.nav.sampler_source.as_deref().is_some_and(|m| !m.is_armed()),
+            "a full phrase bed armed anyway",
+        );
+        // ...and the audio bed is still open on the same pad, because they
+        // are different beds.
+        press(&mut app, KeyCode::Char('p'));
+        press(&mut app, KeyCode::Char('r'));
+        assert!(
+            app.nav.sampler_source.as_deref().is_some_and(SourceMode::is_armed),
+            "a full phrase bed refused an audio take",
+        );
+    }
+
+    /// The phrase sounds like what the player heard: an arpeggiator on the
+    /// track is baked into the notes, exactly as it is rendered into a take.
+    #[test]
+    fn the_tracks_midi_devices_are_baked_into_a_phrase() {
+        let mut bare = phrase_app();
+        record_phrase(&mut bare, 48);
+        let plain = phrases(&bare)[0].note_count();
+
+        let mut arped = sampler_app();
+        arped.add_midi_fx(arped.nav.track_cursor, crate::state::MidiFxType::Arp);
+        press(&mut arped, KeyCode::Char('i'));
+        press(&mut arped, KeyCode::Enter);
+        press(&mut arped, KeyCode::Char('p'));
+        press(&mut arped, KeyCode::Char('r'));
+        let t0 = phosphor_midi::clock::now_micros();
+        play(&mut arped, 48, 100, true, t0);
+        play(&mut arped, 55, 100, true, t0 + 1_000);
+        play(&mut arped, 48, 0, false, t0 + 600_000);
+        play(&mut arped, 55, 0, false, t0 + 600_000);
+        press(&mut arped, KeyCode::Char('r'));
+
+        let run = phrases(&arped)[0].note_count();
+        assert!(plain > 0 && run > 0, "one of the phrases holds no notes");
+        assert!(
+            run > plain,
+            "the arpeggiator never reached the phrase: {run} notes against {plain}",
+        );
+    }
+
+    /// One press of `u` takes a phrase back off, and the child goes with
+    /// it; redo brings both back, pointing at the same events.
+    #[test]
+    fn undo_takes_a_phrase_and_its_child_off_together() {
+        let mut app = phrase_app();
+        record_phrase(&mut app, 60);
+        let events = std::sync::Arc::clone(&phrases(&app)[0].events);
+        let _ = app.drain_mixer_commands();
+
+        press(&mut app, KeyCode::Char('u'));
+        assert!(phrases(&app).is_empty(), "one u did not take the phrase off");
+        assert!(sampler_state(&app).child.is_none(), "the child outlived the only phrase");
+        let commands = app.drain_mixer_commands();
+        assert!(
+            commands.iter().any(|c| matches!(
+                c,
+                MixerCommand::SetSamplerPhrases { phrases, .. } if phrases.is_empty()
+            )),
+            "undo left the phrase in the engine",
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|c| matches!(c, MixerCommand::SetSamplerChild { child: None, .. })),
+            "undo left the child in the engine",
+        );
+
+        app.handle_event(Event::Key(KeyEvent {
+            code: KeyCode::Char('r'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }));
+        assert_eq!(phrases(&app).len(), 1, "redo did not bring the phrase back");
+        assert!(
+            std::sync::Arc::ptr_eq(&phrases(&app)[0].events, &events),
+            "the phrase came back as a copy of itself",
+        );
+        assert_eq!(
+            sampler_state(&app).child.as_ref().map(|c| c.instrument),
+            Some(InstrumentType::Synth),
+            "redo left the phrase with nothing to play through",
+        );
+        assert!(
+            app.drain_mixer_commands()
+                .iter()
+                .any(|c| matches!(c, MixerCommand::SetSamplerChild { child: Some(_), .. })),
+            "the engine was not given the child back",
+        );
+    }
+
+    /// The phr rows sit in the same list as the audio ones: `[`/`]` walk
+    /// both, the panel swaps to the phrase's own three controls, and the
+    /// audio-only knobs are not there to be turned.
+    #[test]
+    fn the_sound_list_walks_layers_and_phrases_as_one() {
+        let dir = scratch("phrase-rows");
+        let mut app = loaded_app(&dir); // kick.wav on C3
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('p'));
+        record_phrase(&mut app, 60);
+        press(&mut app, KeyCode::Esc); // back to the map
+
+        assert_eq!(sampler_state(&app).current().rows(), 2, "the two are not one list");
+        // The panel landed on what just arrived: the phrase's row.
+        assert_eq!(app.nav.clip_view.sampler.layer, 1);
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("phrase 1"), "the list does not name the phrase:\n{text}");
+        assert!(text.contains("phr"), "the list does not mark the row's kind:\n{text}");
+        assert!(text.contains("kick"), "the audio layer left the list:\n{text}");
+        assert!(text.contains("vel"), "the phrase's own control is not drawn:\n{text}");
+        assert!(!text.contains("rev"), "a phrase row offered reverse:\n{text}");
+
+        // `[` walks back onto the audio row and the panel swaps back.
+        press(&mut app, KeyCode::Char('['));
+        assert_eq!(app.nav.clip_view.sampler.layer, 0);
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("rev"), "the layer's controls did not come back:\n{text}");
+        // `2` jumps straight to the phrase again.
+        press(&mut app, KeyCode::Char('2'));
+        assert_eq!(app.nav.clip_view.sampler.layer, 1);
+
+        // The knobs on a phrase row turn the phrase and nothing else.
+        let before = sampler_state(&app).current().layers[0].clone();
+        for _ in 0..phosphor_app::sampler::knobs::PadKnob::PAD_CONTROLS {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        press(&mut app, KeyCode::Enter); // hold `vel`
+        press(&mut app, KeyCode::Char('h'));
+        press(&mut app, KeyCode::Esc);
+        assert!(phrases(&app)[0].gain < 1.0, "the vel knob did not turn the phrase");
+        assert_eq!(
+            sampler_state(&app).current().layers[0],
+            before,
+            "a phrase control reached the audio layer beside it",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `m` mutes a phrase and `d` removes it after asking — the same two
+    /// keys the audio rows answer, on the row the cursor is on.
+    #[test]
+    fn m_and_d_act_on_the_phrase_row_the_cursor_is_on() {
+        let mut app = phrase_app();
+        record_phrase(&mut app, 60);
+        press(&mut app, KeyCode::Esc);
+
+        press(&mut app, KeyCode::Char('m'));
+        assert!(phrases(&app)[0].mute, "m did not mute the phrase");
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("phrase 1"), "the flash named the wrong row: {message}");
+        press(&mut app, KeyCode::Char('m'));
+        assert!(!phrases(&app)[0].mute);
+
+        press(&mut app, KeyCode::Char('d'));
+        assert!(app.nav.confirm_modal.open, "d did not ask first");
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("remove phrase 1"), "the modal names the wrong row:\n{text}");
+        press(&mut app, KeyCode::Char('y'));
+        assert!(phrases(&app).is_empty(), "the phrase survived the confirm");
+        assert!(
+            app.drain_mixer_commands().iter().any(|c| matches!(
+                c,
+                MixerCommand::SetSamplerPhrases { phrases, .. } if phrases.is_empty()
+            )),
+            "the engine still holds the removed phrase",
+        );
+
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(phrases(&app).len(), 1, "u did not bring the phrase back");
+        assert!(phrases(&app)[0].note_count() > 0, "it came back with no notes");
+    }
+
+    /// The layer list's audition has nothing to play for a phrase, so the
+    /// cursor landing on one says what to press instead of going silent —
+    /// silence reads as an audition that has broken.
+    #[test]
+    fn the_cursor_landing_on_a_phrase_says_how_to_hear_it() {
+        let dir = scratch("phrase-audition");
+        let mut app = loaded_app(&dir);
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('p'));
+        record_phrase(&mut app, 60);
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('[')); // onto the audio row: it sounds
+        let _ = app.drain_mixer_commands();
+
+        press(&mut app, KeyCode::Char(']')); // onto the phrase row
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("plays through the child"), "unhelpful: {message}");
+        assert!(message.contains("C3"), "the flash does not say which key: {message}");
+        let started = app.drain_mixer_commands().into_iter().any(|c| {
+            matches!(c, MixerCommand::SetSamplerPreview { preview: Some(_), .. })
+        });
+        assert!(!started, "a phrase row started an audition of something else");
+
+        // And `t` on a phrase row refuses in words rather than opening a
+        // waveform of nothing.
+        press(&mut app, KeyCode::Char('t'));
+        assert!(app.nav.clip_view.sampler.trim.is_none(), "the strip opened on a phrase");
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("notes, not a waveform"), "unhelpful: {message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The keys a phrase has no answer for say what they are for instead of
+    /// doing nothing. A key that is silent is a key a player thinks is
+    /// broken — and `n` on a pad that plainly has sounds on it must not say
+    /// there is nothing here.
+    #[test]
+    fn the_phrase_keys_refuse_in_words_where_they_do_not_apply() {
+        let dir = scratch("phrase-refuse");
+        let mut app = loaded_app(&dir);
+        // `p` outside source mode has nowhere to go, and says where it does.
+        press(&mut app, KeyCode::Char('p'));
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("source-mode choice"), "`p` said: {message}");
+
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('p'));
+        record_phrase(&mut app, 60);
+        press(&mut app, KeyCode::Esc);
+
+        // `n` on a phrase row: there is no level to measure.
+        press(&mut app, KeyCode::Char('n'));
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("no level to normalize"), "`n` said: {message}");
+        assert_eq!(phrases(&app)[0].gain, 1.0, "n turned the velocity scale");
+
+        // `p` while a take is running swaps nothing: the shape of the take
+        // was decided when it was armed.
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('r'));
+        let armed = app.nav.sampler_source.as_deref().map(|m| m.take);
+        press(&mut app, KeyCode::Char('p'));
+        assert_eq!(app.nav.sampler_source.as_deref().map(|m| m.take), armed);
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("take is running"), "`p` while armed said: {message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The trim strip closes when the row cursor lands on a phrase. Playing
+    /// a key moves the pad cursor without anything being pressed, so the
+    /// strip can end up over a row that has no waveform — a mode with
+    /// nothing on the screen and no key that answers.
+    #[test]
+    fn the_trim_strip_closes_when_the_cursor_lands_on_a_phrase() {
+        let dir = scratch("phrase-strip");
+        let mut app = loaded_app(&dir); // kick.wav on C3
+        // A phrase-only pad up the keyboard.
+        app.sampler_follow_note(64);
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('p'));
+        record_phrase(&mut app, 64);
+        press(&mut app, KeyCode::Esc);
+
+        // Back on C3, open the strip on its audio layer.
+        app.sampler_follow_note(60);
+        press(&mut app, KeyCode::Char('t'));
+        assert!(app.nav.clip_view.sampler.trim.is_some(), "the strip did not open");
+
+        // Playing the phrase-only key takes the cursor onto a phrase row.
+        app.sampler_follow_note(64);
+        assert!(app.nav.clip_view.sampler.trim.is_none(), "the strip stayed open on a phrase");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A phrase survives the session with its notes, its settings and the
+    /// child that plays it — and the reloaded track is told about all of it.
+    #[test]
+    fn a_phrase_and_its_child_survive_the_session() {
+        let dir = scratch("phrase-session");
+        let session = dir.join("kit.phos");
+        let mut saving = phrase_app();
+        record_phrase(&mut saving, 45);
+        press(&mut saving, KeyCode::Esc);
+        press(&mut saving, KeyCode::Char('m')); // mute it, so a setting travels
+        let (notes, frames) = {
+            let phrase = &phrases(&saving)[0];
+            (phrase.note_count(), phrase.frames)
+        };
+        saving.do_save(&session.display().to_string());
+        // Nothing was written beside the file: a phrase has no audio.
+        assert!(!dir.join("kit.samples").exists(), "a phrase wrote a sidecar wav");
+        let json = std::fs::read_to_string(&session).unwrap();
+        assert!(json.contains("\"phrases\""), "the phrase is not in the file:\n{json}");
+        assert!(json.contains("\"child\""), "the child is not in the file:\n{json}");
+
+        let mut back = app();
+        back.do_load(&session.display().to_string());
+        let state = back
+            .nav
+            .tracks
+            .iter()
+            .find_map(|t| t.sampler.as_deref())
+            .expect("the sampler did not come back");
+        // The pad the mode was standing on, not the key that was played:
+        // the pad cursor is frozen while source mode is on.
+        let pad = SamplerState::pad_of_note(60).unwrap();
+        assert_eq!(state.pads[pad].phrases.len(), 1, "the phrase did not come back");
+        assert_eq!(state.pads[pad].phrases[0].note_count(), notes);
+        assert_eq!(state.pads[pad].phrases[0].frames, frames);
+        assert!(state.pads[pad].phrases[0].mute, "the mute did not travel");
+        assert_eq!(state.pads[pad].config.root, 45, "the root the phrase taught went missing");
+        assert_eq!(
+            state.child.as_ref().map(|c| c.instrument),
+            Some(InstrumentType::Synth),
+            "the child did not come back",
+        );
+
+        // The fresh engine was given the child and the phrase, or the kit
+        // would open silent on the keys it looks full on.
+        let commands = back.drain_mixer_commands();
+        assert!(
+            commands
+                .iter()
+                .any(|c| matches!(c, MixerCommand::SetSamplerChild { child: Some(_), .. })),
+            "the reloaded sampler has no child",
+        );
+        assert!(
+            commands.iter().any(|c| matches!(
+                c,
+                MixerCommand::SetSamplerPhrases { phrases, .. } if !phrases.is_empty()
+            )),
+            "the reloaded sampler was never told about the phrase",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Leaving source mode rebuilds the sampler from scratch, so the child
+    /// has to be replayed with the kit. Forgetting it is a pad that looks
+    /// full and makes no sound.
+    #[test]
+    fn leaving_source_mode_gives_the_child_back_with_the_kit() {
+        let mut app = phrase_app();
+        record_phrase(&mut app, 60);
+        let _ = app.drain_mixer_commands();
+        press(&mut app, KeyCode::Esc);
+
+        let commands = app.drain_mixer_commands();
+        assert!(
+            commands
+                .iter()
+                .any(|c| matches!(c, MixerCommand::SetSamplerChild { child: Some(_), .. })),
+            "the fresh sampler came back with no child",
+        );
+        assert!(
+            commands.iter().any(|c| matches!(
+                c,
+                MixerCommand::SetSamplerPhrases { phrases, .. } if !phrases.is_empty()
+            )),
+            "the fresh sampler came back with no phrases",
+        );
+    }
+
+    /// A phrase recorded while the bed is in keys mode lands in the zone
+    /// and reaches every key of it, transposing from the zone's root.
+    #[test]
+    fn a_phrase_recorded_in_keys_mode_lands_in_the_zone() {
+        let dir = scratch("keys-phrase");
+        let mut app = keys_app(&dir);
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('p'));
+        record_phrase(&mut app, 57);
+        assert_eq!(zone(&app).pad.phrases.len(), 1, "the phrase missed the zone");
+        assert_eq!(zone(&app).root(), 57, "the performance did not teach the zone its root");
+        assert!(
+            sampler_state(&app).current().phrases.is_empty(),
+            "it landed on the pad hiding under the caret",
+        );
+
+        press(&mut app, KeyCode::Esc); // out of source mode, kit replayed
+        let sent: Vec<(usize, usize)> = app
+            .drain_mixer_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                MixerCommand::SetSamplerPhrases { pad, phrases, .. } => {
+                    Some((pad as usize, phrases.len()))
+                }
+                _ => None,
+            })
+            .collect();
+        for pad in 0..phosphor_app::sampler::NUM_PADS {
+            assert!(
+                sent.contains(&(pad, 1)),
+                "the phrase did not reach key {pad} of the zone",
+            );
+        }
+        let state = sampler_state(&app);
+        assert!(
+            state.voice(0).phrases[0].transpose_with_key,
+            "a zone's phrase would play one pitch across the whole span",
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

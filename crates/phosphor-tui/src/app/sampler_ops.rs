@@ -28,7 +28,9 @@ use super::*;
 use std::path::{Path, PathBuf};
 
 use phosphor_app::sampler::knobs::PadKnob;
-use phosphor_app::sampler::{LayerState, MapMode, SamplerState, ZoneEdge};
+use phosphor_app::sampler::{
+    LayerState, MapMode, PadRow, PadState, SamplerState, ZoneEdge,
+};
 use phosphor_plugin::sample::{PreviewLayer, PreviewMode};
 use crate::state::undo::{UndoGesture, UndoScope};
 
@@ -60,10 +62,12 @@ impl App {
     /// under the cursor.
     pub(crate) fn open_sample_prompt(&mut self) {
         let Some(sampler) = self.cursor_sampler() else { return };
-        if let Err(message) = sampler.room_here() {
-            self.flash(message);
-            return;
-        }
+        // A full pad still gets its prompt. Refusing here with a flash
+        // meant the path the player was already typing ran as raw key
+        // commands — QA watched the `d` in a filename delete a layer and
+        // the `y` confirm it. The prompt swallows the typing; Enter
+        // refuses in words with the field safely between the keys and
+        // the kit.
         let title = sampler.edit_title();
         self.nav.input_modal.open_named(InputModalKind::SamplePath, "");
         self.status_message = Some((
@@ -84,6 +88,15 @@ impl App {
             self.flash("no sampler under the cursor");
             return;
         };
+        // Checked at Enter rather than at `a`: the prompt always opens so
+        // typing can never fall through to the key handler, and the
+        // refusal lands here, before a decode is spent on it.
+        if let Some(sampler) = self.nav.tracks[idx].sampler.as_deref() {
+            if let Err(message) = sampler.room_here() {
+                self.flash(message);
+                return;
+            }
+        }
         let resolved = phosphor_app::paths::find_sample(Path::new(typed));
         let pcm = match phosphor_app::sampler::wav::load_wav(&resolved) {
             Ok(pcm) => pcm,
@@ -137,19 +150,55 @@ impl App {
         ));
     }
 
-    /// Ship one pad's current truth to the engine, whole.
+    /// Ship one pad's current truth to the engine, whole: its settings, its
+    /// sampled layers and its phrases.
+    ///
+    /// All three together, because they are one pad. A sync that shipped the
+    /// layers and not the phrases would leave a performance playing on a key
+    /// the player has just emptied.
     pub(crate) fn sync_sampler_pad(&mut self, track_idx: usize, pad: usize) {
         let Some(track) = self.nav.tracks.get(track_idx) else { return };
         let (Some(mixer_id), Some(sampler)) = (track.mixer_id, track.sampler.as_ref()) else {
             return;
         };
-        let Some((config, layers)) = sampler.engine_pad(pad) else { return };
-        let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::SetSamplerPad {
+        let Some(engine) = sampler.engine_pad(pad) else { return };
+        let tx = &self.engine.shared.mixer_command_tx;
+        let _ = tx.send(MixerCommand::SetSamplerPad {
             track_id: mixer_id,
             pad: pad as u8,
-            config,
-            layers,
+            config: engine.config,
+            layers: engine.layers,
         });
+        let _ = tx.send(MixerCommand::SetSamplerPhrases {
+            track_id: mixer_id,
+            pad: pad as u8,
+            phrases: engine.phrases,
+        });
+    }
+
+    /// Ship the sampler's one child instrument, with its whole panel behind
+    /// it.
+    ///
+    /// The `SetInstrument` recipe, in miniature: a fresh child starts at its
+    /// own defaults and knows nothing about the panel the phrase was played
+    /// on, so the parameters follow it across. `None` takes it away, which
+    /// is what an undo back past the first phrase means.
+    pub(crate) fn sync_sampler_child(&mut self, track_idx: usize) {
+        let Some(track) = self.nav.tracks.get(track_idx) else { return };
+        let (Some(track_id), Some(sampler)) = (track.mixer_id, track.sampler.as_ref()) else {
+            return;
+        };
+        let child = sampler.child.clone();
+        let tx = &self.engine.shared.mixer_command_tx;
+        let _ = tx.send(MixerCommand::SetSamplerChild {
+            track_id,
+            child: child
+                .as_ref()
+                .map(|c| phosphor_app::instrument::build_plugin(c.instrument)),
+        });
+        for (param_index, &value) in child.iter().flat_map(|c| c.params.iter()).enumerate() {
+            let _ = tx.send(MixerCommand::SetSamplerChildParam { track_id, param_index, value });
+        }
     }
 
     /// Ship every key an edit under the cursor can be heard on: the one
@@ -183,7 +232,13 @@ impl App {
     /// The union of both modes, not just the one that is on: a player who
     /// saved in pads mode and switched to keys before the rebuild would
     /// otherwise get a kit that is silent in the mode they are not in.
+    ///
+    /// The child goes first, and it is not optional. A fresh sampler has no
+    /// child at all, so a rebuild that replayed only the pads would leave
+    /// every phrase on the kit silently inert — the one failure the engine
+    /// has no way to complain about.
     pub(crate) fn restore_sampler_pads(&mut self, track_idx: usize) {
+        self.sync_sampler_child(track_idx);
         let pads: Vec<usize> = self
             .nav
             .tracks
@@ -200,6 +255,17 @@ impl App {
     /// keys. On an 88-key controller this is the fastest pad selector
     /// there is, and it costs one array index.
     pub(crate) fn sampler_follow_note(&mut self, note: u8) {
+        // Not while a question is on the screen. The keys are the player
+        // trying sounds under a prompt or a confirm, and the answer must
+        // act on the pad the question NAMED — "remove kick from pad C3?"
+        // answered yes after a stray key press used to remove the snare,
+        // because the cursor had moved under the modal.
+        if self.nav.input_modal.open
+            || self.nav.confirm_modal.open
+            || self.nav.instrument_modal.open
+        {
+            return;
+        }
         let Some(idx) = self.cursor_sampler_track() else { return };
         if let Some(pad) = SamplerState::pad_of_note(note) {
             if let Some(sampler) = self.nav.tracks[idx].sampler.as_mut() {
@@ -218,30 +284,52 @@ impl App {
 
     /// The controls the thing under the cursor offers, and where the cursor
     /// is standing in them.
+    ///
+    /// What the sound cursor is standing on decides the second half of the
+    /// list: a sampled layer's six controls, or a phrase's three.
     pub(crate) fn sampler_knobs(&self) -> &'static [PadKnob] {
         let Some(sampler) = self.cursor_sampler() else {
-            return PadKnob::visible(false, MapMode::Pads);
+            return PadKnob::visible(None, MapMode::Pads);
         };
-        let has_layer = sampler.edited().is_some_and(|p| !p.layers.is_empty());
-        PadKnob::visible(has_layer, sampler.mode)
+        let row = sampler.edited().and_then(|p| p.row_kind(self.nav.clip_view.sampler.layer));
+        PadKnob::visible(row, sampler.mode)
     }
 
-    /// How many layers the thing under the cursor holds.
-    pub(crate) fn sampler_layer_count(&self) -> usize {
-        self.cursor_sampler()
-            .and_then(SamplerState::edited)
-            .map_or(0, |state| state.layers.len())
+    /// How many rows the sound list under the cursor has — the layers and
+    /// the phrases as one list, which is what `[`/`]` and `1`-`8` walk.
+    pub(crate) fn sampler_row_count(&self) -> usize {
+        self.cursor_sampler().and_then(SamplerState::edited).map_or(0, PadState::rows)
+    }
+
+    /// The sound the row cursor is standing on, borrowed.
+    pub(crate) fn sampler_row(&self) -> Option<PadRow<'_>> {
+        self.cursor_sampler()?.edited()?.row(self.nav.clip_view.sampler.layer)
     }
 
     /// Pull both panel cursors inside what the current pad holds.
     ///
     /// Called before every edit and after anything that can change which
     /// pad is current, because the pad cursor moves on its own: playing a
-    /// key takes it to a pad that may have no layers at all, and six
-    /// controls go with them.
+    /// key takes it to a pad that may have no sounds at all, and the
+    /// controls under the pad's own go with them.
+    ///
+    /// The row first and the knobs after: which controls exist depends on
+    /// what the row cursor is standing on, so clamping them the other way
+    /// round would size the knob list against a row that is not there.
     pub(crate) fn clamp_sampler_cursors(&mut self) {
-        let (knobs, layers) = (self.sampler_knobs().len(), self.sampler_layer_count());
-        self.nav.clip_view.sampler.clamp(knobs, layers);
+        let rows = self.sampler_row_count();
+        let view = &mut self.nav.clip_view.sampler;
+        view.layer = view.layer.min(rows.saturating_sub(1));
+        let knobs = self.sampler_knobs().len();
+        self.nav.clip_view.sampler.clamp(knobs, rows);
+        // A strip open over a phrase is a mode with nothing on the screen
+        // and no key that answers: a phrase is notes, and the strip's whole
+        // subject is a waveform. The row cursor can land on one without
+        // anything being pressed — playing a key moves the pad cursor — so
+        // it is closed here rather than at each of the ways in.
+        if matches!(self.sampler_row(), Some(PadRow::Phrase(_))) {
+            self.nav.clip_view.sampler.trim = None;
+        }
     }
 
     /// Walk the cursor along the bed.
@@ -254,7 +342,7 @@ impl App {
         // is a cursor, and the engine has never needed to know.
         let Some(sampler) = self.cursor_sampler() else { return };
         let (title, key) = (sampler.edit_title(), SamplerState::pad_label(sampler.cursor));
-        let layers = self.sampler_layer_count();
+        let layers = self.sampler_row_count();
         self.flash(match self.sampler_mode() {
             // In keys mode the key and the zone are different things and
             // the player needs both: which key the cursor is on, and which
@@ -267,14 +355,14 @@ impl App {
         });
     }
 
-    /// Walk the layer cursor inside the current pad.
+    /// Walk the sound cursor inside the current pad.
     ///
     /// And sound what it lands on. A stack of eight layers is eight names in
     /// a list until you can hear which is which, and the audition costs one
     /// command — the deferral M3 made rather than bolt a one-off note-on
     /// onto the mixer.
     pub(crate) fn move_sampler_layer(&mut self, delta: i32) {
-        let count = self.sampler_layer_count();
+        let count = self.sampler_row_count();
         let before = self.nav.clip_view.sampler.layer;
         self.nav.clip_view.sampler.move_layer(delta, count);
         if self.nav.clip_view.sampler.layer != before {
@@ -282,14 +370,14 @@ impl App {
         }
     }
 
-    /// Put the layer cursor on a numbered layer, when the pad has one.
+    /// Put the sound cursor on a numbered row, when the pad has one.
     ///
     /// This one sounds the layer even when the cursor was already on it,
     /// where `[`/`]` do not: naming a number is a player asking for that
     /// sound, and walking into the end of the list is not asking for
     /// anything.
     pub(crate) fn select_sampler_layer(&mut self, index: usize) {
-        if index < self.sampler_layer_count() {
+        if index < self.sampler_row_count() {
             self.nav.clip_view.sampler.layer = index;
             self.preview_sampler_layer(PreviewMode::Once);
         }
@@ -319,6 +407,19 @@ impl App {
             self.stop_sampler_preview();
             return;
         };
+        // A phrase has no audition: it is note traffic for the child
+        // instrument, and there is no way to sound one from here without
+        // building a second player for it. So the cursor landing on one says
+        // what to press instead of going quietly silent — which would read
+        // as an audition that had broken.
+        if let Some(PadRow::Phrase(phrase)) = pad.row(cursor) {
+            let (name, key) = (phrase.name.clone(), SamplerState::pad_label(sampler.cursor));
+            self.stop_sampler_preview();
+            self.flash(format!(
+                "{name} \u{00b7} a phrase plays through the child \u{00b7} press {key} to hear it",
+            ));
+            return;
+        }
         // A missing file makes no sound, and neither does a muted layer: an
         // audition that ignored the mute would be the one place in the box
         // where a muted sound plays.
@@ -417,7 +518,7 @@ impl App {
         let title = sampler.edit_title();
         let Some(state) = sampler.edited_mut() else { return };
         knob.adjust(state, layer, delta, stride);
-        let shown = knob.value(state, state.layers.get(layer), None);
+        let shown = knob.value(state, state.row(layer), None);
         // The gesture is named for the first key of what is being edited,
         // so a sweep on one zone never folds into a sweep on the next.
         self.nav.commit_undo_coalesced(
@@ -431,21 +532,31 @@ impl App {
 
     // ── The layer list ──
 
-    /// `m`: take the layer under the cursor out of the pad's sound without
-    /// taking it off the pad. One step, never folded — a mute is a decision,
-    /// not a sweep.
+    /// `m`: take the sound under the cursor out of the pad without taking it
+    /// off the pad. One step, never folded — a mute is a decision, not a
+    /// sweep. Works the same on a layer and on a phrase, because the row is
+    /// the thing being muted.
     pub(crate) fn toggle_sampler_layer_mute(&mut self) {
         let Some(track_idx) = self.cursor_sampler_track() else { return };
         self.clamp_sampler_cursors();
-        let layer = self.nav.clip_view.sampler.layer;
+        let row = self.nav.clip_view.sampler.layer;
         let before = self.nav.undo_checkpoint(UndoScope::Sampler { track_idx });
         let Some(sampler) = self.nav.tracks[track_idx].sampler.as_mut() else { return };
-        let Some(state) = sampler.edited_mut().and_then(|p| p.layers.get_mut(layer)) else {
-            return;
+        let Some(pad) = sampler.edited_mut() else { return };
+        let (muted, name, what) = match pad.layers.get_mut(row) {
+            Some(layer) => {
+                layer.mute = !layer.mute;
+                (layer.mute, layer.name.clone(), "mute layer")
+            }
+            None => match pad.phrase_at_row(row) {
+                Some(phrase) => {
+                    phrase.mute = !phrase.mute;
+                    (phrase.mute, phrase.name.clone(), "mute phrase")
+                }
+                None => return,
+            },
         };
-        state.mute = !state.mute;
-        let (muted, name) = (state.mute, state.name.clone());
-        self.nav.commit_undo(before, "mute layer");
+        self.nav.commit_undo(before, what);
         self.sync_sampler_edit(track_idx);
         // An audition holds its own copy of the layer and would otherwise
         // play on regardless — which would make this the one place in the
@@ -460,14 +571,14 @@ impl App {
     /// `d`: ask before taking a sound off a pad.
     ///
     /// The effect chain's modal, for the effect chain's reason and one of
-    /// its own: a layer can be a take that took a performance to make, and
-    /// `d` is one key away from the ones that walk the list.
+    /// its own: a sound can be a take or a phrase that took a performance to
+    /// make, and `d` is one key away from the ones that walk the list.
     pub(crate) fn request_sampler_layer_delete(&mut self) {
         let Some(track_idx) = self.cursor_sampler_track() else { return };
         self.clamp_sampler_cursors();
-        let layer = self.nav.clip_view.sampler.layer;
+        let row = self.nav.clip_view.sampler.layer;
         let Some(sampler) = self.nav.tracks[track_idx].sampler.as_ref() else { return };
-        let Some(state) = sampler.edited().and_then(|p| p.layers.get(layer)) else {
+        let Some(state) = sampler.edited().and_then(|p| p.row(row)) else {
             // `d` removes a *sound*, in both modes. A player pressing it on
             // a zone that has none probably wants the zone gone, and the
             // key for that is one shift away — so say so rather than just
@@ -481,28 +592,32 @@ impl App {
             });
             return;
         };
-        let message = format!("remove {} from {}?", state.name, sampler.edit_title());
+        let message = format!("remove {} from {}?", state.name(), sampler.edit_title());
         self.nav.confirm_modal.show(ConfirmKind::DeleteSamplerLayer, &message);
     }
 
     /// The `y` of that modal.
     ///
     /// The undo step is not only for the player: the slice it captured
-    /// holds the last UI-side `Arc` to this layer's audio, so the buffer
-    /// stays alive until history lets go of it. The engine hears about the
-    /// pad on the next line and drops its own copy whenever it is finished
-    /// with it, which is then never the final drop.
+    /// holds the last UI-side `Arc` to this sound — a layer's audio, a
+    /// phrase's events — so it stays alive until history lets go of it. The
+    /// engine hears about the pad on the next line and drops its own copy
+    /// whenever it is finished with it, which is then never the final drop.
     pub(crate) fn delete_sampler_layer(&mut self) {
         let Some(track_idx) = self.cursor_sampler_track() else { return };
-        let layer = self.nav.clip_view.sampler.layer;
+        let row = self.nav.clip_view.sampler.layer;
         let before = self.nav.undo_checkpoint(UndoScope::Sampler { track_idx });
         let Some(sampler) = self.nav.tracks[track_idx].sampler.as_mut() else { return };
         let Some(state) = sampler.edited_mut() else { return };
-        if layer >= state.layers.len() {
-            return;
-        }
-        let name = state.layers.remove(layer).name;
-        self.nav.commit_undo(before, "remove layer");
+        let (name, what) = if row < state.layers.len() {
+            (state.layers.remove(row).name, "remove layer")
+        } else {
+            match row.checked_sub(state.layers.len()).filter(|i| *i < state.phrases.len()) {
+                Some(index) => (state.phrases.remove(index).name, "remove phrase"),
+                None => return,
+            }
+        };
+        self.nav.commit_undo(before, what);
         self.sync_sampler_edit(track_idx);
         self.clamp_sampler_cursors();
         // A sound taken off a pad stops. The audition holds its own copy and
@@ -521,20 +636,22 @@ impl App {
     /// The union of the two sounding sets, not just the new one: a key the
     /// undo emptied is a key the engine is still holding a sound for, and
     /// shipping only what sounds now would leave that sound on the key with
-    /// nothing on the screen to explain it. Both modes are in each set, so
-    /// an undo that crosses a mode switch is covered by the same rule.
+    /// nothing on the screen to explain it. Both modes are in each set, and
+    /// a pad whose *phrases* changed is in it too, because a phrase is part
+    /// of what makes a pad occupied.
     pub(crate) fn apply_sampler_slice(
         &mut self,
         track_idx: usize,
         sampler: &Option<Box<SamplerState>>,
     ) {
-        let mut pads: Vec<usize> = self
-            .nav
-            .tracks
-            .get(track_idx)
-            .and_then(|t| t.sampler.as_ref())
-            .map(|s| s.sounding_pads())
-            .unwrap_or_default();
+        let was = self.nav.tracks.get(track_idx).and_then(|t| t.sampler.as_ref());
+        let mut pads: Vec<usize> = was.map(|s| s.sounding_pads()).unwrap_or_default();
+        // The child is only rebuilt when it actually changed. It is a whole
+        // instrument arriving on the audio thread and the runners let go of
+        // their notes when it does, so sending one per undo of a knob turn
+        // would cut a playing phrase for nothing.
+        let child_changed =
+            was.and_then(|s| s.child.clone()) != sampler.as_ref().and_then(|s| s.child.clone());
         for pad in sampler.as_ref().map(|s| s.sounding_pads()).unwrap_or_default() {
             if !pads.contains(&pad) {
                 pads.push(pad);
@@ -542,6 +659,9 @@ impl App {
         }
         let Some(track) = self.nav.tracks.get_mut(track_idx) else { return };
         track.sampler = sampler.clone();
+        if child_changed {
+            self.sync_sampler_child(track_idx);
+        }
         for pad in pads {
             self.sync_sampler_pad(track_idx, pad);
         }

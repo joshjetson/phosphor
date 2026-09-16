@@ -145,6 +145,17 @@ pub trait Plugin: Send {
     /// precisely so the callback's budget has already paid for the free.
     fn set_sampler_child(&mut self, _child: Option<Box<dyn Plugin>>) {}
 
+    /// Turn one control on a sampler's child instrument.
+    ///
+    /// The child arrives from [`Plugin::set_sampler_child`] at its own
+    /// defaults, and a phrase has to sound like the thing it was played on,
+    /// so the panel follows it across one control at a time — the same
+    /// recipe `SetInstrument` and its parameter block already use for a
+    /// track. Real-time contract: a clamp and a store inside an instrument
+    /// that already exists, which is why nothing here is charged the
+    /// allocator's rate.
+    fn set_sampler_child_param(&mut self, _index: usize, _value: f32) {}
+
     /// Hand a sampler one pad's phrase layers, whole.
     ///
     /// Real-time contract is [`Plugin::set_sampler_pad`]'s: the `Arc` inside

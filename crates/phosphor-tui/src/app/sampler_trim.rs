@@ -55,11 +55,16 @@ impl App {
             return;
         }
         if self.trim_layer().is_none() {
-            let empty = self.sampler_layer_count() == 0;
-            self.flash(if empty {
-                "nothing on this pad to trim \u{00b7} a loads a sound"
-            } else {
-                "this layer has lost its file \u{00b7} nothing to trim"
+            // Three ways to have nothing to trim, and they want different
+            // answers: an empty pad wants `a`, a phrase row wants to be
+            // told a performance is not a waveform, and a layer whose file
+            // has gone wants the path fixed.
+            self.flash(match self.sampler_row() {
+                None => "nothing on this pad to trim \u{00b7} a loads a sound",
+                Some(phosphor_app::sampler::PadRow::Phrase(_)) => {
+                    "a phrase is notes, not a waveform \u{00b7} there is nothing to trim"
+                }
+                Some(_) => "this layer has lost its file \u{00b7} nothing to trim",
             });
             return;
         }

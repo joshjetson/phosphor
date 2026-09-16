@@ -37,7 +37,7 @@
 
 use std::borrow::Cow;
 
-use super::{PadState, SamplerState, MAX_LAYERS, NUM_PADS};
+use super::{PadState, PhraseState, SamplerState, MAX_LAYERS, NUM_PADS};
 
 /// What the bed means right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -176,15 +176,12 @@ impl Zone {
         format!("{}-{}", SamplerState::pad_label(self.lo), SamplerState::pad_label(self.hi))
     }
 
-    /// What the zone list calls its sound: the one layer by name, a count
-    /// when there are several, a dash when there is nothing on it yet.
+    /// What the zone list calls its sound — the pad's own word for it, so
+    /// the zone list and the pad list can never disagree about what is on a
+    /// sound.
     #[must_use]
     pub fn sound_label(&self) -> String {
-        match self.pad.layers.len() {
-            0 => "\u{2014}".into(),
-            1 => self.pad.layers[0].name.clone(),
-            n => format!("{n} layers"),
-        }
+        self.pad.sound_label()
     }
 }
 
@@ -315,8 +312,24 @@ impl SamplerState {
         // the config, because the zone's root *is* its pad's root.
         let mut config = owner.pad.config;
         config.keytrack = true;
+        // A zone's phrases transpose for the reason its layers do: the
+        // engine shifts a phrase by the played key against the pad's root,
+        // and the root here is the zone's own. A phrase that did not would
+        // be one performance at one pitch across the whole span.
+        //
+        // The owner's only. A lent *layer* is retuned by the distance
+        // between the two roots and a phrase has no field for that — its
+        // only transposition is the one shift, measured from this key's
+        // root — so a borrowed phrase would play the overlap in the wrong
+        // key. It stays home instead. See SAMPLER.md's M8 line.
+        let phrases = owner
+            .pad
+            .phrases
+            .iter()
+            .map(|p| PhraseState { transpose_with_key: true, ..p.clone() })
+            .collect();
         let mut layers = owner.pad.layers.clone();
-        for zone in self.zones.iter().skip(first + 1).filter(|z| z.covers(pad)) {
+        'lending: for zone in self.zones.iter().skip(first + 1).filter(|z| z.covers(pad)) {
             // The lent layer is retuned by the distance between the two
             // roots. Without this it would be transposed from the owning
             // zone's root and sound the wrong note — the whole point of a
@@ -324,7 +337,7 @@ impl SamplerState {
             let shift = i32::from(owner.root()) - i32::from(zone.root());
             for layer in &zone.pad.layers {
                 if layers.len() >= MAX_LAYERS {
-                    return PadState { config, layers, source: owner.pad.source.clone() };
+                    break 'lending;
                 }
                 let mut lent = layer.clone();
                 // Clamped to the engine's own tune range, not the i8 the
@@ -339,11 +352,22 @@ impl SamplerState {
                 layers.push(lent);
             }
         }
-        PadState { config, layers, source: owner.pad.source.clone() }
+        PadState {
+            config,
+            layers,
+            phrases,
+            source: owner.pad.source.clone(),
+            take: owner.pad.take,
+        }
     }
 
-    /// What a key is carrying: how many layers stand over it, and whether
+    /// What a key is carrying: how many sounds stand over it, and whether
     /// any of them has lost its file.
+    ///
+    /// Sounds, not layers: a key carrying nothing but a performance is a
+    /// key that plays, and a band that left it dark would be pointing the
+    /// player at the wrong repair. In keys mode only the owning zone's
+    /// phrases sound the key, which is what [`Self::voice`] materializes.
     ///
     /// Answered without building the pad, because the band asks it
     /// eighty-eight times a frame and materializing to find out would clone
@@ -352,18 +376,20 @@ impl SamplerState {
     #[must_use]
     pub fn key_load(&self, pad: usize) -> (usize, bool) {
         match self.mode {
-            MapMode::Pads => self
-                .pads
-                .get(pad)
-                .map_or((0, false), |state| (state.layers.len(), state.has_missing())),
+            MapMode::Pads => self.pads.get(pad).map_or((0, false), |state| {
+                (state.layers.len() + state.phrases.len(), state.has_missing())
+            }),
             MapMode::Keys => {
-                let mut layers = 0usize;
-                let mut missing = false;
-                for zone in self.zones.iter().filter(|z| z.covers(pad)) {
+                let owner = self.zone_at(pad);
+                let (mut layers, mut phrases, mut missing) = (0usize, 0usize, false);
+                for (index, zone) in self.zones.iter().enumerate().filter(|(_, z)| z.covers(pad)) {
                     layers += zone.pad.layers.len();
+                    if Some(index) == owner {
+                        phrases = zone.pad.phrases.len();
+                    }
                     missing |= zone.pad.has_missing();
                 }
-                (layers.min(MAX_LAYERS), missing)
+                (layers.min(MAX_LAYERS) + phrases, missing)
             }
         }
     }
@@ -698,6 +724,76 @@ mod tests {
         // 108 - 21 = 87 wanted; the engine's range ends at 48, and the
         // materializer must promise no more than the pad will play.
         assert_eq!(voice.layers[1].tune_st, 48, "the app promised a pitch the engine clamps");
+    }
+
+    /// A zone's phrases travel to every key it covers, transposing with the
+    /// keyboard — the engine shifts a phrase by the played key against the
+    /// pad's root, and the materializer is what sets that root.
+    #[test]
+    fn a_zone_stamps_its_phrases_onto_every_key_it_covers() {
+        let events: Arc<[phosphor_plugin::sample::PhraseEvent]> =
+            Arc::from(vec![phosphor_plugin::sample::PhraseEvent {
+                frame: 0,
+                status: 0x90,
+                data1: 60,
+                data2: 100,
+            }]);
+        let mut owner = zone(48, 71, 60, 0);
+        owner.pad.add_phrase(Arc::clone(&events), 44_100, "zone").unwrap();
+        // Transposition off on the zone's own copy: what the materializer
+        // does with it is the thing under test.
+        assert!(!owner.pad.phrases[0].transpose_with_key);
+        let state = keys_state(vec![owner]);
+
+        for note in [48u8, 60, 71] {
+            let pad = SamplerState::pad_of_note(note).unwrap();
+            let voice = state.voice(pad);
+            assert_eq!(voice.phrases.len(), 1, "{note} lost the zone's phrase");
+            assert!(voice.phrases[0].transpose_with_key, "{note} would play one pitch");
+            assert_eq!(voice.config.root, 60, "{note} is rooted somewhere else");
+            assert!(
+                Arc::ptr_eq(&voice.phrases[0].events, &events),
+                "key {note} copied the performance instead of pointing at it",
+            );
+            assert_eq!(state.key_load(pad).0, 1, "the band does not know the key plays");
+        }
+        // A key outside the span plays none of it.
+        let outside = SamplerState::pad_of_note(72).unwrap();
+        assert!(state.voice(outside).phrases.is_empty());
+        assert_eq!(state.key_load(outside).0, 0);
+    }
+
+    /// Where zones overlap, only the owning zone's phrases sound the key.
+    ///
+    /// A lent *layer* is retuned by the distance between the two roots, and
+    /// a phrase has no field for that — its one shift is measured from the
+    /// key's own root, which belongs to the owner. A borrowed phrase would
+    /// play the overlap in the wrong key, so it stays home.
+    #[test]
+    fn a_lent_zone_lends_its_layers_and_keeps_its_phrases() {
+        let events: Arc<[phosphor_plugin::sample::PhraseEvent]> =
+            Arc::from(vec![phosphor_plugin::sample::PhraseEvent {
+                frame: 0,
+                status: 0x90,
+                data1: 60,
+                data2: 100,
+            }]);
+        let mut low = zone(36, 59, 40, 1);
+        low.pad.add_phrase(Arc::clone(&events), 100, "zone").unwrap();
+        let mut high = zone(48, 71, 60, 1);
+        high.pad.add_phrase(events, 100, "zone").unwrap();
+        let state = keys_state(vec![low, high]);
+
+        let shared = SamplerState::pad_of_note(50).unwrap();
+        let voice = state.voice(shared);
+        assert_eq!(voice.layers.len(), 2, "the lent layer did not travel");
+        assert_eq!(voice.phrases.len(), 1, "a lent phrase would play the wrong key");
+        assert_eq!(voice.config.root, 40, "the later zone took the key's root");
+        // Two layers and one phrase: the band counts all three.
+        assert_eq!(state.key_load(shared), (3, false));
+
+        // Outside the overlap each zone keeps its own.
+        assert_eq!(state.voice(SamplerState::pad_of_note(65).unwrap()).phrases.len(), 1);
     }
 
     /// One zone and no overlap never counts an overflow, however full it is.

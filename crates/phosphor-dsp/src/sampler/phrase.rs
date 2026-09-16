@@ -660,6 +660,17 @@ impl ChildHost {
         self.child.is_some()
     }
 
+    /// One control on the child, in the child's own numbering.
+    ///
+    /// A store inside an instrument that already exists: no allocation, no
+    /// `init`, nothing given back. It is how the panel a phrase was played
+    /// on follows the child across, one control per command.
+    pub(super) fn set_parameter(&mut self, index: usize, value: f32) {
+        if let Some(child) = self.child.as_mut() {
+            child.set_parameter(index, value);
+        }
+    }
+
     pub(super) fn reset(&mut self) {
         if let Some(child) = self.child.as_mut() {
             child.reset();

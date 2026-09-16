@@ -12,9 +12,12 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use phosphor_plugin::sample::{PadConfig, SamplePcm, TrigMode};
+use phosphor_plugin::sample::{PadConfig, PhraseEvent, SamplePcm, TrigMode};
 
-use super::{LayerSource, LayerState, MapMode, PadSource, PadState, SamplerState, Zone};
+use super::{
+    LayerSource, LayerState, MapMode, PadSource, PadState, PhraseState, SamplerState, TakeKind,
+    Zone, MAX_PHRASES,
+};
 
 /// The stable spelling of a trigger mode.
 fn trig_key(t: TrigMode) -> &'static str {
@@ -61,6 +64,11 @@ pub struct SessionSampler {
     pub mode: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub zones: Vec<SessionZone>,
+    /// The one instrument every phrase on this sampler plays through, and
+    /// the panel it plays with. Absent on a sampler that has no phrases,
+    /// which is every sampler saved before they existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child: Option<SessionPadSource>,
 }
 
 /// One zone: its two edges as MIDI notes, and its sound written the way a
@@ -99,11 +107,45 @@ pub struct SessionPad {
     pub keytrack: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layers: Vec<SessionLayer>,
+    /// Performances kept as notes. Written inline — a phrase is tens or
+    /// hundreds of events, which is smaller than the path of the WAV it
+    /// would otherwise have been — and absent on a pad that has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phrases: Vec<SessionPhrase>,
     /// What this pad was last recorded from. Absent on every pad that has
     /// never been resampled, which is every pad in every session written
     /// before takes existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SessionPadSource>,
+    /// `phrase` when `r` lands the performance rather than the audio.
+    /// Absent for audio, so a pad saved before phrases existed reads back
+    /// byte for byte.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub take: String,
+}
+
+/// One performance on a pad, events and all.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct SessionPhrase {
+    pub name: String,
+    /// Length in engine frames — the tempo it was played at, baked.
+    pub frames: u64,
+    pub gain: f32,
+    pub transpose_with_key: bool,
+    pub mute: bool,
+    pub vel_lo: u8,
+    pub vel_hi: u8,
+    pub events: Vec<SessionPhraseEvent>,
+}
+
+/// One note of a performance, spelled the way
+/// [`PhraseEvent`] is so the two cannot drift.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub struct SessionPhraseEvent {
+    pub frame: u64,
+    pub status: u8,
+    pub data1: u8,
+    pub data2: u8,
 }
 
 /// A pad's remembered source instrument, by the same key a track's
@@ -156,10 +198,31 @@ impl SessionPad {
             pan: c.pan,
             root: c.root,
             keytrack: c.keytrack,
-            source: pad.source.as_ref().map(|s| SessionPadSource {
-                instrument: crate::session::instrument_key(s.instrument).into(),
-                params: s.params.clone(),
-            }),
+            source: pad.source.as_ref().map(source_of),
+            take: pad.take.key().into(),
+            phrases: pad
+                .phrases
+                .iter()
+                .map(|p| SessionPhrase {
+                    name: p.name.clone(),
+                    frames: p.frames,
+                    gain: p.gain,
+                    transpose_with_key: p.transpose_with_key,
+                    mute: p.mute,
+                    vel_lo: p.vel_lo,
+                    vel_hi: p.vel_hi,
+                    events: p
+                        .events
+                        .iter()
+                        .map(|e| SessionPhraseEvent {
+                            frame: e.frame,
+                            status: e.status,
+                            data1: e.data1,
+                            data2: e.data2,
+                        })
+                        .collect(),
+                })
+                .collect(),
             layers: pad
                 .layers
                 .iter()
@@ -235,15 +298,59 @@ impl SessionPad {
                 }
             })
             .collect();
-        // An instrument this build does not know is dropped rather than
-        // guessed at: the sound keeps its layers and forgets only how to
-        // record another one.
-        let source = self.source.as_ref().and_then(|s| {
-            crate::session::parse_instrument_type(&s.instrument)
-                .map(|instrument| PadSource { instrument, params: s.params.clone() })
-        });
-        PadState { config, layers, source }
+        // A phrase past the cap is dropped rather than kept out of reach,
+        // the ninth layer's rule. Numbers are clamped on the way in for the
+        // same reason every other number here is: a hand-edited file must
+        // not open with a control the knob cannot reach.
+        let phrases = self
+            .phrases
+            .iter()
+            .take(MAX_PHRASES)
+            .map(|p| PhraseState {
+                name: p.name.clone(),
+                events: p
+                    .events
+                    .iter()
+                    .map(|e| PhraseEvent {
+                        frame: e.frame,
+                        status: e.status,
+                        data1: e.data1,
+                        data2: e.data2,
+                    })
+                    .collect(),
+                frames: p.frames,
+                gain: if p.gain.is_nan() { 1.0 } else { p.gain.clamp(0.0, super::knobs::MAX_GAIN) },
+                transpose_with_key: p.transpose_with_key,
+                mute: p.mute,
+                vel_lo: p.vel_lo,
+                vel_hi: p.vel_hi,
+            })
+            .collect();
+        PadState {
+            config,
+            layers,
+            phrases,
+            // An instrument this build does not know is dropped rather than
+            // guessed at: the sound keeps its layers and forgets only how
+            // to record another one.
+            source: self.source.as_ref().and_then(pad_source_of),
+            take: TakeKind::from_key(&self.take),
+        }
     }
+}
+
+/// A pad's remembered instrument, on the way into the file.
+fn source_of(source: &PadSource) -> SessionPadSource {
+    SessionPadSource {
+        instrument: crate::session::instrument_key(source.instrument).into(),
+        params: source.params.clone(),
+    }
+}
+
+/// And back. `None` for an instrument this build has never heard of.
+fn pad_source_of(saved: &SessionPadSource) -> Option<PadSource> {
+    crate::session::parse_instrument_type(&saved.instrument)
+        .map(|instrument| PadSource { instrument, params: saved.params.clone() })
 }
 
 impl SessionSampler {
@@ -267,18 +374,26 @@ impl SessionSampler {
                 pad: SessionPad::from_pad(SamplerState::note_of_pad(z.lo), &z.pad),
             })
             .collect();
-        Self { pads, mode: state.mode.key().into(), zones }
+        Self {
+            pads,
+            mode: state.mode.key().into(),
+            zones,
+            child: state.child.as_ref().map(source_of),
+        }
     }
 
     /// Whether nothing has been done to this sampler at all — what a
     /// session leaves out entirely rather than writing an empty block for.
     ///
-    /// All three, not just the pads: a bed in keys mode with a zone on it
+    /// All four, not just the pads: a bed in keys mode with a zone on it
     /// has plenty to say with no pad occupied, and dropping it on the way
     /// into the file would be losing the instrument.
     #[must_use]
     pub fn is_untouched(&self) -> bool {
-        self.pads.is_empty() && self.zones.is_empty() && self.mode.is_empty()
+        self.pads.is_empty()
+            && self.zones.is_empty()
+            && self.mode.is_empty()
+            && self.child.is_none()
     }
 
     /// Rebuild the state, decoding each layer's file through `resolve`.
@@ -290,6 +405,7 @@ impl SessionSampler {
     ) -> SamplerState {
         let mut state = SamplerState::new();
         state.mode = MapMode::from_key(&self.mode);
+        state.child = self.child.as_ref().and_then(pad_source_of);
         for saved in &self.pads {
             let Some(idx) = SamplerState::pad_of_note(saved.note) else { continue };
             state.pads[idx] = saved.to_pad(&resolve);
@@ -322,7 +438,13 @@ mod tests {
     /// mode, no zones, which is what every session written before zones
     /// existed says.
     fn saved_with(pads: Vec<SessionPad>) -> SessionSampler {
-        SessionSampler { pads, mode: String::new(), zones: Vec::new() }
+        SessionSampler { pads, mode: String::new(), zones: Vec::new(), child: None }
+    }
+
+    /// A pad row as a hand-edited file would carry it: the defaults, with
+    /// whatever the test is about written over them afterwards.
+    fn saved_pad(note: u8) -> SessionPad {
+        SessionPad::from_pad(note, &PadState::empty(note))
     }
 
     #[test]
@@ -380,28 +502,19 @@ mod tests {
 
     #[test]
     fn hostile_numbers_in_a_file_are_clamped_on_the_way_in() {
-        let saved = SessionSampler {
-            mode: String::new(),
-            zones: Vec::new(),
-            pads: vec![SessionPad {
-                note: 60,
-                trig: "sideways".into(), // unknown spelling
-                poly: 200,
-                choke: 99,
-                pitch_st: 120,
-                pitch_cents: -120,
-                attack_ms: -5.0,
-                decay_ms: 100.0,
-                sustain: 9.0,
-                release_ms: 50.0,
-                level: 100.0,
-                pan: -7.0,
-                root: 200,
-                keytrack: false,
-                layers: Vec::new(),
-                source: None,
-            }],
-        };
+        let saved = saved_with(vec![SessionPad {
+            trig: "sideways".into(), // unknown spelling
+            poly: 200,
+            choke: 99,
+            pitch_st: 120,
+            pitch_cents: -120,
+            attack_ms: -5.0,
+            sustain: 9.0,
+            level: 100.0,
+            pan: -7.0,
+            root: 200,
+            ..saved_pad(60)
+        }]);
         let state = saved.into_state(|_| None);
         let c = &state.pads[39].config;
         assert_eq!(c.trig, TrigMode::OneShot);
@@ -415,24 +528,7 @@ mod tests {
 
     #[test]
     fn a_pad_off_the_bed_in_a_file_is_skipped_not_fatal() {
-        let mut pad = SessionPad {
-            note: 5, // below A0
-            trig: "one-shot".into(),
-            poly: 1,
-            choke: 0,
-            pitch_st: 0,
-            pitch_cents: 0,
-            attack_ms: 0.0,
-            decay_ms: 400.0,
-            sustain: 1.0,
-            release_ms: 60.0,
-            level: 1.0,
-            pan: 0.0,
-            root: 5,
-            keytrack: false,
-            layers: Vec::new(),
-            source: None,
-        };
+        let mut pad = saved_pad(5); // below A0
         let state = saved_with(vec![pad.clone()]).into_state(|_| None);
         assert_eq!(state.occupied_pads().count(), 0);
         pad.note = 250;
@@ -593,6 +689,176 @@ mod tests {
         assert_eq!(restored.mode, MapMode::Keys);
     }
 
+    // ── Phrases ──
+
+    fn phrase_events(notes: &[(u64, u8)]) -> Arc<[PhraseEvent]> {
+        let mut out = Vec::new();
+        for &(frame, note) in notes {
+            out.push(PhraseEvent { frame, status: 0x90, data1: note, data2: 100 });
+            out.push(PhraseEvent { frame: frame + 50, status: 0x80, data1: note, data2: 0 });
+        }
+        Arc::from(out)
+    }
+
+    /// A mixed pad — one wav layer and two phrases — survives the file, and
+    /// so does the sampler's one child instrument. Through real JSON, not
+    /// just the structs, because the events are the new thing in the file.
+    #[test]
+    fn a_pad_of_audio_and_phrases_survives_the_round_trip() {
+        let mut state = SamplerState::new();
+        state.add_wav_layer(39, PathBuf::from("kick.wav"), pcm(500)).unwrap();
+        state.pads[39].add_phrase(phrase_events(&[(0, 60), (1_000, 64)]), 44_100, "pad").unwrap();
+        state.pads[39].add_phrase(phrase_events(&[(0, 67)]), 22_050, "pad").unwrap();
+        state.pads[39].phrases[1].gain = 0.5;
+        state.pads[39].phrases[1].transpose_with_key = true;
+        state.pads[39].phrases[1].mute = true;
+        state.pads[39].take = TakeKind::Phrase;
+        state.child = Some(PadSource {
+            instrument: crate::state::InstrumentType::DX7,
+            params: vec![0.25, 0.75],
+        });
+
+        let json = serde_json::to_string(&SessionSampler::from_state(&state)).unwrap();
+        let back: SessionSampler = serde_json::from_str(&json).unwrap();
+        let restored = back.into_state(|_| Some(pcm(500)));
+
+        let pad = &restored.pads[39];
+        assert_eq!(pad.layers.len(), 1, "the wav layer went missing");
+        assert_eq!(pad.phrases.len(), 2);
+        assert_eq!(pad.rows(), 3, "the sound list did not come back whole");
+        assert_eq!(pad.take, TakeKind::Phrase, "the pad forgot what r lands");
+        assert_eq!(pad.phrases[0].name, "phrase 1");
+        assert_eq!(pad.phrases[0].frames, 44_100);
+        assert_eq!(pad.phrases[0].events.len(), 4);
+        assert_eq!(
+            pad.phrases[0].events[0],
+            PhraseEvent { frame: 0, status: 0x90, data1: 60, data2: 100 },
+        );
+        assert_eq!(pad.phrases[1].gain, 0.5);
+        assert!(pad.phrases[1].transpose_with_key);
+        assert!(pad.phrases[1].mute);
+
+        let child = restored.child.as_ref().expect("the child went missing");
+        assert_eq!(child.instrument, crate::state::InstrumentType::DX7);
+        assert_eq!(child.params, vec![0.25, 0.75]);
+    }
+
+    /// A zone's phrases go into the file with the zone, because a zone's
+    /// sound *is* a pad and the file stores it as one.
+    #[test]
+    fn a_zones_phrases_survive_the_round_trip() {
+        let mut state = SamplerState::new();
+        state.mode = MapMode::Keys;
+        let mut pad = PadState::empty(60);
+        pad.add_phrase(phrase_events(&[(0, 60)]), 1_000, "zone").unwrap();
+        state.zones.push(Zone::new(0, 87, pad));
+
+        let saved = SessionSampler::from_state(&state);
+        let restored = saved.into_state(|_| None);
+        assert_eq!(restored.zones[0].pad.phrases.len(), 1);
+        assert_eq!(restored.zones[0].pad.phrases[0].events.len(), 2);
+        // ...and it reaches the engine on every key of the span.
+        assert_eq!(restored.voice(40).phrases.len(), 1);
+    }
+
+    /// A pad with no phrases writes nothing about them, and an empty
+    /// sampler still writes the bytes it always wrote.
+    #[test]
+    fn a_pad_without_phrases_writes_nothing_about_them() {
+        let mut state = SamplerState::new();
+        state.add_wav_layer(0, PathBuf::from("kick.wav"), pcm(10)).unwrap();
+        let json = serde_json::to_string(&SessionSampler::from_state(&state)).unwrap();
+        for absent in ["phrases", "\"take\"", "child"] {
+            assert!(!json.contains(absent), "{absent} reached a file with none:\n{json}");
+        }
+        let empty = serde_json::to_string(&SessionSampler::from_state(&SamplerState::new()))
+            .unwrap();
+        assert_eq!(empty, r#"{"pads":[]}"#, "an empty sampler stopped being empty");
+    }
+
+    /// A session written before phrases existed opens as what it was: no
+    /// phrases, no child, and `r` still landing audio.
+    #[test]
+    fn a_session_from_before_phrases_opens_unchanged() {
+        let json = r#"{"pads":[{"note":60,"trig":"gate","poly":2,"choke":0,
+            "pitch_st":0,"pitch_cents":0,"attack_ms":0.0,"decay_ms":400.0,"sustain":1.0,
+            "release_ms":60.0,"level":1.0,"pan":0.0,"root":60,"keytrack":false,
+            "layers":[{"path":"kick.wav","kind":"take","gain":1.0,"pan":0.0,"tune_st":0,
+            "tune_cents":0,"start_frame":0,"end_frame":10,"reverse":false,"mute":false,
+            "vel_lo":0,"vel_hi":127}]}]}"#;
+        let saved: SessionSampler = serde_json::from_str(json).unwrap();
+        let state = saved.into_state(|_| Some(pcm(10)));
+        assert!(state.child.is_none());
+        assert_eq!(state.pads[39].layers.len(), 1);
+        assert!(state.pads[39].phrases.is_empty());
+        assert_eq!(state.pads[39].take, TakeKind::Audio);
+        assert_eq!(state.pads[39].config.trig, TrigMode::Gate, "the rest of the pad moved");
+    }
+
+    /// A hand-edited file cannot open with more phrases than the bed holds,
+    /// a velocity scale the knob cannot reach, or a spelling for `take`
+    /// that this build has never heard of.
+    #[test]
+    fn a_hostile_phrase_list_is_survivable() {
+        let mut state = SamplerState::new();
+        for _ in 0..MAX_PHRASES {
+            state.pads[0].add_phrase(phrase_events(&[(0, 60)]), 100, "pad").unwrap();
+        }
+        let mut saved = SessionSampler::from_state(&state);
+        let fifth = saved.pads[0].phrases[0].clone();
+        saved.pads[0].phrases.push(fifth);
+        saved.pads[0].phrases[0].gain = 900.0;
+        saved.pads[0].phrases[1].gain = f32::NAN;
+        saved.pads[0].take = "sideways".into();
+
+        let restored = saved.into_state(|_| None);
+        let pad = &restored.pads[0];
+        assert_eq!(pad.phrases.len(), MAX_PHRASES, "the fifth phrase got in");
+        assert_eq!(pad.phrases[0].gain, super::super::knobs::MAX_GAIN);
+        assert_eq!(pad.phrases[1].gain, 1.0, "a NaN velocity scale survived");
+        assert_eq!(pad.take, TakeKind::Audio, "an unknown spelling was guessed at");
+    }
+
+    /// A child instrument this build has never heard of is dropped rather
+    /// than guessed at — the pad's own source memory's rule, so a session
+    /// from a newer build still opens with its phrases on the pads.
+    #[test]
+    fn an_unknown_child_is_dropped_and_the_phrases_stay() {
+        let mut state = SamplerState::new();
+        state.pads[0].add_phrase(phrase_events(&[(0, 60)]), 100, "pad").unwrap();
+        state.child = Some(PadSource {
+            instrument: crate::state::InstrumentType::Rhodes,
+            params: vec![0.5],
+        });
+        let mut saved = SessionSampler::from_state(&state);
+        assert_eq!(saved.child.as_ref().unwrap().instrument, "rhodes");
+        saved.child.as_mut().unwrap().instrument = "moogophone".into();
+
+        let restored = saved.into_state(|_| None);
+        assert!(restored.child.is_none(), "an unknown child was guessed at");
+        assert_eq!(restored.pads[0].phrases.len(), 1, "the phrases went with it");
+    }
+
+    /// A sampler whose only content is a child instrument is not an
+    /// untouched sampler. The defect this catches is the session leaving
+    /// the block out because no pad is occupied, which would lose the
+    /// instrument every phrase plays through.
+    #[test]
+    fn a_child_alone_is_not_an_untouched_sampler() {
+        let mut state = SamplerState::new();
+        state.child = Some(PadSource {
+            instrument: crate::state::InstrumentType::DX7,
+            params: vec![0.5],
+        });
+        let saved = SessionSampler::from_state(&state);
+        assert!(saved.pads.is_empty());
+        assert!(!saved.is_untouched());
+        assert_eq!(
+            saved.into_state(|_| None).child.map(|c| c.instrument),
+            Some(crate::state::InstrumentType::DX7),
+        );
+    }
+
     /// A zone whose edges are off the bed is skipped rather than clamped
     /// onto a span the player never drew, and the list comes back in edge
     /// order however the file had it.
@@ -603,6 +869,7 @@ mod tests {
         let saved = SessionSampler {
             mode: "keys".into(),
             pads: Vec::new(),
+            child: None,
             zones: vec![
                 SessionZone { lo: 72, hi: 84, pad: SessionPad::from_pad(72, &PadState::empty(72)) },
                 SessionZone { lo: 5, hi: 60, pad: SessionPad::from_pad(5, &PadState::empty(60)) },

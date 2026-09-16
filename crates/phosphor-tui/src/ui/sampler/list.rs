@@ -51,14 +51,11 @@ fn pad_row(map: &Map, pad: usize, width: usize) -> Line<'static> {
     } else {
         theme::normal()
     };
-    let count = state.layers.len();
-    // One layer is named; a stack says how many, because the first of eight
-    // names is not what the pad is.
-    let what = match count {
-        0 => "\u{2014}".to_string(),
-        1 => state.layers[0].name.clone(),
-        n => format!("{n} layers"),
-    };
+    // One sound is named; a stack says how many, because the first of eight
+    // names is not what the pad is. Phrases count: a pad carrying nothing
+    // but a performance is not an empty pad.
+    let count = state.rows();
+    let what = state.sound_label();
 
     // The columns in the order they matter, each one taken only if it fits.
     // A narrow list loses the poly and the trigger before it loses the name

@@ -264,7 +264,10 @@ fn marker_row(
 /// refuse but a redraw must survive.
 pub(super) fn strip_lines(map: &Map, width: usize, height: usize) -> Option<Vec<Line<'static>>> {
     let view = map.view.trim?;
-    let layer = map.layer()?;
+    // A phrase has no waveform, so the strip has nothing to draw for one —
+    // the keys refuse to open it, and this is the redraw's own guard for a
+    // cursor that walked onto one while it was open.
+    let PadRow::Layer(layer) = map.row()? else { return None };
     let pcm = layer.pcm.as_ref()?;
     let region = layer.region()?;
     let frames = pcm.frames();

@@ -139,6 +139,24 @@ impl App {
         // goes exactly where it was typed. See `phosphor_app::paths`.
         let path = phosphor_app::paths::find_session(std::path::Path::new(path_str));
 
+        // Parse before anything is touched. A file that will not open must
+        // cost nothing — and the old order made it cost the sampler: source
+        // mode was abandoned before the parse, the parse failed, and nothing
+        // gave the plugin slot back, leaving the whole kit silent with a
+        // normal-looking pad map on the screen. Reading the file mutates no
+        // state, so doing it first closes that door without reopening the
+        // corruption one — the transport still stops before any state moves.
+        let parsed = match crate::session::load(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                self.status_message = Some((
+                    format!("open failed: {e}"),
+                    std::time::Instant::now(),
+                ));
+                return;
+            }
+        };
+
         // Source mode belongs to a track that is about to stop existing,
         // and its plugin slot goes with it. Abandoned before the stop
         // below rather than after it, because a stop ends an armed take —
@@ -165,12 +183,6 @@ impl App {
         // leaving the playhead at an arbitrary old-session offset is
         // nonsense in the new session.
         //
-        // Ordering note: if `crate::session::load` fails below, we've
-        // already stopped the user's playback. That's a minor UX cost
-        // (they hit Space to resume) traded against silent corruption if
-        // we parsed first and the transport kept running through a
-        // successful load. Stopping first is the correct trade.
-        //
         // Race note: stopping during an in-progress recording may cause
         // the mixer's next callback to commit a final ClipSnapshot (see
         // `commit_recording` in mixer.rs when `!should_record &&
@@ -189,16 +201,7 @@ impl App {
         let session_dir =
             path.parent().map_or_else(std::path::PathBuf::new, std::path::Path::to_path_buf);
 
-        let session = match crate::session::load(&path) {
-            Ok(s) => s,
-            Err(e) => {
-                self.status_message = Some((
-                    format!("open failed: {e}"),
-                    std::time::Instant::now(),
-                ));
-                return;
-            }
-        };
+        let session = parsed;
 
         // History does not cross a load. Every step on the stack captured
         // tracks that are about to stop existing; undoing one afterwards

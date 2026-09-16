@@ -34,7 +34,7 @@
 use std::sync::Arc;
 
 use phosphor_core::fx::db_to_gain;
-use phosphor_plugin::sample::SamplePcm;
+use phosphor_plugin::sample::{PhraseEvent, SamplePcm};
 use phosphor_plugin::MidiEvent;
 
 use crate::state::{InstrumentType, MidiFxInstance};
@@ -126,6 +126,64 @@ pub fn render_take(
         start_frame,
         end_frame,
         peak,
+        root: single_pitch(&plan.events),
+    }
+}
+
+/// A captured performance kept as notes: what a phrase layer is made of.
+#[derive(Debug, Clone)]
+pub struct RenderedPhrase {
+    /// The performance, chain-baked, in time order.
+    pub events: Arc<[PhraseEvent]>,
+    /// How long the pad plays before the phrase is over, in engine frames.
+    pub frames: u64,
+    /// The pitch every note-on shared, when they shared one.
+    pub root: Option<u8>,
+}
+
+impl RenderedPhrase {
+    /// How long it plays, in seconds at the rate it was captured at.
+    #[must_use]
+    pub fn seconds(&self, rate: f32) -> f32 {
+        self.frames as f32 / rate.max(1.0)
+    }
+
+    /// Notes in it — what tells a played phrase from an empty window.
+    #[must_use]
+    pub fn note_count(&self) -> usize {
+        self.events.iter().filter(|e| e.status & 0xF0 == 0x90 && e.data2 > 0).count()
+    }
+}
+
+/// Keep `plan` as notes rather than rendering it to audio.
+///
+/// The audio path's first half, stopped one step early: the capture goes
+/// through fresh copies of the track's MIDI effects and then *is* the take,
+/// because that is the signal path the performance went down while it was
+/// being played. A phrase recorded on a track with an arpeggiator on it
+/// holds the arpeggio — the same promise
+/// [`render_take`] makes, kept by the same code.
+///
+/// No tail: a phrase is note data, and the notes a device was still holding
+/// were already closed at the window by the rack. What plays the release is
+/// the child instrument, live.
+#[must_use]
+pub fn render_phrase(plan: &TakePlan, rack: &[MidiFxInstance]) -> RenderedPhrase {
+    let events = through_midi_rack(plan, rack)
+        .into_iter()
+        .map(|e| PhraseEvent {
+            frame: e.frame,
+            status: e.status,
+            data1: e.data1,
+            data2: e.data2,
+        })
+        .collect();
+    RenderedPhrase {
+        events,
+        frames: plan.frames.max(1),
+        // Read from the plan rather than from the baked stream, for the
+        // reason [`single_pitch`] gives: a chord device turning one key
+        // into four does not make the performance a chord.
         root: single_pitch(&plan.events),
     }
 }
@@ -519,6 +577,107 @@ mod tests {
         assert!(seconds < 2.2, "the tail ran to {seconds:.2}s");
         assert!(seconds > 0.1, "the take is shorter than the performance");
         assert!(take.pcm.frames() <= u64::from(super::super::wav::MAX_FRAMES));
+    }
+
+    // ── Phrases ──
+
+    /// The same performance kept as a phrase twice is the same events —
+    /// event for event, not nearly, which is what lets a player record the
+    /// same bar twice and compare.
+    #[test]
+    fn a_phrase_is_the_same_twice() {
+        let plan = plan_of(&[(0, 60, true), (200_000, 60, false)], 400_000);
+        let a = render_phrase(&plan, &[]);
+        let b = render_phrase(&plan, &[]);
+        assert_eq!(a.events.as_ref(), b.events.as_ref(), "two phrases of one take differed");
+        assert_eq!(a.frames, b.frames);
+        assert_eq!(a.note_count(), 1);
+        // And the events are the performance itself, at its own offsets.
+        assert_eq!(a.events[0], PhraseEvent { frame: 0, status: 0x90, data1: 60, data2: 100 });
+        assert_eq!(a.events.last().unwrap().status, 0x80, "the key was never lifted");
+        assert!(a.seconds(SR) > 0.0);
+    }
+
+    /// The rack runs, exactly as it does for audio: one key through a chord
+    /// device is a chord, so the phrase holds three notes and not one.
+    #[test]
+    fn the_midi_rack_is_baked_into_a_phrase() {
+        let plan = plan_of(&[(0, 48, true), (500_000, 48, false)], 700_000);
+        let bare = render_phrase(&plan, &[]);
+        assert_eq!(bare.note_count(), 1);
+
+        let chorded = render_phrase(&plan, &[MidiFxInstance::new(MidiFxType::Chord)]);
+        assert!(
+            chorded.note_count() > bare.note_count(),
+            "the chord device never ran: {} notes",
+            chorded.note_count(),
+        );
+        let pitches: Vec<u8> =
+            chorded.events.iter().filter(|e| e.status == 0x90).map(|e| e.data1).collect();
+        assert!(pitches.contains(&48), "the key played is not in the chord");
+        assert!(pitches.iter().any(|&p| p != 48), "every note of the chord is the root");
+
+        // A bypassed device is an absent one, the audio path's rule.
+        let mut off = MidiFxInstance::new(MidiFxType::Chord);
+        off.bypass = true;
+        assert_eq!(
+            render_phrase(&plan, &[off]).events.as_ref(),
+            bare.events.as_ref(),
+            "a bypassed device changed the phrase",
+        );
+    }
+
+    /// A phrase's events are in time order, whatever the rack did to them —
+    /// the engine's runner walks them forwards and never sorts.
+    #[test]
+    fn a_phrases_events_arrive_in_time_order() {
+        let plan = plan_of(
+            &[(0, 36, true), (100_000, 48, true), (150_000, 36, false), (400_000, 48, false)],
+            600_000,
+        );
+        for rack in [Vec::new(), vec![MidiFxInstance::new(MidiFxType::Arp)]] {
+            let phrase = render_phrase(&plan, &rack);
+            assert!(
+                phrase.events.windows(2).all(|w| w[0].frame <= w[1].frame),
+                "the events came back out of order",
+            );
+            assert!(
+                phrase.events.iter().all(|e| e.frame < phrase.frames),
+                "an event landed past the end of its own phrase",
+            );
+        }
+    }
+
+    /// One key teaches a root and a chord does not, the take's rule — and
+    /// it matters more here, because a phrase's only transposition is
+    /// measured from it.
+    #[test]
+    fn a_one_finger_phrase_teaches_a_root() {
+        let one = plan_of(&[(0, 41, true), (100_000, 41, false)], 300_000);
+        assert_eq!(render_phrase(&one, &[]).root, Some(41));
+        let chord =
+            plan_of(&[(0, 41, true), (1_000, 45, true), (100_000, 41, false)], 300_000);
+        assert_eq!(render_phrase(&chord, &[]).root, None);
+        // An arpeggiator turning one key into a run does not make it a run.
+        assert_eq!(
+            render_phrase(&one, &[MidiFxInstance::new(MidiFxType::Arp)]).root,
+            Some(41),
+            "the rack got a vote on the root",
+        );
+    }
+
+    /// A bar-quantised phrase is the window, to the frame: the loop point
+    /// is the point, and a phrase one frame short would drift every pass.
+    #[test]
+    fn a_bar_phrase_is_exactly_its_window() {
+        let mut capture = TakeCapture::bars(0, 0, 120.0, SR);
+        capture.note(CapturedEvent { micros: 300_000, note: 60, velocity: 100, on: true });
+        capture.note(CapturedEvent { micros: 600_000, note: 60, velocity: 0, on: false });
+        let plan = capture.close(1_900_000).unwrap();
+        let phrase = render_phrase(&plan, &[]);
+        // One bar of 4/4 at 120 BPM, at 44.1 kHz: two seconds.
+        assert_eq!(phrase.frames, (2.0 * SR) as u64);
+        assert!((phrase.seconds(SR) - 2.0).abs() < 1e-6);
     }
 
     /// The render is stereo at the engine's rate, whatever the instrument

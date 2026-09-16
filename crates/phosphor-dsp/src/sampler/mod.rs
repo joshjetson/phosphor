@@ -657,6 +657,10 @@ impl Plugin for Sampler {
         self.child.set(child);
     }
 
+    fn set_sampler_child_param(&mut self, index: usize, value: f32) {
+        self.child.set_parameter(index, value);
+    }
+
     fn set_sampler_phrases(&mut self, pad: u8, phrases: &[PadPhrase]) {
         if let Some(p) = self.pads.get_mut(usize::from(pad)) {
             p.set_phrases(phrases);

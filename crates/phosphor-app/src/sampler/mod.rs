@@ -10,6 +10,7 @@
 
 pub mod capture;
 pub mod knobs;
+pub mod phrase;
 pub mod render;
 pub mod root;
 pub mod session;
@@ -21,10 +22,11 @@ pub mod zones;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use phosphor_plugin::sample::{PadConfig, PadLayer, SamplePcm};
+use phosphor_plugin::sample::{PadConfig, PadLayer, PadPhrase, SamplePcm};
 
 use crate::state::InstrumentType;
 
+pub use phrase::{PadRow, PhraseState, RowKind, TakeKind, MAX_PHRASES};
 pub use zones::{MapMode, Zone, ZoneEdge};
 
 /// One pad per piano key, mirroring the engine.
@@ -223,19 +225,49 @@ pub struct PadSource {
     pub params: Vec<f32>,
 }
 
+/// What pointing the sampler's child at an instrument actually changed.
+///
+/// Three answers rather than a bool, because the player is owed different
+/// words for each: a new instrument changes how every phrase on the kit
+/// sounds, a new panel on the same instrument changes it more quietly, and
+/// nothing changed is worth no words and no command at all — a `SetInstrument`
+/// on the audio thread for a child that is already right would cut whatever
+/// was playing through it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildChange {
+    Same,
+    /// The same instrument, carrying the panel this phrase was played on.
+    Panel,
+    Instrument,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PadState {
     pub config: PadConfig,
     pub layers: Vec<LayerState>,
+    /// Performances kept as notes, played through the sampler's one child
+    /// instrument. They stack after the layers in the sound list — see
+    /// [`PadState::rows`].
+    pub phrases: Vec<PhraseState>,
     /// The instrument this pad was last recorded from, when it has been.
     pub source: Option<PadSource>,
+    /// What `r` lands here: audio, or the performance itself. Remembered
+    /// with the source, because "record another one like that" means the
+    /// shape of the take as well as the instrument.
+    pub take: TakeKind,
 }
 
 impl PadState {
     /// A seat with nothing in it: what a fresh pad is, what a zone starts
     /// as, and what a key no zone covers plays.
     pub fn empty(note: u8) -> Self {
-        Self { config: PadConfig::for_key(note), layers: Vec::new(), source: None }
+        Self {
+            config: PadConfig::for_key(note),
+            layers: Vec::new(),
+            phrases: Vec::new(),
+            source: None,
+            take: TakeKind::Audio,
+        }
     }
 
     /// Whether anything on this pad was asked for and is not here — the
@@ -311,10 +343,32 @@ impl LayerAddr {
     }
 }
 
+/// One key as the engine plays it: everything
+/// [`SamplerState::sync`](crate::sampler::SamplerState) has to hand over
+/// for one pad, materialized once.
+///
+/// One struct rather than three calls, because in keys mode every one of
+/// them is built by stacking the zones over the key, and asking three times
+/// would stack them three times a keystroke.
+#[derive(Debug, Clone)]
+pub struct EnginePad {
+    pub config: PadConfig,
+    pub layers: Vec<PadLayer>,
+    pub phrases: Vec<PadPhrase>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SamplerState {
     /// Indexed by pad — `note - PAD_BASE_NOTE`.
     pub pads: Vec<PadState>,
+    /// The one instrument every phrase on this sampler plays through, and
+    /// the panel it plays with.
+    ///
+    /// At sampler level rather than per pad because that is what it is: one
+    /// child, rendered once a block however many phrases are running. It is
+    /// set by the landing of a phrase, from the pad's remembered source —
+    /// the player never picks it twice.
+    pub child: Option<PadSource>,
     /// The pad being edited. Follows the keys: playing a note on the
     /// track moves it, which on an 88-key controller is the fastest
     /// pad selector there is.
@@ -341,7 +395,27 @@ impl SamplerState {
             cursor: (60 - PAD_BASE_NOTE) as usize,
             mode: MapMode::Pads,
             zones: Vec::new(),
+            child: None,
         }
+    }
+
+    /// Point the sampler's one child at an instrument and its panel, and
+    /// say what that changed.
+    ///
+    /// The whole answer in one door, because every caller has to tell the
+    /// player the same thing: there is one child, and recording a phrase
+    /// from something else replaces it for every phrase on the kit.
+    pub fn set_child(&mut self, source: PadSource) -> ChildChange {
+        let change = match self.child.as_ref() {
+            Some(child) if child.instrument != source.instrument => ChildChange::Instrument,
+            Some(child) if child.params != source.params => ChildChange::Panel,
+            Some(_) => ChildChange::Same,
+            None => ChildChange::Instrument,
+        };
+        if change != ChildChange::Same {
+            self.child = Some(source);
+        }
+        change
     }
 
     /// The pad a note addresses, if it is on the bed.
@@ -485,7 +559,14 @@ impl SamplerState {
     /// What every door says when there is no room left, whether it is a
     /// pad or a zone that is full.
     pub fn full_message(title: &str) -> String {
-        format!("{title} is full \u{2014} eight layers is the bed")
+        Self::bed_is_full(title, "eight layers")
+    }
+
+    /// The shape of every "no room" sentence in the sampler. One place, so
+    /// that a pad, a zone and a phrase bed all refuse in the same words and
+    /// only the count changes.
+    pub(crate) fn bed_is_full(title: &str, bed: &str) -> String {
+        format!("{title} is full \u{2014} {bed} is the bed")
     }
 
     /// What every door says when keys mode has no zone under the cursor —
@@ -496,18 +577,22 @@ impl SamplerState {
             .into()
     }
 
-    /// The engine's copy of one key: config plus every playable layer.
+    /// The engine's copy of one key: config, every playable layer, and
+    /// every phrase.
     ///
     /// [`Self::voice`] is what decides *what* the key plays, so keys mode
     /// arrives here materialized and the engine is handed eighty-eight
     /// pads either way — it has never heard of a zone.
-    pub fn engine_pad(&self, pad: usize) -> Option<(PadConfig, Vec<PadLayer>)> {
+    pub fn engine_pad(&self, pad: usize) -> Option<EnginePad> {
         if pad >= NUM_PADS {
             return None;
         }
         let state = self.voice(pad);
-        let layers = state.layers.iter().filter_map(LayerState::engine_layer).collect();
-        Some((state.config, layers))
+        Some(EnginePad {
+            config: state.config,
+            layers: state.layers.iter().filter_map(LayerState::engine_layer).collect(),
+            phrases: state.phrases.iter().map(PhraseState::engine_phrase).collect(),
+        })
     }
 
     /// Pads that differ from a fresh sampler — what a session stores and
@@ -519,7 +604,12 @@ impl SamplerState {
     pub fn occupied_pads(&self) -> impl Iterator<Item = usize> + '_ {
         self.pads.iter().enumerate().filter_map(|(i, p)| {
             let fresh = PadConfig::for_key(Self::note_of_pad(i));
-            (!p.layers.is_empty() || p.config != fresh || p.source.is_some()).then_some(i)
+            let touched = !p.layers.is_empty()
+                || !p.phrases.is_empty()
+                || p.config != fresh
+                || p.source.is_some()
+                || p.take != TakeKind::Audio;
+            touched.then_some(i)
         })
     }
 
@@ -650,8 +740,11 @@ mod tests {
         s.add_wav_layer(5, PathBuf::from("a.wav"), pcm(100)).unwrap();
         s.add_wav_layer(5, PathBuf::from("gone.wav"), pcm(100)).unwrap();
         s.pads[5].layers[1].pcm = None;
-        let (_, layers) = s.engine_pad(5).unwrap();
-        assert_eq!(layers.len(), 1, "a missing file must not reach the engine");
+        assert_eq!(
+            s.engine_pad(5).unwrap().layers.len(),
+            1,
+            "a missing file must not reach the engine",
+        );
         assert_eq!(s.pads[5].layers.len(), 2, "and must not lose its seat");
         assert_eq!(s.missing_layers(), 1);
     }
@@ -726,6 +819,63 @@ mod tests {
             params: vec![0.5; 4],
         });
         assert_eq!(s.occupied_pads().collect::<Vec<_>>(), vec![7]);
+    }
+
+    /// A pad carrying nothing but a performance is an occupied pad: a
+    /// session that left it out would lose the performance, and a resync
+    /// that skipped it would leave the engine playing the old one.
+    #[test]
+    fn a_pad_with_only_a_phrase_counts_as_occupied() {
+        let mut s = SamplerState::new();
+        let events: Arc<[phosphor_plugin::sample::PhraseEvent]> =
+            Arc::from(vec![phosphor_plugin::sample::PhraseEvent {
+                frame: 0,
+                status: 0x90,
+                data1: 60,
+                data2: 100,
+            }]);
+        s.pads[4].add_phrase(Arc::clone(&events), 500, "pad").unwrap();
+        assert_eq!(s.occupied_pads().collect::<Vec<_>>(), vec![4]);
+        assert!(s.sounding_pads().contains(&4));
+
+        // ...and the engine is handed it beside the layers, pointing at the
+        // same event list rather than a copy of it.
+        let engine = s.engine_pad(4).unwrap();
+        assert_eq!(engine.phrases.len(), 1);
+        assert!(Arc::ptr_eq(&engine.phrases[0].events, &events));
+        assert!(engine.layers.is_empty());
+        assert!(s.engine_pad(5).unwrap().phrases.is_empty());
+    }
+
+    /// A pad that is only *armed* for phrases counts too: the player chose
+    /// it and walked away, and losing that on save loses the setup.
+    #[test]
+    fn a_pad_armed_for_phrases_counts_as_occupied() {
+        let mut s = SamplerState::new();
+        s.pads[9].take = TakeKind::Phrase;
+        assert_eq!(s.occupied_pads().collect::<Vec<_>>(), vec![9]);
+    }
+
+    /// One child per sampler, and the player is told what changed: a new
+    /// instrument, a new panel on the same one, or nothing at all — which
+    /// must not send a rebuild, because a rebuild cuts what is playing.
+    #[test]
+    fn the_child_says_what_pointing_it_somewhere_changed() {
+        let mut s = SamplerState::new();
+        assert!(s.child.is_none());
+        let dx7 = PadSource { instrument: InstrumentType::DX7, params: vec![0.5, 0.5] };
+        assert_eq!(s.set_child(dx7.clone()), ChildChange::Instrument);
+        assert_eq!(s.child.as_ref().unwrap().instrument, InstrumentType::DX7);
+
+        assert_eq!(s.set_child(dx7.clone()), ChildChange::Same, "an unchanged child rebuilt");
+        let tweaked = PadSource { params: vec![0.5, 0.9], ..dx7 };
+        assert_eq!(s.set_child(tweaked.clone()), ChildChange::Panel);
+        assert_eq!(s.child.as_ref().unwrap().params, vec![0.5, 0.9]);
+
+        let rhodes = PadSource { instrument: InstrumentType::Rhodes, params: vec![0.1] };
+        assert_eq!(s.set_child(rhodes), ChildChange::Instrument);
+        assert_eq!(s.child.as_ref().unwrap().instrument, InstrumentType::Rhodes);
+        assert_eq!(s.set_child(tweaked), ChildChange::Instrument, "the swap back was silent");
     }
 
     #[test]
