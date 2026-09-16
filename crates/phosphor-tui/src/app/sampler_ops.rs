@@ -1,16 +1,28 @@
-//! The sampler's operations: putting sounds on pads and keeping the
-//! engine's copy of a pad current.
+//! The sampler's operations: putting sounds on pads, turning what is on
+//! them, and keeping the engine's copy current.
 //!
 //! The state of record is [`phosphor_app::sampler::SamplerState`] on the
 //! track; the engine holds a real-time copy. Every edit goes state first,
 //! then [`App::sync_sampler_pad`] ships that one pad whole — config plus
-//! layers — so the two can never disagree about anything but time.
+//! layers — so the two can never disagree about anything but time. Nothing
+//! outside this file writes a pad, for the reason the sequencer's ops
+//! exist: an edit that changes the screen and not the signal is the hardest
+//! kind of bug to see, because the screen agrees with you.
+//!
+//! Undo goes with it, and here it carries a second job. A deleted layer's
+//! audio must stay referenced by something on the UI side for as long as
+//! the audio thread might still hold it, or the engine's own drop becomes
+//! the last one and a free happens on the real-time thread. The undo step
+//! *is* that reference — which is why no path removes a layer without
+//! pushing one.
 
 use super::*;
 
 use std::path::{Path, PathBuf};
 
+use phosphor_app::sampler::knobs::PadKnob;
 use phosphor_app::sampler::SamplerState;
+use crate::state::undo::{UndoGesture, UndoScope};
 
 impl App {
     /// The track under the cursor, when it is a sampler carrying state.
@@ -53,6 +65,7 @@ impl App {
             }
         };
         let seconds = pcm.frames() as f32 / pcm.sample_rate.max(1.0);
+        let before = self.nav.undo_checkpoint(UndoScope::Sampler { track_idx: idx });
         let Some(sampler) = self.nav.tracks[idx].sampler.as_mut() else { return };
         let pad = sampler.cursor;
         // The session keeps the path as typed: a bare name stays a bare
@@ -63,8 +76,15 @@ impl App {
         }
         let count = sampler.pads[pad].layers.len();
         let name = sampler.pads[pad].layers[count - 1].name.clone();
+        // A sound landing on a pad is one step back off it, and the step
+        // holds the decode: `u` after a load is free, and a `u` that
+        // emptied the pad still has the audio if redo asks for it.
+        self.nav.commit_undo(before, "load sample");
+        // The panel points at the sound that just arrived, which is the one
+        // a player is about to trim, turn down or take off again.
+        self.nav.clip_view.sampler.layer = count - 1;
         self.sync_sampler_pad(idx, pad);
-        self.flash(&format!(
+        self.flash(format!(
             "pad {} \u{00b7} {name} \u{00b7} {seconds:.2}s \u{00b7} layer {count}/{}",
             SamplerState::pad_label(pad),
             phosphor_app::sampler::MAX_LAYERS,
@@ -111,5 +131,202 @@ impl App {
                 sampler.cursor = pad;
             }
         }
+        // The pad that just arrived under the cursor may hold fewer layers
+        // than the one the panel was showing.
+        self.clamp_sampler_cursors();
+    }
+
+    // ── The pad panel ──
+
+    /// The controls the pad under the cursor offers, and where the cursor
+    /// is standing in them.
+    pub(crate) fn sampler_knobs(&self) -> &'static [PadKnob] {
+        let has_layer = self
+            .cursor_sampler_track()
+            .and_then(|idx| self.nav.tracks[idx].sampler.as_ref())
+            .is_some_and(|s| !s.current().layers.is_empty());
+        PadKnob::visible(has_layer)
+    }
+
+    /// How many layers the pad under the cursor holds.
+    pub(crate) fn sampler_layer_count(&self) -> usize {
+        self.cursor_sampler_track()
+            .and_then(|idx| self.nav.tracks[idx].sampler.as_ref())
+            .map_or(0, |s| s.current().layers.len())
+    }
+
+    /// Pull both panel cursors inside what the current pad holds.
+    ///
+    /// Called before every edit and after anything that can change which
+    /// pad is current, because the pad cursor moves on its own: playing a
+    /// key takes it to a pad that may have no layers at all, and six
+    /// controls go with them.
+    pub(crate) fn clamp_sampler_cursors(&mut self) {
+        let (knobs, layers) = (self.sampler_knobs().len(), self.sampler_layer_count());
+        self.nav.clip_view.sampler.clamp(knobs, layers);
+    }
+
+    /// Walk the pad cursor along the bed.
+    pub(crate) fn move_sampler_pad(&mut self, delta: i32) {
+        let Some(idx) = self.cursor_sampler_track() else { return };
+        let Some(sampler) = self.nav.tracks[idx].sampler.as_mut() else { return };
+        let pad = sampler.move_cursor(delta);
+        self.clamp_sampler_cursors();
+        // Not an undo step and not a command: which pad is being looked at
+        // is a cursor, and the engine has never needed to know.
+        self.flash(format!(
+            "pad {} \u{00b7} {} layers",
+            SamplerState::pad_label(pad),
+            self.sampler_layer_count(),
+        ));
+    }
+
+    /// Walk the layer cursor inside the current pad.
+    pub(crate) fn move_sampler_layer(&mut self, delta: i32) {
+        let count = self.sampler_layer_count();
+        self.nav.clip_view.sampler.move_layer(delta, count);
+    }
+
+    /// Put the layer cursor on a numbered layer, when the pad has one.
+    pub(crate) fn select_sampler_layer(&mut self, index: usize) {
+        if index < self.sampler_layer_count() {
+            self.nav.clip_view.sampler.layer = index;
+        }
+    }
+
+    /// Turn the control under the cursor.
+    ///
+    /// One undo step per gesture: a player who nudges the decay and then
+    /// the level has made one adjustment to one pad, and one `u` puts both
+    /// back — the effect panel's grain, applied to a pad.
+    pub(crate) fn adjust_sampler_knob(&mut self, delta: i32, stride: bool) {
+        let Some(track_idx) = self.cursor_sampler_track() else { return };
+        self.clamp_sampler_cursors();
+        let view = &self.nav.clip_view.sampler;
+        let (cursor, layer) = (view.knob, view.layer);
+        let Some(&knob) = self.sampler_knobs().get(cursor) else { return };
+
+        let before = self.nav.undo_checkpoint(UndoScope::Sampler { track_idx });
+        let Some(sampler) = self.nav.tracks[track_idx].sampler.as_mut() else { return };
+        let pad = sampler.cursor;
+        knob.adjust(sampler.current_mut(), layer, delta, stride);
+        let shown = {
+            let state = &sampler.pads[pad];
+            knob.value(state, state.layers.get(layer))
+        };
+        self.nav.commit_undo_coalesced(
+            before,
+            "adjust pad",
+            UndoGesture::SamplerPad { track_idx, pad },
+        );
+        self.sync_sampler_pad(track_idx, pad);
+        self.flash(format!(
+            "{} {}: {shown}",
+            SamplerState::pad_label(pad),
+            knob.label(),
+        ));
+    }
+
+    // ── The layer list ──
+
+    /// `m`: take the layer under the cursor out of the pad's sound without
+    /// taking it off the pad. One step, never folded — a mute is a decision,
+    /// not a sweep.
+    pub(crate) fn toggle_sampler_layer_mute(&mut self) {
+        let Some(track_idx) = self.cursor_sampler_track() else { return };
+        self.clamp_sampler_cursors();
+        let layer = self.nav.clip_view.sampler.layer;
+        let before = self.nav.undo_checkpoint(UndoScope::Sampler { track_idx });
+        let Some(sampler) = self.nav.tracks[track_idx].sampler.as_mut() else { return };
+        let pad = sampler.cursor;
+        let Some(state) = sampler.current_mut().layers.get_mut(layer) else { return };
+        state.mute = !state.mute;
+        let (muted, name) = (state.mute, state.name.clone());
+        self.nav.commit_undo(before, "mute layer");
+        self.sync_sampler_pad(track_idx, pad);
+        self.flash(format!(
+            "{name}: {}",
+            if muted { "muted" } else { "in the pad" },
+        ));
+    }
+
+    /// `d`: ask before taking a sound off a pad.
+    ///
+    /// The effect chain's modal, for the effect chain's reason and one of
+    /// its own: a layer can be a take that took a performance to make, and
+    /// `d` is one key away from the ones that walk the list.
+    pub(crate) fn request_sampler_layer_delete(&mut self) {
+        let Some(track_idx) = self.cursor_sampler_track() else { return };
+        self.clamp_sampler_cursors();
+        let layer = self.nav.clip_view.sampler.layer;
+        let Some(sampler) = self.nav.tracks[track_idx].sampler.as_ref() else { return };
+        let Some(state) = sampler.current().layers.get(layer) else {
+            self.flash("nothing on this pad to remove");
+            return;
+        };
+        let message = format!(
+            "remove {} from pad {}?",
+            state.name,
+            SamplerState::pad_label(sampler.cursor),
+        );
+        self.nav.confirm_modal.show(ConfirmKind::DeleteSamplerLayer, &message);
+    }
+
+    /// The `y` of that modal.
+    ///
+    /// The undo step is not only for the player: the slice it captured
+    /// holds the last UI-side `Arc` to this layer's audio, so the buffer
+    /// stays alive until history lets go of it. The engine hears about the
+    /// pad on the next line and drops its own copy whenever it is finished
+    /// with it, which is then never the final drop.
+    pub(crate) fn delete_sampler_layer(&mut self) {
+        let Some(track_idx) = self.cursor_sampler_track() else { return };
+        let layer = self.nav.clip_view.sampler.layer;
+        let before = self.nav.undo_checkpoint(UndoScope::Sampler { track_idx });
+        let Some(sampler) = self.nav.tracks[track_idx].sampler.as_mut() else { return };
+        let pad = sampler.cursor;
+        let state = sampler.current_mut();
+        if layer >= state.layers.len() {
+            return;
+        }
+        let name = state.layers.remove(layer).name;
+        self.nav.commit_undo(before, "remove layer");
+        self.sync_sampler_pad(track_idx, pad);
+        self.clamp_sampler_cursors();
+        self.flash(format!("{name} removed \u{00b7} u brings it back"));
+    }
+
+    // ── Undo ──
+
+    /// Put a captured sampler back, and tell the engine everything it has
+    /// to forget as well as everything it has to learn.
+    ///
+    /// The union of the two occupied sets, not just the new one: a pad the
+    /// undo emptied is a pad the engine is still holding a sound for, and
+    /// shipping only what is occupied now would leave that sound on the
+    /// key with nothing on the screen to explain it.
+    pub(crate) fn apply_sampler_slice(
+        &mut self,
+        track_idx: usize,
+        sampler: &Option<Box<SamplerState>>,
+    ) {
+        let mut pads: Vec<usize> = self
+            .nav
+            .tracks
+            .get(track_idx)
+            .and_then(|t| t.sampler.as_ref())
+            .map(|s| s.occupied_pads().collect())
+            .unwrap_or_default();
+        for pad in sampler.as_ref().map(|s| s.occupied_pads()).into_iter().flatten() {
+            if !pads.contains(&pad) {
+                pads.push(pad);
+            }
+        }
+        let Some(track) = self.nav.tracks.get_mut(track_idx) else { return };
+        track.sampler = sampler.clone();
+        for pad in pads {
+            self.sync_sampler_pad(track_idx, pad);
+        }
+        self.clamp_sampler_cursors();
     }
 }

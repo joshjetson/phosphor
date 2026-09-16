@@ -53,6 +53,7 @@ impl App {
             ConfirmKind::DeleteTrack | ConfirmKind::DeleteClip => self.execute_delete(kind),
             ConfirmKind::DeletePreset => self.do_delete_preset(),
             ConfirmKind::DeleteFx => self.remove_fx_at_cursor(),
+            ConfirmKind::DeleteSamplerLayer => self.delete_sampler_layer(),
             ConfirmKind::OverwritePreset => {
                 let name = std::mem::take(&mut self.nav.preset_modal.pending_name);
                 self.do_save_preset(&name);
@@ -147,7 +148,10 @@ impl App {
             // here — `execute_confirm` routes them. Named rather than
             // wildcarded so a new confirmation kind has to be placed on
             // purpose instead of quietly doing nothing.
-            ConfirmKind::DeletePreset | ConfirmKind::OverwritePreset | ConfirmKind::DeleteFx => {}
+            ConfirmKind::DeletePreset
+            | ConfirmKind::OverwritePreset
+            | ConfirmKind::DeleteFx
+            | ConfirmKind::DeleteSamplerLayer => {}
         }
     }
 

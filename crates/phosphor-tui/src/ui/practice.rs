@@ -14,6 +14,7 @@ use phosphor_app::practice::{Family, Hand, TargetNote, NOTE_NAMES};
 
 use crate::state::NavState;
 use crate::theme;
+use super::keyboard::{self, white_index, KeyPaint, INK};
 
 pub(super) fn render_practice(frame: &mut Frame, area: Rect, nav: &NavState) {
     let room = &nav.practice;
@@ -281,20 +282,6 @@ fn keyboard_range(targets: &[TargetNote]) -> (u8, u8) {
     (lo.max(21), hi.min(108))
 }
 
-const WHITE_PCS: [u8; 7] = [0, 2, 4, 5, 7, 9, 11];
-
-fn is_black(note: u8) -> bool {
-    matches!(note % 12, 1 | 3 | 6 | 8 | 10)
-}
-
-/// White-key index of a note from `lo` (counting white keys only).
-fn white_index(lo: u8, note: u8) -> usize {
-    (lo..note).filter(|n| !is_black(*n)).count()
-}
-
-/// The keyboard band: five rows. The upper three carry the black keys,
-/// the lower two the white; targets carry their finger number on the key,
-/// pressed keys flip green (right) or red (wrong).
 /// The keys the player should have down *now*: the wait group, or the
 /// pending flow targets nearest the focus tick.
 fn wanted_now(run: &phosphor_app::practice::Run, focus: usize) -> Vec<(u8, u8, Hand)> {
@@ -309,6 +296,10 @@ fn wanted_now(run: &phosphor_app::practice::Run, focus: usize) -> Vec<(u8, u8, H
     wanted
 }
 
+/// The drill's keyboard: targets carry their finger number on the key, in
+/// the hand's colour; a key that is down flips green (right) or red
+/// (wrong). The keyboard itself is [`keyboard::band`] — this only answers
+/// what each key means to the drill.
 fn keyboard_band(
     lo: u8,
     hi: u8,
@@ -319,31 +310,25 @@ fn keyboard_band(
     let targets = run.judge.targets();
     let wanted = wanted_now(run, focus);
 
-    let white_total = white_index(lo, hi) + 1;
-    let cell = 2usize;
-    let usable = width.saturating_sub(4);
-    let white_shown = (usable / cell).min(white_total);
-    let bg_white = theme::piano_white_bg();
-    let bg_white_lit = Color::Rgb(240, 240, 230);
-    let bg_black = Color::Rgb(20, 20, 24);
     let green = Color::Rgb(60, 160, 80);
     let red = theme::rec_active_val();
     let amber = theme::amber_bright_val();
     let lh_blue = Color::Rgb(70, 130, 200);
 
-    let key_color = |note: u8, upper: bool| -> (Color, Option<char>) {
+    keyboard::band(lo, hi, width, |note| {
         let down = run.down.contains(&note);
         let want = wanted.iter().find(|(n, _, _)| *n == note);
         match (want, down) {
-            (Some(_), true) => (green, None),
+            (Some(_), true) => KeyPaint::lit(green),
             (Some(&(_, finger, hand)), false) => {
                 let base = if hand == Hand::Left { lh_blue } else { amber };
-                let digit = if finger > 0 {
-                    char::from_digit(u32::from(finger), 10)
-                } else {
-                    None
-                };
-                (base, digit)
+                let paint = KeyPaint::lit(base);
+                // A lit key carries its digit in near-black: light on amber
+                // washed out.
+                match char::from_digit(u32::from(finger), 10).filter(|_| finger > 0) {
+                    Some(digit) => paint.with_glyph(digit, INK),
+                    None => paint,
+                }
             }
             (None, true) => {
                 // A key down that nothing asked for: red, unless the judge
@@ -352,84 +337,11 @@ fn keyboard_band(
                     .iter()
                     .enumerate()
                     .any(|(i, t)| t.note == note && matches!(run.judge.status(i), HitState::Hit(_)));
-                if recently_ok {
-                    (green, None)
-                } else {
-                    (red, None)
-                }
+                KeyPaint::lit(if recently_ok { green } else { red })
             }
-            (None, false) => {
-                if upper {
-                    (bg_black, None)
-                } else {
-                    (bg_white, None)
-                }
-            }
+            (None, false) => KeyPaint::plain(note),
         }
-    };
-    let _ = bg_white_lit;
-
-    let mut rows: Vec<Vec<Span<'static>>> = vec![vec![Span::styled("  ", theme::dim())]; 5];
-    let mut white = lo;
-    // Walk white keys left to right; consult the black key above each.
-    let mut shown = 0usize;
-    while shown < white_shown && white <= hi {
-        if is_black(white) {
-            white += 1;
-            continue;
-        }
-        let w = white;
-        // Rows 3-4: the white key body.
-        let (wc, wdigit) = key_color(w, false);
-        let wtext = |digit: Option<char>| -> String {
-            match digit {
-                Some(d) => format!("{d} "),
-                None => "  ".to_string(),
-            }
-        };
-        rows[3].push(Span::styled(
-            wtext(None),
-            Style::default().bg(wc),
-        ));
-        rows[4].push(Span::styled(
-            wtext(wdigit).to_string(),
-            Style::default().bg(wc).fg(Color::Rgb(10, 10, 10)).add_modifier(Modifier::BOLD),
-        ));
-        // Rows 0-2: black key between this white and the next, drawn on
-        // this cell's right half, or the white key's continuation.
-        let black = w + 1;
-        let has_black = black <= hi && is_black(black) && WHITE_PCS.contains(&(w % 12)) && !matches!(w % 12, 4 | 11);
-        for row in 0..3 {
-            if has_black {
-                let (bc, bdigit) = key_color(black, true);
-                let digit = if row == 1 { bdigit } else { None };
-                let text = match digit {
-                    Some(d) => format!("{d}"),
-                    None => " ".to_string(),
-                };
-                rows[row].push(Span::styled(
-                    " ".to_string(),
-                    Style::default().bg(key_color(w, false).0),
-                ));
-                // A lit black key carries its digit in near-black on the
-                // bright key colour — light-on-amber washed out.
-                let lit = bc != bg_black;
-                let fg = if lit { Color::Rgb(12, 12, 12) } else { Color::Rgb(230, 230, 230) };
-                rows[row].push(Span::styled(
-                    text,
-                    Style::default().bg(bc).fg(fg).add_modifier(Modifier::BOLD),
-                ));
-            } else {
-                rows[row].push(Span::styled(
-                    "  ".to_string(),
-                    Style::default().bg(key_color(w, false).0),
-                ));
-            }
-        }
-        white += 1;
-        shown += 1;
-    }
-    rows.into_iter().map(Line::from).collect()
+    })
 }
 /// Finger column heights on a four-row hand: a hand seen palm-down, the
 /// middle finger tallest, the thumb a low nub at the side.

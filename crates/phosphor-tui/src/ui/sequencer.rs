@@ -38,54 +38,13 @@
 //! is paged rather than squeezed.
 
 use super::*;
+use super::knobs::{window, Knob, Panel};
 
 use phosphor_app::sequencer::{chords, SequencerState, DEFAULT_DRUM_LABELS};
 use phosphor_core::pattern::{
     Chord, Lane, Mode, PatternBlock, Rate, Step, SwitchQuant, Voicing, LANES, MAX_STEPS, SLOTS,
     STEP_COUNTS,
 };
-
-/// The dial. Five positions is what one cell can say honestly, and the value
-/// is printed beside it, so the glyph is for reading the panel at a glance
-/// rather than for reading the number off.
-fn knob_char(frac: f64) -> char {
-    const RAMP: [char; 5] = ['\u{25CB}', '\u{25D4}', '\u{25D1}', '\u{25D5}', '\u{25CF}'];
-    let index = (frac.clamp(0.0, 1.0) * 4.0).round() as usize;
-    RAMP[index.min(4)]
-}
-
-/// One control on a panel.
-struct Knob {
-    label: &'static str,
-    value: String,
-    /// Where the dial is pointing, 0..=1.
-    frac: f64,
-}
-
-impl Knob {
-    fn new(label: &'static str, value: impl Into<String>, frac: f64) -> Self {
-        Self { label, value: value.into(), frac }
-    }
-
-    /// One of a list, by position — how every discrete control here reads.
-    fn at(label: &'static str, value: impl Into<String>, index: usize, count: usize) -> Self {
-        let frac = if count > 1 { index as f64 / (count - 1) as f64 } else { 0.0 };
-        Self::new(label, value, frac)
-    }
-
-    fn toggle(label: &'static str, on: bool) -> Self {
-        Self::new(label, if on { "on" } else { "off" }, if on { 1.0 } else { 0.0 })
-    }
-
-    /// What [`Seq::knob_spans`] will draw: `" label ◔ value "`.
-    ///
-    /// Counted rather than measured, and the count has to be exact — a knob
-    /// that is one cell wider than the wrapper thinks runs off the right of
-    /// the panel, where a `Paragraph` cuts it in half.
-    fn width(&self) -> usize {
-        self.label.chars().count() + self.value.chars().count() + 5
-    }
-}
 
 /// The short name of a drum voice, for a lane pinned to one.
 ///
@@ -210,88 +169,27 @@ impl Seq<'_> {
         self.state.step()
     }
 
-    /// The style a knob's parts take, given where the cursor is.
-    fn knob_spans(&self, knob: &Knob, index: usize, band: SeqBand) -> Vec<Span<'static>> {
-        let selected = self.on(band) && self.view.knob == index;
-        let locked = selected && self.view.locked;
-
-        let label_style = if selected {
-            theme::amber_bright().add_modifier(Modifier::BOLD)
-        } else if self.focused {
-            theme::muted()
-        } else {
-            theme::dim()
-        };
-        let dial_style = if selected {
-            Style::default().fg(theme::amber_bright_val()).bg(theme::bg_val())
-        } else {
-            Style::default().fg(self.colour).bg(theme::bg_val())
-        };
-        // Locked reads as inverse video in the theme's own colours rather than
-        // as a colour of its own: every palette has a background and an amber,
-        // and swapping them is legible in all nine.
-        let value_style = if locked {
-            Style::default()
-                .fg(theme::bg_val())
-                .bg(theme::amber_bright_val())
-                .add_modifier(Modifier::BOLD)
-        } else if selected {
-            theme::amber_bright()
-        } else if self.focused {
-            theme::normal()
-        } else {
-            theme::dim()
-        };
-
-        vec![
-            Span::styled(format!(" {} ", knob.label), label_style),
-            Span::styled(knob_char(knob.frac).to_string(), dial_style),
-            Span::styled(format!(" {}", knob.value), value_style),
-            Span::styled(" ", theme::bg()),
-        ]
+    /// The shared knob panel, told where this view's cursor is standing.
+    /// The knobs are drawn in the column the grid's lane labels use.
+    fn panel(&self, band: SeqBand) -> Panel {
+        Panel {
+            cursor: self.view.knob,
+            active: self.on(band),
+            locked: self.view.locked,
+            focused: self.focused,
+            colour: self.colour,
+            width: self.width,
+            indent: LABEL_W + 4,
+        }
     }
 
-    /// A panel of knobs, wrapped to the width it has, under a title in the
-    /// same column the grid's lane labels use.
-    ///
-    /// Answers which of the rows the cursor ended up on, so that a panel too
-    /// tall for the space it has can be scrolled to the row being used rather
-    /// than cut off at the bottom.
     fn knob_rows(
         &self,
         title: &str,
         knobs: &[Knob],
         band: SeqBand,
     ) -> (Vec<Line<'static>>, usize) {
-        const INDENT: usize = LABEL_W + 4;
-        let heading = if self.on(band) {
-            theme::amber_bright().add_modifier(Modifier::BOLD)
-        } else if self.focused {
-            theme::muted()
-        } else {
-            theme::dim()
-        };
-
-        let mut rows: Vec<Line> = Vec::new();
-        let mut cursor_row = 0;
-        let mut spans: Vec<Span> =
-            vec![Span::styled(format!("{:>w$} ", title, w = INDENT - 1), heading)];
-        let mut used = INDENT;
-
-        for (index, knob) in knobs.iter().enumerate() {
-            if used + knob.width() > self.width && used > INDENT {
-                rows.push(Line::from(std::mem::take(&mut spans)));
-                spans.push(Span::styled(" ".repeat(INDENT), theme::bg()));
-                used = INDENT;
-            }
-            if index == self.view.knob {
-                cursor_row = rows.len();
-            }
-            used += knob.width();
-            spans.extend(self.knob_spans(knob, index, band));
-        }
-        rows.push(Line::from(spans));
-        (rows, cursor_row)
+        self.panel(band).rows(title, knobs)
     }
 }
 
@@ -1124,21 +1022,6 @@ pub(super) fn render_sequencer(
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// `count` rows of a panel, chosen so that the row the cursor is on is one of
-/// them. A knob under the cursor and off the bottom of the screen is a
-/// control that answers keys nobody can see.
-fn window(rows: Vec<Line<'static>>, count: usize, cursor_row: usize) -> Vec<Line<'static>> {
-    if count == 0 {
-        return Vec::new();
-    }
-    if count >= rows.len() {
-        return rows;
-    }
-    let start = (cursor_row + 1).saturating_sub(count).min(rows.len() - count);
-    rows.into_iter().skip(start).take(count).collect()
-}
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1159,9 +1042,9 @@ mod tests {
         }
     }
 
-    /// The defect this catches, exactly: a knob whose declared width is one
-    /// cell short of what it draws wraps a column too late and gets cut in
-    /// half by the right edge of the panel.
+    /// Every knob the grid can draw is exactly as wide as it says it is —
+    /// the wrapper trusts that count, and a knob one cell wider than its
+    /// own answer gets cut in half by the right edge of the panel.
     #[test]
     fn a_knob_is_as_wide_as_it_says_it_is() {
         let view = SequencerView::new();
@@ -1176,24 +1059,13 @@ mod tests {
             for knob in every {
                 let drawn = knob_of(&seq, knob);
                 let cells: usize = seq
-                    .knob_spans(&drawn, 0, SeqBand::Step)
+                    .panel(SeqBand::Step)
+                    .spans(&drawn, 0)
                     .iter()
                     .map(|span| span.content.chars().count())
                     .sum();
                 assert_eq!(cells, drawn.width(), "{} draws {cells} cells", drawn.label);
             }
-        }
-    }
-
-    /// The dial reads its whole travel, and anything a float can be does not
-    /// take it off the end of the ramp.
-    #[test]
-    fn the_dial_covers_its_travel_and_survives_nonsense() {
-        assert_eq!(knob_char(0.0), '\u{25CB}');
-        assert_eq!(knob_char(1.0), '\u{25CF}');
-        assert_ne!(knob_char(0.5), knob_char(0.0));
-        for frac in [-1.0, 2.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let _ = knob_char(frac);
         }
     }
 
@@ -1255,24 +1127,4 @@ mod tests {
         assert!(geometry.x_of(4).is_none(), "a step from the other page was drawn");
     }
 
-    /// A panel taller than its space shows the row the cursor is on, wherever
-    /// in the panel that row is.
-    #[test]
-    fn a_windowed_panel_keeps_the_cursor_on_the_screen() {
-        let rows: Vec<Line<'static>> = (0..5)
-            .map(|index| Line::from(Span::raw(format!("row {index}"))))
-            .collect();
-        for cursor in 0..5 {
-            let shown = window(rows.clone(), 2, cursor);
-            assert_eq!(shown.len(), 2);
-            let text: Vec<String> =
-                shown.iter().map(|line| line.spans[0].content.to_string()).collect();
-            assert!(
-                text.contains(&format!("row {cursor}")),
-                "row {cursor} fell off the screen: {text:?}",
-            );
-        }
-        assert_eq!(window(rows.clone(), 9, 0).len(), 5, "a panel that fits is not windowed");
-        assert!(window(rows, 0, 0).is_empty());
-    }
 }

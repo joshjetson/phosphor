@@ -60,6 +60,10 @@ pub enum UndoScope {
     /// editing cursors, but never its run state. See
     /// [`crate::sequencer::SeqContent`].
     Sequencer { track_idx: usize },
+    /// A sampler's pads, whole: every pad's settings and every layer on
+    /// them. See [`StateSlice::Sampler`] for why the whole kit rather than
+    /// the one pad being edited.
+    Sampler { track_idx: usize },
     /// A sequencer track's child instrument, whole: which instrument sits
     /// in the plugin slot, its entire panel, and the sequencer content —
     /// because swapping a drum machine for a keyboard re-lays the lanes,
@@ -102,6 +106,15 @@ pub enum StateSlice {
     /// applied as a no-op, and never produced by the capture sites in
     /// practice: only sequencer edits checkpoint this scope.
     Sequencer { track_idx: usize, content: Option<Box<crate::sequencer::SeqContent>> },
+    /// A whole sampler, or `None` when the track had none.
+    ///
+    /// The whole kit rather than one pad, and it costs almost nothing: the
+    /// audio is behind `Arc`s, so a capture clones 88 pads of small numbers
+    /// and a handful of pointers, never a sample. Holding the whole kit is
+    /// also what makes the buffer-lifetime contract hold — a deleted
+    /// layer's buffer stays referenced by this step for as long as the step
+    /// lives, so the audio thread's own drop can never be the last one.
+    Sampler { track_idx: usize, sampler: Option<Box<crate::sampler::SamplerState>> },
     SeqChild {
         track_idx: usize,
         instrument: Option<InstrumentType>,
@@ -169,6 +182,13 @@ impl StateSlice {
                     .and_then(|t| t.sequencer.as_ref())
                     .map(|s| Box::new(s.content())),
             },
+            UndoScope::Sampler { track_idx } => Self::Sampler {
+                track_idx,
+                sampler: nav
+                    .tracks
+                    .get(track_idx)
+                    .and_then(|t| t.sampler.clone()),
+            },
             UndoScope::SeqChild { track_idx } => {
                 let track = nav.tracks.get(track_idx);
                 Self::SeqChild {
@@ -207,6 +227,7 @@ impl StateSlice {
             Self::SynthParams { track_idx, .. } => UndoScope::SynthParams { track_idx: *track_idx },
             Self::TrackMix { track_idx, .. } => UndoScope::TrackMix { track_idx: *track_idx },
             Self::Sequencer { track_idx, .. } => UndoScope::Sequencer { track_idx: *track_idx },
+            Self::Sampler { track_idx, .. } => UndoScope::Sampler { track_idx: *track_idx },
             Self::SeqChild { track_idx, .. } => UndoScope::SeqChild { track_idx: *track_idx },
             Self::TrackName { track_idx, .. } => UndoScope::TrackName { track_idx: *track_idx },
             Self::Tempo { .. } => UndoScope::Tempo,
@@ -257,6 +278,10 @@ impl StateSlice {
                 Self::Sequencer { track_idx: b, content: cb },
             ) => a == b && ca == cb,
             (
+                Self::Sampler { track_idx: a, sampler: sa },
+                Self::Sampler { track_idx: b, sampler: sb },
+            ) => a == b && sa == sb,
+            (
                 Self::SeqChild { track_idx: a, instrument: ia, params: pa, content: ca },
                 Self::SeqChild { track_idx: b, instrument: ib, params: pb, content: cb },
             ) => a == b && ia == ib && pa == pb && ca == cb,
@@ -297,6 +322,11 @@ pub enum UndoGesture {
     Routing { track_idx: usize },
     /// A sequencer's grid and knobs.
     Sequencer { track_idx: usize },
+    /// A pad's controls, and the controls of the layers on it. The whole
+    /// panel is one gesture, the way an effect slot's is: a player nudging
+    /// the decay and then the level has made one adjustment to one pad, and
+    /// one `u` should put both back.
+    SamplerPad { track_idx: usize, pad: usize },
     /// The knob that walks a sequencer's child instrument list. Its own
     /// gesture, so a flick through five instruments is one step back to
     /// the one the player left — and never folds into a pattern sweep.
@@ -598,6 +628,53 @@ mod tests {
         nav.tracks[0].clips[0].notes.clear();
         nav.commit_undo(before, "delete notes");
         assert!(!nav.undo_stack.top_is_take());
+    }
+
+    /// A sampler slice notices a pad edit, and does not notice a buffer
+    /// being handed round: the audio is compared by identity, because a
+    /// slice that walked the samples to answer would walk megabytes on
+    /// every keypress — and because two layers pointing at one buffer is
+    /// the whole point of the `Arc`.
+    #[test]
+    fn a_sampler_slice_compares_pads_and_not_audio() {
+        use crate::sampler::SamplerState;
+        use std::sync::Arc;
+
+        let mut nav = nav_with_clip();
+        let pcm = Arc::new(phosphor_plugin::sample::SamplePcm {
+            data: vec![0.25; 1_000],
+            channels: 1,
+            sample_rate: 44_100.0,
+        });
+        let mut state = SamplerState::new();
+        state.add_wav_layer(0, "kick.wav".into(), Arc::clone(&pcm)).unwrap();
+        nav.tracks[0].sampler = Some(Box::new(state));
+
+        // Nothing touched: no step.
+        let before = nav.undo_checkpoint(UndoScope::Sampler { track_idx: 0 });
+        nav.commit_undo(before, "adjust pad");
+        assert!(!nav.undo_stack.can_undo(), "an untouched kit pushed a step");
+
+        // One knob: one step, holding both sides.
+        let before = nav.undo_checkpoint(UndoScope::Sampler { track_idx: 0 });
+        nav.tracks[0].sampler.as_mut().unwrap().pads[0].config.poly = 4;
+        nav.commit_undo(before, "adjust pad");
+        let step = nav.undo_stack.pop_undo().expect("the edit left no step");
+        let StateSlice::Sampler { sampler: Some(was), .. } = &step.before else { panic!() };
+        let StateSlice::Sampler { sampler: Some(now), .. } = &step.after else { panic!() };
+        assert_eq!(was.pads[0].config.poly, 1);
+        assert_eq!(now.pads[0].config.poly, 4);
+
+        // And the captured side still holds the audio — which is what keeps
+        // the buffer alive when the pad lets go of it.
+        assert!(Arc::ptr_eq(was.pads[0].layers[0].pcm.as_ref().unwrap(), &pcm));
+
+        // A layer rebuilt around the same buffer is the same layer.
+        let before = nav.undo_checkpoint(UndoScope::Sampler { track_idx: 0 });
+        let copy = nav.tracks[0].sampler.as_ref().unwrap().pads[0].layers[0].clone();
+        nav.tracks[0].sampler.as_mut().unwrap().pads[0].layers[0] = copy;
+        nav.commit_undo(before, "adjust pad");
+        assert!(!nav.undo_stack.can_undo(), "re-cloning a layer looked like an edit");
     }
 
     // ── Gestures ──

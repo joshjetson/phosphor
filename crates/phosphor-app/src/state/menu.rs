@@ -418,6 +418,10 @@ pub enum ConfirmKind {
     /// a chain is work, and a `d` that lands one row off should have to say
     /// what it is about to take.
     DeleteFx,
+    /// Taking a sound off a pad. Asked about for the effect's reason and
+    /// one of its own: a layer can be a take that took a performance to
+    /// make, and `d` is one row away from the keys that walk the list.
+    DeleteSamplerLayer,
     /// Saving over a preset name the bank already holds.
     OverwritePreset,
 }

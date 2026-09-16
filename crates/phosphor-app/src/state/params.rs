@@ -141,6 +141,14 @@ impl NavState {
                 };
                 self.clip_view_target = Some((self.track_cursor, clip_idx));
 
+                // A tab this track has not got cannot stay open behind it:
+                // walking from a sampler to a synth would leave the pad map
+                // showing with nothing on it, and highlighted on a strip
+                // that no longer lists it.
+                if self.clip_view.clip_tab == ClipTab::Pads && track.sampler.is_none() {
+                    self.clip_view.clip_tab = ClipTab::InstConfig;
+                }
+
                 // A sequencer track opens on its grid: the pattern is the
                 // thing being worked on, and its clips — if it has any — are
                 // bounces of it rather than what is playing.
@@ -152,6 +160,16 @@ impl NavState {
                     // one pane while the keys land in another is a sequencer
                     // you can see but not touch — the tab and the inner focus
                     // above are only two thirds of "opened on its grid".
+                    self.focused_pane = Pane::ClipView;
+                } else if track.sampler.is_some() {
+                    // A sampler opens on its pads, for the sequencer's
+                    // reason: the kit is the thing being worked on, and the
+                    // flat panel holds two globals. All four fields again —
+                    // the tab, the side of the clip view it is on, the
+                    // panel's own cursor, and the pane the keys go to.
+                    self.clip_view.clip_tab = ClipTab::Pads;
+                    self.clip_view.focus = ClipViewFocus::PianoRoll;
+                    self.clip_view.sampler.focus();
                     self.focused_pane = Pane::ClipView;
                 } else if !track.clips.is_empty() {
                     self.clip_view.clip_tab = ClipTab::PianoRoll;
@@ -584,6 +602,44 @@ mod tests {
                 assert_eq!(before[i], after[i], "{} moved with the kick's decay", drum_rack::PARAM_NAMES[i]);
             }
         }
+    }
+
+    /// Opening a sampler track lands on its pads, with the keys on them.
+    ///
+    /// All four fields or none: the tab, the side of the clip view, the
+    /// panel's own cursor and the pane the keyboard goes to. Three of four
+    /// is a pad map you can see and not touch — the defect the sequencer
+    /// arm above this one was written to stop.
+    #[test]
+    fn a_sampler_track_opens_on_its_pads_with_the_keys_on_them() {
+        let mut nav = NavState::new(super::super::initial_tracks());
+        let mut track = TrackState::new("smplr", 0, true, TrackKind::Instrument, vec![]);
+        track.instrument_type = Some(InstrumentType::Sampler);
+        track.sampler = Some(Box::new(crate::sampler::SamplerState::new()));
+        track.handle =
+            Some(std::sync::Arc::new(phosphor_core::project::TrackHandle::new(
+                0,
+                TrackKind::Instrument,
+            )));
+        nav.tracks.insert(0, track);
+        nav.track_cursor = 0;
+
+        nav.clip_view.sampler.knob = 7;
+        nav.clip_view.sampler.locked = true;
+        nav.show_current_track_controls();
+
+        assert_eq!(nav.clip_view.clip_tab, ClipTab::Pads);
+        assert_eq!(nav.clip_view.focus, ClipViewFocus::PianoRoll);
+        assert_eq!(nav.clip_view.sampler.knob, 0);
+        assert!(!nav.clip_view.sampler.locked, "the panel opened with a knob still held");
+        assert_eq!(nav.focused_pane, Pane::ClipView);
+
+        // A track with no pads does not land there, however many times it
+        // is opened.
+        nav.tracks[0].sampler = None;
+        nav.tracks[0].instrument_type = Some(InstrumentType::Rhodes);
+        nav.show_current_track_controls();
+        assert_ne!(nav.clip_view.clip_tab, ClipTab::Pads);
     }
 
     #[test]

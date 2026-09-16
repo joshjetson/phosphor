@@ -31,6 +31,7 @@
 
 use super::*;
 
+use phosphor_app::format::pan_label;
 use phosphor_app::state::{FxType, FxView};
 use phosphor_dsp::fx::eq::{
     iso_step_down, iso_step_up, natural_param, BandType, Slope, PARAM_COUNT,
@@ -923,18 +924,6 @@ impl App {
 
 /// Where a send opens to when it is turned up from silence.
 const SEND_FLOOR_DB: f32 = -40.0;
-
-/// The pan, as a mixer says it: `C`, `L37`, `R50`.
-pub(crate) fn pan_label(pan: f32) -> String {
-    let amount = (pan.abs() * 100.0).round() as i32;
-    if amount == 0 {
-        "C".to_string()
-    } else if pan < 0.0 {
-        format!("L{amount}")
-    } else {
-        format!("R{amount}")
-    }
-}
 
 // ── The delay's panel ──
 

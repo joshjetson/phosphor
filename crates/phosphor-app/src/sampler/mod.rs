@@ -8,6 +8,7 @@
 //! also held here (or by undo history), so the audio thread's drops are
 //! refcount decrements and the actual frees happen on this side.
 
+pub mod knobs;
 pub mod session;
 pub mod wav;
 
@@ -77,6 +78,16 @@ impl LayerState {
         }
     }
 
+    /// How long the playable region lasts, in seconds — what the layer
+    /// list prints beside its name. Zero while the file is missing: there
+    /// is nothing to time.
+    pub fn seconds(&self) -> f32 {
+        let Some(pcm) = self.pcm.as_ref() else { return 0.0 };
+        let end = self.end_frame.min(pcm.frames());
+        let frames = end.saturating_sub(self.start_frame) as f32;
+        frames / pcm.sample_rate.max(1.0)
+    }
+
     /// The engine's view of this layer, or `None` while the file behind
     /// it is missing.
     pub fn engine_layer(&self) -> Option<PadLayer> {
@@ -97,13 +108,52 @@ impl LayerState {
     }
 }
 
-#[derive(Debug, Clone)]
+/// Two layers are the same layer when they point at the same buffer and
+/// carry the same settings.
+///
+/// Identity on the PCM, never contents: undo compares slices of this state
+/// on every commit, and comparing two takes sample by sample would walk
+/// megabytes to answer a question the pointer already answers. Two distinct
+/// decodes of one file are "different" under this rule, which costs one
+/// harmless undo step and never a missed one.
+impl PartialEq for LayerState {
+    fn eq(&self, other: &Self) -> bool {
+        let same_pcm = match (&self.pcm, &other.pcm) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        same_pcm
+            && self.path == other.path
+            && self.name == other.name
+            && self.gain == other.gain
+            && self.pan == other.pan
+            && self.tune_st == other.tune_st
+            && self.tune_cents == other.tune_cents
+            && self.start_frame == other.start_frame
+            && self.end_frame == other.end_frame
+            && self.reverse == other.reverse
+            && self.mute == other.mute
+            && self.vel_lo == other.vel_lo
+            && self.vel_hi == other.vel_hi
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct PadState {
     pub config: PadConfig,
     pub layers: Vec<LayerState>,
 }
 
-#[derive(Debug, Clone)]
+impl PadState {
+    /// Whether anything on this pad was asked for and is not here — the
+    /// red mark on the bed and in the list.
+    pub fn has_missing(&self) -> bool {
+        self.layers.iter().any(|l| l.pcm.is_none())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct SamplerState {
     /// Indexed by pad — `note - PAD_BASE_NOTE`.
     pub pads: Vec<PadState>,
@@ -144,15 +194,30 @@ impl SamplerState {
         PAD_BASE_NOTE + pad.min(NUM_PADS - 1) as u8
     }
 
-    /// The pad's name on a keyboard — "C3", "A#1". Octaves numbered so
-    /// that 60 is C3, matching the chord device's split labelling.
+    /// The pad's name on a keyboard — "C3", "A#1".
     pub fn pad_label(pad: usize) -> String {
-        const NAMES: [&str; 12] = [
-            "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-        ];
-        let note = Self::note_of_pad(pad);
-        let octave = i32::from(note) / 12 - 2;
-        format!("{}{}", NAMES[usize::from(note) % 12], octave)
+        crate::format::note_name(Self::note_of_pad(pad))
+    }
+
+    /// The pad under the cursor. Always a pad: the bed is 88 seats that
+    /// exist whether or not anything is sitting on them, and a cursor that
+    /// somehow walked off the end is pulled back to the top key rather than
+    /// answering `None` to every caller.
+    pub fn current(&self) -> &PadState {
+        &self.pads[self.cursor.min(NUM_PADS - 1)]
+    }
+
+    pub fn current_mut(&mut self) -> &mut PadState {
+        &mut self.pads[self.cursor.min(NUM_PADS - 1)]
+    }
+
+    /// Walk the cursor along the bed, stopping at both ends. Wrapping would
+    /// turn one press too many at the top of the keyboard into a jump to
+    /// the bottom, which reads as the cursor having been lost.
+    pub fn move_cursor(&mut self, delta: i32) -> usize {
+        self.cursor =
+            (self.cursor as i32 + delta).clamp(0, NUM_PADS as i32 - 1) as usize;
+        self.cursor
     }
 
     /// Put a decoded WAV on a pad. `Err` is a status-bar sentence.

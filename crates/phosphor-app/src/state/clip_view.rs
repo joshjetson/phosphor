@@ -1,5 +1,7 @@
 //! Clip view state — ClipViewState, focus, tabs, piano roll.
 
+use super::SamplerView;
+
 /// Which sub-panel of the clip view has focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipViewFocus {
@@ -44,6 +46,10 @@ pub enum ClipTab {
     /// and left out of the strip until there is a slot open — a tab for a
     /// panel that has no effect behind it is a tab that shows nothing.
     Fx,
+    /// The pad map. Only reachable on a track whose instrument is the
+    /// sampler — [`ClipTab::next`] steps over it everywhere else, and the
+    /// tab strip leaves it out, exactly as it does the step grid.
+    Pads,
 }
 
 impl ClipTab {
@@ -54,6 +60,7 @@ impl ClipTab {
             Self::Settings => "settings",
             Self::Sequencer => "seq",
             Self::Fx => "fx",
+            Self::Pads => "pads",
         }
     }
 
@@ -62,7 +69,7 @@ impl ClipTab {
             Self::InstConfig => Self::PianoRoll,
             Self::PianoRoll => Self::Settings,
             Self::Settings => Self::InstConfig,
-            Self::Sequencer | Self::Fx => Self::InstConfig,
+            Self::Sequencer | Self::Fx | Self::Pads => Self::InstConfig,
         }
     }
 
@@ -184,6 +191,9 @@ pub struct ClipViewState {
     /// is locked. Only ever cursors: what a sequencer *contains* lives in
     /// [`crate::sequencer::SequencerState`] and is edited through its ops.
     pub sequencer: SequencerView,
+    /// Where the cursor is standing in the pad map. Cursors again: the pads
+    /// themselves live on the track's sampler.
+    pub sampler: SamplerView,
     /// Which effect's panel is open, and where the cursor is in it.
     pub fx: FxView,
 }
@@ -202,6 +212,7 @@ impl ClipViewState {
             fx_cursor: 0,
             synth_param_cursor: 0,
             sequencer: SequencerView::new(),
+            sampler: SamplerView::new(),
             fx: FxView::new(),
         }
     }
@@ -1007,6 +1018,31 @@ impl PianoRollState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The conditional tabs stay out of the cycle: `next` steps over the
+    /// step grid and the pad map wherever it starts, so no key can land on
+    /// a view with nothing behind it, and every tab has a name.
+    #[test]
+    fn a_conditional_tab_is_never_cycled_into() {
+        for conditional in [ClipTab::Sequencer, ClipTab::Fx, ClipTab::Pads] {
+            assert!(
+                !ClipTab::ALL.contains(&conditional),
+                "{conditional:?} is in the ordinary strip",
+            );
+            assert!(ClipTab::ALL.contains(&conditional.next()));
+        }
+        let mut tab = ClipTab::Pads;
+        for _ in 0..12 {
+            tab = tab.next();
+            assert!(ClipTab::ALL.contains(&tab), "the cycle reached {tab:?}");
+        }
+        // Lowercase and short, like the others on the strip.
+        for tab in [ClipTab::Pads, ClipTab::Sequencer, ClipTab::Fx] {
+            let label = tab.label();
+            assert_eq!(label, label.to_lowercase());
+            assert!((2..=8).contains(&label.len()), "{label:?} is an odd width");
+        }
+    }
 
     /// An octave hop moves twelve semitones, clamps at the ends, and drags
     /// the view so the cursor stays on screen.

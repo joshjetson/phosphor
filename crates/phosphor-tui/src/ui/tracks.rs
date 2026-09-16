@@ -261,7 +261,7 @@ pub(super) fn render_header(frame: &mut Frame, area: Rect, ctx: &TrackCtx) {
         Line::from(vec![
             Span::styled(ac, ac_s),
             Span::styled(
-                format!("{:>3}", crate::app::pan_label(track.pan)),
+                format!("{:>3}", phosphor_app::format::pan_label(track.pan)),
                 theme::btn_style(track.pan.abs() > 0.001, pan_f, tc),
             ),
             Span::styled(" ", theme::bg()),

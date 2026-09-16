@@ -278,11 +278,14 @@
     "session": "loop markers now save in ticks; old bar-based sessions load exactly as before"
   },
   "sampler": {
-    "_about": "the sampler puts a sound on every piano key: 88 pads, each stacking up to eight wav layers; per-pad trigger/poly/choke/pitch/ADSR and per-layer trim/tune/reverse are in the data model now and grow a full pad view soon",
-    "create": "space then a opens the instrument menu — pick Sampler; the track opens on its panel (level · vel)",
-    "pick_a_pad": "play a key on your MIDI controller — the pad under that key becomes the current pad (C3 to start)",
-    "load": "a on the sampler's panel asks for a file: type a path and press enter — a bare name like 'kick' looks in ~/.phosphor/samples/ and tries .wav for you; each load stacks another layer on the current pad, up to eight",
+    "_about": "the sampler puts a sound on every piano key: 88 pads, each stacking up to eight wav layers, with its own trigger/poly/choke/pitch/ADSR and per-layer tune/reverse/mute",
+    "create": "space then a opens the instrument menu — pick Sampler; the track opens on its [pads] tab with the keys on it",
+    "pad_map": "the keyboard band across the top IS the kit: a key with sounds on it lights in the track's colour and carries the number of layers, a key whose file went missing is red, and the caret ▼ marks the pad being edited · the bed scrolls to keep the caret in sight on a narrow terminal",
+    "pick_a_pad": "play a key on your MIDI controller — the pad under that key becomes the current pad (C3 to start) · h/l walk the bed one key at a time, H/L by an octave",
+    "load": "a asks for a file: type a path and press enter — a bare name like 'kick' looks in ~/.phosphor/samples/ and tries .wav for you; each load stacks another layer on the current pad, up to eight, and points the panel at what just arrived",
+    "knobs": "j/k picks a control, enter holds it, h/l turns it, H/L strides, esc lets go — held is the only time h/l stop walking the keyboard · the pad's own: trig · poly · choke · pitch · fine · attack · decay · sustain · release · level · pan · root · keytrk; then the selected layer's: level · pan · tune · fine · rev · mute",
+    "layers": "[ and ] pick which sound on the pad the layer knobs address, 1-8 jumps straight to one · m mutes it (it keeps its seat) · d removes it and asks first · u brings it back with its audio, ctrl+r takes it off again",
     "hear_it": "press the same key — the pad plays its layers together; one-shot pads play whole, retriggers cut the last hit with a fade",
-    "sessions": "saving stores each layer's path (never the audio); a file that moved is kept on its pad and named in the log — fix the path or drop the file in samples/ and reopen"
+    "sessions": "saving stores each layer's path (never the audio); a file that moved is kept on its pad, marked red on the bed and 'missing' in the layer list — fix the path or drop the file in samples/ and reopen"
   }
 }

@@ -30,6 +30,11 @@ pub(super) fn render_clip_view_tabs(frame: &mut Frame, area: Rect, nav: &NavStat
     if has_sequencer {
         tabs.push(ClipTab::Sequencer);
     }
+    // And the pad map on the same terms: a sampler's kit is what that
+    // track is worked on, so its tab leads too.
+    if nav.current_track().is_some_and(|t| t.sampler.is_some()) {
+        tabs.push(ClipTab::Pads);
+    }
     // An effect's panel is a tab only while a slot is open in it: a tab for a
     // panel with no effect behind it is a tab that shows nothing.
     if nav.clip_view.fx.slot.is_some() || nav.clip_view.fx.midi_slot.is_some() {
@@ -84,6 +89,23 @@ pub(super) fn render_clip_view_tabs(frame: &mut Frame, area: Rect, nav: &NavStat
         ));
     }
 
+    // Which pad the keys are editing, for the step grid's reason: the pad
+    // cursor moves when a key is *played*, so the strip has to say where it
+    // went, and a held knob that does not announce itself is a keyboard
+    // that has stopped working.
+    if nav.clip_view.clip_tab == ClipTab::Pads {
+        if let Some(pads) = nav.current_track().and_then(|t| t.sampler.as_deref()) {
+            spans.push(Span::styled(
+                format!(
+                    " [PAD:{}{}]",
+                    phosphor_app::sampler::SamplerState::pad_label(pads.cursor),
+                    if nav.clip_view.sampler.locked { " hold" } else { "" },
+                ),
+                Style::default().fg(theme::amber_val()).add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
+
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -109,6 +131,7 @@ pub(super) fn render_clip_view(frame: &mut Frame, area: Rect, nav: &NavState, sn
         ClipTab::Settings => render_settings(frame, cols[2], nav),
         ClipTab::PianoRoll => render_piano_roll(frame, cols[2], nav, snap),
         ClipTab::Sequencer => render_sequencer(frame, cols[2], nav, snap),
+        ClipTab::Pads => sampler::render_pads(frame, cols[2], nav),
         ClipTab::Fx => fx::render_fx_panel(frame, cols[2], nav),
     }
 }

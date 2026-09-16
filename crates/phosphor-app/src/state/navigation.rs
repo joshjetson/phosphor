@@ -369,6 +369,10 @@ impl NavState {
         // the cycle steps straight over it, so no key can land on a view with
         // nothing behind it.
         let has_sequencer = self.current_track().is_some_and(|t| t.sequencer.is_some());
+        // The pad map is a tab on the same terms, and on the same track
+        // never both: a sampler's own editor and a step grid's are the two
+        // instruments that have one.
+        let has_pads = self.current_track().is_some_and(|t| t.sampler.is_some());
 
         match (self.clip_view.focus, self.clip_view.fx_panel_tab, self.clip_view.clip_tab) {
             // FX panel: trk fx → synth
@@ -385,6 +389,9 @@ impl NavState {
                 if has_sequencer {
                     self.clip_view.clip_tab = ClipTab::Sequencer;
                     self.clip_view.sequencer.focus_band(SeqBand::Grid);
+                } else if has_pads {
+                    self.clip_view.clip_tab = ClipTab::Pads;
+                    self.clip_view.sampler.focus();
                 } else {
                     self.clip_view.clip_tab = ClipTab::InstConfig;
                 }
@@ -397,8 +404,8 @@ impl NavState {
                 self.clip_view.focus = ClipViewFocus::FxPanel;
                 self.clip_view.fx_panel_tab = FxPanelTab::TrackFx;
             }
-            // Step grid → inst config
-            (ClipViewFocus::PianoRoll, _, ClipTab::Sequencer) => {
+            // Step grid or pad map → inst config
+            (ClipViewFocus::PianoRoll, _, ClipTab::Sequencer | ClipTab::Pads) => {
                 self.clip_view.clip_tab = ClipTab::InstConfig;
             }
             // Inst config → piano roll

@@ -360,7 +360,9 @@ impl App {
                     && ((self.nav.clip_view.clip_tab == ClipTab::Sequencer
                         && self.nav.clip_view.sequencer.locked)
                         || (self.nav.clip_view.clip_tab == ClipTab::Fx
-                            && self.nav.clip_view.fx.locked)) =>
+                            && self.nav.clip_view.fx.locked)
+                        || (self.nav.clip_view.clip_tab == ClipTab::Pads
+                            && self.nav.clip_view.sampler.locked)) =>
             {
                 return;
             }
@@ -759,6 +761,17 @@ impl App {
             && self.nav.clip_view.clip_tab == ClipTab::Sequencer
         {
             self.handle_sequencer_keys(key);
+            return;
+        }
+
+        // The pad map takes its own keys, for the step grid's reason: h, l,
+        // the digits and Enter all mean something different on a keyboard
+        // full of pads, and a key that fell through from here would move a
+        // cursor nobody can see.
+        if self.nav.clip_view.focus == ClipViewFocus::PianoRoll
+            && self.nav.clip_view.clip_tab == ClipTab::Pads
+        {
+            self.handle_sampler_keys(key);
             return;
         }
 

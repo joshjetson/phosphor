@@ -199,6 +199,10 @@ impl App {
                     }
                 }
             }
+            StateSlice::Sampler { track_idx, sampler } => {
+                let sampler = sampler.clone();
+                self.apply_sampler_slice(*track_idx, &sampler);
+            }
             StateSlice::SeqChild { track_idx, instrument, params, content } => {
                 if let Some(track) = self.nav.tracks.get_mut(*track_idx) {
                     track.instrument_type = *instrument;
@@ -361,9 +365,15 @@ impl App {
             track.clips = saved.clips.clone();
             track.fx_chain = saved.fx_chain.clone();
             track.midi_fx = saved.midi_fx.clone();
+            // The kit travels with the track. The buffers are `Arc`s the
+            // captured state has been holding all along, so a sampler track
+            // that comes back from the undo stack comes back with its
+            // sounds rather than with 88 empty pads.
+            track.sampler = saved.sampler.clone();
             track.sync_to_audio();
         }
         self.push_params_to_audio(final_idx);
+        self.restore_sampler_pads(final_idx);
 
         // The freshly created track has no clips on the audio side yet.
         self.resync_track_clips_to_audio(final_idx, 0);

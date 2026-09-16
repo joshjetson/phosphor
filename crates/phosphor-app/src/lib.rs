@@ -6,6 +6,7 @@
 
 pub mod actions;
 pub mod discrete;
+pub mod format;
 pub mod fx;
 pub mod paths;
 pub mod preset;
