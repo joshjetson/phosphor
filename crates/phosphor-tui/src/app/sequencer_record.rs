@@ -33,54 +33,83 @@ impl App {
             events.push((message.message_type, message.received_micros));
         }
         for (event, stamp) in events {
-            // The practice room hears everything while it is running: the
-            // judge needs the arrival stamp, and a drilled note should not
-            // also step-record.
-            if self.nav.practice.open && self.nav.practice.run.is_some() {
-                match event {
-                    MidiMessageType::NoteOn { note, velocity: 0, .. }
-                    | MidiMessageType::NoteOff { note, .. } => self.nav.practice.note_off(note),
-                    MidiMessageType::NoteOn { note, .. } => {
-                        let at = stamp.unwrap_or_else(phosphor_midi::clock::now_micros);
-                        self.nav.practice.note_on(note, at);
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-            // The progression editor's learn mode takes the stream while it
-            // is listening — a chord played to be captured should not also
-            // step-record.
-            if self.nav.prog_editor.open && self.nav.prog_editor.learn_armed {
-                match event {
-                    MidiMessageType::NoteOn { note, velocity: 0, .. }
-                    | MidiMessageType::NoteOff { note, .. } => {
-                        if self.nav.prog_editor.learn_note_off(note) {
-                            self.flash("learned \u{00b7} the row is your chord");
-                        }
-                    }
-                    MidiMessageType::NoteOn { note, .. } => {
-                        self.nav.prog_editor.learn_note_on(note);
-                    }
-                    _ => {}
-                }
-                continue;
-            }
+            self.handle_tap_event(event, stamp);
+        }
+    }
+
+    /// One message from the tap, routed.
+    ///
+    /// Separate from the drain above so that a test can play a controller
+    /// without one: the modes that intercept the stream — the practice
+    /// room, the progression editor's learn, the sampler's source mode —
+    /// are decided here, and a test that reached past them would be
+    /// checking a route nobody uses.
+    pub(crate) fn handle_tap_event(&mut self, event: MidiMessageType, stamp: Option<u64>) {
+        // The practice room hears everything while it is running: the
+        // judge needs the arrival stamp, and a drilled note should not
+        // also step-record.
+        if self.nav.practice.open && self.nav.practice.run.is_some() {
             match event {
-                // A note-on with no velocity is a note-off; every controller
-                // that runs notes together sends them that way.
                 MidiMessageType::NoteOn { note, velocity: 0, .. }
-                | MidiMessageType::NoteOff { note, .. } => self.step_record_note_off(note),
+                | MidiMessageType::NoteOff { note, .. } => self.nav.practice.note_off(note),
                 MidiMessageType::NoteOn { note, .. } => {
-                    // The sampler's pad cursor follows the keys — an
-                    // observation, not a capture: the note still plays
-                    // and still records.
-                    self.sampler_follow_note(note);
-                    self.observe_note_for_recording_undo();
-                    self.step_record_note_on(note);
+                    let at = stamp.unwrap_or_else(phosphor_midi::clock::now_micros);
+                    self.nav.practice.note_on(note, at);
                 }
                 _ => {}
             }
+            return;
+        }
+        // The sampler's source mode takes it too, and for the same reason
+        // twice over: the keys are a performance being recorded into a pad,
+        // so they must not also step-record, and they must not walk the pad
+        // cursor out from under the take that is landing on it.
+        if self.nav.sampler_source.is_some() {
+            let at = stamp.unwrap_or_else(phosphor_midi::clock::now_micros);
+            match event {
+                MidiMessageType::NoteOn { note, velocity: 0, .. }
+                | MidiMessageType::NoteOff { note, .. } => {
+                    self.sampler_source_note(note, 0, false, at);
+                }
+                MidiMessageType::NoteOn { note, velocity, .. } => {
+                    self.sampler_source_note(note, velocity, true, at);
+                }
+                _ => {}
+            }
+            return;
+        }
+        // The progression editor's learn mode takes the stream while it
+        // is listening — a chord played to be captured should not also
+        // step-record.
+        if self.nav.prog_editor.open && self.nav.prog_editor.learn_armed {
+            match event {
+                MidiMessageType::NoteOn { note, velocity: 0, .. }
+                | MidiMessageType::NoteOff { note, .. } => {
+                    if self.nav.prog_editor.learn_note_off(note) {
+                        self.flash("learned \u{00b7} the row is your chord");
+                    }
+                }
+                MidiMessageType::NoteOn { note, .. } => {
+                    self.nav.prog_editor.learn_note_on(note);
+                }
+                _ => {}
+            }
+            return;
+        }
+        match event {
+            // A note-on with no velocity is a note-off; every controller
+            // that runs notes together sends them that way.
+            MidiMessageType::NoteOn { note, velocity: 0, .. }
+            | MidiMessageType::NoteOff { note, .. } => self.step_record_note_off(note),
+            MidiMessageType::NoteOn { note, .. } => {
+                // The sampler's pad cursor follows the keys — an
+                // observation, not a capture: the note still plays
+                // and still records.
+                self.sampler_follow_note(note);
+                self.observe_note_for_recording_undo();
+                self.step_record_note_on(note);
+            }
+            _ => {}
         }
     }
 

@@ -8,8 +8,11 @@
 //! also held here (or by undo history), so the audio thread's drops are
 //! refcount decrements and the actual frees happen on this side.
 
+pub mod capture;
 pub mod knobs;
+pub mod render;
 pub mod session;
+pub mod sidecar;
 pub mod trim;
 pub mod wav;
 
@@ -17,6 +20,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use phosphor_plugin::sample::{PadConfig, PadLayer, SamplePcm};
+
+use crate::state::InstrumentType;
 
 /// One pad per piano key, mirroring the engine.
 pub const NUM_PADS: usize = 88;
@@ -28,6 +33,24 @@ pub const PAD_BASE_NOTE: u8 = 21;
 /// player hears "pad full" instead of a silently dropped ninth layer.
 pub const MAX_LAYERS: usize = 8;
 
+/// Where a layer's audio came from.
+///
+/// The difference is what a session save has to do about it: a file layer
+/// is a reference to something the player already owns, and a take is
+/// audio that exists nowhere else until the save writes it out. It is also
+/// what the list calls the row, so a player can tell a loaded kick from
+/// one they played.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LayerSource {
+    /// A file on disk the player named. The default, so that every
+    /// session written before takes existed reads back unchanged.
+    #[default]
+    File,
+    /// A performance recorded through one of our own instruments and
+    /// rendered here. Its `path` is empty until a save gives it one.
+    Take,
+}
+
 /// A sound stacked on a pad, plus everything the UI knows that the
 /// engine does not need: where it came from, what to call it, and
 /// whether the file behind it was actually there on load.
@@ -35,7 +58,9 @@ pub const MAX_LAYERS: usize = 8;
 pub struct LayerState {
     /// The path as the session stores it — what the player typed, not
     /// what it resolved to, so a project that moves keeps its meaning.
+    /// Empty on a take that has never been saved.
     pub path: PathBuf,
+    pub source: LayerSource,
     /// Display name: the file stem.
     pub name: String,
     /// The decoded audio, or `None` when the file was missing on load.
@@ -64,6 +89,7 @@ impl LayerState {
         let end_frame = pcm.frames();
         Self {
             path,
+            source: LayerSource::File,
             name,
             pcm: Some(pcm),
             gain: 1.0,
@@ -77,6 +103,43 @@ impl LayerState {
             vel_lo: 0,
             vel_hi: 127,
         }
+    }
+
+    /// A layer holding a take that was just rendered, trimmed where the
+    /// render said and named for the pad it landed on.
+    ///
+    /// No path: a take exists in memory and nowhere else until a session
+    /// save writes it into the sidecar beside the file. See
+    /// [`super::sidecar`].
+    pub fn from_take(name: String, take: &render::RenderedTake) -> Self {
+        Self {
+            path: PathBuf::new(),
+            source: LayerSource::Take,
+            name,
+            pcm: Some(Arc::clone(&take.pcm)),
+            gain: 1.0,
+            pan: 0.0,
+            tune_st: 0,
+            tune_cents: 0,
+            start_frame: take.start_frame,
+            end_frame: take.end_frame,
+            reverse: false,
+            mute: false,
+            vel_lo: 0,
+            vel_hi: 127,
+        }
+    }
+
+    /// The loudest sample in the region that plays, linear — what a
+    /// normalize measures itself against. Zero for a layer with no audio
+    /// behind it.
+    pub fn region_peak(&self) -> f32 {
+        let (Some((start, end)), Some(pcm)) = (self.region(), self.pcm.as_ref()) else {
+            return 0.0;
+        };
+        let channels = usize::from(pcm.channels.max(1));
+        let (from, to) = (start as usize * channels, (end as usize * channels).min(pcm.data.len()));
+        render::peak_of(&pcm.data[from.min(to)..to])
     }
 
     /// How long the playable region lasts, in seconds — what the layer
@@ -126,6 +189,7 @@ impl PartialEq for LayerState {
         };
         same_pcm
             && self.path == other.path
+            && self.source == other.source
             && self.name == other.name
             && self.gain == other.gain
             && self.pan == other.pan
@@ -140,10 +204,27 @@ impl PartialEq for LayerState {
     }
 }
 
+/// What a pad was last recorded from: the instrument, and the panel it
+/// was played with.
+///
+/// Remembered per pad so that a second take of the same sound is one key
+/// press away — `i` reopens the picker already standing on it, and the
+/// render replays exactly these numbers into a fresh instance. It goes
+/// into the session with the pad, because "record another one like that"
+/// is a thing a player wants a week later.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PadSource {
+    pub instrument: InstrumentType,
+    /// The instrument's whole panel, in its own order.
+    pub params: Vec<f32>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PadState {
     pub config: PadConfig,
     pub layers: Vec<LayerState>,
+    /// The instrument this pad was last recorded from, when it has been.
+    pub source: Option<PadSource>,
 }
 
 impl PadState {
@@ -151,6 +232,13 @@ impl PadState {
     /// red mark on the bed and in the list.
     pub fn has_missing(&self) -> bool {
         self.layers.iter().any(|l| l.pcm.is_none())
+    }
+
+    /// Takes already on this pad — what the next one is numbered after.
+    /// Counted rather than stored: a take removed and undone back onto the
+    /// pad would otherwise reuse a number that is already in the list.
+    pub fn take_count(&self) -> usize {
+        self.layers.iter().filter(|l| l.source == LayerSource::Take).count()
     }
 }
 
@@ -177,6 +265,7 @@ impl SamplerState {
                 .map(|i| PadState {
                     config: PadConfig::for_key(PAD_BASE_NOTE + i as u8),
                     layers: Vec::new(),
+                    source: None,
                 })
                 .collect(),
             // C3 — the middle of the bed, where a hand falls.
@@ -228,7 +317,34 @@ impl SamplerState {
         path: PathBuf,
         pcm: Arc<SamplePcm>,
     ) -> Result<(), String> {
-        let Some(state) = self.pads.get_mut(pad) else {
+        self.room_on(pad)?;
+        self.pads[pad].layers.push(LayerState::from_wav(path, pcm));
+        Ok(())
+    }
+
+    /// Put a rendered take on a pad, named for its place in the stack.
+    /// `Err` is a status-bar sentence, and the take is untouched.
+    pub fn add_take_layer(
+        &mut self,
+        pad: usize,
+        take: &render::RenderedTake,
+    ) -> Result<usize, String> {
+        self.room_on(pad)?;
+        let name = format!("take {}", self.pads[pad].take_count() + 1);
+        self.pads[pad].layers.push(LayerState::from_take(name, take));
+        // A take teaches the pad its root when the performance was one
+        // pitch. Keytrack is left alone: a root is a fact about the
+        // recording, and whether the pad should transpose is a decision.
+        if let Some(root) = take.root {
+            self.pads[pad].config.root = root;
+        }
+        Ok(self.pads[pad].layers.len() - 1)
+    }
+
+    /// Whether a pad has room for one more sound — the refusal both
+    /// doors give, in the same words.
+    pub fn room_on(&self, pad: usize) -> Result<(), String> {
+        let Some(state) = self.pads.get(pad) else {
             return Err("no such pad".into());
         };
         if state.layers.len() >= MAX_LAYERS {
@@ -237,7 +353,6 @@ impl SamplerState {
                 Self::pad_label(pad)
             ));
         }
-        state.layers.push(LayerState::from_wav(path, pcm));
         Ok(())
     }
 
@@ -250,10 +365,27 @@ impl SamplerState {
 
     /// Pads that differ from a fresh sampler — what a session stores and
     /// what a load must replay to the engine.
+    ///
+    /// A pad that remembers an instrument counts even with nothing on it:
+    /// the player picked a source and walked away, and losing that on save
+    /// would lose the setup for the take they were about to record.
     pub fn occupied_pads(&self) -> impl Iterator<Item = usize> + '_ {
         self.pads.iter().enumerate().filter_map(|(i, p)| {
             let fresh = PadConfig::for_key(Self::note_of_pad(i));
-            (!p.layers.is_empty() || p.config != fresh).then_some(i)
+            (!p.layers.is_empty() || p.config != fresh || p.source.is_some()).then_some(i)
+        })
+    }
+
+    /// Every take on the kit, as `(pad, layer)` — what a session save has
+    /// to write out before it writes the file that names them.
+    pub fn takes(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.pads.iter().enumerate().flat_map(|(pad, state)| {
+            state
+                .layers
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l.source == LayerSource::Take)
+                .map(move |(layer, _)| (pad, layer))
         })
     }
 
@@ -339,6 +471,69 @@ mod tests {
         s.add_wav_layer(0, PathBuf::from("a.wav"), Arc::clone(&shared)).unwrap();
         s.add_wav_layer(1, PathBuf::from("a.wav"), shared).unwrap();
         assert_eq!(s.pcm_bytes(), 4_000);
+    }
+
+    fn take(peak: f32, root: Option<u8>) -> render::RenderedTake {
+        let pcm = Arc::new(SamplePcm {
+            data: vec![peak, -peak, 0.0, 0.0],
+            channels: 2,
+            sample_rate: 44_100.0,
+        });
+        render::RenderedTake { start_frame: 0, end_frame: 2, peak, root, pcm }
+    }
+
+    /// Takes are numbered by what is on the pad, not by a counter that
+    /// forgets: a take removed and a new one recorded must not both be
+    /// called "take 2".
+    #[test]
+    fn a_take_is_named_for_its_place_in_the_stack() {
+        let mut s = SamplerState::new();
+        assert_eq!(s.add_take_layer(0, &take(0.5, None)).unwrap(), 0);
+        s.add_take_layer(0, &take(0.5, None)).unwrap();
+        let names: Vec<&str> = s.pads[0].layers.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, vec!["take 1", "take 2"]);
+        s.pads[0].layers.remove(0);
+        s.add_take_layer(0, &take(0.5, None)).unwrap();
+        assert_eq!(s.pads[0].layers[1].name, "take 2");
+        assert_eq!(s.takes().count(), 2);
+    }
+
+    /// A one-pitch performance teaches the pad its root; keytrack is left
+    /// alone, because a root is a fact about the recording and
+    /// keytracking is a decision about the pad.
+    #[test]
+    fn a_take_teaches_its_root_and_nothing_else() {
+        let mut s = SamplerState::new();
+        let before = s.pads[0].config;
+        s.add_take_layer(0, &take(0.5, Some(64))).unwrap();
+        assert_eq!(s.pads[0].config.root, 64);
+        assert_eq!(s.pads[0].config.keytrack, before.keytrack);
+        // A chord has no root to teach, and leaves the last one standing.
+        s.add_take_layer(0, &take(0.5, None)).unwrap();
+        assert_eq!(s.pads[0].config.root, 64);
+    }
+
+    #[test]
+    fn a_full_pad_refuses_a_take_in_the_same_words_as_a_file() {
+        let mut s = SamplerState::new();
+        for _ in 0..MAX_LAYERS {
+            s.add_wav_layer(3, PathBuf::from("k.wav"), pcm(10)).unwrap();
+        }
+        let err = s.add_take_layer(3, &take(0.5, None)).unwrap_err();
+        assert!(err.contains("full"), "{err}");
+        assert_eq!(s.pads[3].layers.len(), MAX_LAYERS);
+    }
+
+    /// A pad that remembers an instrument is not a fresh pad, even with
+    /// nothing on it: the session has to keep the setup.
+    #[test]
+    fn a_remembered_source_counts_as_occupied() {
+        let mut s = SamplerState::new();
+        s.pads[7].source = Some(PadSource {
+            instrument: InstrumentType::DX7,
+            params: vec![0.5; 4],
+        });
+        assert_eq!(s.occupied_pads().collect::<Vec<_>>(), vec![7]);
     }
 
     #[test]

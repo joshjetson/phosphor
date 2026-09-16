@@ -20,7 +20,6 @@ use phosphor_core::mixer::{Mixer, MixerCommand, clip_snapshot_channel, mixer_com
 use phosphor_core::transport::Transport;
 use phosphor_core::project::{TrackHandle, TrackKind};
 use phosphor_core::{AudioRequest, EngineConfig};
-use phosphor_dsp::synth::PhosphorSynth;
 use phosphor_midi::ring::midi_ring_buffer;
 
 use crate::state::{self, ClipTab, ClipViewFocus, ConfirmKind, FxPanelTab, InputModalKind, InstrumentType, NavState, Pane, PianoRollFocus, SpaceAction, TransportElement};
@@ -39,6 +38,7 @@ mod midi_fx_ops;
 mod practice_ops;
 mod sampler_keys;
 mod sampler_ops;
+mod sampler_source;
 mod sampler_trim;
 mod section_ops;
 mod tracks;
@@ -480,8 +480,7 @@ impl App {
 
             // Instrument
             Action::AddInstrument => {
-                self.nav.instrument_modal.open = true;
-                self.nav.instrument_modal.cursor = 0;
+                self.nav.instrument_modal.open_for_track();
             }
             Action::InstrumentSelect => {
                 let instrument = self.nav.instrument_modal.selected();

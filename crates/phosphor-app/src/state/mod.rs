@@ -159,6 +159,14 @@ pub struct NavState {
     pub split_warned_for: Option<(usize, usize)>,
     /// The practice room — the "fingers" trainer.
     pub practice: crate::practice::Room,
+    /// Source mode: a sampler track is playing an instrument so that a pad
+    /// can be recorded from it.
+    ///
+    /// A mode rather than state of record — what the *pad* remembers about
+    /// its source lives on the pad and goes into the session. Here because
+    /// the banner, the mode line and the pad strip all have to say that it
+    /// is on, and they are handed the navigation state and nothing else.
+    pub sampler_source: Option<Box<crate::sampler::capture::SourceMode>>,
     /// The lifted loop section, waiting for `p`.
     pub section_clip: Option<SectionClipboard>,
     /// What the master limiter is taking off, ready to draw.
@@ -233,6 +241,7 @@ impl NavState {
             prog_editor: ProgEditor::default(),
             split_warned_for: None,
             practice: crate::practice::Room::default(),
+            sampler_source: None,
             section_clip: None,
             limiter_gr: std::sync::Arc::new(phosphor_core::fx::GrMeter::new()),
             sample_rate: 48_000,

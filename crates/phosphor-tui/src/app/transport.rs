@@ -7,6 +7,12 @@ impl App {
     /// and stop-recording. Prevents notes from ringing after playback ends.
     pub(crate) fn stop_playback(&mut self) {
         let was_recording = self.engine.transport.is_recording();
+        // A bar-quantised take is a performance against the transport, so
+        // the transport stopping is the end of it — whichever key stopped
+        // it. Landed here rather than at each of the three doors into this
+        // function, because a take that survived a stop would go on
+        // collecting notes against a clock that is no longer moving.
+        self.land_armed_take();
         self.engine.transport.pause();
         // The mixer clears its own key listen on the stop edge; this keeps the
         // mirror in step so the panel and the status bar stop blinking in the

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use phosphor_plugin::sample::{PadConfig, SamplePcm, TrigMode};
 
-use super::{LayerState, PadState, SamplerState};
+use super::{LayerSource, LayerState, PadSource, PadState, SamplerState};
 
 /// The stable spelling of a trigger mode.
 fn trig_key(t: TrigMode) -> &'static str {
@@ -58,11 +58,29 @@ pub struct SessionPad {
     pub keytrack: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layers: Vec<SessionLayer>,
+    /// What this pad was last recorded from. Absent on every pad that has
+    /// never been resampled, which is every pad in every session written
+    /// before takes existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SessionPadSource>,
+}
+
+/// A pad's remembered source instrument, by the same key a track's
+/// instrument is stored under — so the two cannot drift apart.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct SessionPadSource {
+    pub instrument: String,
+    pub params: Vec<f32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct SessionLayer {
     pub path: String,
+    /// `take` for a performance rendered here, absent for a file the
+    /// player named. Skipped when it is a file so that every session
+    /// written before takes existed reads back byte for byte.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
     pub gain: f32,
     pub pan: f32,
     pub tune_st: i8,
@@ -99,11 +117,19 @@ impl SessionSampler {
                     pan: c.pan,
                     root: c.root,
                     keytrack: c.keytrack,
+                    source: pad.source.as_ref().map(|s| SessionPadSource {
+                        instrument: crate::session::instrument_key(s.instrument).into(),
+                        params: s.params.clone(),
+                    }),
                     layers: pad
                         .layers
                         .iter()
                         .map(|l| SessionLayer {
                             path: l.path.display().to_string(),
+                            kind: match l.source {
+                                LayerSource::File => String::new(),
+                                LayerSource::Take => "take".into(),
+                            },
                             gain: l.gain,
                             pan: l.pan,
                             tune_st: l.tune_st,
@@ -160,6 +186,11 @@ impl SessionSampler {
                     LayerState {
                         pcm: resolve(&path),
                         path,
+                        source: if l.kind == "take" {
+                            LayerSource::Take
+                        } else {
+                            LayerSource::File
+                        },
                         name,
                         gain: l.gain,
                         pan: l.pan,
@@ -174,7 +205,14 @@ impl SessionSampler {
                     }
                 })
                 .collect();
-            state.pads[idx] = PadState { config, layers };
+            // An instrument this build does not know is dropped rather
+            // than guessed at: the pad keeps its sounds and forgets only
+            // how to record another one.
+            let source = saved.source.as_ref().and_then(|s| {
+                crate::session::parse_instrument_type(&s.instrument)
+                    .map(|instrument| PadSource { instrument, params: s.params.clone() })
+            });
+            state.pads[idx] = PadState { config, layers, source };
         }
         state
     }
@@ -248,6 +286,7 @@ mod tests {
                 root: 200,
                 keytrack: false,
                 layers: Vec::new(),
+                source: None,
             }],
         };
         let state = saved.into_state(|_| None);
@@ -279,12 +318,70 @@ mod tests {
             root: 5,
             keytrack: false,
             layers: Vec::new(),
+            source: None,
         };
         let state = SessionSampler { pads: vec![pad.clone()] }.into_state(|_| None);
         assert_eq!(state.occupied_pads().count(), 0);
         pad.note = 250;
         let state = SessionSampler { pads: vec![pad] }.into_state(|_| None);
         assert_eq!(state.occupied_pads().count(), 0);
+    }
+
+    /// A take is marked in the file and a file layer is not, so that every
+    /// session written before takes existed reads back byte for byte.
+    #[test]
+    fn a_take_is_marked_and_a_file_layer_is_not() {
+        let mut state = SamplerState::new();
+        state.add_wav_layer(0, PathBuf::from("kick.wav"), pcm(10)).unwrap();
+        state.pads[0].layers.push(LayerState {
+            path: PathBuf::from("kit.samples/A-1-1.wav"),
+            source: LayerSource::Take,
+            name: "take 1".into(),
+            pcm: Some(pcm(10)),
+            gain: 1.0,
+            pan: 0.0,
+            tune_st: 0,
+            tune_cents: 0,
+            start_frame: 0,
+            end_frame: 10,
+            reverse: false,
+            mute: false,
+            vel_lo: 0,
+            vel_hi: 127,
+        });
+        let saved = SessionSampler::from_state(&state);
+        let json = serde_json::to_string(&saved).unwrap();
+        assert_eq!(json.matches("\"kind\"").count(), 1, "the file layer wrote a kind:\n{json}");
+        assert!(json.contains("\"kind\":\"take\""), "the take is not marked:\n{json}");
+
+        let back: SessionSampler = serde_json::from_str(&json).unwrap();
+        let restored = back.into_state(|_| Some(pcm(10)));
+        assert_eq!(restored.pads[0].layers[0].source, LayerSource::File);
+        assert_eq!(restored.pads[0].layers[1].source, LayerSource::Take);
+        assert_eq!(restored.takes().count(), 1);
+    }
+
+    /// A pad's remembered source instrument survives, and one this build
+    /// has never heard of is dropped rather than guessed at.
+    #[test]
+    fn a_pad_remembers_what_it_was_recorded_from() {
+        let mut state = SamplerState::new();
+        state.pads[20].source = Some(PadSource {
+            instrument: crate::state::InstrumentType::Rhodes,
+            params: vec![0.25, 0.75],
+        });
+        let saved = SessionSampler::from_state(&state);
+        assert_eq!(saved.pads[0].source.as_ref().unwrap().instrument, "rhodes");
+
+        let restored = saved.into_state(|_| None);
+        let source = restored.pads[20].source.as_ref().expect("the memory went missing");
+        assert_eq!(source.instrument, crate::state::InstrumentType::Rhodes);
+        assert_eq!(source.params, vec![0.25, 0.75]);
+
+        let mut hostile = SessionSampler::from_state(&state);
+        hostile.pads[0].source.as_mut().unwrap().instrument = "moogophone".into();
+        let restored = hostile.into_state(|_| None);
+        assert!(restored.pads[20].source.is_none(), "an unknown instrument was guessed at");
     }
 
     #[test]

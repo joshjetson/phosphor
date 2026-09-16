@@ -8,6 +8,7 @@ pub mod actions;
 pub mod discrete;
 pub mod format;
 pub mod fx;
+pub mod instrument;
 pub mod paths;
 pub mod preset;
 pub mod practice;

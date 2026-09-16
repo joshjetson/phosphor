@@ -1,0 +1,362 @@
+//! Source mode and the resampler: playing one of our own instruments
+//! through a sampler track, recording what was played, and landing it on
+//! the pad as audio.
+//!
+//! # The loan
+//!
+//! There is one plugin slot on a track, and while source mode is on it
+//! holds the chosen instrument instead of the sampler. That is the whole
+//! trick: the player hears exactly what will be recorded, through the
+//! track's own MIDI effects, inserts, fader and sends, because it *is* the
+//! track. Leaving the mode puts the sampler back — and then replays every
+//! occupied pad into it, because the instance that comes back is a fresh
+//! one that has never heard of the kit. Forgetting that replay is a silent
+//! kit and the easiest bug in this file to write.
+//!
+//! # What is recorded, and what is rendered
+//!
+//! The capture is MIDI: note-ons and note-offs with the arrival stamps the
+//! tap already carries ([`phosphor_app::sampler::capture`]). Nothing is
+//! recorded from the audio thread, which is why this can never glitch a
+//! performance and why a take is bar-exact rather than "however long the
+//! buffer happened to be". The audio is made afterwards, offline, by
+//! replaying those events through a fresh instrument
+//! ([`phosphor_app::sampler::render`]) — deterministic, and free of any
+//! chance of feeding the sampler its own output.
+//!
+//! # The doors
+//!
+//! Everything that changes a pad still goes through
+//! [`super::sampler_ops`]'s rule: state, then the undo step, then
+//! [`App::sync_sampler_pad`]. A landed take is one step, and the step
+//! holds the only other reference to the audio, which is what the buffer
+//! lifetime contract requires of anything that can be undone.
+
+use super::*;
+
+use phosphor_app::sampler::capture::{CapturedEvent, SourceMode, TakeCapture};
+use phosphor_app::sampler::{render, PadSource, SamplerState};
+use phosphor_app::state::InstrumentPick;
+
+use crate::state::undo::UndoScope;
+
+impl App {
+    // ── Entering and leaving ──
+
+    /// `i` on the pad map: ask what this pad should be recorded from.
+    pub(crate) fn open_pad_source_picker(&mut self) {
+        let Some(track_idx) = self.cursor_sampler_track() else { return };
+        // While the mode is already on *this* track, `i` swaps the
+        // instrument rather than opening a second mode on another pad: the
+        // pad is the mode's, and the answer replaces what is in the slot.
+        // A mode running on some other track has no say over this one's
+        // cursor — see the hand-off in [`App::enter_sampler_source`].
+        let pad = match self.nav.sampler_source.as_deref() {
+            Some(mode) if mode.track_idx == track_idx => mode.pad,
+            _ => self.nav.tracks[track_idx].sampler.as_ref().map_or(0, |s| s.cursor),
+        };
+        let current = self.nav.tracks[track_idx]
+            .sampler
+            .as_ref()
+            .and_then(|s| s.pads.get(pad))
+            .and_then(|p| p.source.as_ref())
+            .map(|s| s.instrument);
+        self.nav.instrument_modal.open_for_pad(track_idx, pad, current);
+    }
+
+    /// Enter on that picker: the track starts playing the instrument, and
+    /// every key played is a performance waiting to be recorded.
+    pub(crate) fn enter_sampler_source(&mut self, pick: InstrumentPick, instrument: InstrumentType) {
+        let InstrumentPick::PadSource { track_idx, pad } = pick else { return };
+        if self.nav.tracks.get(track_idx).and_then(|t| t.sampler.as_ref()).is_none() {
+            return;
+        }
+        // An armed capture on the way out of the old instrument lands
+        // first: swapping the sound under a performance would render it
+        // through an instrument it was never played on.
+        self.land_armed_take();
+        // Only one track can have its slot on loan at a time. Starting the
+        // mode on a second one gives the first its sampler back — without
+        // this, the track left behind would play a synth forever with
+        // nothing on the screen offering to put it right.
+        if self.nav.sampler_source.as_deref().is_some_and(|m| m.track_idx != track_idx) {
+            self.leave_sampler_source();
+        }
+
+        // The pad remembers what it was recorded from — and the panel it
+        // was recorded with, so the next take of the same sound is one key
+        // away. Keeping the numbers when the instrument has not changed is
+        // the point: a player who tweaked the DX7 and pressed `i` again
+        // gets the DX7 they tweaked.
+        let before = self.nav.undo_checkpoint(UndoScope::Sampler { track_idx });
+        let params = {
+            let Some(sampler) =
+                self.nav.tracks.get_mut(track_idx).and_then(|t| t.sampler.as_deref_mut())
+            else {
+                return;
+            };
+            let Some(state) = sampler.pads.get_mut(pad) else { return };
+            let keep = state
+                .source
+                .as_ref()
+                .filter(|s| s.instrument == instrument)
+                .map(|s| s.params.clone());
+            let params = keep.unwrap_or_else(|| phosphor_app::preset::defaults(instrument));
+            state.source = Some(PadSource { instrument, params: params.clone() });
+            params
+        };
+        self.nav.commit_undo(before, "pad source");
+
+        // An audition through the sampler cannot survive the sampler
+        // leaving the slot.
+        self.stop_sampler_preview();
+        self.nav.clip_view.sampler.trim = None;
+        self.nav.clip_view.sampler.locked = false;
+        self.install_instrument(track_idx, instrument, &params);
+        self.nav.sampler_source =
+            Some(Box::new(SourceMode::new(track_idx, pad, instrument, params)));
+        self.flash(format!(
+            "source: {} \u{00b7} pad {} \u{00b7} play it \u{00b7} r records \u{00b7} esc puts the sampler back",
+            instrument.label(),
+            SamplerState::pad_label(pad),
+        ));
+    }
+
+    /// `esc` in source mode: the sampler comes back, with its kit.
+    ///
+    /// The instance the mixer builds is empty, so every occupied pad is
+    /// replayed into it. A take landed during the mode is already in that
+    /// set, which is why nothing has to be shipped twice.
+    pub(crate) fn leave_sampler_source(&mut self) {
+        let Some(mode) = self.nav.sampler_source.take() else { return };
+        self.reload_child_instrument(mode.track_idx);
+        self.restore_sampler_pads(mode.track_idx);
+        self.flash("sampler back \u{00b7} the pads are playing again");
+    }
+
+    /// Whether the mode is on for the track under the cursor.
+    pub(crate) fn in_sampler_source(&self) -> bool {
+        self.nav
+            .sampler_source
+            .as_deref()
+            .is_some_and(|mode| Some(mode.track_idx) == self.cursor_sampler_track())
+    }
+
+    /// Drop the mode without putting the sampler back — the session load's
+    /// exit, where the track it was running on is about to stop existing.
+    pub(crate) fn abandon_sampler_source(&mut self) {
+        self.nav.sampler_source = None;
+    }
+
+    /// Drop the mode if the track it was borrowing no longer exists, or is
+    /// no longer a sampler.
+    ///
+    /// Asked once per keystroke rather than remembered at each of the ways
+    /// a track can go — deleted, undone away, replaced by a session load.
+    /// A mode pointing at a track that is gone is a take waiting to land on
+    /// a pad nobody can see, and the index it holds would be somebody
+    /// else's track by then.
+    pub(crate) fn reconcile_sampler_source(&mut self) {
+        let Some(mode) = self.nav.sampler_source.as_deref() else { return };
+        let alive = self
+            .nav
+            .tracks
+            .get(mode.track_idx)
+            .is_some_and(|t| t.sampler.is_some() && mode.pad < phosphor_app::sampler::NUM_PADS);
+        if !alive {
+            self.nav.sampler_source = None;
+        }
+    }
+
+    // ── Arming ──
+
+    /// `r` in source mode: start a take, or end the one that is running.
+    pub(crate) fn toggle_sampler_take(&mut self) {
+        if self.nav.sampler_source.as_deref().is_some_and(SourceMode::is_armed) {
+            self.land_armed_take();
+            return;
+        }
+        let Some(mode) = self.nav.sampler_source.as_deref() else {
+            self.flash("i picks an instrument to record this pad from");
+            return;
+        };
+        let (track_idx, pad) = (mode.track_idx, mode.pad);
+        // Refused *before* the performance, not after it: finding out that
+        // a pad was full once the playing is over is losing the take.
+        let full = self
+            .nav
+            .tracks
+            .get(track_idx)
+            .and_then(|t| t.sampler.as_ref())
+            .and_then(|s| s.room_on(pad).err());
+        if let Some(message) = full {
+            self.flash(format!("{message} \u{00b7} d removes one"));
+            return;
+        }
+        let rate = self.nav.sample_rate as f32;
+        let tempo = self.engine.transport.tempo_bpm();
+        let rolling = self.engine.transport.is_playing();
+        let capture = if rolling {
+            TakeCapture::bars(
+                phosphor_midi::clock::now_micros(),
+                self.engine.transport.position_ticks(),
+                tempo,
+                rate,
+            )
+        } else {
+            TakeCapture::free(tempo, rate)
+        };
+        let message = if rolling {
+            "recording at the bar line \u{00b7} whole bars, so it loops \u{00b7} r ends it"
+        } else {
+            "recording \u{00b7} the take starts on your first note \u{00b7} r ends it"
+        };
+        if let Some(mode) = self.nav.sampler_source.as_deref_mut() {
+            mode.capture = Some(capture);
+        }
+        self.flash(message);
+    }
+
+    /// The take is over: render it and put it on the pad.
+    ///
+    /// Called by `r`, by `esc`, and by the transport stopping — a stop is
+    /// the end of a bar-quantised performance whichever key caused it.
+    pub(crate) fn land_armed_take(&mut self) {
+        let Some(mode) = self.nav.sampler_source.as_deref_mut() else { return };
+        let Some(capture) = mode.capture.take() else { return };
+        let (track_idx, pad) = (mode.track_idx, mode.pad);
+        let (instrument, params) = (mode.instrument, mode.params.clone());
+
+        let Some(plan) = capture.close(phosphor_midi::clock::now_micros()) else {
+            self.flash("nothing played \u{00b7} no take landed \u{00b7} r tries again");
+            return;
+        };
+        // A take is rendered through the track's own MIDI devices, because
+        // that is what the player was listening to while they played it.
+        let Some(rack) = self.nav.tracks.get(track_idx).map(|t| t.midi_fx.clone()) else {
+            return;
+        };
+        let take = render::render_take(&plan, &rack, instrument, &params);
+
+        let before = self.nav.undo_checkpoint(UndoScope::Sampler { track_idx });
+        let Some(sampler) =
+            self.nav.tracks.get_mut(track_idx).and_then(|t| t.sampler.as_deref_mut())
+        else {
+            return;
+        };
+        let landed = match sampler.add_take_layer(pad, &take) {
+            Ok(index) => index,
+            Err(message) => {
+                self.flash(message);
+                return;
+            }
+        };
+        let name = sampler.pads[pad].layers[landed].name.clone();
+        // One step, and the step is also the only other hand on the audio:
+        // a take undone off a pad stays alive in history, so the engine's
+        // own drop is never the last one.
+        self.nav.commit_undo(before, "record take");
+        // The panel points at what just arrived — the thing a player is
+        // about to trim, turn down, or record over.
+        self.nav.clip_view.sampler.layer = landed;
+        self.sync_sampler_pad(track_idx, pad);
+        self.clamp_sampler_cursors();
+
+        let peak = match take.peak_db() {
+            Some(db) => format!("{db:+.1} dB"),
+            None => "silent".to_string(),
+        };
+        let capped = if plan.capped {
+            match plan.start_tick {
+                Some(_) => " \u{00b7} stopped at 64 bars",
+                None => " \u{00b7} stopped at 60s",
+            }
+        } else {
+            ""
+        };
+        self.flash(format!(
+            "pad {} \u{00b7} {name} \u{00b7} {:.2}s \u{00b7} peak {peak}{capped} \u{00b7} u undoes",
+            SamplerState::pad_label(pad),
+            take.seconds(),
+        ));
+    }
+
+    /// One note from the MIDI tap, while source mode is on.
+    ///
+    /// The mode takes the stream the way the practice room does — see
+    /// [`App::handle_tap_event`] — because the keys are a performance now:
+    /// they must not step-record, and they must not walk the pad cursor out
+    /// from under the take that is going to land on it. Unarmed, the note
+    /// is simply played and nothing is kept.
+    pub(crate) fn sampler_source_note(&mut self, note: u8, velocity: u8, on: bool, at: u64) {
+        let Some(mode) = self.nav.sampler_source.as_deref_mut() else { return };
+        let Some(capture) = mode.capture.as_mut() else { return };
+        capture.note(CapturedEvent { micros: at, note, velocity, on });
+    }
+
+    // ── Normalize ──
+
+    /// `n` on a layer: bring its trimmed region up to just under full
+    /// scale, or back to unity.
+    ///
+    /// A gain value, never a rewrite. The buffer is shared — by the engine,
+    /// by undo history, one day by two pads pointing into one recording —
+    /// and rewriting it would change every one of them, destructively, for
+    /// a decision the player may want back. The level knob and this are the
+    /// same number; `n` is the one that does the arithmetic for you.
+    pub(crate) fn normalize_sampler_layer(&mut self) {
+        let Some(track_idx) = self.cursor_sampler_track() else { return };
+        self.clamp_sampler_cursors();
+        let cursor = self.nav.clip_view.sampler.layer;
+        let Some(sampler) = self.nav.tracks[track_idx].sampler.as_ref() else { return };
+        let pad = sampler.cursor;
+        let Some(layer) = sampler.pads[pad].layers.get(cursor) else {
+            self.flash("nothing on this pad to normalize");
+            return;
+        };
+        if layer.pcm.is_none() {
+            self.flash("this layer has lost its file \u{00b7} nothing to measure");
+            return;
+        }
+        let peak = layer.region_peak();
+        if peak <= 0.0 {
+            self.flash("this take is silent \u{00b7} there is nothing to normalize");
+            return;
+        }
+        // Half a decibel of headroom: a sample that peaks at exactly full
+        // scale clips the moment anything downstream — a pan law, an
+        // insert, the pad's own level — touches it.
+        //
+        // The level control's own ceiling is the ceiling here, because this
+        // *is* that control: a gain the knob cannot reach is a number a
+        // player cannot turn back down by hand. Our instruments render with
+        // a lot of headroom, so a single quiet note can want more than the
+        // twelve decibels there are — and then it goes as far as it goes and
+        // the flash says how far short that left it.
+        let wanted = (phosphor_core::fx::db_to_gain(-0.5) / peak).min(phosphor_app::sampler::knobs::MAX_GAIN);
+        let short_by = 20.0 * (peak * wanted).log10() + 0.5;
+        let back_to_unity = (layer.gain - 1.0).abs() > 1e-4;
+
+        let before = self.nav.undo_checkpoint(UndoScope::Sampler { track_idx });
+        let Some(sampler) = self.nav.tracks[track_idx].sampler.as_mut() else { return };
+        let Some(layer) = sampler.pads[pad].layers.get_mut(cursor) else { return };
+        layer.gain = if back_to_unity { 1.0 } else { wanted };
+        let (gain, name) = (layer.gain, layer.name.clone());
+        self.nav.commit_undo(before, "normalize layer");
+        self.sync_sampler_pad(track_idx, pad);
+        self.stop_sampler_preview();
+        self.flash(if back_to_unity {
+            format!("{name} \u{00b7} level back to unity \u{00b7} n normalizes again")
+        } else if short_by < -0.1 {
+            format!(
+                "{name} \u{00b7} level {} \u{00b7} as far as it goes \u{00b7} peak {short_by:+.1} dB \u{00b7} n undoes it",
+                phosphor_app::format::db_text(gain),
+            )
+        } else {
+            format!(
+                "{name} \u{00b7} normalized to -0.5 dB \u{00b7} level {} \u{00b7} n undoes the gain",
+                phosphor_app::format::db_text(gain),
+            )
+        });
+    }
+}

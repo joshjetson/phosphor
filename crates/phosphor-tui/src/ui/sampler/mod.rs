@@ -75,6 +75,8 @@ struct Map<'a> {
     /// The clip view is focused and this is the tab it is showing.
     focused: bool,
     colour: Color,
+    /// Source mode, when this track is in it — the banner's subject.
+    source: Option<&'a phosphor_app::sampler::capture::SourceMode>,
 }
 
 impl Map<'_> {
@@ -209,6 +211,49 @@ fn caret_line(map: &Map, lo: u8, cursor_note: u8, width: usize) -> Line<'static>
     ])
 }
 
+// ── The banner ──
+
+/// The one line that says the track is not playing its sampler.
+///
+/// It is worth a whole row of the pane because the mode changes what the
+/// keys do, what the track sounds like, and what a note played on the
+/// controller *is* — and a player who cannot see it on is a player whose
+/// pads have gone quiet for no visible reason.
+fn source_banner(map: &Map, width: usize) -> Option<Line<'static>> {
+    let mode = map.source?;
+    let red = Style::default().fg(theme::rec_active_val()).bg(theme::bg_val());
+    let pad = SamplerState::pad_label(mode.pad);
+    let (mark, text, style) = match mode.capture.as_ref() {
+        None => (
+            "\u{25B8}",
+            format!(
+                "source \u{00b7} {} \u{00b7} pad {pad} \u{00b7} r records \u{00b7} esc puts the sampler back",
+                mode.instrument.label(),
+            ),
+            theme::amber_bright(),
+        ),
+        Some(capture) if !capture.open_at(phosphor_midi::clock::now_micros()) => (
+            "\u{25CF}",
+            format!("armed \u{00b7} pad {pad} \u{00b7} the take opens at the next bar line"),
+            red,
+        ),
+        Some(capture) => (
+            "\u{25CF}",
+            format!(
+                "recording \u{00b7} pad {pad} \u{00b7} {} note{} \u{00b7} {} \u{00b7} r ends the take",
+                capture.note_count(),
+                if capture.note_count() == 1 { "" } else { "s" },
+                if capture.is_bars() { "whole bars" } else { "free" },
+            ),
+            red,
+        ),
+    };
+    let mut row = Row::new(width);
+    row.push(format!(" {mark} "), style);
+    row.push(clip_text(&text, width.saturating_sub(3)), style);
+    Some(row.line())
+}
+
 // ── The view ──
 
 pub(super) fn render_pads(frame: &mut Frame, area: Rect, nav: &NavState) {
@@ -232,6 +277,10 @@ pub(super) fn render_pads(frame: &mut Frame, area: Rect, nav: &NavState) {
             && nav.clip_view.focus == ClipViewFocus::PianoRoll
             && nav.clip_view.clip_tab == ClipTab::Pads,
         colour: theme::track_color(track.color_index),
+        source: nav
+            .sampler_source
+            .as_deref()
+            .filter(|mode| mode.track_idx == nav.track_cursor),
     };
 
     let mut body = area;
@@ -244,6 +293,19 @@ pub(super) fn render_pads(frame: &mut Frame, area: Rect, nav: &NavState) {
     }
     if body.height == 0 {
         return;
+    }
+
+    // The banner takes the row under the keyboard, above everything else:
+    // it is the answer to "why is nothing on the pads making a sound".
+    if let Some(line) = source_banner(&map, body.width as usize) {
+        let mut row = body;
+        row.height = 1;
+        frame.render_widget(Paragraph::new(vec![line]), row);
+        body.y += 1;
+        body.height -= 1;
+        if body.height == 0 {
+            return;
+        }
     }
 
     // The trim strip takes the body and leaves the band. It is worth the
@@ -316,7 +378,7 @@ pub(super) mod tests {
         state: &'a SamplerState,
         view: &'a SamplerView,
     ) -> Map<'a> {
-        Map { state, view, focused: true, colour: theme::track_color(0) }
+        Map { state, view, focused: true, colour: theme::track_color(0), source: None }
     }
 
     pub(in crate::ui::sampler) fn text(lines: &[Line<'static>]) -> String {

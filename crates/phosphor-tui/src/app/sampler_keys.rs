@@ -6,11 +6,15 @@
 //! pad map    h/l walks the bed · H/L an octave · playing a key jumps to it
 //!            j/k picks a control · enter holds it · h/l adjusts · H/L strides
 //!            [ ] picks a layer · 1-8 jumps to one · m mutes · d removes
-//!            a loads a sound onto the pad · t trims it · esc goes back
+//!            a loads a sound onto the pad · t trims it · n normalizes it
+//!            i records the pad from an instrument · esc goes back
 //!
 //! trim strip h/l moves the START · H/L moves the END
 //!            j/k walks the unit deeper/wider · z snaps · r reverses
 //!            t loops the region · esc goes back to the map
+//!
+//! source     r starts the take · r again ends it · i swaps the instrument
+//!            esc puts the sampler back · the pad is fixed
 //! ```
 //!
 //! `h`/`l` do two jobs on the map, and `enter` is what tells them apart:
@@ -31,6 +35,14 @@
 //! that falls through from a mode is a key that edits something nobody can
 //! see.
 //!
+//! Source mode owns them for the same reason and one more: while it is on,
+//! the track is playing a synth rather than the sampler, so every key that
+//! edits a pad would be editing something the player cannot hear. It takes
+//! three keys and refuses the rest in words — including the ones that walk
+//! the bed, because the mode belongs to the pad it was entered on and a
+//! cursor that wandered off it would leave the banner naming one pad and
+//! the take landing on another.
+//!
 //! Every edit goes through the sampler's ops, which are the only things
 //! that write a pad and tell the engine.
 
@@ -43,6 +55,11 @@ impl App {
     pub(crate) fn handle_sampler_keys(&mut self, key: crossterm::event::KeyEvent) {
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         self.clamp_sampler_cursors();
+
+        if self.in_sampler_source() {
+            self.handle_source_keys(key);
+            return;
+        }
 
         if self.nav.clip_view.sampler.trim.is_some() {
             self.handle_trim_keys(key);
@@ -93,9 +110,55 @@ impl App {
             KeyCode::Char('m') => self.toggle_sampler_layer_mute(),
             KeyCode::Char('d') => self.request_sampler_layer_delete(),
             KeyCode::Char('a') => self.open_sample_prompt(),
+            KeyCode::Char('i') => self.open_pad_source_picker(),
+            KeyCode::Char('n') => self.normalize_sampler_layer(),
             KeyCode::Char('t') => self.open_trim_strip(),
+            // `r` outside source mode is a key with nowhere to go, and the
+            // thing a player pressing it wants is one key away.
+            KeyCode::Char('r') => {
+                self.flash("i picks an instrument to record this pad from");
+            }
             KeyCode::Esc | KeyCode::Char('q') => self.nav.escape(),
             _ => {}
+        }
+    }
+
+    /// One key, in source mode.
+    ///
+    /// Three do something and everything else says what the three are. A
+    /// mode that silently swallows keys is a mode a player thinks has
+    /// crashed.
+    fn handle_source_keys(&mut self, key: crossterm::event::KeyEvent) {
+        let armed = self
+            .nav
+            .sampler_source
+            .as_deref()
+            .is_some_and(phosphor_app::sampler::capture::SourceMode::is_armed);
+        match key.code {
+            KeyCode::Char('r') => self.toggle_sampler_take(),
+            KeyCode::Char('i') => self.open_pad_source_picker(),
+            // Esc ends a running take before it leaves — a performance is
+            // too expensive to throw away on a key that means "back". The
+            // second press is the one that leaves.
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if armed {
+                    self.land_armed_take();
+                } else {
+                    self.leave_sampler_source();
+                }
+            }
+            _ => {
+                let pad = self
+                    .nav
+                    .sampler_source
+                    .as_deref()
+                    .map(|mode| phosphor_app::sampler::SamplerState::pad_label(mode.pad))
+                    .unwrap_or_default();
+                self.flash(format!(
+                    "source mode is on pad {pad} \u{00b7} r {} \u{00b7} esc puts the sampler back",
+                    if armed { "ends the take" } else { "records" },
+                ));
+            }
         }
     }
 

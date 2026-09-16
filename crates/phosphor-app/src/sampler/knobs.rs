@@ -24,7 +24,11 @@ const MAX_ENV_MS: f32 = 10_000.0;
 
 /// The top of a level control, linear — the session clamps to this too, so
 /// a hand-edited file cannot open with a pad the knob cannot reach.
-const MAX_GAIN: f32 = 4.0;
+///
+/// Public because it is also the ceiling on a normalize: that sets the
+/// same number this knob turns, and a gain past the end of the travel is a
+/// gain the player cannot turn back down by hand.
+pub const MAX_GAIN: f32 = 4.0;
 
 /// The bottom of a level control's travel, in decibels. One step below it
 /// is silence, so stepping down from the floor reaches it and stepping up
@@ -480,7 +484,7 @@ mod tests {
     #[test]
     fn no_control_reads_as_nothing() {
         let pad = pad_with_layer();
-        let empty = PadState { config: pad.config, layers: Vec::new() };
+        let empty = PadState { config: pad.config, layers: Vec::new(), source: None };
         for knob in PadKnob::ALL {
             assert!(!knob.label().is_empty());
             assert!(!knob.value(&pad, pad.layers.first()).is_empty(), "{knob:?}");

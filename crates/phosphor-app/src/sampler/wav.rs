@@ -15,7 +15,11 @@ use phosphor_plugin::sample::SamplePcm;
 /// Longest file accepted, in frames — ten minutes of 48 kHz. A sampler
 /// pad is a sound, not an album side, and a decode this large would sit
 /// on the UI thread while it runs.
-const MAX_FRAMES: u32 = 48_000 * 60 * 10;
+///
+/// Public because a rendered take has to respect it too: a resample long
+/// enough to be refused by its own loader would vanish on the next
+/// session load. See [`crate::sampler::render`].
+pub const MAX_FRAMES: u32 = 48_000 * 60 * 10;
 
 /// Decode `path` into PCM. The error is a sentence for the status bar,
 /// not a code: the player reads it where they typed the path.

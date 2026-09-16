@@ -46,8 +46,7 @@ impl App {
                 tracing::info!("PANIC: all sound killed");
             }
             SpaceAction::AddInstrument => {
-                self.nav.instrument_modal.open = true;
-                self.nav.instrument_modal.cursor = 0;
+                self.nav.instrument_modal.open_for_track();
             }
             SpaceAction::Save => {
                 self.handle_save();
@@ -329,10 +328,31 @@ impl App {
     /// panel behind it.
     pub(crate) fn reload_child_instrument(&mut self, track_index: usize) {
         let Some(track) = self.nav.tracks.get(track_index) else { return };
-        let (Some(instrument), Some(track_id)) = (track.instrument_type, track.mixer_id) else {
+        let (Some(instrument), Some(_)) = (track.instrument_type, track.mixer_id) else {
             return;
         };
         let params = track.synth_params.clone();
+        self.install_instrument(track_index, instrument, &params);
+    }
+
+    /// Build an instrument, put it in a track's plugin slot, and replay a
+    /// panel into it.
+    ///
+    /// The rebuild-in-place recipe, in one place: a fresh plugin starts at
+    /// its own defaults and knows nothing about the panel the player has
+    /// been turning, so the parameters follow it across. Every caller that
+    /// swaps what a track is playing goes through here — the sequencer's
+    /// child knob, and the sampler's source mode, which borrows the slot
+    /// for as long as it takes to record a pad.
+    pub(crate) fn install_instrument(
+        &mut self,
+        track_index: usize,
+        instrument: InstrumentType,
+        params: &[f32],
+    ) {
+        let Some(track_id) = self.nav.tracks.get(track_index).and_then(|t| t.mixer_id) else {
+            return;
+        };
         let tx = &self.engine.shared.mixer_command_tx;
         let _ = tx.send(MixerCommand::SetInstrument {
             track_id,
@@ -588,30 +608,9 @@ impl App {
 
 }
 
-/// The plugin behind an instrument type.
+/// The plugin behind an instrument type — [`phosphor_app::instrument`].
 ///
-/// One factory, because there were about to be two: a track being created
-/// builds one, and a sequencer track being pointed at a different child
-/// builds another. Two lists of instruments is one list that eventually
-/// forgets an instrument.
-///
-/// The sequencer has no plugin — it drives one — and answers with the
-/// phosphor synth so that the slot is never left empty; nothing reaches this
-/// with it, because a sequencer track carries its child's type.
-pub(crate) fn build_plugin(
-    instrument: InstrumentType,
-) -> Box<dyn phosphor_plugin::Plugin + Send> {
-    match instrument {
-        InstrumentType::Synth | InstrumentType::Sequencer => Box::new(PhosphorSynth::new()),
-        InstrumentType::Sampler => Box::new(phosphor_dsp::sampler::Sampler::new()),
-        InstrumentType::DrumRack => Box::new(phosphor_dsp::drum_rack::DrumRack::new()),
-        InstrumentType::DX7 => Box::new(phosphor_dsp::dx7::Dx7Synth::new()),
-        InstrumentType::Jupiter8 => Box::new(phosphor_dsp::jupiter::Jupiter8Synth::new()),
-        InstrumentType::Prophet6 => Box::new(phosphor_dsp::prophet6::Prophet6::new()),
-        InstrumentType::Teo5 => Box::new(phosphor_dsp::teo5::Teo5::new()),
-        InstrumentType::Odyssey => Box::new(phosphor_dsp::odyssey::OdysseySynth::new()),
-        InstrumentType::Juno60 => Box::new(phosphor_dsp::juno::Juno60Synth::new()),
-        InstrumentType::Rhodes => Box::new(phosphor_dsp::rhodes::RhodesPiano::new()),
-        InstrumentType::LittlePhatty => Box::new(phosphor_dsp::phatty::LittlePhatty::new()),
-    }
-}
+/// Re-exported here because this is where a track is made, and moved down
+/// there because the sampler's offline render needs the same factory and
+/// runs inside the application crate.
+pub(crate) use phosphor_app::instrument::build_plugin;

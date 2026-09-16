@@ -183,6 +183,38 @@ mod tests {
         }
     }
 }
+/// Fresh effect instances from the front end's mirror, ready to run
+/// offline.
+///
+/// The one place a rack is built from what the panel holds: the ghost
+/// render below and the sampler's resampler
+/// ([`crate::sampler::render`]) both call it, so a device that gains a
+/// setting cannot end up applied in one render and not the other.
+/// Bypassed slots are left out — bypassed is absent, everywhere.
+#[must_use]
+pub fn build_offline_rack(
+    rack: &[MidiFxInstance],
+    sample_rate: f32,
+    max_block: usize,
+) -> Vec<Box<dyn phosphor_core::midi_fx::MidiEffect>> {
+    let mut chain: Vec<Box<dyn phosphor_core::midi_fx::MidiEffect>> = Vec::new();
+    for slot in rack.iter().filter(|s| !s.bypass) {
+        let Some(mut fx) = phosphor_core::midi_fx::build_midi_fx(slot.fx_type.key()) else {
+            continue;
+        };
+        for (index, &value) in slot.params.iter().enumerate() {
+            fx.set_parameter(index, value);
+        }
+        if !slot.custom_chords.is_empty() {
+            fx.set_progression(&slot.custom_chords);
+        }
+        fx.init(f64::from(sample_rate), max_block);
+        fx.reset();
+        chain.push(fx);
+    }
+    chain
+}
+
 /// Render a clip through a MIDI rack, offline — the one code path under
 /// both the piano roll's ghost notes and the commit action, so what the
 /// ghosts show is exactly what a commit would print.
@@ -201,21 +233,9 @@ pub fn render_clip_through_rack(
     sample_rate: f32,
     tempo_bpm: f64,
 ) -> Vec<phosphor_core::clip::ClipEvent> {
-    use phosphor_core::midi_fx::{build_midi_fx, MidiFxContext};
+    use phosphor_core::midi_fx::MidiFxContext;
 
-    let mut chain: Vec<Box<dyn phosphor_core::midi_fx::MidiEffect>> = Vec::new();
-    for slot in rack.iter().filter(|s| !s.bypass) {
-        let Some(mut fx) = build_midi_fx(slot.fx_type.key()) else { continue };
-        for (index, &value) in slot.params.iter().enumerate() {
-            fx.set_parameter(index, value);
-        }
-        if !slot.custom_chords.is_empty() {
-            fx.set_progression(&slot.custom_chords);
-        }
-        fx.init(f64::from(sample_rate), 256);
-        fx.reset();
-        chain.push(fx);
-    }
+    let mut chain = build_offline_rack(rack, sample_rate, 256);
     let input = clip.events_for_audio();
     if chain.is_empty() {
         return input.into_iter().filter(|e| matches!(e.status & 0xF0, 0x90 | 0x80)).collect();

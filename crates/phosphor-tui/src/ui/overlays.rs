@@ -195,8 +195,12 @@ fn help_line(line: HelpLine, width: usize) -> Line<'static> {
 pub(super) fn render_instrument_modal(frame: &mut Frame, nav: &NavState) {
     let area = frame.area();
     let mw = 40u16;
+    // The same menu answers two questions — a new track, or what a sampler
+    // pad is recorded from — and the list is shorter for the second, so
+    // the box is measured from what it is actually about to draw.
+    let items = nav.instrument_modal.items();
     // 3 lines per instrument (name + desc + blank) + 3 for border/padding
-    let mh = ((InstrumentType::ALL.len() as u16) * 3 + 3).min(area.height.saturating_sub(2));
+    let mh = ((items.len() as u16) * 3 + 3).min(area.height.saturating_sub(2));
     let mx = (area.width.saturating_sub(mw)) / 2;
     let my = (area.height.saturating_sub(mh)) / 2;
     let menu_area = Rect::new(mx, my, mw, mh);
@@ -206,13 +210,16 @@ pub(super) fn render_instrument_modal(frame: &mut Frame, nav: &NavState) {
         .style(Style::default().bg(theme::overlay_bg()))
         .borders(ratatui::widgets::Borders::ALL)
         .border_style(theme::border_style())
-        .title(Span::styled(" add instrument ", theme::amber_bright().add_modifier(Modifier::BOLD)));
+        .title(Span::styled(
+            format!(" {} ", nav.instrument_modal.title().to_lowercase()),
+            theme::amber_bright().add_modifier(Modifier::BOLD),
+        ));
     frame.render_widget(block, menu_area);
 
     let inner = Rect::new(mx + 2, my + 2, mw - 4, mh - 3);
 
     let mut lines: Vec<Line> = Vec::new();
-    for (i, inst) in InstrumentType::ALL.iter().enumerate() {
+    for (i, inst) in items.iter().enumerate() {
         let is_cur = nav.instrument_modal.cursor == i;
         let indicator = if is_cur { "\u{25B6} " } else { "  " };
         let name_s = if is_cur {

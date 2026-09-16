@@ -248,6 +248,17 @@ impl InstrumentType {
     /// last, because it is not an instrument: it drives one.
     pub const ALL: &[InstrumentType] = &[Self::Synth, Self::DrumRack, Self::DX7, Self::Jupiter8, Self::Odyssey, Self::Juno60, Self::Rhodes, Self::Sampler, Self::LittlePhatty, Self::Prophet6, Self::Teo5, Self::Sequencer];
 
+    /// Whether a sampler pad can be recorded from this — everything that
+    /// makes a sound on its own.
+    ///
+    /// The sequencer drives an instrument rather than being one, and a
+    /// sampler recording itself is a feedback loop wearing a menu entry:
+    /// the pad being recorded would be playing into the take.
+    #[must_use]
+    pub const fn is_recordable_source(self) -> bool {
+        !matches!(self, Self::Sequencer | Self::Sampler)
+    }
+
     /// Whether picking this from the add-track menu builds a step sequencer
     /// rather than an instrument.
     ///
@@ -261,19 +272,81 @@ impl InstrumentType {
     }
 }
 
-#[derive(Debug)]
+/// What the instrument menu's answer is for.
+///
+/// One menu, two jobs, and the difference is in the type rather than in a
+/// second modal that would drift out of step with the first: the list of
+/// instruments, the way it is drawn and every key in it are the same, and
+/// only what happens on Enter is different.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InstrumentPick {
+    /// Space+a: the choice makes a track.
+    #[default]
+    NewTrack,
+    /// `i` on a sampler pad: the choice is played live on the track and
+    /// recorded onto the pad.
+    PadSource { track_idx: usize, pad: usize },
+}
+
+#[derive(Debug, Default)]
 pub struct InstrumentModal {
     pub open: bool,
     pub cursor: usize,
-}
-
-impl Default for InstrumentModal {
-    fn default() -> Self { Self::new() }
+    /// What the answer is for. Reset by whichever door opened the menu, so
+    /// a cancelled pad pick cannot leave the next Space+a building a track
+    /// out of a pad's answer.
+    pub target: InstrumentPick,
 }
 
 impl InstrumentModal {
     pub fn new() -> Self {
-        Self { open: false, cursor: 0 }
+        Self::default()
+    }
+
+    /// Open for a new track — the whole list, from the top.
+    pub fn open_for_track(&mut self) {
+        self.open = true;
+        self.cursor = 0;
+        self.target = InstrumentPick::NewTrack;
+    }
+
+    /// Open to choose what a pad is recorded from, standing on `current`
+    /// when the pad already remembers one: picking the same instrument
+    /// again is the common case, and it should cost one Enter.
+    pub fn open_for_pad(
+        &mut self,
+        track_idx: usize,
+        pad: usize,
+        current: Option<InstrumentType>,
+    ) {
+        self.open = true;
+        self.target = InstrumentPick::PadSource { track_idx, pad };
+        self.cursor = current
+            .and_then(|want| self.items().iter().position(|&i| i == want))
+            .unwrap_or(0);
+    }
+
+    /// The instruments this menu is offering. A pad's source list leaves
+    /// out the two entries that cannot be recorded from — see
+    /// [`InstrumentType::is_recordable_source`] — rather than offering
+    /// them and refusing afterwards.
+    pub fn items(&self) -> Vec<InstrumentType> {
+        match self.target {
+            InstrumentPick::NewTrack => InstrumentType::ALL.to_vec(),
+            InstrumentPick::PadSource { .. } => InstrumentType::ALL
+                .iter()
+                .copied()
+                .filter(|i| i.is_recordable_source())
+                .collect(),
+        }
+    }
+
+    /// What the title bar of the menu says it is for.
+    pub fn title(&self) -> &'static str {
+        match self.target {
+            InstrumentPick::NewTrack => "Add Instrument",
+            InstrumentPick::PadSource { .. } => "Record This Pad From",
+        }
     }
 
     pub fn move_up(&mut self) {
@@ -281,11 +354,12 @@ impl InstrumentModal {
     }
 
     pub fn move_down(&mut self) {
-        if self.cursor + 1 < InstrumentType::ALL.len() { self.cursor += 1; }
+        if self.cursor + 1 < self.items().len() { self.cursor += 1; }
     }
 
     pub fn selected(&self) -> InstrumentType {
-        InstrumentType::ALL[self.cursor]
+        let items = self.items();
+        items[self.cursor.min(items.len() - 1)]
     }
 }
 

@@ -19,6 +19,10 @@ pub(super) fn render_bottom_bar(
     let in_pads = nav.focused_pane == Pane::ClipView
         && nav.clip_view.clip_tab == ClipTab::Pads
         && nav.clip_view.focus == ClipViewFocus::PianoRoll;
+    let in_source = nav
+        .sampler_source
+        .as_deref()
+        .is_some_and(|mode| mode.track_idx == nav.track_cursor);
     // **Key listen takes the mode tag.** It is the one switch in the box that
     // changes what comes out of the speakers rather than what the mix does
     // with it, and a player who has forgotten it is on will spend the next
@@ -42,6 +46,27 @@ pub(super) fn render_bottom_bar(
         ("-- EDIT --", theme::amber_bright())
     } else if nav.focused_pane == Pane::Transport {
         ("-- TRANSPORT --", theme::amber_bright())
+    } else if in_source && nav.focused_pane == Pane::ClipView {
+        // Source mode takes the tag for key listen's reason: the track is
+        // playing a synth instead of its sampler, which is a change to what
+        // comes out of the speakers rather than to what the keys do. So it
+        // says so from any tab of the clip view, and not only from the pad
+        // map where the keys for it live.
+        if nav.sampler_source.as_deref().is_some_and(|m| m.is_armed()) {
+            (
+                "-- TAKE --",
+                if super::meters::blink_on() {
+                    Style::default()
+                        .fg(theme::rec_active_val())
+                        .bg(theme::bg_val())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    theme::dim()
+                },
+            )
+        } else {
+            ("-- SOURCE --", theme::amber_bright())
+        }
     } else if nav.focused_pane == Pane::ClipView
         && nav.clip_view.clip_tab == ClipTab::Fx
         && nav.clip_view.focus == ClipViewFocus::PianoRoll
@@ -202,6 +227,17 @@ pub(super) fn render_bottom_bar(
                         ("X","clear"),("jk","band"),
                     ],
                 },
+            // Source mode has three keys and that is the whole list, which
+            // is the point: everything else is a performance. Only while
+            // the pad map has the keys, though — the tag above says the
+            // mode is on from any tab, but on the FX tab it is the FX
+            // panel's keys that answer.
+            Pane::ClipView if in_source && in_pads =>
+                vec![("r", if nav.sampler_source.as_deref().is_some_and(|m| m.is_armed()) {
+                    "end take"
+                } else {
+                    "record"
+                }), ("i","instrument"), ("esc","sampler")],
             // The trim strip. `h`/`l` take an edge rather than a pad, which
             // is the one thing about this mode a player has to know.
             Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Pads
@@ -217,8 +253,8 @@ pub(super) fn render_bottom_bar(
                 vec![("hl","turn"),("H/L","stride"),("esc","release")],
             Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Pads
                 && nav.clip_view.focus == ClipViewFocus::PianoRoll =>
-                vec![("hl","pad"),("jk","knob"),("enter","hold"),("[]","layer"),
-                     ("a","load"),("t","trim"),("d","del")],
+                vec![("hl","pad"),("jk","knob"),("[]","layer"),("i","source"),
+                     ("a","load"),("t","trim"),("n","norm")],
             // Note editing: proximity nav, selection, and the velocity ride.
             Pane::ClipView if nav.clip_view.piano_roll.edit_mode =>
                 vec![("hjkl","note"),("enter","sel"),(",.","vel"),("<>","vel\u{00b1}"),

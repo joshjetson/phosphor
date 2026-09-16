@@ -1061,4 +1061,484 @@ mod tests {
         assert!(!json.contains("\"pads\""), "an empty kit was written out:\n{json}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // ── Source mode and the resampler ──
+
+    /// Play a key through the same door the MIDI callback uses, so the
+    /// modes that intercept the stream get their say.
+    fn play(app: &mut App, note: u8, velocity: u8, on: bool, at: u64) {
+        use phosphor_midi::MidiMessageType;
+        let event = if on {
+            MidiMessageType::NoteOn { channel: 0, note, velocity }
+        } else {
+            MidiMessageType::NoteOff { channel: 0, note, velocity: 0 }
+        };
+        app.handle_tap_event(event, Some(at));
+    }
+
+    /// A short performance on one key, stamped from now.
+    fn perform(app: &mut App, note: u8) {
+        let t0 = phosphor_midi::clock::now_micros();
+        play(app, note, 100, true, t0);
+        play(app, note, 0, false, t0 + 150_000);
+    }
+
+    /// A sampler track in source mode on its current pad, playing the
+    /// Phosphor synth — the whole way in, through the real keys.
+    fn source_app() -> App {
+        let mut app = sampler_app();
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Enter); // the first entry: Phosphor Synth
+        app
+    }
+
+    /// `i` opens the picker for the pad, and it offers what can be
+    /// recorded from — never the sequencer, and never the sampler itself.
+    #[test]
+    fn i_offers_every_instrument_that_can_be_recorded_from() {
+        let mut app = sampler_app();
+        press(&mut app, KeyCode::Char('i'));
+        assert!(app.nav.instrument_modal.open, "`i` did not ask");
+        let items = app.nav.instrument_modal.items();
+        assert!(!items.contains(&InstrumentType::Sequencer), "the sequencer is not an instrument");
+        assert!(
+            !items.contains(&InstrumentType::Sampler),
+            "a sampler recording itself is a feedback loop",
+        );
+        assert_eq!(items.len(), InstrumentType::ALL.len() - 2);
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("record this pad from"), "the menu does not say what for:\n{text}");
+    }
+
+    /// Entering puts the instrument in the track's slot, says so, and
+    /// freezes the pad cursor: the keys are a performance now.
+    #[test]
+    fn source_mode_swaps_the_instrument_and_freezes_the_pad_cursor() {
+        let mut app = sampler_app();
+        let pad = sampler_state(&app).cursor;
+        let _ = app.drain_mixer_commands();
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Enter);
+
+        assert!(app.nav.sampler_source.is_some(), "the mode did not start");
+        let commands = app.drain_mixer_commands();
+        assert!(
+            commands.iter().any(|c| matches!(c, MixerCommand::SetInstrument { .. })),
+            "the track never took the instrument",
+        );
+        assert!(
+            commands.iter().any(|c| matches!(c, MixerCommand::SetParameter { .. })),
+            "the instrument arrived with no panel behind it",
+        );
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("-- SOURCE --"), "the bar does not say which mode:\n{text}");
+        assert!(text.contains("source \u{00b7} Phosphor Synth"), "no banner:\n{text}");
+        assert!(text.contains("[PAD:C3 source]"), "the strip does not say either:\n{text}");
+
+        // A key played is a performance: the pad cursor stays put.
+        play(&mut app, 72, 100, true, phosphor_midi::clock::now_micros());
+        assert_eq!(sampler_state(&app).cursor, pad, "a played key moved the pad cursor");
+        // ...and so do the keys that walk the bed, which says so.
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(sampler_state(&app).cursor, pad, "`l` walked out of the mode's pad");
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("source mode is on pad C3"), "unhelpful: {message}");
+    }
+
+    /// The pad remembers what it was recorded from, and `i` comes back
+    /// standing on it.
+    #[test]
+    fn the_pad_remembers_its_instrument_and_its_panel() {
+        let mut app = sampler_app();
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Char('j')); // Drum Rack
+        press(&mut app, KeyCode::Enter);
+        let pad = sampler_state(&app).cursor;
+        let source = sampler_state(&app).pads[pad].source.clone().expect("no memory");
+        assert_eq!(source.instrument, InstrumentType::DrumRack);
+        assert_eq!(source.params.len(), phosphor_app::preset::defaults(InstrumentType::DrumRack).len());
+
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('i'));
+        assert_eq!(
+            app.nav.instrument_modal.selected(),
+            InstrumentType::DrumRack,
+            "the picker did not open on the pad's own instrument",
+        );
+    }
+
+    /// `esc` puts the sampler back — and replays the kit into it, because
+    /// the instance that comes back is empty.
+    #[test]
+    fn esc_restores_the_sampler_and_replays_the_kit() {
+        let dir = scratch("source-esc");
+        let mut app = loaded_app(&dir);
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Enter);
+        let _ = app.drain_mixer_commands();
+
+        press(&mut app, KeyCode::Esc);
+        assert!(app.nav.sampler_source.is_none(), "esc did not leave the mode");
+        let commands = app.drain_mixer_commands();
+        assert!(
+            commands.iter().any(|c| matches!(c, MixerCommand::SetInstrument { .. })),
+            "the sampler never came back",
+        );
+        let replayed = commands
+            .iter()
+            .filter(|c| matches!(c, MixerCommand::SetSamplerPad { layers, .. } if !layers.is_empty()))
+            .count();
+        assert_eq!(replayed, 1, "the kit was not replayed into the fresh sampler");
+
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("-- PADS --"), "the bar still says source:\n{text}");
+        assert!(text.contains("kick"), "the kit went away with the mode:\n{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A performance lands as a take: selected, named, timed, and one
+    /// press of `u` deep.
+    #[test]
+    fn a_performance_lands_as_a_take_in_one_undo_step() {
+        let mut app = source_app();
+        press(&mut app, KeyCode::Char('r'));
+        perform(&mut app, 60);
+        press(&mut app, KeyCode::Char('r'));
+
+        let state = sampler_state(&app);
+        let pad = state.cursor;
+        assert_eq!(state.pads[pad].layers.len(), 1, "no take landed");
+        let layer = &state.pads[pad].layers[0];
+        assert_eq!(layer.name, "take 1");
+        assert_eq!(layer.source, phosphor_app::sampler::LayerSource::Take);
+        let pcm = layer.pcm.as_ref().expect("a take with no audio");
+        assert_eq!(pcm.sample_rate, 44_100.0, "the take is not at the engine's rate");
+        assert!(pcm.frames() > 0);
+        assert_eq!(app.nav.clip_view.sampler.layer, 0, "the panel is not on the new take");
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("take 1"), "the flash does not name the take: {message}");
+        assert!(message.contains("peak"), "the flash does not give the peak: {message}");
+
+        // One step back off the pad, and redo brings it back with its
+        // audio — the buffer was in the step all along.
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(pad_layers(&app, pad), 0, "one `u` did not take the take off");
+        let commands = app.drain_mixer_commands();
+        assert!(
+            commands.iter().any(|c| matches!(
+                c,
+                MixerCommand::SetSamplerPad { layers, .. } if layers.is_empty()
+            )),
+            "undo left the take in the engine",
+        );
+        app.handle_event(Event::Key(KeyEvent {
+            code: KeyCode::Char('r'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }));
+        assert_eq!(pad_layers(&app, pad), 1, "redo did not bring the take back");
+        assert!(
+            sampler_state(&app).pads[pad].layers[0].pcm.is_some(),
+            "the take came back with no audio behind it",
+        );
+    }
+
+    fn pad_layers(app: &App, pad: usize) -> usize {
+        sampler_state(app).pads[pad].layers.len()
+    }
+
+    /// Armed and nothing played: nothing lands, and it says so. A
+    /// zero-frame layer would be a sound that cannot be heard, trimmed or
+    /// removed without a puzzle.
+    #[test]
+    fn an_empty_take_lands_nothing_and_says_so() {
+        let mut app = source_app();
+        press(&mut app, KeyCode::Char('r'));
+        press(&mut app, KeyCode::Char('r'));
+        assert_eq!(pad_layers(&app, sampler_state(&app).cursor), 0, "silence landed on the pad");
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("nothing played"), "unhelpful: {message}");
+        assert!(app.nav.sampler_source.is_some(), "an empty take ended the mode");
+    }
+
+    /// A single-pitch performance teaches the pad its root; a chord does
+    /// not, because there is nothing for it to teach.
+    #[test]
+    fn a_one_finger_take_teaches_the_pad_its_root() {
+        let mut app = source_app();
+        press(&mut app, KeyCode::Char('r'));
+        perform(&mut app, 45);
+        press(&mut app, KeyCode::Char('r'));
+        let pad = sampler_state(&app).cursor;
+        assert_eq!(sampler_state(&app).pads[pad].config.root, 45);
+        assert!(!sampler_state(&app).pads[pad].config.keytrack, "a root turned keytrack on");
+
+        // A chord leaves the root where the first take put it.
+        press(&mut app, KeyCode::Char('r'));
+        let t0 = phosphor_midi::clock::now_micros();
+        play(&mut app, 50, 100, true, t0);
+        play(&mut app, 57, 100, true, t0 + 1_000);
+        play(&mut app, 50, 0, false, t0 + 120_000);
+        play(&mut app, 57, 0, false, t0 + 130_000);
+        press(&mut app, KeyCode::Char('r'));
+        assert_eq!(pad_layers(&app, pad), 2, "the second take did not land");
+        assert_eq!(sampler_state(&app).pads[pad].config.root, 45, "a chord moved the root");
+        assert_eq!(sampler_state(&app).pads[pad].layers[1].name, "take 2");
+    }
+
+    /// Rolling, a take is whole bars — the length that loops.
+    #[test]
+    fn a_take_against_the_transport_is_whole_bars() {
+        let mut app = source_app();
+        app.engine.transport.play();
+        press(&mut app, KeyCode::Char('r'));
+        perform(&mut app, 64);
+        press(&mut app, KeyCode::Char('r'));
+
+        let state = sampler_state(&app);
+        let layer = &state.pads[state.cursor].layers[0];
+        let pcm = layer.pcm.as_ref().expect("no take");
+        // One bar of 4/4 at 120 BPM, at 44.1 kHz: exactly two seconds.
+        assert_eq!(pcm.frames(), 88_200, "the take is not a whole bar");
+        // ...and it is not auto-trimmed, or the loop point would move.
+        assert_eq!(layer.start_frame, 0);
+        assert_eq!(layer.end_frame, 88_200);
+        app.engine.transport.pause();
+    }
+
+    /// A full pad refuses the arm before the performance, not after it.
+    #[test]
+    fn a_full_pad_refuses_the_arm_before_a_note_is_played() {
+        let dir = scratch("source-full");
+        let wav = dir.join("hat.wav");
+        write_wav(&wav, 441);
+        let mut app = sampler_app();
+        for _ in 0..phosphor_app::sampler::MAX_LAYERS {
+            press(&mut app, KeyCode::Char('a'));
+            type_line(&mut app, &wav.display().to_string());
+            press(&mut app, KeyCode::Enter);
+        }
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('r'));
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("full"), "the refusal said: {message}");
+        assert!(
+            app.nav.sampler_source.as_deref().is_some_and(|m| !m.is_armed()),
+            "a full pad armed anyway",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Stopping the transport ends a take: it is a performance against the
+    /// transport, and the transport stopped.
+    #[test]
+    fn stopping_the_transport_lands_the_take() {
+        let mut app = source_app();
+        app.engine.transport.play();
+        press(&mut app, KeyCode::Char('r'));
+        perform(&mut app, 60);
+        app.stop_playback();
+        assert_eq!(pad_layers(&app, sampler_state(&app).cursor), 1, "the stop lost the take");
+        assert!(
+            app.nav.sampler_source.as_deref().is_some_and(|m| !m.is_armed()),
+            "the take is still armed after a stop",
+        );
+    }
+
+    /// `n` normalizes as a gain and `n` again puts it back. The buffer is
+    /// never rewritten — the same audio, at a different level.
+    #[test]
+    fn n_normalizes_a_layer_as_a_gain_and_toggles_back() {
+        let mut app = source_app();
+        press(&mut app, KeyCode::Char('r'));
+        perform(&mut app, 60);
+        press(&mut app, KeyCode::Char('r'));
+        press(&mut app, KeyCode::Esc); // back to the map, where `n` lives
+
+        let pad = sampler_state(&app).cursor;
+        let before = sampler_state(&app).pads[pad].layers[0].pcm.clone().unwrap();
+        press(&mut app, KeyCode::Char('n'));
+        let layer = &sampler_state(&app).pads[pad].layers[0];
+        assert!(layer.gain > 1.0, "normalize did not raise the level");
+        // Either it reached -0.5 dB or it ran out of level control — our
+        // instruments render with enough headroom that one quiet note can
+        // want more than the twelve decibels there are.
+        let peak_db = 20.0 * (layer.region_peak() * layer.gain).log10();
+        let ceiling = phosphor_app::sampler::knobs::MAX_GAIN;
+        assert!(
+            (peak_db + 0.5).abs() < 0.01 || (layer.gain - ceiling).abs() < 1e-6,
+            "the normalized peak is {peak_db:.2} dB at a gain of {}",
+            layer.gain,
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&before, layer.pcm.as_ref().unwrap()),
+            "normalize rewrote the buffer",
+        );
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(
+            message.contains("-0.5 dB") || message.contains("as far as it goes"),
+            "the flash does not say what it did: {message}",
+        );
+
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(sampler_state(&app).pads[pad].layers[0].gain, 1.0, "`n` did not toggle back");
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("unity"), "the flash does not say so: {message}");
+
+        // And each throw is its own undo step.
+        press(&mut app, KeyCode::Char('u'));
+        assert!(sampler_state(&app).pads[pad].layers[0].gain > 1.0, "undo lost the normalize");
+    }
+
+    /// A take survives the session: the audio is written beside the file,
+    /// named relatively, and comes back playable.
+    #[test]
+    fn a_take_is_written_beside_the_session_and_comes_back() {
+        let dir = scratch("take-session");
+        let session = dir.join("kit.phos");
+        let mut recording = source_app();
+        press(&mut recording, KeyCode::Char('r'));
+        perform(&mut recording, 60);
+        press(&mut recording, KeyCode::Char('r'));
+        let frames = {
+            let state = sampler_state(&recording);
+            state.pads[state.cursor].layers[0].pcm.as_ref().unwrap().frames()
+        };
+        recording.do_save(&session.display().to_string());
+
+        let wav = dir.join("kit.samples").join("C3-1.wav");
+        assert!(wav.exists(), "the take was not written beside the session");
+        let json = std::fs::read_to_string(&session).unwrap();
+        assert!(json.contains("kit.samples/C3-1.wav"), "the path is not in the file:\n{json}");
+        assert!(!json.contains(&dir.display().to_string()), "the session names this machine");
+        assert!(json.contains("\"kind\": \"take\""), "the layer is not marked a take:\n{json}");
+
+        let mut loading = app();
+        loading.do_load(&session.display().to_string());
+        let state = sampler_state(&loading);
+        let pad = SamplerState::pad_of_note(60).unwrap();
+        assert_eq!(state.pads[pad].layers.len(), 1, "the take did not come back");
+        let layer = &state.pads[pad].layers[0];
+        assert_eq!(layer.source, phosphor_app::sampler::LayerSource::Take);
+        assert_eq!(
+            layer.pcm.as_ref().expect("the take came back silent").frames(),
+            frames,
+            "the take changed length on the way through the file",
+        );
+        assert_eq!(
+            state.pads[pad].source.as_ref().map(|s| s.instrument),
+            Some(InstrumentType::Synth),
+            "the pad forgot what it was recorded from",
+        );
+
+        // The sidecar deleted: the pad keeps its seat, red and counted —
+        // the same rule a missing wav has always followed.
+        std::fs::remove_file(&wav).unwrap();
+        let mut after = app();
+        after.do_load(&session.display().to_string());
+        let state = sampler_state(&after);
+        assert_eq!(state.pads[pad].layers.len(), 1, "a missing take cost the pad its seat");
+        assert!(state.pads[pad].layers[0].pcm.is_none());
+        assert!(state.pads[pad].has_missing(), "the pad is not marked");
+        assert_eq!(state.missing_layers(), 1);
+        let (message, _) = after.status_message.as_ref().unwrap();
+        assert!(message.contains("missing"), "the player was not told: {message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A second save writes nothing new: a take already on disk keeps its
+    /// file.
+    #[test]
+    fn saving_twice_writes_the_take_once() {
+        let dir = scratch("take-twice");
+        let session = dir.join("kit.phos");
+        let mut app = source_app();
+        press(&mut app, KeyCode::Char('r'));
+        perform(&mut app, 60);
+        press(&mut app, KeyCode::Char('r'));
+        app.do_save(&session.display().to_string());
+        let wav = dir.join("kit.samples").join("C3-1.wav");
+        let stamp = std::fs::metadata(&wav).unwrap().len();
+        app.do_save(&session.display().to_string());
+        assert_eq!(std::fs::read_dir(dir.join("kit.samples")).unwrap().count(), 1);
+        assert_eq!(std::fs::metadata(&wav).unwrap().len(), stamp);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The take sounds like what the player heard: a chord device on the
+    /// track is in the render.
+    #[test]
+    fn the_tracks_midi_devices_are_in_the_take() {
+        let mut bare = source_app();
+        press(&mut bare, KeyCode::Char('r'));
+        perform(&mut bare, 48);
+        press(&mut bare, KeyCode::Char('r'));
+
+        let mut chorded = sampler_app();
+        chorded.add_midi_fx(chorded.nav.track_cursor, crate::state::MidiFxType::Chord);
+        press(&mut chorded, KeyCode::Char('i'));
+        press(&mut chorded, KeyCode::Enter);
+        press(&mut chorded, KeyCode::Char('r'));
+        perform(&mut chorded, 48);
+        press(&mut chorded, KeyCode::Char('r'));
+
+        let one = take_peak(&bare);
+        let chord = take_peak(&chorded);
+        assert!(one > 0.0 && chord > 0.0, "one of the takes is silent");
+        assert!(
+            (one - chord).abs() > 1e-4,
+            "the chord device never reached the take: {one} vs {chord}",
+        );
+    }
+
+    fn take_peak(app: &App) -> f32 {
+        let state = sampler_state(app);
+        let pcm = state.pads[state.cursor].layers[0].pcm.as_ref().expect("no take");
+        pcm.data.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+    }
+
+    /// Only one track can have its plugin slot on loan: starting the mode
+    /// on a second sampler gives the first its sampler back, rather than
+    /// leaving a track playing a synth with nothing on the screen offering
+    /// to put it right.
+    #[test]
+    fn a_second_source_mode_hands_the_first_track_its_sampler_back() {
+        let dir = scratch("source-handoff");
+        let mut app = loaded_app(&dir); // track 0: a kit on C3
+        let first = app.nav.track_cursor;
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Enter);
+
+        app.create_instrument_track(InstrumentType::Sampler);
+        let second = app.nav.track_cursor;
+        assert_ne!(first, second);
+        app.nav.focused_pane = Pane::ClipView;
+        let _ = app.drain_mixer_commands();
+
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Enter);
+        let mode = app.nav.sampler_source.as_deref().expect("the second mode did not start");
+        assert_eq!(mode.track_idx, second, "the mode stayed on the first track");
+        let first_id = app.nav.tracks[first].mixer_id;
+        let replayed = app.drain_mixer_commands().into_iter().any(|c| matches!(
+            c,
+            MixerCommand::SetSamplerPad { track_id, layers, .. }
+                if Some(track_id) == first_id && !layers.is_empty()
+        ));
+        assert!(replayed, "the track left behind never got its kit back");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The track the mode was borrowing is deleted: the mode goes with it
+    /// rather than waiting to land a take on a track that is not there.
+    #[test]
+    fn deleting_the_track_ends_source_mode() {
+        let mut app = source_app();
+        press(&mut app, KeyCode::Char('r'));
+        app.execute_confirm(ConfirmKind::DeleteTrack);
+        press(&mut app, KeyCode::Char('l')); // any key: the reconciler runs after each
+        assert!(app.nav.sampler_source.is_none(), "the mode outlived its track");
+    }
 }

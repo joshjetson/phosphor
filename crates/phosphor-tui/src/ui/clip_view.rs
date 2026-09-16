@@ -95,9 +95,16 @@ pub(super) fn render_clip_view_tabs(frame: &mut Frame, area: Rect, nav: &NavStat
     // that has stopped working.
     if nav.clip_view.clip_tab == ClipTab::Pads {
         if let Some(pads) = nav.current_track().and_then(|t| t.sampler.as_deref()) {
-            // Trim before hold: the strip has the keys, so "hold" would be
-            // describing a control that is not answering any of them.
-            let mode = if nav.clip_view.sampler.trim.is_some() {
+            // Source before trim before hold, in the order the modes take
+            // the keys: naming a mode that is not answering any of them is
+            // worse than naming none.
+            let source = nav
+                .sampler_source
+                .as_deref()
+                .filter(|mode| mode.track_idx == nav.track_cursor);
+            let mode = if let Some(source) = source {
+                if source.is_armed() { " rec" } else { " source" }
+            } else if nav.clip_view.sampler.trim.is_some() {
                 " trim"
             } else if nav.clip_view.sampler.locked {
                 " hold"

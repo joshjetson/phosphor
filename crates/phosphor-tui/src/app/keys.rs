@@ -17,6 +17,10 @@ impl App {
         // stop, and most of the ways out of the pad map are keys that know
         // nothing about it.
         self.reconcile_sampler_preview();
+        // Source mode borrows a track's plugin slot, and the keys that can
+        // take that track away — delete, undo, a session load — know
+        // nothing about the borrow.
+        self.reconcile_sampler_source();
     }
 
     fn dispatch_event(&mut self, event: Event) {
@@ -298,9 +302,17 @@ impl App {
                 KeyCode::Char('k') | KeyCode::Up => self.nav.move_up(),
                 KeyCode::Enter => {
                     let instrument = self.nav.instrument_modal.selected();
+                    let target = self.nav.instrument_modal.target;
                     dbg::user(&format!("instrument modal: Enter → selected {:?}", instrument));
                     self.nav.instrument_modal.open = false;
-                    self.create_instrument_track_undoable(instrument);
+                    // One menu, two answers. Which one this is was decided
+                    // by the door that opened it — see `InstrumentPick`.
+                    match target {
+                        crate::state::InstrumentPick::NewTrack => {
+                            self.create_instrument_track_undoable(instrument);
+                        }
+                        pick => self.enter_sampler_source(pick, instrument),
+                    }
                 }
                 _ => {}
             }

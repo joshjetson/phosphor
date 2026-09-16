@@ -26,6 +26,23 @@ impl App {
             path.with_extension("phos")
         };
 
+        // The takes go out first, and the save stops if they will not
+        // write. A session naming audio that is not there is a kit full of
+        // red pads; an orphan wav beside a session is a file nobody
+        // notices. See `phosphor_app::sampler::sidecar`.
+        match self.write_take_sidecars(&path) {
+            Ok(0) => {}
+            Ok(written) => crate::debug_log::log(
+                "SAMPLER",
+                &format!("{written} take(s) written beside {}", path.display()),
+            ),
+            Err(message) => {
+                self.status_message =
+                    Some((format!("save failed: {message}"), std::time::Instant::now()));
+                return;
+            }
+        }
+
         match crate::session::save(&path, &self.nav, &self.engine.transport) {
             Ok(()) => {
                 self.session_path = Some(path.clone());
@@ -43,6 +60,24 @@ impl App {
         }
     }
 
+
+    /// Write every recorded take that has no file yet into the session's
+    /// sidecar directory, and give each layer the relative path that names
+    /// it.
+    ///
+    /// Writing changes the kit — a take's `path` goes from empty to a
+    /// filename — and that is deliberate: from the save onward the take is
+    /// a file like any other, and a second save has nothing to do. It is
+    /// not an undo step, because saving is not an edit; it is the same
+    /// state saying where it now lives.
+    fn write_take_sidecars(&mut self, path: &std::path::Path) -> Result<usize, String> {
+        let mut written = 0usize;
+        for index in 0..self.nav.tracks.len() {
+            let Some(sampler) = self.nav.tracks[index].sampler.as_deref_mut() else { continue };
+            written += phosphor_app::sampler::sidecar::write_takes(path, sampler)?;
+        }
+        Ok(written)
+    }
 
     /// Put the send buses and the master back the way the session left them.
     ///
@@ -104,6 +139,13 @@ impl App {
         // goes exactly where it was typed. See `phosphor_app::paths`.
         let path = phosphor_app::paths::find_session(std::path::Path::new(path_str));
 
+        // Source mode belongs to a track that is about to stop existing,
+        // and its plugin slot goes with it. Abandoned before the stop
+        // below rather than after it, because a stop ends an armed take —
+        // and rendering one onto a pad in the session being closed is work
+        // thrown away at best.
+        self.abandon_sampler_source();
+
         // Stop the transport before touching any session state. If playback
         // or recording was rolling, the audio thread keeps advancing the
         // playhead and honoring the `recording` atomic as we swap tracks in
@@ -140,6 +182,12 @@ impl App {
         self.stop_playback();
         self.engine.transport.stop_loop_record();
         self.engine.transport.set_position(0);
+
+        // Where the file is, for the sample paths it names: a take's path
+        // is relative to the session it belongs to, so the project can be
+        // moved as a directory.
+        let session_dir =
+            path.parent().map_or_else(std::path::PathBuf::new, std::path::Path::to_path_buf);
 
         let session = match crate::session::load(&path) {
             Ok(s) => s,
@@ -407,8 +455,13 @@ impl App {
             // its settings, and the count reaches the status bar. Dropping
             // it would punish the player for moving a folder.
             if let Some(stored) = &st.sampler {
+                // Beside the session first: that is where a recorded take
+                // lives, and where a project's own samples folder would be.
+                // Then the usual chain, so a bare name still finds the
+                // shared samples directory.
+                let near = session_dir.clone();
                 let state = stored.into_state(|path| {
-                    let resolved = phosphor_app::paths::find_sample(path);
+                    let resolved = phosphor_app::sampler::sidecar::find_layer_file(&near, path);
                     match phosphor_app::sampler::wav::load_wav(&resolved) {
                         Ok(pcm) => Some(pcm),
                         Err(message) => {
