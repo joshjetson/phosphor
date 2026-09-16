@@ -49,7 +49,11 @@ pub fn load_wav(path: &Path) -> Result<Arc<SamplePcm>, String> {
             for (i, s) in reader.samples::<f32>().enumerate() {
                 let s = s.map_err(|e| format!("{shown}: {}", reason(e)))?;
                 if i % channels < keep {
-                    data.push(s);
+                    // A float file can carry NaN or infinity, and one such
+                    // sample is enough to latch the engine's DC blocker and
+                    // silence the whole track until reset. Audio that is
+                    // not a number is silence, decided here at the door.
+                    data.push(if s.is_finite() { s } else { 0.0 });
                 }
             }
         }
@@ -200,6 +204,33 @@ mod tests {
         std::fs::write(&path, b"this is a text file wearing a wav extension").unwrap();
         let err = load_wav(&path).unwrap_err();
         assert!(err.contains("not a WAV"), "{err}");
+    }
+
+    #[test]
+    fn a_nan_in_a_float_file_becomes_silence_at_the_door() {
+        // One non-finite sample used to latch the engine's DC blocker and
+        // silence the whole track until reset. Audio that is not a number
+        // is decided here, once, before the engine ever sees it.
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 44_100,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let path = write_wav("nan.wav", spec, |w| {
+            w.write_sample(0.5f32).unwrap();
+            w.write_sample(f32::NAN).unwrap();
+            w.write_sample(f32::INFINITY).unwrap();
+            w.write_sample(f32::NEG_INFINITY).unwrap();
+            w.write_sample(-0.25f32).unwrap();
+        });
+        let pcm = load_wav(&path).unwrap();
+        assert!(pcm.data.iter().all(|s| s.is_finite()), "a non-finite sample got through");
+        assert_eq!(pcm.data[0], 0.5);
+        assert_eq!(pcm.data[1], 0.0);
+        assert_eq!(pcm.data[2], 0.0);
+        assert_eq!(pcm.data[3], 0.0);
+        assert_eq!(pcm.data[4], -0.25);
     }
 
     #[test]

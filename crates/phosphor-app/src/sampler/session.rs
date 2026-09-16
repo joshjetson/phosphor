@@ -33,6 +33,24 @@ fn trig_from_key(s: &str) -> TrigMode {
     }
 }
 
+/// A path as the file stores it: components joined by `/` whatever the
+/// host writes between them. `display()` uses the host's separator, so a
+/// kit saved on Windows named its takes `kit.samples\C3-1.wav` and every
+/// one of them was missing on any other machine. `PathBuf::from` reads
+/// `/` correctly on every platform this builds for, so one spelling in
+/// the file serves them all. An absolute prefix (a typed absolute path)
+/// is kept as written — portability is for the relative references the
+/// sidecar makes, not for a path that names one machine anyway.
+fn portable_path(path: &Path) -> String {
+    if path.is_absolute() {
+        return path.display().to_string();
+    }
+    path.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct SessionSampler {
     pub pads: Vec<SessionPad>,
@@ -146,7 +164,7 @@ impl SessionPad {
                 .layers
                 .iter()
                 .map(|l| SessionLayer {
-                    path: l.path.display().to_string(),
+                    path: portable_path(&l.path),
                     kind: match l.source {
                         LayerSource::File => String::new(),
                         LayerSource::Take => "take".into(),
@@ -305,6 +323,18 @@ mod tests {
     /// existed says.
     fn saved_with(pads: Vec<SessionPad>) -> SessionSampler {
         SessionSampler { pads, mode: String::new(), zones: Vec::new() }
+    }
+
+    #[test]
+    fn a_stored_path_spells_itself_with_forward_slashes() {
+        // `display()` writes the host's separator, and a kit saved on
+        // Windows lost every take anywhere else. One spelling serves all
+        // platforms; an absolute path is one machine's name and is kept
+        // as written.
+        let relative: PathBuf = ["kit.samples", "C3-1.wav"].iter().collect();
+        assert_eq!(portable_path(&relative), "kit.samples/C3-1.wav");
+        let absolute = std::env::temp_dir().join("kick.wav");
+        assert_eq!(portable_path(&absolute), absolute.display().to_string());
     }
 
     #[test]

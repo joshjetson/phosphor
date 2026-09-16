@@ -50,7 +50,7 @@ pub(super) fn rule_line(map: &Map, lo: u8, width: usize) -> Line<'static> {
             // white key with no black above it owns both halves. The same
             // rule the band itself draws by.
             owner[column].get_or_insert(index);
-            if !is_black(note) && !(note < HIGH && is_black(note + 1)) && column + 1 < width {
+            if !is_black(note) && (note >= HIGH || !is_black(note + 1)) && column + 1 < width {
                 owner[column + 1].get_or_insert(index);
             }
             if zone.root() == note {

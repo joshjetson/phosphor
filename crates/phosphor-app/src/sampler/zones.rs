@@ -327,9 +327,15 @@ impl SamplerState {
                     return PadState { config, layers, source: owner.pad.source.clone() };
                 }
                 let mut lent = layer.clone();
-                lent.tune_st = (i32::from(lent.tune_st) + shift)
-                    .clamp(i32::from(i8::MIN), i32::from(i8::MAX))
-                    as i8;
+                // Clamped to the engine's own tune range, not the i8 the
+                // field can hold: the engine clamps at ±48, and a wider
+                // number here was a silent disagreement — the app promised
+                // -87 and the pad played -48, thirty-nine semitones sharp
+                // with nothing on the screen to say so. Two zones rooted
+                // more than four octaves apart still meet this clamp; they
+                // now at least clamp to the SAME pitch the engine plays.
+                lent.tune_st =
+                    (i32::from(lent.tune_st) + shift).clamp(-48, 48) as i8;
                 layers.push(lent);
             }
         }
@@ -677,6 +683,21 @@ mod tests {
             60,
             "the second zone lost its own root outside the overlap",
         );
+    }
+
+    /// A retune past the engine's ±48 clamps to the engine's number, not
+    /// to the field's. Two clamps with two answers was the audit's C3:
+    /// the app promised -87, the pad played -48, and nothing said so.
+    #[test]
+    fn an_extreme_retune_clamps_where_the_engine_clamps() {
+        // Roots 87 semitones apart: A0-rooted zone lending to a C8 owner.
+        let state = keys_state(vec![zone(21, 108, 108, 1), zone(21, 108, 21, 1)]);
+        let shared = SamplerState::pad_of_note(60).unwrap();
+        let voice = state.voice(shared);
+        assert_eq!(voice.layers.len(), 2);
+        // 108 - 21 = 87 wanted; the engine's range ends at 48, and the
+        // materializer must promise no more than the pad will play.
+        assert_eq!(voice.layers[1].tune_st, 48, "the app promised a pitch the engine clamps");
     }
 
     /// One zone and no overlap never counts an overflow, however full it is.

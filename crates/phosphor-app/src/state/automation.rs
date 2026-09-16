@@ -144,12 +144,15 @@ impl Clip {
     ) -> bool {
         let start = self.column_tick(col, col_count);
         let end = self.column_tick(col + 1, col_count);
-        let before = self.controls.len();
         self.controls
             .retain(|e| !(stream.matches(e) && e.tick >= start && e.tick < end));
         self.controls.push(stream.event_at(start, value));
         self.controls.sort_by_key(|e| e.tick);
-        before != self.controls.len() || true
+        // Writing a point always changes the clip: whatever the column held
+        // was just replaced by the pushed event. The old length comparison
+        // here was dead — and, as a deny-level lint, it kept clippy from
+        // reading the rest of this crate at all.
+        true
     }
 
     /// Remove `stream`'s events from column `col`. Returns whether any went.
