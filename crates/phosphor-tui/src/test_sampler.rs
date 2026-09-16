@@ -610,6 +610,445 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // ── The trim strip ──
+
+    /// The layer the strip is on.
+    fn trimmed(app: &App) -> &phosphor_app::sampler::LayerState {
+        let layer = app.nav.clip_view.sampler.layer;
+        &pad(app).layers[layer]
+    }
+
+    fn trim_view(app: &App) -> phosphor_app::state::TrimView {
+        app.nav.clip_view.sampler.trim.expect("the trim strip is not open")
+    }
+
+    /// Commands the app has sent that are auditions, and what they asked for.
+    fn previews(app: &App) -> Vec<Option<phosphor_plugin::sample::PreviewMode>> {
+        app.drain_mixer_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                MixerCommand::SetSamplerPreview { preview, .. } => {
+                    Some(preview.map(|p| p.mode))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `t` opens the strip on a layer that has audio, and the pane turns
+    /// into a waveform with a header over it.
+    #[test]
+    fn t_opens_the_trim_strip_on_a_loaded_layer() {
+        let dir = scratch("trim-open");
+        let mut app = loaded_app(&dir);
+        press(&mut app, KeyCode::Char('t'));
+        assert!(app.nav.clip_view.sampler.trim.is_some(), "`t` did not open the strip");
+
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("unit 10ms"), "no unit on the header:\n{text}");
+        assert!(text.contains("snap on"), "snap is not on by default:\n{text}");
+        assert!(text.contains("0.000s \u{2192} 0.100s"), "no trim times:\n{text}");
+        assert!(text.contains("-- TRIM --"), "the bar does not say which mode:\n{text}");
+        assert!(text.contains("[PAD:C3 trim]"), "the strip does not say either:\n{text}");
+        assert!(text.contains('['), "no start marker on the screen:\n{text}");
+        assert!(text.contains("esc back"), "no way out on the screen:\n{text}");
+        // The keyboard band stays: a player trimming still has to be able to
+        // see which pad they are trimming.
+        assert!(text.contains("\u{25BC}"), "the bed went away with the map:\n{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A layer with no audio is refused in words, and so is an empty pad.
+    /// Both are one keypress away from a pad that would have worked.
+    #[test]
+    fn t_refuses_a_layer_it_cannot_draw() {
+        let dir = scratch("trim-refuse");
+        let mut app = loaded_app(&dir);
+        // An empty pad two keys up.
+        app.sampler_follow_note(62);
+        press(&mut app, KeyCode::Char('t'));
+        assert!(app.nav.clip_view.sampler.trim.is_none(), "the strip opened over nothing");
+        let (message, _) = app.status_message.as_ref().expect("no word to the player");
+        assert!(message.contains("nothing on this pad"), "unhelpful: {message}");
+
+        // ...and a layer whose file went missing.
+        app.sampler_follow_note(60);
+        {
+            let track = app.nav.tracks.iter_mut().find(|t| t.sampler.is_some()).unwrap();
+            let sampler = track.sampler.as_mut().unwrap();
+            let pad = sampler.cursor;
+            sampler.pads[pad].layers[0].pcm = None;
+        }
+        press(&mut app, KeyCode::Char('t'));
+        assert!(app.nav.clip_view.sampler.trim.is_none(), "the strip opened over a missing file");
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("lost its file"), "unhelpful: {message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Right-Left Trick, on a waveform: `h`/`l` take the start, `H`/`L`
+    /// the end, and neither touches the other's marker.
+    #[test]
+    fn the_edges_move_independently_and_the_engine_hears_every_move() {
+        let dir = scratch("trim-nudge");
+        let mut app = loaded_app(&dir); // 4 410 frames at 44.1 kHz
+        press(&mut app, KeyCode::Char('t'));
+        let _ = app.drain_mixer_commands();
+
+        // One press of 10 ms is 441 frames. The wav is a 220 Hz sine, whose
+        // crossings fall every 100 frames, so the snap moves this a little —
+        // the region's end is what must not move at all.
+        press(&mut app, KeyCode::Char('l'));
+        assert!(trimmed(&app).start_frame > 0, "`l` did not move the start");
+        assert_eq!(trimmed(&app).end_frame, 4_410, "`l` moved the end too");
+        let moved = trimmed(&app).start_frame;
+
+        press_shift(&mut app, 'H');
+        assert!(trimmed(&app).end_frame < 4_410, "`H` did not move the end");
+        assert_eq!(trimmed(&app).start_frame, moved, "`H` moved the start too");
+
+        // Every one of those reached the engine, as a pad *and* as a sound.
+        let commands = app.drain_mixer_commands();
+        let pads = commands
+            .iter()
+            .filter(|c| matches!(c, MixerCommand::SetSamplerPad { .. }))
+            .count();
+        assert_eq!(pads, 2, "the engine was not told about both nudges: {pads}");
+        let auditions = commands
+            .iter()
+            .filter(|c| matches!(c, MixerCommand::SetSamplerPreview { preview: Some(_), .. }))
+            .count();
+        assert_eq!(auditions, 2, "a nudge did not audition: {auditions}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A run of nudges is one press of `u` — a player deciding where the
+    /// start goes has made one decision, not thirty.
+    #[test]
+    fn a_nudge_run_coalesces_into_one_undo_step() {
+        let dir = scratch("trim-undo");
+        let mut app = loaded_app(&dir);
+        press(&mut app, KeyCode::Char('t'));
+        for _ in 0..6 {
+            press(&mut app, KeyCode::Char('l'));
+        }
+        assert!(trimmed(&app).start_frame > 0);
+
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(trimmed(&app).start_frame, 0, "one `u` did not take back the whole run");
+        // And the step before it is the load, not another slice of the run.
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(pad(&app).layers.len(), 0, "the run left more than one step behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The edges stop a millisecond apart and say so, rather than meeting.
+    #[test]
+    fn the_start_stops_a_millisecond_short_of_the_end() {
+        let dir = scratch("trim-floor");
+        let mut app = loaded_app(&dir);
+        press(&mut app, KeyCode::Char('t'));
+        press(&mut app, KeyCode::Char('k')); // 10ms -> 1/16
+        press(&mut app, KeyCode::Char('k')); // -> beat
+        press(&mut app, KeyCode::Char('k')); // -> bar
+        for _ in 0..10 {
+            press(&mut app, KeyCode::Char('l'));
+        }
+        let layer = trimmed(&app);
+        assert!(layer.start_frame < layer.end_frame, "the edges met or crossed");
+        assert!(
+            layer.end_frame - layer.start_frame >= 44, // 1 ms at 44.1 kHz
+            "the region is {} frames",
+            layer.end_frame - layer.start_frame,
+        );
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("shortest region"), "the floor was silent: {message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `j` and `k` walk the unit ladder, and the header follows.
+    #[test]
+    fn j_and_k_walk_the_nudge_unit_and_the_header_says_which() {
+        let dir = scratch("trim-unit");
+        let mut app = loaded_app(&dir);
+        press(&mut app, KeyCode::Char('t'));
+        assert!(screen(&app, 120, 40).contains("unit 10ms"));
+
+        press(&mut app, KeyCode::Char('j'));
+        assert!(screen(&app, 120, 40).contains("unit 1ms"), "`j` did not go deeper");
+        press(&mut app, KeyCode::Char('j'));
+        assert!(screen(&app, 120, 40).contains("unit 1smp"), "`j` did not reach samples");
+        // The bottom of the ladder is a wall.
+        for _ in 0..5 {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        assert!(screen(&app, 120, 40).contains("unit 1smp"));
+
+        // ...and back up to bars, where one press is two seconds at 120 BPM.
+        for _ in 0..10 {
+            press(&mut app, KeyCode::Char('k'));
+        }
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("unit bar"), "`k` did not reach bars:\n{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `z` turns the snap off and on, and the header says which it is.
+    #[test]
+    fn z_toggles_the_zero_crossing_snap() {
+        let dir = scratch("trim-snap");
+        let mut app = loaded_app(&dir);
+        press(&mut app, KeyCode::Char('t'));
+        assert!(trim_view(&app).snap, "the snap is not on by default");
+
+        press(&mut app, KeyCode::Char('z'));
+        assert!(!trim_view(&app).snap);
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("snap off"), "the header still says on:\n{text}");
+
+        // With it off, a press lands exactly where the unit says: 10 ms of a
+        // 44.1 kHz recording is 441 frames, no more and no less.
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(trimmed(&app).start_frame, 441, "the snap moved an edge it was off for");
+
+        press(&mut app, KeyCode::Char('z'));
+        assert!(trim_view(&app).snap);
+        assert!(screen(&app, 120, 40).contains("snap on"));
+        // And with it on, the edge lands on a crossing of the 220 Hz sine —
+        // every 100 frames or so, and never on the 882 the unit alone says.
+        press(&mut app, KeyCode::Char('l'));
+        assert_ne!(trimmed(&app).start_frame, 882, "the snap did nothing");
+        assert!((782..=982).contains(&trimmed(&app).start_frame), "the snap left its cap");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `r` reverses the layer from inside the strip, keeps the markers where
+    /// they were, and tells the engine.
+    #[test]
+    fn r_reverses_the_layer_without_moving_its_markers() {
+        let dir = scratch("trim-rev");
+        let mut app = loaded_app(&dir);
+        press(&mut app, KeyCode::Char('t'));
+        press(&mut app, KeyCode::Char('l'));
+        let region = (trimmed(&app).start_frame, trimmed(&app).end_frame);
+        let _ = app.drain_mixer_commands();
+
+        press(&mut app, KeyCode::Char('r'));
+        assert!(trimmed(&app).reverse, "`r` did not reverse the layer");
+        assert_eq!(
+            (trimmed(&app).start_frame, trimmed(&app).end_frame),
+            region,
+            "reversing moved the trim",
+        );
+        assert!(screen(&app, 120, 40).contains("rev"), "the header does not say so");
+        assert!(
+            app.drain_mixer_commands()
+                .iter()
+                .any(|c| matches!(c, MixerCommand::SetSamplerPad { .. })),
+            "the reverse never reached the engine",
+        );
+
+        press(&mut app, KeyCode::Char('r'));
+        assert!(!trimmed(&app).reverse);
+        // Each direction is its own step, the way a mute is.
+        press(&mut app, KeyCode::Char('u'));
+        assert!(trimmed(&app).reverse, "undo did not put the reverse back");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `t` inside the strip loops the region, and every nudge after it keeps
+    /// looping rather than dropping back to a single pass.
+    #[test]
+    fn t_inside_the_strip_loops_the_region() {
+        let dir = scratch("trim-loop");
+        let mut app = loaded_app(&dir);
+        press(&mut app, KeyCode::Char('t'));
+        let _ = app.drain_mixer_commands();
+
+        press(&mut app, KeyCode::Char('t'));
+        assert!(trim_view(&app).looping);
+        assert_eq!(previews(&app), vec![Some(phosphor_plugin::sample::PreviewMode::Loop)]);
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(
+            previews(&app),
+            vec![Some(phosphor_plugin::sample::PreviewMode::Loop)],
+            "a nudge dropped the loop",
+        );
+
+        press(&mut app, KeyCode::Char('t'));
+        assert!(!trim_view(&app).looping);
+        assert_eq!(previews(&app), vec![None], "turning the loop off did not silence it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `esc` goes back to the pad map with everything on it, and takes the
+    /// audition with it.
+    #[test]
+    fn esc_leaves_the_strip_quiet_and_the_pad_map_intact() {
+        let dir = scratch("trim-esc");
+        let mut app = loaded_app(&dir);
+        press(&mut app, KeyCode::Char('t'));
+        press(&mut app, KeyCode::Char('t')); // looping
+        press(&mut app, KeyCode::Char('l'));
+        let _ = app.drain_mixer_commands();
+
+        press(&mut app, KeyCode::Esc);
+        assert!(app.nav.clip_view.sampler.trim.is_none(), "esc did not leave the strip");
+        assert_eq!(previews(&app), vec![None], "esc left the loop playing");
+
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("pad C3"), "the panel did not come back:\n{text}");
+        assert!(text.contains("1 filled"), "the pad list did not come back:\n{text}");
+        assert!(text.contains("kick"), "the layer list did not come back:\n{text}");
+        assert!(text.contains("-- PADS --"), "the bar still says trim:\n{text}");
+        // And the keys are the map's again.
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(
+            SamplerState::note_of_pad(sampler_state(&app).cursor),
+            61,
+            "`l` did not go back to walking the bed",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Walking away from the pad map stops the audition, whichever way the
+    /// player walked. Nobody presses `esc` on the way to another tab.
+    #[test]
+    fn leaving_the_pads_tab_silences_a_looping_audition() {
+        let dir = scratch("trim-leave");
+        let mut app = loaded_app(&dir);
+        press(&mut app, KeyCode::Char('t'));
+        press(&mut app, KeyCode::Char('t')); // looping
+        let _ = app.drain_mixer_commands();
+
+        press(&mut app, KeyCode::Tab);
+        assert_ne!(app.nav.clip_view.clip_tab, ClipTab::Pads);
+        assert_eq!(previews(&app), vec![None], "the loop followed the player out of the tab");
+
+        // And one keystroke later it is not sending anything else.
+        press(&mut app, KeyCode::Tab);
+        assert!(previews(&app).is_empty(), "the audition is still being switched off");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Moving the layer cursor sounds what it lands on — the deferral M3
+    /// made, which the trim strip's machinery pays for.
+    #[test]
+    fn walking_the_layer_list_auditions_each_sound() {
+        let dir = scratch("trim-audition");
+        let mut app = loaded_app(&dir);
+        let wav = dir.join("clap.wav");
+        write_wav(&wav, 800);
+        press(&mut app, KeyCode::Char('a'));
+        type_line(&mut app, &wav.display().to_string());
+        press(&mut app, KeyCode::Enter);
+        let _ = app.drain_mixer_commands();
+
+        press(&mut app, KeyCode::Char('['));
+        assert_eq!(app.nav.clip_view.sampler.layer, 0);
+        assert_eq!(previews(&app), vec![Some(phosphor_plugin::sample::PreviewMode::Once)]);
+        press(&mut app, KeyCode::Char(']'));
+        assert_eq!(previews(&app), vec![Some(phosphor_plugin::sample::PreviewMode::Once)]);
+        // The end of the list is not a move and not a sound.
+        press(&mut app, KeyCode::Char(']'));
+        assert!(previews(&app).is_empty(), "a cursor that did not move made a sound");
+
+        // A muted layer auditions as silence rather than as the one sound in
+        // the box that plays while it is muted.
+        press(&mut app, KeyCode::Char('m'));
+        let _ = app.drain_mixer_commands();
+        press(&mut app, KeyCode::Char('1'));
+        press(&mut app, KeyCode::Char('2'));
+        assert_eq!(previews(&app), vec![Some(phosphor_plugin::sample::PreviewMode::Once), None]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A pad cursor that walks onto an empty pad closes the strip — and
+    /// takes its loop with it. Playing a key moves that cursor, so this
+    /// happens with nothing pressed on the computer keyboard at all, which
+    /// is exactly where a loop would otherwise be left playing with nothing
+    /// on the screen to explain it.
+    #[test]
+    fn playing_an_empty_pad_closes_a_strip_open_over_it_and_stops_its_loop() {
+        let dir = scratch("trim-follow");
+        let mut app = loaded_app(&dir);
+        press(&mut app, KeyCode::Char('t'));
+        press(&mut app, KeyCode::Char('t')); // looping
+        assert!(app.nav.clip_view.sampler.trim.is_some());
+        let _ = app.drain_mixer_commands();
+
+        app.sampler_follow_note(70); // a pad with nothing on it
+        assert!(app.nav.clip_view.sampler.trim.is_none(), "a strip stayed open over nothing");
+        assert_eq!(previews(&app), vec![None], "the loop outlived its strip");
+        // And the map is what the keys are on again.
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(SamplerState::note_of_pad(sampler_state(&app).cursor), 71);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Muting or removing a layer stops the audition of it. The preview
+    /// carries its own copy of the layer — which is what lets it sound a
+    /// trim the pad has not been told about yet, and what would otherwise
+    /// leave a ten-second sample playing after the sound was muted.
+    #[test]
+    fn an_edit_under_a_running_audition_silences_it() {
+        let dir = scratch("trim-edit");
+        let mut app = loaded_app(&dir);
+        let wav = dir.join("clap.wav");
+        write_wav(&wav, 800);
+        press(&mut app, KeyCode::Char('a'));
+        type_line(&mut app, &wav.display().to_string());
+        press(&mut app, KeyCode::Enter);
+
+        press(&mut app, KeyCode::Char('[')); // audition layer one
+        let _ = app.drain_mixer_commands();
+        press(&mut app, KeyCode::Char('m'));
+        assert!(pad(&app).layers[0].mute);
+        assert_eq!(previews(&app), vec![None], "a muted layer kept sounding");
+
+        // Unmuting does not start one: nothing asked for a sound.
+        press(&mut app, KeyCode::Char('m'));
+        assert!(previews(&app).is_empty(), "an unmute started an audition nobody asked for");
+
+        // And a layer taken off the pad cannot be sounding either.
+        press(&mut app, KeyCode::Char(']'));
+        let _ = app.drain_mixer_commands();
+        press(&mut app, KeyCode::Char('d'));
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(pad(&app).layers.len(), 1);
+        assert_eq!(previews(&app), vec![None], "a removed layer kept sounding");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A trim round-trips through a session file: the region is what the
+    /// player left, not the whole file again.
+    #[test]
+    fn a_trim_survives_save_and_load() {
+        let dir = scratch("trim-session");
+        let wav = dir.join("kick.wav");
+        write_wav(&wav, 4_410);
+        let session = dir.join("trim.phos");
+
+        let mut saving = sampler_app();
+        press(&mut saving, KeyCode::Char('a'));
+        type_line(&mut saving, &wav.display().to_string());
+        press(&mut saving, KeyCode::Enter);
+        press(&mut saving, KeyCode::Char('t'));
+        press(&mut saving, KeyCode::Char('z')); // snap off, so the frames are exact
+        press(&mut saving, KeyCode::Char('l'));
+        press_shift(&mut saving, 'H');
+        let region = (trimmed(&saving).start_frame, trimmed(&saving).end_frame);
+        assert_eq!(region, (441, 3_969));
+        saving.do_save(&session.display().to_string());
+
+        let mut loading = app();
+        loading.do_load(&session.display().to_string());
+        let state = sampler_state(&loading);
+        let layer = &state.pads[state.cursor].layers[0];
+        assert_eq!((layer.start_frame, layer.end_frame), region, "the trim did not survive");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn an_empty_sampler_writes_no_sampler_block() {
         // The byte-stability promise: a session with nothing on the pads

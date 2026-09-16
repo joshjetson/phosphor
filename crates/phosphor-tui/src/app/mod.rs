@@ -39,6 +39,7 @@ mod midi_fx_ops;
 mod practice_ops;
 mod sampler_keys;
 mod sampler_ops;
+mod sampler_trim;
 mod section_ops;
 mod tracks;
 mod transport;
@@ -101,6 +102,15 @@ pub struct App {
     /// `midir` callback fills both. `None` when MIDI is off, which is every
     /// test — those call the step-record entry points directly.
     pub(crate) midi_ui_rx: Option<crossbeam_channel::Receiver<phosphor_midi::MidiMessage>>,
+    /// The mixer track currently auditioning a sampler layer, and how.
+    ///
+    /// The engine holds a preview until it is told to stop, so something on
+    /// this side has to remember that it is running and which track to
+    /// address — a track index would go stale the moment one was deleted,
+    /// and a mixer id that has gone away is a command the mixer shrugs off.
+    /// The mode rides along because a single pass ends on its own and a loop
+    /// does not: only one of the two can be left behind.
+    pub(crate) sampler_preview: Option<(usize, phosphor_plugin::sample::PreviewMode)>,
     /// Notes with a key still down.
     pub(crate) held_notes: Vec<u8>,
     /// Every note touched since the last one was let go — the chord being
@@ -327,6 +337,7 @@ impl App {
             seq_step_clip: None,
             seq_pattern_clip: None,
             midi_ui_rx: enable_midi.then_some(midi_ui_rx),
+            sampler_preview: None,
             held_notes: Vec::new(),
             recorded_notes: Vec::new(),
             live_take_notes: 0,

@@ -11,6 +11,31 @@
 //! keypress have to move the same cursor, and a cursor that lives in the
 //! view would be a second one that disagrees.
 
+use crate::sampler::trim::NudgeUnit;
+
+/// The trim strip, while it is open over the pad map.
+///
+/// Only what the strip itself owns. *Which* layer is being trimmed is not
+/// here: that is the layer cursor below, and a second copy of it would be a
+/// second cursor that disagrees the moment a layer is removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrimView {
+    /// How far one press of `h`/`l` moves an edge — `j`/`k` walk it.
+    pub unit: NudgeUnit,
+    /// Pull a nudged edge onto the nearest zero crossing. On by default:
+    /// it is what stops a trim clicking, and a player who wants the frame
+    /// they asked for presses `z`.
+    pub snap: bool,
+    /// `t` again: the region plays round and round while it is trimmed.
+    pub looping: bool,
+}
+
+impl Default for TrimView {
+    fn default() -> Self {
+        Self { unit: NudgeUnit::default(), snap: true, looping: false }
+    }
+}
+
 /// Where the cursor is standing in the pad panel.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SamplerView {
@@ -25,6 +50,10 @@ pub struct SamplerView {
     /// knob — and what lets `h`/`l` walk the keyboard bed the rest of the
     /// time.
     pub locked: bool,
+    /// `t` opened the trim strip over the map, and it has the keys until
+    /// `esc`. `Some` is the whole answer to "is it open": a flag beside the
+    /// settings would let the two disagree.
+    pub trim: Option<TrimView>,
 }
 
 impl SamplerView {
@@ -34,11 +63,12 @@ impl SamplerView {
     }
 
     /// Opening the view: the cursor at the top of the pad's controls, with
-    /// nothing held.
+    /// nothing held and no strip open.
     pub fn focus(&mut self) {
         self.knob = 0;
         self.layer = 0;
         self.locked = false;
+        self.trim = None;
     }
 
     /// Move between controls, stopping at both ends. Walking off the end of
@@ -78,6 +108,13 @@ impl SamplerView {
         }
         if self.layer >= layers {
             self.layer = layers.saturating_sub(1);
+        }
+        // A strip open over a pad that has nothing on it is a waveform of
+        // nothing, and every key in it would be a refusal. Playing a key
+        // moves the pad cursor, so this happens without anything being
+        // pressed.
+        if layers == 0 {
+            self.trim = None;
         }
     }
 }

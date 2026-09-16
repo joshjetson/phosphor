@@ -1,0 +1,176 @@
+//! The trim strip's operations: opening it, moving an edge, and turning
+//! the four switches beside the waveform.
+//!
+//! Every edit here follows [`super::sampler_ops`]'s rule to the letter —
+//! state first, then the undo step, then [`App::sync_sampler_pad`] ships
+//! the pad whole. It lives in its own file rather than in that one because
+//! the strip is a mode: it has its own keys, its own cursor, its own
+//! arithmetic ([`phosphor_app::sampler::trim`]) and its own way out.
+//!
+//! # The grain of undo
+//!
+//! A nudge run is one gesture. Holding `l` for a second is a player deciding
+//! where the start goes, not thirty decisions, so the presses fold into one
+//! step the way a knob sweep does — one `u` puts the marker back where the
+//! run began. `r` does not fold: reversing a layer is a decision, and
+//! [`App::toggle_sampler_layer_mute`] settled that grain already.
+//!
+//! # Every nudge makes a sound
+//!
+//! A trim marker is a position in a waveform nobody can hear by looking at
+//! it. So a start nudge auditions from the new start, which is the only way
+//! to know whether the click is off the front yet, and the audition goes
+//! through the one door in [`super::sampler_ops`] that can also switch it
+//! off again.
+
+use super::*;
+
+use phosphor_app::sampler::trim::TrimEdge;
+use phosphor_plugin::sample::PreviewMode;
+
+use crate::state::undo::{UndoGesture, UndoScope};
+
+impl App {
+    /// The layer the strip is on, when there is one with audio behind it.
+    fn trim_layer(&self) -> Option<(usize, usize, usize)> {
+        let track_idx = self.cursor_sampler_track()?;
+        let cursor = self.nav.clip_view.sampler.layer;
+        let sampler = self.nav.tracks[track_idx].sampler.as_ref()?;
+        let pad = sampler.cursor;
+        sampler.pads[pad].layers.get(cursor)?.pcm.as_ref()?;
+        Some((track_idx, pad, cursor))
+    }
+
+    /// `t` on the pad map: open the strip over the layer under the cursor.
+    ///
+    /// A layer with no audio behind it is refused in words rather than
+    /// opened onto an empty pane: the strip's whole subject is a waveform,
+    /// and a missing file has none to show.
+    pub(crate) fn open_trim_strip(&mut self) {
+        if self.cursor_sampler_track().is_none() {
+            return;
+        }
+        if self.trim_layer().is_none() {
+            let empty = self.sampler_layer_count() == 0;
+            self.flash(if empty {
+                "nothing on this pad to trim \u{00b7} a loads a sound"
+            } else {
+                "this layer has lost its file \u{00b7} nothing to trim"
+            });
+            return;
+        }
+        self.nav.clip_view.sampler.trim = Some(crate::state::TrimView::default());
+        // The sound before the first nudge: the region as it stands, so the
+        // player hears what they are about to change.
+        self.preview_sampler_layer(PreviewMode::Once);
+        self.flash(
+            "trim \u{00b7} h/l start \u{00b7} H/L end \u{00b7} j/k unit \
+             \u{00b7} z snap \u{00b7} t loop",
+        );
+    }
+
+    /// `esc` in the strip: back to the pad map, and quiet.
+    pub(crate) fn close_trim_strip(&mut self) {
+        self.nav.clip_view.sampler.trim = None;
+        self.stop_sampler_preview();
+    }
+
+    /// `h`/`l` and `H`/`L`: move one edge of the region by one unit.
+    pub(crate) fn nudge_trim(&mut self, edge: TrimEdge, delta: i32) {
+        let Some(view) = self.nav.clip_view.sampler.trim else { return };
+        let Some((track_idx, pad, cursor)) = self.trim_layer() else {
+            self.flash("nothing here to trim");
+            return;
+        };
+        let bpm = self.engine.transport.tempo_bpm();
+
+        let before = self.nav.undo_checkpoint(UndoScope::Sampler { track_idx });
+        let Some(sampler) = self.nav.tracks[track_idx].sampler.as_mut() else { return };
+        let Some(layer) = sampler.pads[pad].layers.get_mut(cursor) else { return };
+        let Some(nudge) = layer.nudge_trim(edge, delta, view.unit, bpm, view.snap) else {
+            return;
+        };
+        let seconds = layer.edge_seconds(edge);
+        let length = layer.seconds();
+        // One step per run, not one per press: holding `l` is a player
+        // deciding where the marker goes, and `u` should take back the
+        // decision rather than the last thirtieth of it.
+        self.nav.commit_undo_coalesced(
+            before,
+            "trim layer",
+            UndoGesture::SamplerPad { track_idx, pad },
+        );
+        self.sync_sampler_pad(track_idx, pad);
+        // The audition follows the edge that moved. Moving the start and
+        // hearing the old start is worse than hearing nothing.
+        self.preview_sampler_layer(self.sampler_preview_mode());
+        if nudge.floored {
+            self.flash(format!(
+                "{} \u{00b7} {MIN} ms is the shortest region",
+                edge.label(),
+                MIN = phosphor_app::sampler::trim::MIN_REGION_MS as i32,
+            ));
+        } else {
+            self.flash(format!(
+                "{} {seconds:.3}s \u{00b7} region {length:.3}s",
+                edge.label(),
+            ));
+        }
+    }
+
+    /// `j`/`k`: walk the nudge unit deeper or shallower.
+    pub(crate) fn walk_trim_unit(&mut self, delta: i32) {
+        let Some(view) = self.nav.clip_view.sampler.trim.as_mut() else { return };
+        view.unit = view.unit.stepped(delta);
+        let unit = view.unit;
+        self.flash(format!("unit {} \u{00b7} j deeper \u{00b7} k wider", unit.label()));
+    }
+
+    /// `z`: zero-crossing snap on or off.
+    pub(crate) fn toggle_trim_snap(&mut self) {
+        let Some(view) = self.nav.clip_view.sampler.trim.as_mut() else { return };
+        view.snap = !view.snap;
+        let on = view.snap;
+        self.flash(if on {
+            "snap on \u{00b7} edges land on a zero crossing"
+        } else {
+            "snap off \u{00b7} edges land exactly where you put them"
+        });
+    }
+
+    /// `t` inside the strip: play the region round and round, or stop.
+    pub(crate) fn toggle_trim_loop(&mut self) {
+        let Some(view) = self.nav.clip_view.sampler.trim.as_mut() else { return };
+        view.looping = !view.looping;
+        let looping = view.looping;
+        if looping {
+            self.preview_sampler_layer(PreviewMode::Loop);
+            self.flash("loop on \u{00b7} the region plays while you trim it");
+        } else {
+            self.stop_sampler_preview();
+            self.flash("loop off");
+        }
+    }
+
+    /// `r`: play the region backwards, or forwards again.
+    ///
+    /// The region either way — reversing a layer never moves a marker, so a
+    /// trim found forwards still means the same audio when it is flipped.
+    pub(crate) fn toggle_trim_reverse(&mut self) {
+        let Some((track_idx, pad, cursor)) = self.trim_layer() else {
+            self.flash("nothing here to reverse");
+            return;
+        };
+        let before = self.nav.undo_checkpoint(UndoScope::Sampler { track_idx });
+        let Some(sampler) = self.nav.tracks[track_idx].sampler.as_mut() else { return };
+        let Some(layer) = sampler.pads[pad].layers.get_mut(cursor) else { return };
+        layer.reverse = !layer.reverse;
+        let reversed = layer.reverse;
+        // Not folded: a direction is a decision, the way a mute is.
+        self.nav.commit_undo(before, "reverse layer");
+        self.sync_sampler_pad(track_idx, pad);
+        self.preview_sampler_layer(self.sampler_preview_mode());
+        self.flash(if reversed { "reverse on" } else { "reverse off" });
+    }
+
+}

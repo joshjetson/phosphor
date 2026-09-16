@@ -57,8 +57,12 @@ pub(super) fn render_bottom_bar(
             ("-- STEP --", theme::amber_bright())
         }
     } else if in_pads {
-        // And so is the pad map, for the same reason.
-        if nav.clip_view.sampler.locked {
+        // And so is the pad map, for the same reason. The trim strip is its
+        // own mode again: it takes every key the map takes and means
+        // something else by all of them.
+        if nav.clip_view.sampler.trim.is_some() {
+            ("-- TRIM --", theme::amber_bright())
+        } else if nav.clip_view.sampler.locked {
             ("-- HOLD --", theme::amber_bright())
         } else {
             ("-- PADS --", theme::amber_bright())
@@ -198,6 +202,13 @@ pub(super) fn render_bottom_bar(
                         ("X","clear"),("jk","band"),
                     ],
                 },
+            // The trim strip. `h`/`l` take an edge rather than a pad, which
+            // is the one thing about this mode a player has to know.
+            Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Pads
+                && nav.clip_view.focus == ClipViewFocus::PianoRoll
+                && nav.clip_view.sampler.trim.is_some() =>
+                vec![("hl","start"),("H/L","end"),("jk","unit"),("z","snap"),
+                     ("r","rev"),("t","loop"),("esc","back")],
             // The pad map. `h`/`l` walk the keyboard until a knob is held,
             // which is the one thing about this tab a player has to know.
             Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Pads
@@ -207,7 +218,7 @@ pub(super) fn render_bottom_bar(
             Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Pads
                 && nav.clip_view.focus == ClipViewFocus::PianoRoll =>
                 vec![("hl","pad"),("jk","knob"),("enter","hold"),("[]","layer"),
-                     ("a","load"),("d","del")],
+                     ("a","load"),("t","trim"),("d","del")],
             // Note editing: proximity nav, selection, and the velocity ride.
             Pane::ClipView if nav.clip_view.piano_roll.edit_mode =>
                 vec![("hjkl","note"),("enter","sel"),(",.","vel"),("<>","vel\u{00b1}"),

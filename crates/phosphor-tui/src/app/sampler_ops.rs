@@ -9,6 +9,13 @@
 //! exist: an edit that changes the screen and not the signal is the hardest
 //! kind of bug to see, because the screen agrees with you.
 //!
+//! There is a second door in this file and it makes a sound rather than
+//! changing one: [`App::preview_sampler_layer`] auditions a single layer,
+//! which is what the trim strip does on every nudge and what the layer list
+//! does when its cursor moves. It is here because an audition that can be
+//! started from three files is an audition nobody can switch off — see
+//! [`App::reconcile_sampler_preview`] for the switch.
+//!
 //! Undo goes with it, and here it carries a second job. A deleted layer's
 //! audio must stay referenced by something on the UI side for as long as
 //! the audio thread might still hold it, or the engine's own drop becomes
@@ -21,7 +28,8 @@ use super::*;
 use std::path::{Path, PathBuf};
 
 use phosphor_app::sampler::knobs::PadKnob;
-use phosphor_app::sampler::SamplerState;
+use phosphor_app::sampler::{LayerState, SamplerState, NUM_PADS};
+use phosphor_plugin::sample::{PreviewLayer, PreviewMode};
 use crate::state::undo::{UndoGesture, UndoScope};
 
 impl App {
@@ -132,8 +140,11 @@ impl App {
             }
         }
         // The pad that just arrived under the cursor may hold fewer layers
-        // than the one the panel was showing.
+        // than the one the panel was showing — and if it has none at all the
+        // trim strip closes, which is one of the ways a loop preview can be
+        // left playing with nothing on the screen to explain it.
         self.clamp_sampler_cursors();
+        self.reconcile_sampler_preview();
     }
 
     // ── The pad panel ──
@@ -182,15 +193,122 @@ impl App {
     }
 
     /// Walk the layer cursor inside the current pad.
+    ///
+    /// And sound what it lands on. A stack of eight layers is eight names in
+    /// a list until you can hear which is which, and the audition costs one
+    /// command — the deferral M3 made rather than bolt a one-off note-on
+    /// onto the mixer.
     pub(crate) fn move_sampler_layer(&mut self, delta: i32) {
         let count = self.sampler_layer_count();
+        let before = self.nav.clip_view.sampler.layer;
         self.nav.clip_view.sampler.move_layer(delta, count);
+        if self.nav.clip_view.sampler.layer != before {
+            self.preview_sampler_layer(PreviewMode::Once);
+        }
     }
 
     /// Put the layer cursor on a numbered layer, when the pad has one.
+    ///
+    /// This one sounds the layer even when the cursor was already on it,
+    /// where `[`/`]` do not: naming a number is a player asking for that
+    /// sound, and walking into the end of the list is not asking for
+    /// anything.
     pub(crate) fn select_sampler_layer(&mut self, index: usize) {
         if index < self.sampler_layer_count() {
             self.nav.clip_view.sampler.layer = index;
+            self.preview_sampler_layer(PreviewMode::Once);
+        }
+    }
+
+    // ── The audition ──
+
+    /// Sound the layer under the layer cursor, on its own.
+    ///
+    /// The engine's second door, beside [`App::sync_sampler_pad`]: this one
+    /// makes a sound rather than changing one. Both are here because
+    /// everything that touches a pad's audio should be findable in one file
+    /// — an audition that fires from three places is an audition nobody can
+    /// switch off.
+    ///
+    /// The layer travels whole rather than as an index, because the engine's
+    /// layer slots hold only the ones with audio behind them: with a missing
+    /// file in the stack, row three and slot three are different sounds.
+    pub(crate) fn preview_sampler_layer(&mut self, mode: PreviewMode) {
+        let Some(track_idx) = self.cursor_sampler_track() else { return };
+        let cursor = self.nav.clip_view.sampler.layer;
+        let Some(track) = self.nav.tracks.get(track_idx) else { return };
+        let (Some(mixer_id), Some(sampler)) = (track.mixer_id, track.sampler.as_ref()) else {
+            return;
+        };
+        let pad = &sampler.pads[sampler.cursor.min(NUM_PADS - 1)];
+        // A missing file makes no sound, and neither does a muted layer: an
+        // audition that ignored the mute would be the one place in the box
+        // where a muted sound plays.
+        let Some(layer) = pad
+            .layers
+            .get(cursor)
+            .filter(|l| !l.mute)
+            .and_then(LayerState::engine_layer)
+        else {
+            self.stop_sampler_preview();
+            return;
+        };
+        let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::SetSamplerPreview {
+            track_id: mixer_id,
+            preview: Some(PreviewLayer { config: pad.config, layer, mode }),
+        });
+        self.sampler_preview = Some((mixer_id, mode));
+    }
+
+    /// Silence the audition, wherever it is running.
+    pub(crate) fn stop_sampler_preview(&mut self) {
+        let Some((track_id, _)) = self.sampler_preview.take() else { return };
+        let _ = self
+            .engine
+            .shared
+            .mixer_command_tx
+            .send(MixerCommand::SetSamplerPreview { track_id, preview: None });
+    }
+
+    /// How an audition started now should behave: round and round while the
+    /// trim strip is looping, a single pass otherwise. One answer, because
+    /// every nudge and every toggle in the strip has to give the same one.
+    pub(crate) fn sampler_preview_mode(&self) -> PreviewMode {
+        match self.nav.clip_view.sampler.trim {
+            Some(view) if view.looping => PreviewMode::Loop,
+            _ => PreviewMode::Once,
+        }
+    }
+
+    /// Stop an audition the player has walked away from.
+    ///
+    /// A preview is a mode the engine holds until it is told otherwise, and
+    /// there are more ways out of the pad map than there are keys in it —
+    /// Tab to another view, `esc` to the track list, the track deleted from
+    /// under the cursor, a key played that moves the pad cursor onto an
+    /// empty pad. Rather than remembering to stop it at each of them, the
+    /// question is asked once per keystroke and once per note: are the keys
+    /// still on the pads of the track that is sounding, and is the strip
+    /// still open if what is sounding is a loop? If not, silence.
+    ///
+    /// The second half of that is the part worth stating. A single pass ends
+    /// by itself, so leaving one running costs nothing; a loop ends only
+    /// when something asks it to, and the strip is the only thing with a key
+    /// for asking.
+    pub(crate) fn reconcile_sampler_preview(&mut self) {
+        let Some((track_id, mode)) = self.sampler_preview else { return };
+        let on_the_pads = self.nav.focused_pane == Pane::ClipView
+            && self.nav.clip_view.clip_tab == ClipTab::Pads
+            && self.nav.clip_view.focus == ClipViewFocus::PianoRoll
+            && self
+                .cursor_sampler_track()
+                .and_then(|idx| self.nav.tracks.get(idx))
+                .and_then(|t| t.mixer_id)
+                == Some(track_id);
+        let kept = on_the_pads
+            && (mode == PreviewMode::Once || self.nav.clip_view.sampler.trim.is_some());
+        if !kept {
+            self.stop_sampler_preview();
         }
     }
 
@@ -244,6 +362,10 @@ impl App {
         let (muted, name) = (state.mute, state.name.clone());
         self.nav.commit_undo(before, "mute layer");
         self.sync_sampler_pad(track_idx, pad);
+        // An audition holds its own copy of the layer and would otherwise
+        // play on regardless — which would make this the one place in the
+        // box where a muted sound is audible.
+        self.stop_sampler_preview();
         self.flash(format!(
             "{name}: {}",
             if muted { "muted" } else { "in the pad" },
@@ -293,6 +415,11 @@ impl App {
         self.nav.commit_undo(before, "remove layer");
         self.sync_sampler_pad(track_idx, pad);
         self.clamp_sampler_cursors();
+        // A sound taken off a pad stops. The audition holds its own copy and
+        // would otherwise play the removed layer to its end — and starting
+        // the neighbour the cursor fell onto would be a sound nobody asked
+        // for at the one moment a player is removing one.
+        self.stop_sampler_preview();
         self.flash(format!("{name} removed \u{00b7} u brings it back"));
     }
 

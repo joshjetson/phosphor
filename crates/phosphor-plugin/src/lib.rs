@@ -115,6 +115,19 @@ pub trait Plugin: Send {
         _layers: &[sample::PadLayer],
     ) {
     }
+
+    /// Audition exactly one layer, or `None` to stop auditioning.
+    ///
+    /// The UI's way of making a sound without playing a note: the trim
+    /// strip's nudges, the layer list's cursor. Whatever answers this plays
+    /// outside the pad map's voice accounting — it must not steal a voice
+    /// from the kit, be stolen from by one, or count toward poly or a choke
+    /// group, because it is the player listening rather than playing.
+    ///
+    /// Real-time contract is [`Plugin::set_sampler_pad`]'s: the `Arc` inside
+    /// the layer is cloned into storage the implementation already owns, and
+    /// the one it replaces drops as a refcount decrement.
+    fn set_sampler_preview(&mut self, _preview: Option<&sample::PreviewLayer>) {}
 }
 
 /// Clamp a parameter value to the valid range.

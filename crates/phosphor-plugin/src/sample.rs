@@ -158,6 +158,38 @@ impl PadLayer {
     }
 }
 
+/// How long an auditioned layer plays for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewMode {
+    /// The trimmed region once, then silence.
+    Once,
+    /// The trimmed region round and round, its seams lapped, until the UI
+    /// says stop. What the trim strip plays while an edge is being found.
+    Loop,
+}
+
+/// One layer sounded on its own, for the UI to listen to.
+///
+/// The whole layer travels rather than an index into the pad table, and the
+/// reason is the missing-file rule: a pad's engine-side layers are only the
+/// ones that have audio behind them, so the third row of the list and the
+/// third slot in the engine are not the same layer whenever a file has gone
+/// missing above them. An index would audition the wrong sound in exactly
+/// the situation a player is trying to sort out.
+///
+/// The `Arc` inside `layer` is a refcount handle like every other one that
+/// crosses to the audio thread: the UI keeps its own reference, so the
+/// clone and the drop on the far side never reach the allocator.
+#[derive(Debug, Clone)]
+pub struct PreviewLayer {
+    /// The pad the layer sits on — its pitch, level and pan are part of
+    /// what the sound *is*, so they travel. Its envelope does not; see
+    /// the sampler's preview path for why.
+    pub config: PadConfig,
+    pub layer: PadLayer,
+    pub mode: PreviewMode,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

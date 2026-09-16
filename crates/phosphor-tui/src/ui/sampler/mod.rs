@@ -34,9 +34,11 @@ use super::keyboard::{self, KeyPaint, INK};
 
 mod list;
 mod panel;
+mod strip;
 
 use list::pad_list;
 use panel::panel_lines;
+use strip::strip_lines;
 
 /// The lowest and highest key on the bed.
 const LOW: u8 = PAD_BASE_NOTE;
@@ -241,6 +243,15 @@ pub(super) fn render_pads(frame: &mut Frame, area: Rect, nav: &NavState) {
         body.height -= BAND_ROWS as u16;
     }
     if body.height == 0 {
+        return;
+    }
+
+    // The trim strip takes the body and leaves the band. It is worth the
+    // whole width — a waveform in half a pane is half a waveform — and the
+    // keyboard above it stays because a player who has lost track of which
+    // pad they are trimming has lost the plot entirely.
+    if let Some(lines) = strip_lines(&map, body.width as usize, body.height as usize) {
+        frame.render_widget(Paragraph::new(lines), body);
         return;
     }
 

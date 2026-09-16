@@ -250,6 +250,31 @@ impl SamplerVoice {
         self.killing && self.stage != EnvStage::Dead
     }
 
+    /// How many engine samples are left before the head leaves the region,
+    /// whichever direction it is travelling.
+    ///
+    /// What a loop preview schedules its next lap against: the lap has to
+    /// start while this voice still has its closing edge fade to run, or the
+    /// seam is a fade to silence and back rather than two ramps crossing.
+    pub(crate) fn samples_to_exit(&self) -> f64 {
+        if self.stage == EnvStage::Dead {
+            return 0.0;
+        }
+        let to_exit = if self.dir > 0.0 { self.end - self.pos } else { self.pos - self.start };
+        (to_exit * self.inv_rate).max(0.0)
+    }
+
+    /// Engine samples since the trigger. Reads as "has this voice been
+    /// playing long enough to be worth lapping".
+    pub(crate) fn elapsed(&self) -> f64 {
+        self.elapsed
+    }
+
+    /// The edge fade's length in engine samples, as this voice was started.
+    pub(crate) fn fade_len(&self) -> f64 {
+        self.fade_len
+    }
+
     /// Render one sample. Returns silence once dead.
     pub(crate) fn tick(&mut self) -> (f32, f32) {
         if self.stage == EnvStage::Dead {

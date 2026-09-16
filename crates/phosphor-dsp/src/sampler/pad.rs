@@ -51,6 +51,60 @@ pub(crate) struct LayerSlot {
     pub vel_hi: u8,
 }
 
+impl LayerSlot {
+    /// Sanitize a delivered layer into one a voice can be pointed at, or
+    /// `None` when there is nothing playable behind it.
+    ///
+    /// The one place a trim is clamped. Everything downstream — the voice's
+    /// interpolator taps, its edge fades, its reverse start position —
+    /// trusts `start < end <= frames` completely, so `end < start`, a trim
+    /// past the buffer and an empty buffer are all caught here or not at
+    /// all. Audition shares it for that reason: a preview that clamped its
+    /// own region differently would be a second set of rules for the same
+    /// question.
+    pub fn from_layer(layer: &PadLayer) -> Option<Self> {
+        let frames = layer.pcm.frames();
+        if frames == 0 {
+            return None;
+        }
+        let start = layer.start_frame.min(frames - 1);
+        let end = layer.end_frame.clamp(start + 1, frames);
+        Some(Self {
+            pcm: Arc::clone(&layer.pcm),
+            gain: layer.gain.clamp(0.0, 4.0),
+            pan: layer.pan.clamp(-1.0, 1.0),
+            tune_st: layer.tune_st.clamp(-48, 48),
+            tune_cents: layer.tune_cents.clamp(-50, 50),
+            start: start as f64,
+            end: end as f64,
+            reverse: layer.reverse,
+            mute: layer.mute,
+            vel_lo: layer.vel_lo.min(127),
+            vel_hi: layer.vel_hi.min(127).max(layer.vel_lo.min(127)),
+        })
+    }
+
+    /// Everything a voice needs to fire this layer.
+    pub fn trigger(&self) -> super::voice::LayerTrigger<'_> {
+        super::voice::LayerTrigger {
+            pcm: &self.pcm,
+            gain: self.gain,
+            pan: self.pan,
+            tune_st: self.tune_st,
+            tune_cents: self.tune_cents,
+            start: self.start,
+            end: self.end,
+            reverse: self.reverse,
+        }
+    }
+
+    /// Whether this layer answers a hit at `vel`. A muted layer answers
+    /// nothing; a velocity-switched one answers only its own range.
+    pub fn answers(&self, vel: u8) -> bool {
+        !self.mute && vel >= self.vel_lo && vel <= self.vel_hi
+    }
+}
+
 pub(crate) struct Pad {
     pub config: PadConfig,
     pub layers: [Option<LayerSlot>; MAX_LAYERS],
@@ -81,26 +135,7 @@ impl Pad {
         self.config = cfg;
 
         for (slot, layer) in self.layers.iter_mut().zip(layers.iter()) {
-            let frames = layer.pcm.frames();
-            if frames == 0 {
-                *slot = None;
-                continue;
-            }
-            let start = layer.start_frame.min(frames - 1);
-            let end = layer.end_frame.clamp(start + 1, frames);
-            *slot = Some(LayerSlot {
-                pcm: Arc::clone(&layer.pcm),
-                gain: layer.gain.clamp(0.0, 4.0),
-                pan: layer.pan.clamp(-1.0, 1.0),
-                tune_st: layer.tune_st.clamp(-48, 48),
-                tune_cents: layer.tune_cents.clamp(-50, 50),
-                start: start as f64,
-                end: end as f64,
-                reverse: layer.reverse,
-                mute: layer.mute,
-                vel_lo: layer.vel_lo.min(127),
-                vel_hi: layer.vel_hi.min(127).max(layer.vel_lo.min(127)),
-            });
+            *slot = LayerSlot::from_layer(layer);
         }
         for slot in self.layers.iter_mut().skip(layers.len().min(MAX_LAYERS)) {
             *slot = None;

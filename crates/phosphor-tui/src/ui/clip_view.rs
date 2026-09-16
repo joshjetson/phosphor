@@ -95,11 +95,19 @@ pub(super) fn render_clip_view_tabs(frame: &mut Frame, area: Rect, nav: &NavStat
     // that has stopped working.
     if nav.clip_view.clip_tab == ClipTab::Pads {
         if let Some(pads) = nav.current_track().and_then(|t| t.sampler.as_deref()) {
+            // Trim before hold: the strip has the keys, so "hold" would be
+            // describing a control that is not answering any of them.
+            let mode = if nav.clip_view.sampler.trim.is_some() {
+                " trim"
+            } else if nav.clip_view.sampler.locked {
+                " hold"
+            } else {
+                ""
+            };
             spans.push(Span::styled(
                 format!(
-                    " [PAD:{}{}]",
+                    " [PAD:{}{mode}]",
                     phosphor_app::sampler::SamplerState::pad_label(pads.cursor),
-                    if nav.clip_view.sampler.locked { " hold" } else { "" },
                 ),
                 Style::default().fg(theme::amber_val()).add_modifier(Modifier::BOLD),
             ));

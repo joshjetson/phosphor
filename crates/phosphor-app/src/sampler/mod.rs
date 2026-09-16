@@ -10,6 +10,7 @@
 
 pub mod knobs;
 pub mod session;
+pub mod trim;
 pub mod wav;
 
 use std::path::PathBuf;
@@ -82,10 +83,10 @@ impl LayerState {
     /// list prints beside its name. Zero while the file is missing: there
     /// is nothing to time.
     pub fn seconds(&self) -> f32 {
-        let Some(pcm) = self.pcm.as_ref() else { return 0.0 };
-        let end = self.end_frame.min(pcm.frames());
-        let frames = end.saturating_sub(self.start_frame) as f32;
-        frames / pcm.sample_rate.max(1.0)
+        let (Some((start, end)), Some(pcm)) = (self.region(), self.pcm.as_ref()) else {
+            return 0.0;
+        };
+        (end - start) as f32 / pcm.sample_rate.max(1.0)
     }
 
     /// The engine's view of this layer, or `None` while the file behind

@@ -19,19 +19,23 @@
 //! * At most [`ACTIVE_CAP`] voices count as sounding; the pool holds
 //!   [`VOICE_POOL`] so that cut voices have somewhere to finish their
 //!   fades. Past the cap the oldest voice anywhere is cut.
+//! * The UI's audition ([`preview`]) is none of the above — see that
+//!   module for why it is deliberately outside all three rules.
 
 mod pad;
+mod preview;
 mod voice;
 
 pub use pad::{pad_index, MAX_LAYERS, NUM_PADS, PAD_BASE_NOTE};
 
 use std::sync::Arc;
 
-use phosphor_plugin::sample::{PadConfig, PadLayer};
+use phosphor_plugin::sample::{PadConfig, PadLayer, PreviewLayer};
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
 use crate::level::soft_saturate;
 use pad::Pad;
+use preview::Preview;
 use voice::SamplerVoice;
 
 pub const PARAM_COUNT: usize = 2;
@@ -110,6 +114,8 @@ pub struct Sampler {
     age_counter: u64,
     /// Monotonic per note-on gesture; all layers of one hit share it.
     hit_counter: u64,
+    /// The UI's audition, on voices of its own.
+    preview: Preview,
     dc_l: DcBlocker,
     dc_r: DcBlocker,
 }
@@ -123,6 +129,7 @@ impl Sampler {
             voices: Vec::new(),
             age_counter: 0,
             hit_counter: 0,
+            preview: Preview::new(),
             dc_l: DcBlocker::new(),
             dc_r: DcBlocker::new(),
         }
@@ -161,22 +168,10 @@ impl Sampler {
         for layer_idx in 0..MAX_LAYERS {
             let Some(trigger) = ({
                 let pad = &self.pads[pad_idx];
-                pad.layers[layer_idx].as_ref().and_then(|slot| {
-                    if slot.mute || vel < slot.vel_lo || vel > slot.vel_hi {
-                        None
-                    } else {
-                        Some(voice::LayerTrigger {
-                            pcm: &slot.pcm,
-                            gain: slot.gain,
-                            pan: slot.pan,
-                            tune_st: slot.tune_st,
-                            tune_cents: slot.tune_cents,
-                            start: slot.start,
-                            end: slot.end,
-                            reverse: slot.reverse,
-                        })
-                    }
-                })
+                pad.layers[layer_idx]
+                    .as_ref()
+                    .filter(|slot| slot.answers(vel))
+                    .map(pad::LayerSlot::trigger)
             }) else {
                 continue;
             };
@@ -285,10 +280,14 @@ impl Sampler {
         }
     }
 
+    /// All-sound-off: the panic gesture and the transport's stop edge. The
+    /// audition goes with it — a preview left looping after a panic is the
+    /// one sound in the box the player has no way to reach.
     fn kill_all(&mut self) {
         for v in &mut self.voices {
             v.kill();
         }
+        self.preview.stop();
     }
 
     fn release_all(&mut self) {
@@ -395,8 +394,7 @@ impl Plugin for Sampler {
                 ei += 1;
             }
 
-            let mut sum_l = 0.0f32;
-            let mut sum_r = 0.0f32;
+            let (mut sum_l, mut sum_r) = self.preview.tick(self.sample_rate);
             for v in &mut self.voices {
                 if v.is_sounding() {
                     let (l, r) = v.tick();
@@ -448,6 +446,7 @@ impl Plugin for Sampler {
         for v in &mut self.voices {
             v.silence();
         }
+        self.preview.silence();
         self.dc_l.reset();
         self.dc_r.reset();
         self.age_counter = 0;
@@ -459,13 +458,17 @@ impl Plugin for Sampler {
             p.set(config, layers);
         }
     }
+
+    fn set_sampler_preview(&mut self, preview: Option<&PreviewLayer>) {
+        self.preview.set(preview, self.sample_rate);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::synth::tests::allocations_during;
-    use phosphor_plugin::sample::{SamplePcm, TrigMode};
+    use phosphor_plugin::sample::{PreviewMode, SamplePcm, TrigMode};
 
     const SR: f64 = 44_100.0;
 
@@ -857,6 +860,261 @@ mod tests {
             s.set_sampler_pad(39, &cfg, &[]);
         });
         assert_eq!(allocations, 0, "a pad edit reached the allocator");
+    }
+
+    // ── The audition ──
+
+    fn preview(layer: PadLayer, mode: PreviewMode) -> PreviewLayer {
+        PreviewLayer { config: PadConfig::for_key(60), layer, mode }
+    }
+
+    /// A two-layer pad is the test, because it is the one that can be got
+    /// wrong: the audition must sound the layer it was handed and nothing
+    /// else on the pad, and it must not be a note-on in disguise.
+    #[test]
+    fn an_audition_sounds_one_layer_and_not_the_pad() {
+        let quiet = PadLayer::from_pcm(sine_pcm(0.2, 44_100));
+        let loud = PadLayer::from_pcm(sine_pcm(0.8, 44_100));
+        let mut s = sampler_with(60, PadConfig::for_key(60), &[quiet.clone(), loud.clone()]);
+
+        // Playing the pad sums both layers; auditioning one gives one.
+        let (both, _) = process(&mut s, &[note_on(60, 127, 0)], 1_500);
+        let stacked = peak(&both[500..1_500]);
+        s.reset();
+
+        s.set_sampler_preview(Some(&preview(quiet, PreviewMode::Once)));
+        let (l, r) = process(&mut s, &[], 1_500);
+        let heard = peak(&l[500..1_500]);
+        let expected = 0.2 * core::f32::consts::FRAC_1_SQRT_2;
+        assert!(
+            (heard - expected).abs() < 0.02,
+            "the audition played {heard}, not the quiet layer's {expected} (the pad is {stacked})",
+        );
+        assert!((peak(&r[500..1_500]) - expected).abs() < 0.02);
+        // And it is not a hit: nothing on the pad is sounding.
+        assert_eq!(s.sounding_on(39), 0, "the audition took a voice from the pool");
+        assert_eq!(s.preview.sounding(), 1);
+
+        // The other layer, on the same pad, auditions as itself.
+        s.reset();
+        s.set_sampler_preview(Some(&preview(loud, PreviewMode::Once)));
+        let (l, _) = process(&mut s, &[], 1_500);
+        let expected = 0.8 * core::f32::consts::FRAC_1_SQRT_2;
+        assert!((peak(&l[500..1_500]) - expected).abs() < 0.03, "{}", peak(&l[500..1_500]));
+    }
+
+    /// An audition plays the layer's *trimmed* region, which is the whole
+    /// point of the strip that sends it.
+    #[test]
+    fn an_audition_starts_at_the_trim_and_stops_at_it() {
+        // Silence, then a sine: a preview of the second half must speak at
+        // once rather than after half a second of nothing.
+        let frames = 44_100usize;
+        let mut data = vec![0.0f32; frames];
+        for (i, s) in data.iter_mut().enumerate().skip(frames / 2) {
+            *s = 0.5 * (core::f32::consts::TAU * 220.0 * i as f32 / SR as f32).sin();
+        }
+        let pcm = Arc::new(SamplePcm { data, channels: 1, sample_rate: SR as f32 });
+        let mut layer = PadLayer::from_pcm(pcm);
+        layer.start_frame = (frames / 2) as u64;
+        layer.end_frame = (frames / 2 + 4_410) as u64; // 100 ms of it
+
+        let mut s = sampler_with(60, PadConfig::for_key(60), &[]);
+        s.set_sampler_preview(Some(&preview(layer, PreviewMode::Once)));
+        let (l, _) = process(&mut s, &[], 8_000);
+        assert!(peak(&l[500..1_500]) > 0.2, "the trim start was not honoured");
+        // 100 ms is 4 410 samples; well past it there is nothing left.
+        assert!(peak(&l[5_500..]) < 0.001, "the trim end was not honoured");
+        assert_eq!(s.preview.sounding(), 0, "a one-pass audition never ended");
+    }
+
+    /// The seam of a loop is two ramps crossing, not a step and not a hole.
+    ///
+    /// A sawtooth is the worst case and the clearest one: its region ends at
+    /// full positive and begins at full negative, so a hard join would show
+    /// a step of the whole waveform. It also stays in the audio band, which
+    /// a square-ish buffer would not — the DC blocker is *supposed* to bleed
+    /// a standing offset away, and a test that fed it one would be measuring
+    /// the blocker.
+    #[test]
+    fn a_looping_audition_has_no_step_at_its_seam() {
+        let frames = 882usize; // 20 ms, so the window below holds many seams
+        let data: Vec<f32> =
+            (0..frames).map(|i| 1.6 * i as f32 / frames as f32 - 0.8).collect();
+        let pcm = Arc::new(SamplePcm { data, channels: 1, sample_rate: SR as f32 });
+        let layer = PadLayer::from_pcm(pcm);
+
+        let mut s = sampler_with(60, PadConfig::for_key(60), &[]);
+        s.set_sampler_preview(Some(&preview(layer, PreviewMode::Loop)));
+        let (l, _) = process(&mut s, &[], 22_050); // half a second: 25 laps
+        // It really is still going half a second later.
+        assert!(peak(&l[20_000..]) > 0.3, "the loop stopped: {}", peak(&l[20_000..]));
+        // And nothing anywhere near the jump a hard seam would make: the
+        // full 1.6 swing is 1.13 after the centre pan law, while the ramp
+        // itself moves 0.0013 per sample.
+        let seam = l[1_000..].windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+        assert!(seam < 0.1, "the loop seam stepped by {seam}");
+        // Nor is the seam a hole. Fading out and back in would take every
+        // lap through silence; the overlap keeps a level up throughout.
+        let quietest = l[1_000..20_000].chunks(441).map(peak).fold(f32::MAX, f32::min);
+        assert!(quietest > 0.2, "the loop dropped to {quietest} at a seam");
+    }
+
+    /// Off is a fade, and it is over inside the kill fade's own length.
+    #[test]
+    fn off_kills_an_audition_inside_the_fade() {
+        let layer = PadLayer::from_pcm(sine_pcm(0.8, 441_000)); // 10 s
+        let mut s = sampler_with(60, PadConfig::for_key(60), &[]);
+        s.set_sampler_preview(Some(&preview(layer, PreviewMode::Loop)));
+        process(&mut s, &[], 1_000);
+        assert_eq!(s.preview.sounding(), 1);
+
+        s.set_sampler_preview(None);
+        // 3 ms at 44.1 kHz is ~132 samples; 441 is 10 ms.
+        let (l, _) = process(&mut s, &[], 4_410);
+        assert_eq!(s.preview.sounding(), 0, "the audition survived being turned off");
+        let jump = l.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+        assert!(jump < 0.05, "turning it off clicked: {jump}");
+        // What is left at the far end of that hundred milliseconds is the
+        // DC blocker's own ring-down, which outlives any fade by design and
+        // is four orders of magnitude below the signal.
+        assert!(peak(&l[4_000..]) < 1e-3, "something kept sounding: {}", peak(&l[4_000..]));
+        // And off again is not a fault.
+        s.set_sampler_preview(None);
+    }
+
+    /// The nudge run: one audition per press, and they do not pile up.
+    #[test]
+    fn re_auditioning_retriggers_rather_than_stacking() {
+        let layer = PadLayer::from_pcm(sine_pcm(0.5, 441_000));
+        let mut s = sampler_with(60, PadConfig::for_key(60), &[]);
+        for _ in 0..12 {
+            s.set_sampler_preview(Some(&preview(layer.clone(), PreviewMode::Once)));
+            let (l, _) = process(&mut s, &[], 2_205); // 50 ms between presses
+            // Two passes of the same sine in phase would double the level.
+            let expected = 0.5 * core::f32::consts::FRAC_1_SQRT_2;
+            assert!(peak(&l) < expected * 1.6, "auditions stacked: {}", peak(&l));
+            let jump = l.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+            assert!(jump < 0.05, "a retrigger clicked: {jump}");
+        }
+        process(&mut s, &[], 1_000);
+        assert_eq!(s.preview.sounding(), 1, "a run of presses left voices behind");
+    }
+
+    /// A retrigger faster than the kill fade — three inside three
+    /// milliseconds — has nowhere free to start and must take the quietest
+    /// voice rather than panic or stack.
+    #[test]
+    fn a_retrigger_storm_stays_bounded() {
+        let layer = PadLayer::from_pcm(sine_pcm(0.5, 441_000));
+        let mut s = sampler_with(60, PadConfig::for_key(60), &[]);
+        for _ in 0..40 {
+            s.set_sampler_preview(Some(&preview(layer.clone(), PreviewMode::Once)));
+            let (l, r) = process(&mut s, &[], 16); // a third of a millisecond
+            for x in l.iter().chain(r.iter()) {
+                assert!(x.is_finite() && x.abs() <= 1.0, "the storm left the rails: {x}");
+            }
+        }
+        assert!(s.preview.sounding() <= preview::PREVIEW_VOICES);
+        process(&mut s, &[], 441);
+        assert_eq!(s.preview.sounding(), 1);
+    }
+
+    /// The audition obeys the two things that silence everything else: the
+    /// panic gesture and a reset. A loop that survived either would be the
+    /// one sound in the box with no key that stops it.
+    #[test]
+    fn all_sound_off_and_reset_both_end_an_audition() {
+        let layer = PadLayer::from_pcm(sine_pcm(0.8, 441_000));
+        let mut s = sampler_with(60, PadConfig::for_key(60), &[]);
+
+        s.set_sampler_preview(Some(&preview(layer.clone(), PreviewMode::Loop)));
+        process(&mut s, &[], 512);
+        process(&mut s, &[cc(120, 0)], 441);
+        assert_eq!(s.preview.sounding(), 0, "a loop survived all-sound-off");
+        // Nothing relights it: past the DC blocker's ring-down there is
+        // silence, however long the loop had left to run.
+        let (l, _) = process(&mut s, &[], 4_410);
+        assert!(peak(&l[4_000..]) < 1e-3, "the loop relit itself after the panic");
+
+        s.set_sampler_preview(Some(&preview(layer, PreviewMode::Loop)));
+        process(&mut s, &[], 512);
+        s.reset();
+        assert_eq!(s.preview.sounding(), 0, "a loop survived a reset");
+        // A reset zeroes the blockers too, so this one really is silence.
+        let (l, _) = process(&mut s, &[], 4_410);
+        assert_eq!(peak(&l), 0.0);
+    }
+
+    /// An audition of a layer with no frames behind it is silence, not a
+    /// panic — the same answer the pad table gives an empty buffer.
+    #[test]
+    fn an_empty_buffer_auditions_as_silence() {
+        let empty = Arc::new(SamplePcm { data: vec![], channels: 2, sample_rate: SR as f32 });
+        let mut s = sampler_with(60, PadConfig::for_key(60), &[]);
+        s.set_sampler_preview(Some(&preview(PadLayer::from_pcm(empty), PreviewMode::Loop)));
+        let (l, _) = process(&mut s, &[], 2_048);
+        assert_eq!(peak(&l), 0.0);
+        assert_eq!(s.preview.sounding(), 0);
+    }
+
+    /// A pad with a fast envelope must not shape the audition: the strip
+    /// asks "what is between the markers", and a 20 ms decay would answer
+    /// with a tick whatever the markers said.
+    #[test]
+    fn an_audition_ignores_the_pads_envelope() {
+        let layer = PadLayer::from_pcm(sine_pcm(0.5, 44_100));
+        let mut cfg = PadConfig::for_key(60);
+        cfg.attack_ms = 500.0;
+        cfg.decay_ms = 20.0;
+        cfg.sustain = 0.0;
+        let mut s = sampler_with(60, cfg, &[]);
+        s.set_sampler_preview(Some(&PreviewLayer {
+            config: cfg,
+            layer,
+            mode: PreviewMode::Once,
+        }));
+        let (l, _) = process(&mut s, &[], 22_050);
+        // Half a second in, a pad with that envelope is long dead and the
+        // audition is still at its own level.
+        let expected = 0.5 * core::f32::consts::FRAC_1_SQRT_2;
+        assert!(
+            (peak(&l[20_000..]) - expected).abs() < 0.02,
+            "the pad's envelope shaped the audition: {}",
+            peak(&l[20_000..]),
+        );
+    }
+
+    /// The command handler runs this on the audio thread, so starting,
+    /// looping and stopping an audition must all stay off the allocator.
+    #[test]
+    fn an_audition_never_reaches_the_allocator() {
+        let mut s = Sampler::new();
+        s.init(SR, 512);
+        let short = PadLayer::from_pcm(constant_pcm(0.5, 441)); // 10 ms: laps often
+        let long = PadLayer::from_pcm(constant_pcm(0.5, 44_100));
+        let mut l = vec![0.0f32; 512];
+        let mut r = vec![0.0f32; 512];
+        // Warm the voices: the first `start` on each slot fills its `Option`.
+        s.set_sampler_preview(Some(&preview(long.clone(), PreviewMode::Loop)));
+        {
+            let mut outs: [&mut [f32]; 2] = [&mut l, &mut r];
+            s.process(&[], &mut outs, &[]);
+        }
+        let allocations = allocations_during(|| {
+            s.set_sampler_preview(Some(&preview(short.clone(), PreviewMode::Loop)));
+            for _ in 0..8 {
+                let mut outs: [&mut [f32]; 2] = [&mut l, &mut r];
+                s.process(&[], &mut outs, &[]);
+            }
+            s.set_sampler_preview(Some(&preview(long.clone(), PreviewMode::Once)));
+            let mut outs: [&mut [f32]; 2] = [&mut l, &mut r];
+            s.process(&[], &mut outs, &[]);
+            s.set_sampler_preview(None);
+            let mut outs: [&mut [f32]; 2] = [&mut l, &mut r];
+            s.process(&[], &mut outs, &[]);
+        });
+        assert_eq!(allocations, 0, "the audition reached the allocator");
     }
 
     #[test]

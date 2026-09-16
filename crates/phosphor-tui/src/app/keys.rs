@@ -3,8 +3,23 @@
 use super::*;
 
 impl App {
-
+    /// One keystroke, and then the bookkeeping that has to happen whichever
+    /// way through [`App::dispatch_event`] it went.
+    ///
+    /// The dispatcher below returns from forty places, which is the right
+    /// shape for a key router and the wrong one for "and afterwards, check
+    /// this". So the door is here: everything that must be true after *any*
+    /// key belongs in this function, where it cannot be skipped by an early
+    /// return somebody adds next year.
     pub(crate) fn handle_event(&mut self, event: Event) {
+        self.dispatch_event(event);
+        // A sampler audition is a sound the engine holds until it is told to
+        // stop, and most of the ways out of the pad map are keys that know
+        // nothing about it.
+        self.reconcile_sampler_preview();
+    }
+
+    fn dispatch_event(&mut self, event: Event) {
         use crate::debug_log as dbg;
 
         let Event::Key(key) = event else { return };

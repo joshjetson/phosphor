@@ -164,6 +164,17 @@ pub enum MixerCommand {
         config: phosphor_plugin::sample::PadConfig,
         layers: Vec<phosphor_plugin::sample::PadLayer>,
     },
+    /// Audition one sampler layer, or `None` to stop auditioning.
+    ///
+    /// The layer travels whole for the reason
+    /// [`PreviewLayer`](phosphor_plugin::sample::PreviewLayer) gives: an
+    /// index into the pad table would name the wrong sound the moment a file
+    /// above it went missing. The `Arc` is a refcount handle like every other
+    /// one on this road.
+    SetSamplerPreview {
+        track_id: usize,
+        preview: Option<phosphor_plugin::sample::PreviewLayer>,
+    },
     /// Take the effect out of a slot. Frees on the audio thread, as
     /// `RemoveTrack` and `UpdateClip` already do.
     RemoveFx {
@@ -296,8 +307,12 @@ fn command_cost(cmd: &MixerCommand) -> u32 {
         | MixerCommand::RemoveMidiFx { .. }
         | MixerCommand::SetMidiFxProgression { .. }
         // A pad delivery is Arc traffic plus a Vec freed here — allocator
-        // business on the drop side even when the copy itself is cheap.
+        // business on the drop side even when the copy itself is cheap. An
+        // audition is the same traffic and starts a voice with it, and the
+        // UI sends one per press of a trim key, which is exactly the burst
+        // the budget exists to spread.
         | MixerCommand::SetSamplerPad { .. }
+        | MixerCommand::SetSamplerPreview { .. }
         | MixerCommand::MoveFx { .. }
         // Only the first pattern a track receives allocates — it builds the
         // player — and the cost is charged before the command is opened, so
@@ -1615,6 +1630,13 @@ impl Mixer {
                     }
                 }
             }
+            MixerCommand::SetSamplerPreview { track_id, preview } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    if let Some(instrument) = track.instrument.as_mut() {
+                        instrument.set_sampler_preview(preview.as_ref());
+                    }
+                }
+            }
             MixerCommand::SetMidiFxBypass { track_id, slot, bypassed } => {
                 if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
                     if let Some(s) = track.midi_fx.get_mut(slot) {
@@ -1978,6 +2000,53 @@ mod tests {
         mixer.process(&mut output, &midi, &transport);
         let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         assert!(peak > 0.01, "the delivered pad made no sound, peak={peak}");
+    }
+
+    /// The audition takes the same road as a pad and needs no note: the UI
+    /// asks, the sampler sounds, and `None` puts it back to silence.
+    #[test]
+    fn a_sampler_audition_travels_to_the_engine_and_sounds_without_a_note() {
+        use phosphor_plugin::sample::{PadConfig, PadLayer, PreviewLayer, PreviewMode, SamplePcm};
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let handle = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
+        handle.config.midi_active.store(true, std::sync::atomic::Ordering::Relaxed);
+        tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle: handle.clone() })
+            .unwrap();
+        tx.send(MixerCommand::SetInstrument {
+            track_id: 0,
+            instrument: Box::new(phosphor_dsp::sampler::Sampler::new()),
+        })
+        .unwrap();
+
+        let data: Vec<f32> = (0..44_100)
+            .map(|i| 0.5 * (std::f32::consts::TAU * 220.0 * i as f32 / 44_100.0).sin())
+            .collect();
+        let pcm = Arc::new(SamplePcm { data, channels: 1, sample_rate: 44_100.0 });
+        // Nothing is on any pad: the audition carries its own layer, which
+        // is what lets the trim strip sound a sound before it is committed.
+        tx.send(MixerCommand::SetSamplerPreview {
+            track_id: 0,
+            preview: Some(PreviewLayer {
+                config: PadConfig::for_key(60),
+                layer: PadLayer::from_pcm(pcm),
+                mode: PreviewMode::Loop,
+            }),
+        })
+        .unwrap();
+
+        transport.play();
+        let mut output = vec![0.0f32; 2_048];
+        mixer.process(&mut output, &[], &transport);
+        let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(peak > 0.01, "the audition made no sound, peak={peak}");
+
+        tx.send(MixerCommand::SetSamplerPreview { track_id: 0, preview: None }).unwrap();
+        // A pad off the bed and a track that does not exist are both shrugs.
+        tx.send(MixerCommand::SetSamplerPreview { track_id: 99, preview: None }).unwrap();
+        let mut output = vec![0.0f32; 8_192];
+        mixer.process(&mut output, &[], &transport);
+        let tail = output[6_000..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(tail < 1e-3, "the audition kept going after off, tail={tail}");
     }
 
     #[test]
