@@ -8,6 +8,13 @@
 //!            [ ] picks a layer · 1-8 jumps to one · m mutes · d removes
 //!            a loads a sound onto the pad · t trims it · n normalizes it
 //!            i records the pad from an instrument · esc goes back
+//!            K switches the bed between pads and keys
+//!
+//! keys mode  the same, on zones instead of pads, plus
+//!            w the whole bed · o this octave · s splits here · D removes
+//!            R learns the root from the next key played
+//!            the span is the first control: enter holds it, then
+//!            h/l move the LOW edge and H/L the HIGH one
 //!
 //! trim strip h/l moves the START · H/L moves the END
 //!            j/k walks the unit deeper/wider · z snaps · r reverses
@@ -43,12 +50,20 @@
 //! cursor that wandered off it would leave the banner naming one pad and
 //! the take landing on another.
 //!
+//! Keys mode changes what the keys *address*, never what they mean: `a`
+//! still loads a sound, `t` still trims one, `j`/`k` still walk the
+//! controls — they simply land on the zone under the cursor instead of the
+//! pad under it. That is why there is no second key table here. The four
+//! keys it adds are the four things a pad map has no word for: the three
+//! ways to make a zone, and the one that removes it.
+//!
 //! Every edit goes through the sampler's ops, which are the only things
 //! that write a pad and tell the engine.
 
 use super::*;
 
 use phosphor_app::sampler::trim::TrimEdge;
+use phosphor_app::sampler::MapMode;
 
 impl App {
     /// One key, on the pad map.
@@ -63,6 +78,16 @@ impl App {
 
         if self.nav.clip_view.sampler.trim.is_some() {
             self.handle_trim_keys(key);
+            return;
+        }
+
+        // Root-learn is a question the screen has asked, and `esc` is the
+        // answer "never mind". Checked before the held-control branch
+        // because a player can arm it with a knob held and would otherwise
+        // have to press `esc` twice to mean one thing.
+        if self.nav.clip_view.sampler.root_learn && key.code == KeyCode::Esc {
+            self.nav.clip_view.sampler.root_learn = false;
+            self.flash("root learn off \u{00b7} nothing changed");
             return;
         }
 
@@ -102,8 +127,17 @@ impl App {
             }
             KeyCode::Enter => {
                 self.nav.clip_view.sampler.locked = true;
+                // The span is a brace and the rest are knobs, and the two
+                // want different halves of the same sentence: a brace has
+                // two edges, a knob has a stride.
+                let span = self.sampler_knobs().get(self.nav.clip_view.sampler.knob)
+                    == Some(&phosphor_app::sampler::knobs::PadKnob::Span);
                 self.status_message = Some((
-                    "held: h/l adjusts, H/L strides, esc lets go".into(),
+                    if span {
+                        "held: h/l moves the low edge, H/L the high one, esc lets go".into()
+                    } else {
+                        "held: h/l adjusts, H/L strides, esc lets go".to_string()
+                    },
                     std::time::Instant::now(),
                 ));
             }
@@ -113,6 +147,19 @@ impl App {
             KeyCode::Char('i') => self.open_pad_source_picker(),
             KeyCode::Char('n') => self.normalize_sampler_layer(),
             KeyCode::Char('t') => self.open_trim_strip(),
+            KeyCode::Char('K') => self.toggle_sampler_map_mode(),
+            // The zone keys. They say so rather than doing nothing in pads
+            // mode, because a key that is silent is a key a player thinks
+            // is broken — and `K` is the answer.
+            KeyCode::Char('w') => self.zone_whole(),
+            KeyCode::Char('o') => self.zone_octave(),
+            KeyCode::Char('s') => self.zone_split(),
+            KeyCode::Char('D') if self.sampler_mode() == MapMode::Keys => {
+                self.request_zone_delete();
+            }
+            KeyCode::Char('R') if self.sampler_mode() == MapMode::Keys => {
+                self.toggle_root_learn();
+            }
             // `r` outside source mode is a key with nowhere to go, and the
             // thing a player pressing it wants is one key away.
             KeyCode::Char('r') => {

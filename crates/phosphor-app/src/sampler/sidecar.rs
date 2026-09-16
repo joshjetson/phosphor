@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use phosphor_plugin::sample::SamplePcm;
 
-use super::SamplerState;
+use super::{LayerAddr, SamplerState};
 
 /// The directory a session's takes live in: the session file's name
 /// without its extension, plus `.samples`, in the same directory. Beside
@@ -50,7 +50,7 @@ pub fn sidecar_dir(session: &Path) -> PathBuf {
 /// caller must not go on to write the session, because the session would
 /// name audio that is not there.
 pub fn write_takes(session: &Path, state: &mut SamplerState) -> Result<usize, String> {
-    let takes: Vec<(usize, usize)> = state.takes().collect();
+    let takes: Vec<LayerAddr> = state.takes().collect();
     if takes.is_empty() {
         return Ok(0);
     }
@@ -65,15 +65,12 @@ pub fn write_takes(session: &Path, state: &mut SamplerState) -> Result<usize, St
     let mut written = 0usize;
     let mut created = false;
 
-    for (pad, layer) in takes {
-        let already = {
-            let layer = &state.pads[pad].layers[layer];
-            layer.path.parent() == Some(home.as_path()) && base.join(&layer.path).exists()
-        };
-        if already {
+    for addr in takes {
+        let Some(layer) = state.layer_at(addr) else { continue };
+        if layer.path.parent() == Some(home.as_path()) && base.join(&layer.path).exists() {
             continue;
         }
-        let Some(pcm) = state.pads[pad].layers[layer].pcm.clone() else {
+        let Some(pcm) = layer.pcm.clone() else {
             // A take whose audio is gone is a take that was loaded from a
             // sidecar that has since been deleted. It keeps its seat and
             // its path; there is nothing to write.
@@ -84,11 +81,16 @@ pub fn write_takes(session: &Path, state: &mut SamplerState) -> Result<usize, St
                 .map_err(|e| format!("{}: {e}", dir.display()))?;
             created = true;
         }
-        let file = free_name(&dir, &SamplerState::pad_label(pad), layer + 1);
+        // A zone's take is named for the zone's first key, which is a key
+        // a pad might also have recorded one on — so the collision counter
+        // settles it, exactly as it does for two takes on one pad.
+        let file = free_name(&dir, &state.addr_label(addr), addr.layer() + 1);
         write_wav(&dir.join(&file), &pcm)?;
         // Relative to the session, which is the whole point: the project
         // is a directory that can be moved.
-        state.pads[pad].layers[layer].path = home.join(&file);
+        if let Some(layer) = state.layer_at_mut(addr) {
+            layer.path = home.join(&file);
+        }
         written += 1;
     }
     Ok(written)
@@ -263,6 +265,34 @@ mod tests {
             state.pads[pad].layers[0].path,
             PathBuf::from("kit.samples/Cs3-1.wav"),
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A take recorded into a zone is a performance that exists nowhere
+    /// else either: it is written out like any other, named for the zone's
+    /// first key, and a pad's take on that same key does not overwrite it.
+    #[test]
+    fn a_zones_take_is_written_out_too() {
+        let dir = scratch("zone-take");
+        let session = dir.join("kit.phos");
+        let mut state = SamplerState::new();
+        state.mode = crate::sampler::MapMode::Keys;
+        let lo = SamplerState::pad_of_note(60).unwrap();
+        let mut pad = crate::sampler::PadState::empty(60);
+        pad.add_take(&take(50), "zone").unwrap();
+        state.zones.push(crate::sampler::Zone::new(lo, lo + 11, pad));
+        // ...and one on the pad under the same key, in the mode that is off.
+        state.add_take_layer(lo, &take(50)).unwrap();
+
+        assert_eq!(write_takes(&session, &mut state).unwrap(), 2);
+        let zone_path = state.zones[0].pad.layers[0].path.clone();
+        let pad_path = state.pads[lo].layers[0].path.clone();
+        assert_ne!(zone_path, pad_path, "the two takes share one file");
+        assert!(dir.join(&zone_path).exists(), "the zone's take was not written");
+        assert!(dir.join(&pad_path).exists(), "the pad's take was not written");
+
+        // A second save writes neither of them again.
+        assert_eq!(write_takes(&session, &mut state).unwrap(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

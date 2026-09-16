@@ -78,6 +78,19 @@ impl App {
             }
             return;
         }
+        // Root-learn takes it next: with `R` armed, the next key played is
+        // an answer to a question the zone asked, so it must not also walk
+        // the pad cursor off that zone or step-record. One key spends the
+        // arming, and the note still sounds — the tap is a copy of a stream
+        // the instrument already has.
+        if self.sampler_root_learn_armed() {
+            if let MidiMessageType::NoteOn { note, velocity, .. } = event {
+                if velocity > 0 {
+                    self.learn_zone_root(note);
+                }
+            }
+            return;
+        }
         // The progression editor's learn mode takes the stream while it
         // is listening — a chord played to be captured should not also
         // step-record.

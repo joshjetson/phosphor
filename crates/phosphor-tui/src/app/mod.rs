@@ -40,6 +40,7 @@ mod sampler_keys;
 mod sampler_ops;
 mod sampler_source;
 mod sampler_trim;
+mod sampler_zones;
 mod section_ops;
 mod tracks;
 mod transport;

@@ -19,33 +19,40 @@
 //!
 //! # Fitting
 //!
-//! The band is six rows and wants a hundred and eight columns for the whole
-//! bed; below that it shows the white keys that fit and scrolls to keep the
-//! caret in sight. Below twelve rows it goes entirely — the panel is what
+//! The band is six rows — seven in keys mode, where the rule under the
+//! keyboard braces each zone — and wants a hundred and eight columns for
+//! the whole bed; below that it shows the white keys that fit and scrolls
+//! to keep the caret in sight. Below twelve rows it goes entirely; how tall
+//! it actually came out is read from what [`band_lines`] returned, so the
+//! rule cannot push the panel off the bottom of the pane. The panel is what
 //! the keys are typing into, and a view that shows the keyboard and not the
 //! control being turned has given up the wrong thing.
 
 use super::*;
 
 use phosphor_app::sampler::knobs::PadKnob;
-use phosphor_app::sampler::{LayerState, PadState, SamplerState, PAD_BASE_NOTE};
+use phosphor_app::sampler::{
+    LayerState, MapMode, PadState, SamplerState, Zone, NUM_PADS, PAD_BASE_NOTE,
+};
 
 use super::keyboard::{self, KeyPaint, INK};
 
 mod list;
 mod panel;
 mod strip;
+mod zones;
 
 use list::pad_list;
 use panel::panel_lines;
 use strip::strip_lines;
+use zones::{rule_line, zone_list};
 
 /// The lowest and highest key on the bed.
 const LOW: u8 = PAD_BASE_NOTE;
 const HIGH: u8 = PAD_BASE_NOTE + 87;
 
-/// Rows the band costs: the keyboard plus the caret above it.
-const BAND_ROWS: usize = keyboard::ROWS + 1;
+/// The mark a zone's root key wears on the band.
+const ROOT_MARK: char = '\u{25C6}';
 
 /// Below this many rows the band is dropped for the panel's sake.
 const BAND_MIN_H: usize = 12;
@@ -80,25 +87,42 @@ struct Map<'a> {
 }
 
 impl Map<'_> {
-    fn pad(&self) -> &PadState {
-        self.state.current()
+    /// The sound the panel is drawing: the pad under the caret, or the
+    /// zone's own in keys mode. `None` only in keys mode, on a key no zone
+    /// covers — where the panel says what to press instead of drawing
+    /// controls for a sound that is not there.
+    fn pad(&self) -> Option<&PadState> {
+        self.state.edited()
     }
 
-    /// The layer the layer cursor is on, when the pad has one.
+    /// The zone the caret is standing in, when keys mode is on.
+    fn zone(&self) -> Option<&Zone> {
+        match self.state.mode {
+            MapMode::Keys => self.state.cursor_zone().map(|i| &self.state.zones[i]),
+            MapMode::Pads => None,
+        }
+    }
+
+    /// How many sounds are stacked on what is being edited.
+    fn layer_count(&self) -> usize {
+        self.pad().map_or(0, |state| state.layers.len())
+    }
+
+    /// The layer the layer cursor is on, when there is one.
     fn layer(&self) -> Option<&LayerState> {
-        self.pad().layers.get(self.layer_cursor())
+        self.pad()?.layers.get(self.layer_cursor())
     }
 
-    /// The layer cursor, pulled inside what this pad actually holds. The
-    /// keys clamp it too; this is the frame's own guard, because the pad
+    /// The layer cursor, pulled inside what this sound actually holds. The
+    /// keys clamp it too; this is the frame's own guard, because what is
     /// under the cursor can change without a key being pressed — playing a
     /// note moves it.
     fn layer_cursor(&self) -> usize {
-        self.view.layer.min(self.pad().layers.len().saturating_sub(1))
+        self.view.layer.min(self.layer_count().saturating_sub(1))
     }
 
     fn knobs(&self) -> &'static [PadKnob] {
-        PadKnob::visible(!self.pad().layers.is_empty())
+        PadKnob::visible(self.layer_count() > 0, self.state.mode)
     }
 
     /// Which control the cursor is on, inside the list this pad offers.
@@ -164,37 +188,57 @@ fn clip_text(text: &str, width: usize) -> String {
 
 // ── The band ──
 
-/// The caret over the pad being edited, and the keyboard under it.
+/// The caret over the key being edited, the keyboard under it, and — in
+/// keys mode — the rule that braces each zone.
 fn band_lines(map: &Map, width: usize) -> Vec<Line<'static>> {
     let cursor_note = SamplerState::note_of_pad(map.state.cursor);
     let lo = keyboard::window_lo(LOW, HIGH, width, cursor_note);
-    let red = theme::rec_active_val();
 
     let mut lines = vec![caret_line(map, lo, cursor_note, width)];
-    lines.extend(keyboard::band(lo, HIGH, width, |note| {
-        let Some(index) = SamplerState::pad_of_note(note) else {
-            return KeyPaint::plain(note);
-        };
-        let pad = &map.state.pads[index];
-        let count = pad.layers.len();
-        let paint = if index == map.state.cursor {
-            KeyPaint::lit(theme::amber_bright_val())
-        } else if pad.has_missing() {
-            KeyPaint::lit(red)
-        } else if count > 0 {
-            KeyPaint::lit(map.colour)
-        } else {
-            return KeyPaint::plain(note);
-        };
-        // The number of sounds stacked on the key, on the key. A pad past
-        // nine cannot exist — eight layers is the bed — so one digit always
-        // tells the truth.
-        match char::from_digit(count as u32, 10).filter(|_| count > 0) {
-            Some(digit) => paint.with_glyph(digit, INK),
-            None => paint,
-        }
-    }));
+    lines.extend(keyboard::band(lo, HIGH, width, |note| key_paint(map, note)));
+    // The rule only exists where zones do. In pads mode the row would be
+    // air, and a band that changes height for nothing is a screen that
+    // jumps when the mode does.
+    if map.state.mode == MapMode::Keys {
+        lines.push(rule_line(map, lo, width));
+    }
     lines
+}
+
+/// How one key on the bed is painted.
+///
+/// The same rule in both modes, because it is the same question: what does
+/// this key play, is anything it plays missing, and is the caret on it. In
+/// keys mode the answer comes from the zones standing over the key rather
+/// than from the pad under it — see
+/// [`SamplerState::key_load`](phosphor_app::sampler::SamplerState::key_load).
+fn key_paint(map: &Map, note: u8) -> KeyPaint {
+    let Some(index) = SamplerState::pad_of_note(note) else {
+        return KeyPaint::plain(note);
+    };
+    let (count, missing) = map.state.key_load(index);
+    let paint = if index == map.state.cursor {
+        KeyPaint::lit(theme::amber_bright_val())
+    } else if missing {
+        KeyPaint::lit(theme::rec_active_val())
+    } else if count > 0 {
+        KeyPaint::lit(map.colour)
+    } else {
+        return KeyPaint::plain(note);
+    };
+    // A zone's root wears the anchor rather than the count: the count is on
+    // every other key of the zone, and which key the sound was recorded at
+    // is the thing that cannot be read anywhere else on the band.
+    if map.state.is_zone_root(index) {
+        return paint.with_glyph(ROOT_MARK, INK);
+    }
+    // The number of sounds stacked on the key, on the key. Past nine cannot
+    // happen — eight layers is the bed — so one digit always tells the
+    // truth.
+    match char::from_digit(count as u32, 10).filter(|_| count > 0) {
+        Some(digit) => paint.with_glyph(digit, INK),
+        None => paint,
+    }
 }
 
 fn caret_line(map: &Map, lo: u8, cursor_note: u8, width: usize) -> Line<'static> {
@@ -285,11 +329,13 @@ pub(super) fn render_pads(frame: &mut Frame, area: Rect, nav: &NavState) {
 
     let mut body = area;
     if height >= BAND_MIN_H && width >= BAND_MIN_W {
+        let lines = band_lines(&map, width);
+        let rows = (lines.len() as u16).min(area.height);
         let mut top = area;
-        top.height = BAND_ROWS as u16;
-        frame.render_widget(Paragraph::new(band_lines(&map, width)), top);
-        body.y += BAND_ROWS as u16;
-        body.height -= BAND_ROWS as u16;
+        top.height = rows;
+        frame.render_widget(Paragraph::new(lines), top);
+        body.y += rows;
+        body.height -= rows;
     }
     if body.height == 0 {
         return;
@@ -323,7 +369,7 @@ pub(super) fn render_pads(frame: &mut Frame, area: Rect, nav: &NavState) {
             .constraints([Constraint::Length(LIST_W), Constraint::Min(20)])
             .split(body);
         frame.render_widget(
-            Paragraph::new(pad_list(&map, cols[0].width as usize, cols[0].height as usize)),
+            Paragraph::new(side_list(&map, cols[0].width as usize, cols[0].height as usize)),
             cols[0],
         );
         frame.render_widget(
@@ -344,10 +390,21 @@ pub(super) fn render_pads(frame: &mut Frame, area: Rect, nav: &NavState) {
     let mut lines = panel_lines(&map, body_w, body_h.saturating_sub(2).max(1));
     let left = body_h.saturating_sub(lines.len());
     if left > 1 {
-        lines.extend(pad_list(&map, body_w, left));
+        lines.extend(side_list(&map, body_w, left));
     }
     lines.truncate(body_h);
     frame.render_widget(Paragraph::new(lines), body);
+}
+
+/// The column beside the panel: what is on the kit, in whichever unit the
+/// mode is in. Pads have a pad list; zones have a zone list, because in
+/// keys mode a list of eighty-eight keys would be a list of the same sound
+/// twenty-four times.
+fn side_list(map: &Map, width: usize, height: usize) -> Vec<Line<'static>> {
+    match map.state.mode {
+        MapMode::Pads => pad_list(map, width, height),
+        MapMode::Keys => zone_list(map, width, height),
+    }
 }
 
 #[cfg(test)]
@@ -374,6 +431,27 @@ pub(super) mod tests {
         state
     }
 
+    /// The same kit in keys mode, with one zone over C2-B3 rooted at C3 —
+    /// two octaves of a piano, which is what a zone is for.
+    pub(in crate::ui::sampler) fn zoned() -> SamplerState {
+        let mut state = kit();
+        state.mode = phosphor_app::sampler::MapMode::Keys;
+        let pcm = Arc::new(SamplePcm {
+            data: vec![0.0; 44_100],
+            channels: 1,
+            sample_rate: 44_100.0,
+        });
+        let mut pad = PadState::empty(60);
+        pad.add_wav(PathBuf::from("piano.wav"), pcm, "zone").unwrap();
+        state.zones.push(phosphor_app::sampler::Zone::new(
+            SamplerState::pad_of_note(48).unwrap(),
+            SamplerState::pad_of_note(71).unwrap(),
+            pad,
+        ));
+        state.cursor = SamplerState::pad_of_note(60).unwrap();
+        state
+    }
+
     pub(in crate::ui::sampler) fn map<'a>(
         state: &'a SamplerState,
         view: &'a SamplerView,
@@ -397,30 +475,44 @@ pub(super) mod tests {
     /// that cuts a knob in half at the right edge of the pane.
     #[test]
     fn nothing_runs_past_the_right_edge() {
-        let state = kit();
-        let view = SamplerView::new();
-        let map = map(&state, &view);
-        for width in [1usize, 8, 20, 29, 38, 57, 95, 200] {
-            for line in band_lines(&map, width) {
-                assert!(cells(&line) <= width.max(1), "band row in {width} columns");
-            }
-            for line in pad_list(&map, width, 10) {
-                assert!(
-                    cells(&line) <= width,
-                    "a {}-cell list row in {width} columns: {:?}",
-                    cells(&line),
-                    text(&[line.clone()]),
-                );
-            }
-            for line in panel_lines(&map, width, 20) {
-                assert!(
-                    cells(&line) <= width.max(MIN_PANEL_W),
-                    "a {}-cell panel row in {width} columns: {:?}",
-                    cells(&line),
-                    text(&[line.clone()]),
-                );
+        // Both modes, because keys mode draws two sections the pad map does
+        // not — the rule under the band and the zone list — and a row one
+        // cell too long is cut in half by the edge of the pane either way.
+        for state in [kit(), zoned()] {
+            let view = SamplerView::new();
+            let map = map(&state, &view);
+            for width in [1usize, 8, 20, 29, 38, 57, 95, 200] {
+                for line in band_lines(&map, width) {
+                    assert!(cells(&line) <= width.max(1), "band row in {width} columns");
+                }
+                for line in side_list(&map, width, 10) {
+                    assert!(
+                        cells(&line) <= width,
+                        "a {}-cell list row in {width} columns: {:?}",
+                        cells(&line),
+                        text(&[line.clone()]),
+                    );
+                }
+                for line in panel_lines(&map, width, 20) {
+                    assert!(
+                        cells(&line) <= width.max(MIN_PANEL_W),
+                        "a {}-cell panel row in {width} columns: {:?}",
+                        cells(&line),
+                        text(&[line.clone()]),
+                    );
+                }
             }
         }
+    }
+
+    /// Keys mode costs one row more than pads mode and no more than that,
+    /// and the row it costs is the rule.
+    #[test]
+    fn the_rule_is_the_only_row_keys_mode_adds() {
+        let view = SamplerView::new();
+        let pads = band_lines(&map(&kit(), &view), 120).len();
+        let keys = zoned();
+        assert_eq!(band_lines(&map(&keys, &view), 120).len(), pads + 1);
     }
 
     /// The caret is over the key it names, wherever the band has scrolled

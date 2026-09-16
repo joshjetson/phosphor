@@ -11,10 +11,12 @@
 pub mod capture;
 pub mod knobs;
 pub mod render;
+pub mod root;
 pub mod session;
 pub mod sidecar;
 pub mod trim;
 pub mod wav;
+pub mod zones;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,6 +24,8 @@ use std::sync::Arc;
 use phosphor_plugin::sample::{PadConfig, PadLayer, SamplePcm};
 
 use crate::state::InstrumentType;
+
+pub use zones::{MapMode, Zone, ZoneEdge};
 
 /// One pad per piano key, mirroring the engine.
 pub const NUM_PADS: usize = 88;
@@ -228,6 +232,12 @@ pub struct PadState {
 }
 
 impl PadState {
+    /// A seat with nothing in it: what a fresh pad is, what a zone starts
+    /// as, and what a key no zone covers plays.
+    pub fn empty(note: u8) -> Self {
+        Self { config: PadConfig::for_key(note), layers: Vec::new(), source: None }
+    }
+
     /// Whether anything on this pad was asked for and is not here — the
     /// red mark on the bed and in the list.
     pub fn has_missing(&self) -> bool {
@@ -240,6 +250,65 @@ impl PadState {
     pub fn take_count(&self) -> usize {
         self.layers.iter().filter(|l| l.source == LayerSource::Take).count()
     }
+
+    /// Stack one more sound, if the bed has room for it.
+    ///
+    /// `title` is what the refusal calls this place — "pad C3", "zone
+    /// C2-B3" — because a pad and a zone are full in the same words and
+    /// named in different ones.
+    fn push_layer(&mut self, layer: LayerState, title: &str) -> Result<usize, String> {
+        if self.layers.len() >= MAX_LAYERS {
+            return Err(SamplerState::full_message(title));
+        }
+        self.layers.push(layer);
+        Ok(self.layers.len() - 1)
+    }
+
+    /// Put a decoded WAV here. `Err` is a status-bar sentence and nothing
+    /// is touched.
+    pub fn add_wav(
+        &mut self,
+        path: PathBuf,
+        pcm: Arc<SamplePcm>,
+        title: &str,
+    ) -> Result<usize, String> {
+        self.push_layer(LayerState::from_wav(path, pcm), title)
+    }
+
+    /// Put a rendered take here, named for its place in the stack.
+    ///
+    /// The root a one-pitch performance teaches is *not* set here: in keys
+    /// mode it belongs to the zone, and one door for all three ways a root
+    /// arrives is [`SamplerState::set_edit_root`].
+    pub fn add_take(
+        &mut self,
+        take: &render::RenderedTake,
+        title: &str,
+    ) -> Result<usize, String> {
+        let name = format!("take {}", self.take_count() + 1);
+        self.push_layer(LayerState::from_take(name, take), title)
+    }
+}
+
+/// Where a layer sits.
+///
+/// Two places, because a sound can be on a pad or in a zone, and the things
+/// that walk every layer in the kit — the sidecar writing takes out, a
+/// count of what is missing — have to be able to name either and come back
+/// to it. See [`SamplerState::layer_at`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerAddr {
+    Pad { pad: usize, layer: usize },
+    Zone { zone: usize, layer: usize },
+}
+
+impl LayerAddr {
+    /// Its place in the stack it sits in.
+    pub fn layer(self) -> usize {
+        match self {
+            Self::Pad { layer, .. } | Self::Zone { layer, .. } => layer,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -250,6 +319,12 @@ pub struct SamplerState {
     /// track moves it, which on an 88-key controller is the fastest
     /// pad selector there is.
     pub cursor: usize,
+    /// What the eighty-eight keys mean: a pad each, or zones. Both truths
+    /// live here at once — see [`zones`].
+    pub mode: MapMode,
+    /// The zones, in edge order. Empty in pads mode, and empty in keys
+    /// mode until the player makes one.
+    pub zones: Vec<Zone>,
 }
 
 impl Default for SamplerState {
@@ -261,15 +336,11 @@ impl Default for SamplerState {
 impl SamplerState {
     pub fn new() -> Self {
         Self {
-            pads: (0..NUM_PADS)
-                .map(|i| PadState {
-                    config: PadConfig::for_key(PAD_BASE_NOTE + i as u8),
-                    layers: Vec::new(),
-                    source: None,
-                })
-                .collect(),
+            pads: (0..NUM_PADS).map(|i| PadState::empty(PAD_BASE_NOTE + i as u8)).collect(),
             // C3 — the middle of the bed, where a hand falls.
             cursor: (60 - PAD_BASE_NOTE) as usize,
+            mode: MapMode::Pads,
+            zones: Vec::new(),
         }
     }
 
@@ -317,9 +388,11 @@ impl SamplerState {
         path: PathBuf,
         pcm: Arc<SamplePcm>,
     ) -> Result<(), String> {
-        self.room_on(pad)?;
-        self.pads[pad].layers.push(LayerState::from_wav(path, pcm));
-        Ok(())
+        let title = Self::pad_title(pad);
+        let Some(state) = self.pads.get_mut(pad) else {
+            return Err("no such pad".into());
+        };
+        state.add_wav(path, pcm, &title).map(|_| ())
     }
 
     /// Put a rendered take on a pad, named for its place in the stack.
@@ -329,16 +402,56 @@ impl SamplerState {
         pad: usize,
         take: &render::RenderedTake,
     ) -> Result<usize, String> {
-        self.room_on(pad)?;
-        let name = format!("take {}", self.pads[pad].take_count() + 1);
-        self.pads[pad].layers.push(LayerState::from_take(name, take));
+        let title = Self::pad_title(pad);
+        let Some(state) = self.pads.get_mut(pad) else {
+            return Err("no such pad".into());
+        };
+        let index = state.add_take(take, &title)?;
         // A take teaches the pad its root when the performance was one
         // pitch. Keytrack is left alone: a root is a fact about the
         // recording, and whether the pad should transpose is a decision.
         if let Some(root) = take.root {
-            self.pads[pad].config.root = root;
+            state.config.root = root;
         }
-        Ok(self.pads[pad].layers.len() - 1)
+        Ok(index)
+    }
+
+    /// Put a decoded WAV on whatever the cursor is editing — the pad in
+    /// pads mode, the zone's own sound in keys mode.
+    pub fn add_wav_here(
+        &mut self,
+        path: PathBuf,
+        pcm: Arc<SamplePcm>,
+    ) -> Result<usize, String> {
+        let title = self.edit_title();
+        self.edited_mut().ok_or_else(Self::no_zone_message)?.add_wav(path, pcm, &title)
+    }
+
+    /// Put a rendered take on whatever the cursor is editing, and let it
+    /// teach its root when the performance was one pitch.
+    pub fn add_take_here(&mut self, take: &render::RenderedTake) -> Result<usize, String> {
+        let title = self.edit_title();
+        let index = self.edited_mut().ok_or_else(Self::no_zone_message)?.add_take(take, &title)?;
+        if let Some(root) = take.root {
+            self.set_edit_root(root);
+        }
+        Ok(index)
+    }
+
+    /// Teach a root to whatever the cursor is editing.
+    ///
+    /// One door, because a root arrives three ways — a capture, a file
+    /// name, a key played — and all three have to land in the same place or
+    /// two of them are silently wrong in one of the two modes. Answers
+    /// whether it moved, which is what the flash is for.
+    pub fn set_edit_root(&mut self, root: u8) -> bool {
+        match self.edited_mut() {
+            Some(state) if state.config.root != root => {
+                state.config.root = root;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Whether a pad has room for one more sound — the refusal both
@@ -348,17 +461,51 @@ impl SamplerState {
             return Err("no such pad".into());
         };
         if state.layers.len() >= MAX_LAYERS {
-            return Err(format!(
-                "pad {} is full — eight layers is the bed",
-                Self::pad_label(pad)
-            ));
+            return Err(Self::full_message(&Self::pad_title(pad)));
         }
         Ok(())
     }
 
-    /// The engine's copy of one pad: config plus every playable layer.
+    /// The same question about whatever the cursor is editing.
+    pub fn room_here(&self) -> Result<(), String> {
+        match self.edited() {
+            None => Err(Self::no_zone_message()),
+            Some(state) if state.layers.len() >= MAX_LAYERS => {
+                Err(Self::full_message(&self.edit_title()))
+            }
+            Some(_) => Ok(()),
+        }
+    }
+
+    /// "pad C3" — what a flash and a refusal call a pad.
+    pub fn pad_title(pad: usize) -> String {
+        format!("pad {}", Self::pad_label(pad))
+    }
+
+    /// What every door says when there is no room left, whether it is a
+    /// pad or a zone that is full.
+    pub fn full_message(title: &str) -> String {
+        format!("{title} is full \u{2014} eight layers is the bed")
+    }
+
+    /// What every door says when keys mode has no zone under the cursor —
+    /// with the three keys that make one, because a refusal that does not
+    /// say what to press instead is a dead end.
+    pub fn no_zone_message() -> String {
+        "no zone on this key \u{00b7} w covers the bed \u{00b7} o the octave \u{00b7} s splits"
+            .into()
+    }
+
+    /// The engine's copy of one key: config plus every playable layer.
+    ///
+    /// [`Self::voice`] is what decides *what* the key plays, so keys mode
+    /// arrives here materialized and the engine is handed eighty-eight
+    /// pads either way — it has never heard of a zone.
     pub fn engine_pad(&self, pad: usize) -> Option<(PadConfig, Vec<PadLayer>)> {
-        let state = self.pads.get(pad)?;
+        if pad >= NUM_PADS {
+            return None;
+        }
+        let state = self.voice(pad);
         let layers = state.layers.iter().filter_map(LayerState::engine_layer).collect();
         Some((state.config, layers))
     }
@@ -376,26 +523,61 @@ impl SamplerState {
         })
     }
 
-    /// Every take on the kit, as `(pad, layer)` — what a session save has
-    /// to write out before it writes the file that names them.
-    pub fn takes(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
-        self.pads.iter().enumerate().flat_map(|(pad, state)| {
-            state
-                .layers
-                .iter()
-                .enumerate()
-                .filter(|(_, l)| l.source == LayerSource::Take)
-                .map(move |(layer, _)| (pad, layer))
-        })
+    /// Every take in the kit — what a session save has to write out before
+    /// it writes the file that names them.
+    ///
+    /// The zones' sounds as well as the pads', because a take recorded into
+    /// a zone is a performance that exists nowhere else either.
+    pub fn takes(&self) -> impl Iterator<Item = LayerAddr> + '_ {
+        let pads = self.pads.iter().enumerate().flat_map(|(pad, state)| {
+            takes_in(state).map(move |layer| LayerAddr::Pad { pad, layer })
+        });
+        let zones = self.zones.iter().enumerate().flat_map(|(zone, state)| {
+            takes_in(&state.pad).map(move |layer| LayerAddr::Zone { zone, layer })
+        });
+        pads.chain(zones)
+    }
+
+    /// One layer by address, or `None` when the address is stale.
+    pub fn layer_at(&self, addr: LayerAddr) -> Option<&LayerState> {
+        match addr {
+            LayerAddr::Pad { pad, layer } => self.pads.get(pad)?.layers.get(layer),
+            LayerAddr::Zone { zone, layer } => self.zones.get(zone)?.pad.layers.get(layer),
+        }
+    }
+
+    pub fn layer_at_mut(&mut self, addr: LayerAddr) -> Option<&mut LayerState> {
+        match addr {
+            LayerAddr::Pad { pad, layer } => self.pads.get_mut(pad)?.layers.get_mut(layer),
+            LayerAddr::Zone { zone, layer } => {
+                self.zones.get_mut(zone)?.pad.layers.get_mut(layer)
+            }
+        }
+    }
+
+    /// The key a layer's address is named after, which is what a take's
+    /// file on disk is called: the pad's own key, or the zone's first one.
+    pub fn addr_label(&self, addr: LayerAddr) -> String {
+        match addr {
+            LayerAddr::Pad { pad, .. } => Self::pad_label(pad),
+            LayerAddr::Zone { zone, .. } => {
+                Self::pad_label(self.zones.get(zone).map_or(0, |z| z.lo))
+            }
+        }
+    }
+
+    /// Every sound in the kit, wherever it sits — the pads' and the zones'
+    /// both, because a zone's layers are as real as a pad's.
+    pub fn all_layers(&self) -> impl Iterator<Item = &LayerState> + '_ {
+        self.pads
+            .iter()
+            .chain(self.zones.iter().map(|z| &z.pad))
+            .flat_map(|state| state.layers.iter())
     }
 
     /// Layers whose file was not found on load.
     pub fn missing_layers(&self) -> usize {
-        self.pads
-            .iter()
-            .flat_map(|p| p.layers.iter())
-            .filter(|l| l.pcm.is_none())
-            .count()
+        self.all_layers().filter(|l| l.pcm.is_none()).count()
     }
 
     /// Bytes of PCM held, counting a buffer shared by several layers
@@ -404,7 +586,7 @@ impl SamplerState {
     pub fn pcm_bytes(&self) -> usize {
         let mut seen: Vec<*const SamplePcm> = Vec::new();
         let mut total = 0usize;
-        for layer in self.pads.iter().flat_map(|p| p.layers.iter()) {
+        for layer in self.all_layers() {
             if let Some(pcm) = layer.pcm.as_ref() {
                 let ptr = Arc::as_ptr(pcm);
                 if !seen.contains(&ptr) {
@@ -415,6 +597,16 @@ impl SamplerState {
         }
         total
     }
+}
+
+/// Which of a sound's layers are takes, by index.
+fn takes_in(state: &PadState) -> impl Iterator<Item = usize> + '_ {
+    state
+        .layers
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.source == LayerSource::Take)
+        .map(|(index, _)| index)
 }
 
 #[cfg(test)]

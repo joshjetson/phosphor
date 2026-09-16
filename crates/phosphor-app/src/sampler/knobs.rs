@@ -15,7 +15,7 @@ use phosphor_plugin::sample::TrigMode;
 
 use crate::format::{db_text, ms_text, note_name, pan_label};
 
-use super::{LayerState, PadState};
+use super::{LayerState, MapMode, PadState, Zone, NUM_PADS};
 
 /// The top of an envelope stage. Ten seconds is longer than any sampler
 /// envelope a player reaches for and short enough that the dial's travel
@@ -48,6 +48,16 @@ const PAN_STEP: f32 = 0.05;
 /// inside it does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PadKnob {
+    /// The zone's two edges — keys mode only, and the first control there,
+    /// because the brace is what the band is for.
+    ///
+    /// It is a control rather than a mode of its own so that it reaches the
+    /// keys by the path every other control does: `enter` holds it, `h`/`l`
+    /// move it, `esc` lets go. The one thing it reads differently is
+    /// `H`/`L`, which on a span are not a stride but the *other edge* —
+    /// the loop brace's grammar, which is what a player's hands already
+    /// know about a region with two ends.
+    Span,
     Trig,
     Poly,
     Choke,
@@ -71,7 +81,7 @@ pub enum PadKnob {
 }
 
 impl PadKnob {
-    /// Every control, pad first.
+    /// Every control in pads mode, pad first.
     pub const ALL: [PadKnob; 19] = [
         Self::Trig,
         Self::Poly,
@@ -94,17 +104,52 @@ impl PadKnob {
         Self::LayerMute,
     ];
 
-    /// How many of [`PadKnob::ALL`] belong to the pad itself.
+    /// Every control in keys mode.
+    ///
+    /// The span takes the top, and `keytrk` is gone: a zone always tracks
+    /// the keyboard — one that did not would be a stretch of keys all
+    /// playing one pitch, which is a pad with extra steps — so the switch
+    /// would be a control with nothing on the other side of it. That
+    /// leaves the same number of controls above the layer's, which
+    /// [`PadKnob::PAD_CONTROLS`] counts for both lists.
+    pub const KEYS: [PadKnob; 19] = [
+        Self::Span,
+        Self::Trig,
+        Self::Poly,
+        Self::Choke,
+        Self::PitchSt,
+        Self::PitchCents,
+        Self::Attack,
+        Self::Decay,
+        Self::Sustain,
+        Self::Release,
+        Self::Level,
+        Self::Pan,
+        Self::Root,
+        Self::LayerGain,
+        Self::LayerPan,
+        Self::LayerTuneSt,
+        Self::LayerTuneCents,
+        Self::LayerReverse,
+        Self::LayerMute,
+    ];
+
+    /// How many of either list belong to the pad or zone itself, rather
+    /// than to the layer under the layer cursor.
     pub const PAD_CONTROLS: usize = 13;
 
-    /// The controls a pad offers right now. An empty pad stops at its own:
-    /// a gain knob for a sound that is not there is a control that answers
-    /// keys and changes nothing.
-    pub fn visible(has_layer: bool) -> &'static [PadKnob] {
+    /// The controls the thing under the cursor offers right now. An empty
+    /// pad stops at its own: a gain knob for a sound that is not there is a
+    /// control that answers keys and changes nothing.
+    pub fn visible(has_layer: bool, mode: MapMode) -> &'static [PadKnob] {
+        let all: &'static [PadKnob] = match mode {
+            MapMode::Pads => &Self::ALL,
+            MapMode::Keys => &Self::KEYS,
+        };
         if has_layer {
-            &Self::ALL
+            all
         } else {
-            &Self::ALL[..Self::PAD_CONTROLS]
+            &all[..Self::PAD_CONTROLS]
         }
     }
 
@@ -127,6 +172,7 @@ impl PadKnob {
     /// and `pan` is what the control is called.
     pub fn label(self) -> &'static str {
         match self {
+            Self::Span => "span",
             Self::Trig => "trig",
             Self::Poly => "poly",
             Self::Choke => "choke",
@@ -147,11 +193,24 @@ impl PadKnob {
         }
     }
 
-    /// What the control reads, in its own unit. A layer control with no
-    /// layer behind it reads as a dash rather than as a lie.
-    pub fn value(self, pad: &PadState, layer: Option<&LayerState>) -> String {
+    /// What the control reads, in its own unit.
+    ///
+    /// A layer control with no layer behind it reads as a dash rather than
+    /// as a lie, and so does the span with no zone behind it — the one
+    /// control here that is about the keyboard rather than about the sound,
+    /// which is why it is the one that needs `zone`.
+    pub fn value(
+        self,
+        pad: &PadState,
+        layer: Option<&LayerState>,
+        zone: Option<&Zone>,
+    ) -> String {
         let c = &pad.config;
         match self {
+            // The span and nothing else: how many keys that is, the dial
+            // beside it already says, and a value wider than the panel is
+            // a knob cut in half by the right edge of the pane.
+            Self::Span => zone.map_or_else(|| "\u{2014}".into(), Zone::span_label),
             Self::Trig => match c.trig {
                 TrigMode::OneShot => "one-shot".into(),
                 TrigMode::Gate => "gate".into(),
@@ -193,9 +252,13 @@ impl PadKnob {
     /// The envelope times take the square root of their travel: a dial that
     /// is linear over ten seconds does not move at all across the first
     /// fifty milliseconds, which is where most of a drum envelope lives.
-    pub fn frac(self, pad: &PadState, layer: Option<&LayerState>) -> f64 {
+    pub fn frac(self, pad: &PadState, layer: Option<&LayerState>, zone: Option<&Zone>) -> f64 {
         let c = &pad.config;
         match self {
+            // How much of the bed the zone holds. The dial cannot show two
+            // edges, so it shows the thing a player is watching while they
+            // move one: how wide the zone has got.
+            Self::Span => zone.map_or(0.0, |z| z.keys() as f64 / NUM_PADS as f64),
             Self::Trig => f64::from(u8::from(c.trig == TrigMode::Gate)),
             Self::Poly => f64::from(c.poly.clamp(1, 8) - 1) / 7.0,
             Self::Choke => f64::from(c.choke.min(8)) / 8.0,
@@ -232,6 +295,12 @@ impl PadKnob {
         let up = delta > 0;
         let c = &mut pad.config;
         match self {
+            // The span is the one control that does not live on the sound
+            // it is drawn beside: its edges are clamped against the zones
+            // either side of it, which only the zone list knows about. So
+            // [`crate::sampler::SamplerState::move_zone_edge`] moves it and
+            // this does nothing — see the `Span` arm of the keys.
+            Self::Span => {}
             Self::Trig => c.trig = if up { TrigMode::Gate } else { TrigMode::OneShot },
             Self::Poly => c.poly = step_int(i32::from(c.poly), delta, 1, 8) as u8,
             Self::Choke => c.choke = step_int(i32::from(c.choke), delta, 0, 8) as u8,
@@ -367,6 +436,7 @@ fn step_pan(pan: f32, delta: i32, stride: bool) -> f32 {
 mod tests {
     use super::*;
     use crate::sampler::{SamplerState, MAX_LAYERS};
+    use crate::sampler::zones::Zone;
     use phosphor_plugin::sample::SamplePcm;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -380,12 +450,52 @@ mod tests {
 
     #[test]
     fn an_empty_pad_offers_no_layer_controls() {
-        assert_eq!(PadKnob::visible(false).len(), PadKnob::PAD_CONTROLS);
-        assert_eq!(PadKnob::visible(true).len(), PadKnob::ALL.len());
+        for mode in [MapMode::Pads, MapMode::Keys] {
+            assert_eq!(PadKnob::visible(false, mode).len(), PadKnob::PAD_CONTROLS);
+            assert_eq!(PadKnob::visible(true, mode).len(), PadKnob::ALL.len());
+            assert!(
+                PadKnob::visible(false, mode).iter().all(|k| !k.is_layer()),
+                "a layer control is reachable with no layers, in {mode:?}",
+            );
+        }
+    }
+
+    /// The two lists carry the same number of controls above the layer's,
+    /// which is what lets one constant split either of them. The defect
+    /// this catches is a control added to one list and not the other: the
+    /// panel would draw it under the layer heading, and `j`/`k` would
+    /// walk into a knob with the wrong name on it.
+    #[test]
+    fn both_control_lists_split_in_the_same_place() {
+        for list in [&PadKnob::ALL, &PadKnob::KEYS] {
+            assert_eq!(
+                list.iter().position(|k| k.is_layer()),
+                Some(PadKnob::PAD_CONTROLS),
+                "{list:?} does not split where the constant says",
+            );
+        }
         assert!(
-            PadKnob::visible(false).iter().all(|k| !k.is_layer()),
-            "a layer control is reachable on a pad with no layers",
+            !PadKnob::KEYS.contains(&PadKnob::Keytrack),
+            "keys mode offers a switch a zone cannot turn off",
         );
+        assert!(!PadKnob::ALL.contains(&PadKnob::Span), "pads mode offers a span");
+    }
+
+    /// The span reads the zone and turns nothing on the sound it is drawn
+    /// beside — its edges are the zone list's business, not a pad's.
+    #[test]
+    fn the_span_reads_the_zone_and_edits_nothing_here() {
+        let mut pad = pad_with_layer();
+        let zone = Zone::new(0, 11, PadState::empty(60));
+        assert_eq!(PadKnob::Span.value(&pad, None, Some(&zone)), zone.span_label());
+        assert_eq!(PadKnob::Span.value(&pad, None, None), "\u{2014}");
+        assert!(PadKnob::Span.frac(&pad, None, Some(&zone)) > 0.0);
+
+        let before = pad.clone();
+        for delta in [-1, 1] {
+            PadKnob::Span.adjust(&mut pad, 0, delta, true);
+        }
+        assert_eq!(pad, before, "the span turned a control on the sound");
     }
 
     /// The defect this catches: a layer control turned on a pad whose layer
@@ -394,9 +504,9 @@ mod tests {
     fn a_layer_control_with_no_layer_under_it_changes_nothing() {
         let mut pad = pad_with_layer();
         let before = pad.clone();
-        for knob in PadKnob::visible(true).iter().filter(|k| k.is_layer()) {
+        for knob in PadKnob::visible(true, MapMode::Pads).iter().filter(|k| k.is_layer()) {
             knob.adjust(&mut pad, MAX_LAYERS + 3, 1, false);
-            assert_eq!(knob.value(&pad, None), "\u{2014}", "{knob:?} invented a value");
+            assert_eq!(knob.value(&pad, None, None), "\u{2014}", "{knob:?} invented a value");
         }
         assert_eq!(pad, before, "an out-of-range layer cursor edited a real layer");
     }
@@ -429,7 +539,7 @@ mod tests {
                 assert!((-48..=48).contains(&l.tune_st));
                 assert!((-50..=50).contains(&l.tune_cents));
                 // And the dial never leaves its own travel either.
-                let f = knob.frac(&pad, pad.layers.first());
+                let f = knob.frac(&pad, pad.layers.first(), None);
                 assert!((0.0..=1.0).contains(&f), "{knob:?} dial at {f}");
             }
         }
@@ -485,10 +595,13 @@ mod tests {
     fn no_control_reads_as_nothing() {
         let pad = pad_with_layer();
         let empty = PadState { config: pad.config, layers: Vec::new(), source: None };
-        for knob in PadKnob::ALL {
+        for knob in PadKnob::ALL.iter().chain(PadKnob::KEYS.iter()).copied() {
             assert!(!knob.label().is_empty());
-            assert!(!knob.value(&pad, pad.layers.first()).is_empty(), "{knob:?}");
-            assert!(!knob.value(&empty, None).is_empty(), "{knob:?} on an empty pad");
+            assert!(!knob.value(&pad, pad.layers.first(), None).is_empty(), "{knob:?}");
+            assert!(
+                !knob.value(&empty, None, None).is_empty(),
+                "{knob:?} on an empty pad",
+            );
         }
     }
 }

@@ -14,9 +14,13 @@ use phosphor_app::sampler::MAX_LAYERS;
 
 use super::super::knobs::{window, Knob, Panel};
 
-fn knob_of(map: &Map, knob: PadKnob) -> Knob {
-    let pad = map.pad();
-    Knob::new(knob.label(), knob.value(pad, map.layer()), knob.frac(pad, map.layer()))
+fn knob_of(map: &Map, pad: &PadState, knob: PadKnob) -> Knob {
+    let (layer, zone) = (map.layer(), map.zone());
+    Knob::new(
+        knob.label(),
+        knob.value(pad, layer, zone),
+        knob.frac(pad, layer, zone),
+    )
 }
 
 /// The pad's own controls, the selected layer's under them, and the layer
@@ -27,21 +31,22 @@ pub(super) fn panel_lines(map: &Map, width: usize, height: usize) -> Vec<Line<'s
         return Vec::new();
     }
     // Narrower than one knob and its heading, there is no panel to draw —
-    // only the line that says which pad the keys are on, so that a player
-    // in a small terminal can still see the caret move.
+    // only the line that says what the keys are on, so that a player in a
+    // small terminal can still see the caret move.
     if width < MIN_PANEL_W {
         return vec![Line::from(Span::styled(
             clip_text(
-                &format!(
-                    " {} \u{00b7} {} layers",
-                    SamplerState::pad_label(map.state.cursor),
-                    map.pad().layers.len(),
-                ),
+                &format!(" {} \u{00b7} {} layers", map.state.edit_title(), map.layer_count()),
                 width,
             ),
             map.heading(),
         ))];
     }
+    // Keys mode on a key no zone covers: there is nothing to draw controls
+    // for, and the useful thing to say is which three keys make one.
+    let Some(pad) = map.pad() else {
+        return no_zone_lines(map, width, height);
+    };
     let knobs = map.knobs();
     let cursor = map.knob_cursor();
     let on_layer = cursor >= PadKnob::PAD_CONTROLS;
@@ -57,8 +62,8 @@ pub(super) fn panel_lines(map: &Map, width: usize, height: usize) -> Vec<Line<'s
     };
 
     let pad_knobs: Vec<Knob> =
-        knobs[..PadKnob::PAD_CONTROLS].iter().map(|k| knob_of(map, *k)).collect();
-    let title = format!("pad {}", SamplerState::pad_label(map.state.cursor));
+        knobs[..PadKnob::PAD_CONTROLS].iter().map(|k| knob_of(map, pad, *k)).collect();
+    let title = map.state.edit_title();
     let (mut rows, pad_cursor_row) =
         panel(cursor.min(PadKnob::PAD_CONTROLS - 1), !on_layer).rows(&title, &pad_knobs);
 
@@ -67,7 +72,7 @@ pub(super) fn panel_lines(map: &Map, width: usize, height: usize) -> Vec<Line<'s
     let mut cursor_row = if on_layer { rows.len() } else { pad_cursor_row };
     if knobs.len() > PadKnob::PAD_CONTROLS {
         let layer_knobs: Vec<Knob> =
-            knobs[PadKnob::PAD_CONTROLS..].iter().map(|k| knob_of(map, *k)).collect();
+            knobs[PadKnob::PAD_CONTROLS..].iter().map(|k| knob_of(map, pad, *k)).collect();
         let title = format!("layer {}", map.layer_cursor() + 1);
         let (layer_rows, layer_cursor_row) =
             panel(cursor.saturating_sub(PadKnob::PAD_CONTROLS), on_layer)
@@ -78,21 +83,55 @@ pub(super) fn panel_lines(map: &Map, width: usize, height: usize) -> Vec<Line<'s
         rows.extend(layer_rows);
     }
 
-    rows.extend(layer_list(map, width));
+    rows.extend(layer_list(map, pad, width));
     window(rows, height, cursor_row)
 }
 
-/// Every sound on the pad: what it is called, how long it plays, what it is
-/// turned up to, and whether it is muted or missing.
-fn layer_list(map: &Map, width: usize) -> Vec<Line<'static>> {
-    let pad = map.pad();
+/// The panel on a key keys mode has no zone for: where the caret is, and
+/// the three keys that put a zone under it.
+fn no_zone_lines(map: &Map, width: usize, height: usize) -> Vec<Line<'static>> {
+    let mut rows = vec![Line::from(Span::styled(
+        clip_text(
+            &format!(" {} \u{00b7} no zone on this key", SamplerState::pad_label(map.state.cursor)),
+            width,
+        ),
+        map.heading(),
+    ))];
+    for line in [
+        "w covers the whole bed",
+        "o covers this octave",
+        "s splits the zone under the caret here",
+    ] {
+        rows.push(Line::from(Span::styled(
+            clip_text(&format!("{:w$}{line}", "", w = INDENT), width),
+            theme::dim(),
+        )));
+    }
+    rows.truncate(height);
+    rows
+}
+
+/// Every sound on the pad or in the zone: what it is called, how long it
+/// plays, what it is turned up to, and whether it is muted or missing.
+fn layer_list(map: &Map, pad: &PadState, width: usize) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![Span::styled(
         format!("{:>w$} ", "layers", w = INDENT - 1),
         theme::dim(),
     )])];
     if pad.layers.is_empty() {
         lines.push(Line::from(Span::styled(
-            clip_text(&format!("{:w$}a loads a sound onto this pad", "", w = INDENT), width),
+            clip_text(
+                &format!(
+                    "{:w$}a loads a sound onto {}",
+                    "",
+                    match map.state.mode {
+                        MapMode::Keys => "this zone",
+                        MapMode::Pads => "this pad",
+                    },
+                    w = INDENT,
+                ),
+                width,
+            ),
             theme::dim(),
         )));
         return lines;

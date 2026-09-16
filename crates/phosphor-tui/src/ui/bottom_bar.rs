@@ -23,6 +23,10 @@ pub(super) fn render_bottom_bar(
         .sampler_source
         .as_deref()
         .is_some_and(|mode| mode.track_idx == nav.track_cursor);
+    let in_keys_mode = nav
+        .current_track()
+        .and_then(|t| t.sampler.as_deref())
+        .is_some_and(|s| s.mode == phosphor_app::sampler::MapMode::Keys);
     // **Key listen takes the mode tag.** It is the one switch in the box that
     // changes what comes out of the speakers rather than what the mix does
     // with it, and a player who has forgotten it is on will spend the next
@@ -84,11 +88,28 @@ pub(super) fn render_bottom_bar(
     } else if in_pads {
         // And so is the pad map, for the same reason. The trim strip is its
         // own mode again: it takes every key the map takes and means
-        // something else by all of them.
+        // something else by all of them — and so, one level up, does keys
+        // mode, where the same keys address zones instead of pads.
         if nav.clip_view.sampler.trim.is_some() {
             ("-- TRIM --", theme::amber_bright())
+        } else if nav.clip_view.sampler.root_learn {
+            // Blinking, like every other tag that means "the box is
+            // waiting for you to play something".
+            (
+                "-- ROOT? --",
+                if super::meters::blink_on() {
+                    Style::default()
+                        .fg(theme::rec_active_val())
+                        .bg(theme::bg_val())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    theme::dim()
+                },
+            )
         } else if nav.clip_view.sampler.locked {
             ("-- HOLD --", theme::amber_bright())
+        } else if in_keys_mode {
+            ("-- KEYS --", theme::amber_bright())
         } else {
             ("-- PADS --", theme::amber_bright())
         }
@@ -245,16 +266,32 @@ pub(super) fn render_bottom_bar(
                 && nav.clip_view.sampler.trim.is_some() =>
                 vec![("hl","start"),("H/L","end"),("jk","unit"),("z","snap"),
                      ("r","rev"),("t","loop"),("esc","back")],
+            // A held span is the loop brace, so it says so: `H`/`L` are the
+            // other edge here, not a stride, and a player who read the
+            // knob's line would move the wrong end.
+            Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Pads
+                && nav.clip_view.focus == ClipViewFocus::PianoRoll
+                && nav.clip_view.sampler.locked
+                && in_keys_mode
+                && nav.clip_view.sampler.knob == 0 =>
+                vec![("hl","low edge"),("H/L","high edge"),("esc","release")],
             // The pad map. `h`/`l` walk the keyboard until a knob is held,
             // which is the one thing about this tab a player has to know.
             Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Pads
                 && nav.clip_view.focus == ClipViewFocus::PianoRoll
                 && nav.clip_view.sampler.locked =>
                 vec![("hl","turn"),("H/L","stride"),("esc","release")],
+            // Keys mode: the four keys a pad map has no word for, and `K`
+            // to put it back.
+            Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Pads
+                && nav.clip_view.focus == ClipViewFocus::PianoRoll
+                && in_keys_mode =>
+                vec![("hl","key"),("jk","knob"),("w/o/s","zone"),("D","drop"),
+                     ("a","load"),("R","root"),("K","pads")],
             Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Pads
                 && nav.clip_view.focus == ClipViewFocus::PianoRoll =>
                 vec![("hl","pad"),("jk","knob"),("[]","layer"),("i","source"),
-                     ("a","load"),("t","trim"),("n","norm")],
+                     ("a","load"),("t","trim"),("K","keys")],
             // Note editing: proximity nav, selection, and the velocity ride.
             Pane::ClipView if nav.clip_view.piano_roll.edit_mode =>
                 vec![("hjkl","note"),("enter","sel"),(",.","vel"),("<>","vel\u{00b1}"),

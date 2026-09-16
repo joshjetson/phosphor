@@ -496,6 +496,10 @@ pub enum ConfirmKind {
     /// one of its own: a layer can be a take that took a performance to
     /// make, and `d` is one row away from the keys that walk the list.
     DeleteSamplerLayer,
+    /// Taking a zone off the bed. Asked about for the layer's reason: a
+    /// zone holds a whole sound, and the keys that walk the band are one
+    /// row away from the one that removes it.
+    DeleteSamplerZone,
     /// Saving over a preset name the bank already holds.
     OverwritePreset,
 }

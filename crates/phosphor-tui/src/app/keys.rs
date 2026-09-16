@@ -21,6 +21,10 @@ impl App {
         // take that track away — delete, undo, a session load — know
         // nothing about the borrow.
         self.reconcile_sampler_source();
+        // Root-learn is armed at one zone, and an arming left standing
+        // would take the next note played anywhere in the box and retune
+        // that zone with it.
+        self.reconcile_sampler_learn();
     }
 
     fn dispatch_event(&mut self, event: Event) {

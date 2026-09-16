@@ -69,7 +69,7 @@ fn pad_row(map: &Map, pad: usize, width: usize) -> Line<'static> {
     let name_w = row.left().saturating_sub(17).clamp(4, 14);
     row.push(format!("{:<w$}", clip_text(&what, name_w), w = name_w), theme::normal());
     row.push(format!("{count:>2} "), theme::dim());
-    row.push(format!("{:<9}", PadKnob::Trig.value(state, None)), theme::dim());
+    row.push(format!("{:<9}", PadKnob::Trig.value(state, None, None)), theme::dim());
     row.push(format!("p{}", state.config.poly), theme::dim());
     if state.config.choke > 0 {
         row.push(format!(" c{}", state.config.choke), theme::dim());

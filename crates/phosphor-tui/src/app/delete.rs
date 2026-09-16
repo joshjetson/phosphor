@@ -54,6 +54,7 @@ impl App {
             ConfirmKind::DeletePreset => self.do_delete_preset(),
             ConfirmKind::DeleteFx => self.remove_fx_at_cursor(),
             ConfirmKind::DeleteSamplerLayer => self.delete_sampler_layer(),
+            ConfirmKind::DeleteSamplerZone => self.delete_zone(),
             ConfirmKind::OverwritePreset => {
                 let name = std::mem::take(&mut self.nav.preset_modal.pending_name);
                 self.do_save_preset(&name);
@@ -151,7 +152,8 @@ impl App {
             ConfirmKind::DeletePreset
             | ConfirmKind::OverwritePreset
             | ConfirmKind::DeleteFx
-            | ConfirmKind::DeleteSamplerLayer => {}
+            | ConfirmKind::DeleteSamplerLayer
+            | ConfirmKind::DeleteSamplerZone => {}
         }
     }
 

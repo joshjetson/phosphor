@@ -54,6 +54,14 @@ pub struct SamplerView {
     /// `esc`. `Some` is the whole answer to "is it open": a flag beside the
     /// settings would let the two disagree.
     pub trim: Option<TrimView>,
+    /// `R` armed root-learn on the zone under the cursor: the next key
+    /// played teaches it where it was recorded, and nothing else happens to
+    /// that key.
+    ///
+    /// Here rather than on the sampler because it is a question the screen
+    /// is asking, not a fact about the kit — it must not go into a session,
+    /// and undoing an edit must not re-arm it.
+    pub root_learn: bool,
 }
 
 impl SamplerView {
@@ -69,6 +77,7 @@ impl SamplerView {
         self.layer = 0;
         self.locked = false;
         self.trim = None;
+        self.root_learn = false;
     }
 
     /// Move between controls, stopping at both ends. Walking off the end of

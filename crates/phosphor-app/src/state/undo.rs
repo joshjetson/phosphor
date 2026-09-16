@@ -327,6 +327,10 @@ pub enum UndoGesture {
     /// the decay and then the level has made one adjustment to one pad, and
     /// one `u` should put both back.
     SamplerPad { track_idx: usize, pad: usize },
+    /// A zone's brace. Anchored on the edge that is *not* moving, so a run
+    /// of presses on one edge folds into one step and a run on the other
+    /// one does not join it — two edges are two decisions.
+    SamplerZone { track_idx: usize, anchor: usize },
     /// The knob that walks a sequencer's child instrument list. Its own
     /// gesture, so a flick through five instruments is one step back to
     /// the one the player left — and never folds into a pattern sweep.

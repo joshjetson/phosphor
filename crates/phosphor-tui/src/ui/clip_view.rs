@@ -106,16 +106,36 @@ pub(super) fn render_clip_view_tabs(frame: &mut Frame, area: Rect, nav: &NavStat
                 if source.is_armed() { " rec" } else { " source" }
             } else if nav.clip_view.sampler.trim.is_some() {
                 " trim"
+            } else if nav.clip_view.sampler.root_learn {
+                " root?"
             } else if nav.clip_view.sampler.locked {
                 " hold"
             } else {
                 ""
             };
-            spans.push(Span::styled(
-                format!(
-                    " [PAD:{}{mode}]",
-                    phosphor_app::sampler::SamplerState::pad_label(pads.cursor),
+            // Which unit the keys are in, as well as which mode: in keys
+            // mode a key is not a sound, and a chip that still said `PAD`
+            // would be naming the one thing that has changed.
+            let (word, what) = match pads.mode {
+                phosphor_app::sampler::MapMode::Pads => {
+                    ("PAD", phosphor_app::sampler::SamplerState::pad_label(pads.cursor))
+                }
+                phosphor_app::sampler::MapMode::Keys => (
+                    "KEY",
+                    match pads.cursor_zone() {
+                        Some(i) => pads.zones[i].span_label(),
+                        // Not a span, because there is no zone here — the
+                        // key the caret is on, and the word for what that
+                        // is.
+                        None => format!(
+                            "{} bare",
+                            phosphor_app::sampler::SamplerState::pad_label(pads.cursor),
+                        ),
+                    },
                 ),
+            };
+            spans.push(Span::styled(
+                format!(" [{word}:{what}{mode}]"),
                 Style::default().fg(theme::amber_val()).add_modifier(Modifier::BOLD),
             ));
         }

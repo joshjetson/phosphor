@@ -179,15 +179,20 @@ mod tests {
         let wav = dir.join("hat.wav");
         write_wav(&wav, 441);
         let mut app = sampler_app();
-        for _ in 0..phosphor_app::sampler::MAX_LAYERS + 1 {
+        for _ in 0..phosphor_app::sampler::MAX_LAYERS {
             press(&mut app, KeyCode::Char('a'));
             type_line(&mut app, &wav.display().to_string());
             press(&mut app, KeyCode::Enter);
         }
-        let state = sampler_state(&app);
-        assert_eq!(state.pads[state.cursor].layers.len(), phosphor_app::sampler::MAX_LAYERS);
+        // The ninth is refused at the door rather than after the typing:
+        // the prompt never opens, so nobody types a path for a sound that
+        // was never going to land.
+        press(&mut app, KeyCode::Char('a'));
+        assert!(!app.nav.input_modal.open, "a full pad still opened the prompt");
         let (message, _) = app.status_message.as_ref().unwrap();
         assert!(message.contains("full"), "the refusal said: {message}");
+        let state = sampler_state(&app);
+        assert_eq!(state.pads[state.cursor].layers.len(), phosphor_app::sampler::MAX_LAYERS);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1540,5 +1545,609 @@ mod tests {
         app.execute_confirm(ConfirmKind::DeleteTrack);
         press(&mut app, KeyCode::Char('l')); // any key: the reconciler runs after each
         assert!(app.nav.sampler_source.is_none(), "the mode outlived its track");
+    }
+
+    // ── Keys mode: the bed as zones ──
+
+    /// The zone under the caret, for a test that wants to read it.
+    fn zone(app: &App) -> &phosphor_app::sampler::Zone {
+        let state = sampler_state(app);
+        let index = state.cursor_zone().expect("no zone under the caret");
+        &state.zones[index]
+    }
+
+    /// Every `SetSamplerPad` the engine was sent, as `(pad, layers)`.
+    fn synced(app: &App) -> Vec<(usize, usize)> {
+        app.drain_mixer_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                MixerCommand::SetSamplerPad { pad, layers, .. } => {
+                    Some((pad as usize, layers.len()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A kit with `kick.wav` on C3 in keys mode, with one zone across the
+    /// whole bed seeded from it — the `K`-then-`w` journey, through the
+    /// real keys.
+    fn keys_app(dir: &std::path::Path) -> App {
+        let mut app = loaded_app(dir);
+        press_shift(&mut app, 'K');
+        press(&mut app, KeyCode::Char('w'));
+        let _ = app.drain_mixer_commands();
+        app
+    }
+
+    /// `K` puts the bed into zones and back, and says so in both places a
+    /// player looks: the chip on the tab strip and the word on the bar.
+    #[test]
+    fn k_switches_the_bed_between_pads_and_keys() {
+        let dir = scratch("keys-toggle");
+        let mut app = loaded_app(&dir);
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("[PAD:C3]"), "the strip does not name the pad:\n{text}");
+        assert!(text.contains("-- PADS --"), "{text}");
+
+        press_shift(&mut app, 'K');
+        assert_eq!(sampler_state(&app).mode, phosphor_app::sampler::MapMode::Keys);
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("[KEY:"), "the chip did not change:\n{text}");
+        assert!(text.contains("-- KEYS --"), "the bar did not change:\n{text}");
+        assert!(text.contains("no zone"), "the panel does not say the key is bare:\n{text}");
+
+        // ...and back, with the kit still on it.
+        press_shift(&mut app, 'K');
+        assert_eq!(sampler_state(&app).mode, phosphor_app::sampler::MapMode::Pads);
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("[PAD:C3]"), "{text}");
+        assert!(text.contains("C3  kick"), "the pad map lost its kit:\n{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The switch resyncs the union: a pad that only sounds in the mode
+    /// being left has to be told it is empty now, or it plays on with
+    /// nothing on the screen to explain it. The M3 undo lesson, applied to
+    /// a mode switch.
+    #[test]
+    fn switching_modes_silences_what_the_other_mode_was_playing() {
+        let dir = scratch("keys-union");
+        let mut app = loaded_app(&dir);
+        let here = sampler_state(&app).cursor;
+        let _ = app.drain_mixer_commands();
+
+        press_shift(&mut app, 'K');
+        let cleared = synced(&app);
+        assert!(
+            cleared.contains(&(here, 0)),
+            "the pad's sound was left in the engine: {cleared:?}",
+        );
+
+        // A zone over the bottom octave, and back to pads: now the zone's
+        // keys are the ones that have to go quiet.
+        app.sampler_follow_note(36);
+        press(&mut app, KeyCode::Char('o'));
+        let _ = app.drain_mixer_commands();
+        press_shift(&mut app, 'K');
+        let cleared = synced(&app);
+        let low = SamplerState::pad_of_note(36).unwrap();
+        assert!(cleared.contains(&(low, 0)), "the zone kept playing in pads mode: {cleared:?}");
+        assert!(
+            cleared.contains(&(here, 1)),
+            "the pad's own sound did not come back: {cleared:?}",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `w` throws one zone across the bed, seeded with the sound under the
+    /// caret — and every key of it reaches the engine keytracking, rooted
+    /// where the pad was, pointing at the one buffer.
+    #[test]
+    fn w_covers_the_bed_with_the_sound_under_the_caret() {
+        let dir = scratch("keys-whole");
+        let mut app = loaded_app(&dir);
+        press_shift(&mut app, 'K');
+        let _ = app.drain_mixer_commands();
+        press(&mut app, KeyCode::Char('w'));
+
+        assert_eq!(sampler_state(&app).zones.len(), 1);
+        assert_eq!(zone(&app).keys(), phosphor_app::sampler::NUM_PADS);
+        assert_eq!(zone(&app).pad.layers.len(), 1, "the zone was not seeded");
+        assert_eq!(zone(&app).root(), 60, "the zone is not rooted where the pad was");
+
+        let sent = synced(&app);
+        assert_eq!(sent.len(), phosphor_app::sampler::NUM_PADS, "not every key was shipped");
+        assert!(sent.iter().all(|(_, layers)| *layers == 1), "a key of the zone is silent");
+
+        // The same audio on every key, never a copy of it.
+        let state = sampler_state(&app);
+        let first = state.voice(0);
+        let last = state.voice(phosphor_app::sampler::NUM_PADS - 1);
+        assert!(
+            std::sync::Arc::ptr_eq(
+                first.layers[0].pcm.as_ref().unwrap(),
+                last.layers[0].pcm.as_ref().unwrap(),
+            ),
+            "the bed copied the sample eighty-eight times",
+        );
+        assert!(first.config.keytrack, "a zone that does not track the keyboard");
+
+        // And the screen says what was made.
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("zones"), "the list is not the zone list:\n{text}");
+        assert!(text.contains("root C3"), "the list does not give the root:\n{text}");
+        assert!(text.contains("\u{251C}"), "the rule is not under the band:\n{text}");
+        assert!(text.contains("span"), "the span control is not on the panel:\n{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `o` covers the octave the caret is in, and a second one beside it
+    /// stops where the first begins.
+    #[test]
+    fn o_covers_the_octave_and_zones_stop_at_each_other() {
+        let dir = scratch("keys-octave");
+        let mut app = loaded_app(&dir);
+        press_shift(&mut app, 'K');
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(zone(&app).keys(), 12);
+        assert_eq!(
+            SamplerState::note_of_pad(zone(&app).lo),
+            60,
+            "the octave does not start on its C",
+        );
+
+        // A zone in the octave above, then its low edge walked down into
+        // the first one — where it stops.
+        app.sampler_follow_note(72);
+        press(&mut app, KeyCode::Char('o'));
+        assert_eq!(sampler_state(&app).zones.len(), 2);
+        press(&mut app, KeyCode::Enter); // hold the span
+        for _ in 0..20 {
+            press(&mut app, KeyCode::Char('h'));
+        }
+        let state = sampler_state(&app);
+        assert_eq!(
+            state.zones[1].lo,
+            state.zones[0].hi + 1,
+            "the zones ran into each other",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The brace: `enter` holds the span, `h`/`l` move the low edge and
+    /// `H`/`L` the high one, the readout follows, and a whole run is one
+    /// press of `u`.
+    #[test]
+    fn the_span_is_a_brace_with_two_edges() {
+        let dir = scratch("keys-brace");
+        let mut app = keys_app(&dir);
+        app.sampler_follow_note(60);
+        press(&mut app, KeyCode::Enter);
+        let (held, _) = app.status_message.as_ref().unwrap();
+        assert!(held.contains("low edge"), "the hold does not say what it holds: {held}");
+
+        let before = (zone(&app).lo, zone(&app).hi);
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Char('l'));
+        }
+        assert_eq!(zone(&app).lo, before.0 + 3, "`l` did not move the low edge");
+        assert_eq!(zone(&app).hi, before.1, "`l` moved the high edge too");
+        let (shown, _) = app.status_message.as_ref().unwrap();
+        assert!(shown.contains("keys"), "the span readout does not follow: {shown}");
+
+        press_shift(&mut app, 'H');
+        assert_eq!(zone(&app).hi, before.1 - 1, "`H` did not move the high edge");
+
+        // The keys the zone left were emptied in the engine, not just on
+        // the screen.
+        let sent = synced(&app);
+        assert!(
+            sent.iter().any(|(pad, layers)| *pad == before.0 && *layers == 0),
+            "a key the brace left is still sounding: {sent:?}",
+        );
+
+        // One `u` per edge run, not one per press.
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(zone(&app).hi, before.1, "the high edge did not come back");
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(zone(&app).lo, before.0, "one `u` did not take the whole run back");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An edge pushed past the caret takes the caret with it. Without that,
+    /// the second press of the same key is refused by a panel that has
+    /// stopped showing the zone being moved — which is what a one-octave
+    /// zone does on its very first press, because the caret is standing on
+    /// the edge that is about to move.
+    #[test]
+    fn the_caret_rides_the_edge_it_is_pushing() {
+        let dir = scratch("keys-ride");
+        let mut app = loaded_app(&dir);
+        press_shift(&mut app, 'K');
+        press(&mut app, KeyCode::Char('o')); // C3-B3, caret on C3, its low edge
+        let lo = zone(&app).lo;
+        press(&mut app, KeyCode::Enter);
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Char('l'));
+        }
+        assert_eq!(zone(&app).lo, lo + 3, "the brace stopped following the caret");
+        assert_eq!(sampler_state(&app).cursor, zone(&app).lo, "the caret was left behind");
+        assert_eq!(zone(&app).keys(), 9, "the high edge moved too");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `s` splits the zone under the caret: the left keeps its root, the
+    /// right is rooted at its own first key, and both point at the one
+    /// buffer.
+    #[test]
+    fn s_splits_the_zone_under_the_caret() {
+        let dir = scratch("keys-split");
+        let mut app = keys_app(&dir);
+        app.sampler_follow_note(72);
+        press(&mut app, KeyCode::Char('s'));
+
+        let state = sampler_state(&app);
+        assert_eq!(state.zones.len(), 2);
+        let at = SamplerState::pad_of_note(72).unwrap();
+        assert_eq!(state.zones[0].hi, at - 1, "the halves overlap");
+        assert_eq!(state.zones[1].lo, at);
+        assert_eq!(state.zones[0].root(), 60, "the left half was retuned");
+        assert_eq!(state.zones[1].root(), 72, "the right half is not rooted at itself");
+        assert!(
+            std::sync::Arc::ptr_eq(
+                state.zones[0].pad.layers[0].pcm.as_ref().unwrap(),
+                state.zones[1].pad.layers[0].pcm.as_ref().unwrap(),
+            ),
+            "the split copied the audio",
+        );
+
+        // One step back, and the bed is one zone again.
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(sampler_state(&app).zones.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `D` asks before taking a zone off the bed, the keys go quiet in the
+    /// engine, and `u` brings the zone back with its audio.
+    #[test]
+    fn d_takes_a_zone_off_the_bed_after_asking() {
+        let dir = scratch("keys-drop");
+        let mut app = keys_app(&dir);
+        press_shift(&mut app, 'D');
+        assert!(app.nav.confirm_modal.open, "`D` did not ask");
+        assert_eq!(app.nav.confirm_modal.kind, ConfirmKind::DeleteSamplerZone);
+        assert!(
+            app.nav.confirm_modal.message.contains("off the bed"),
+            "the question is unclear: {}",
+            app.nav.confirm_modal.message,
+        );
+
+        press(&mut app, KeyCode::Char('y'));
+        assert!(sampler_state(&app).zones.is_empty(), "the zone stayed");
+        let sent = synced(&app);
+        assert!(
+            sent.iter().all(|(_, layers)| *layers == 0) && !sent.is_empty(),
+            "the zone's keys are still sounding: {sent:?}",
+        );
+
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(sampler_state(&app).zones.len(), 1, "undo lost the zone");
+        assert!(
+            zone(&app).pad.layers[0].pcm.is_some(),
+            "the zone came back with no audio behind it",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Undo crosses a mode switch: the step that made the zone is under the
+    /// step that switched the mode, and both come back with the engine.
+    #[test]
+    fn undo_walks_back_across_a_mode_switch() {
+        let dir = scratch("keys-undo");
+        let mut app = keys_app(&dir);
+        assert_eq!(sampler_state(&app).zones.len(), 1);
+
+        press(&mut app, KeyCode::Char('u')); // the zone
+        assert!(sampler_state(&app).zones.is_empty());
+        assert_eq!(sampler_state(&app).mode, phosphor_app::sampler::MapMode::Keys);
+
+        let _ = app.drain_mixer_commands();
+        press(&mut app, KeyCode::Char('u')); // the switch
+        assert_eq!(sampler_state(&app).mode, phosphor_app::sampler::MapMode::Pads);
+        let here = sampler_state(&app).cursor;
+        let sent = synced(&app);
+        assert!(
+            sent.contains(&(here, 1)),
+            "the pad's sound did not come back to the engine: {sent:?}",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `R` arms the keyboard: the next key played is the zone's root, and
+    /// nothing else happens to that key.
+    #[test]
+    fn r_learns_a_root_from_the_next_key_played() {
+        let dir = scratch("keys-learn");
+        let mut app = keys_app(&dir);
+        let cursor = sampler_state(&app).cursor;
+        press_shift(&mut app, 'R');
+        assert!(app.nav.clip_view.sampler.root_learn, "`R` did not arm");
+        assert!(screen(&app, 120, 40).contains("root?"), "the chip does not say it is armed");
+
+        play(&mut app, 45, 100, true, phosphor_midi::clock::now_micros());
+        assert_eq!(zone(&app).root(), 45, "the key played did not become the root");
+        assert!(!app.nav.clip_view.sampler.root_learn, "the arming was not spent");
+        assert_eq!(
+            sampler_state(&app).cursor,
+            cursor,
+            "the key played walked the caret off the zone it was teaching",
+        );
+        // The engine heard the new root on every key of the zone.
+        assert!(!synced(&app).is_empty(), "the root never reached the engine");
+
+        // `esc` disarms without changing anything.
+        press_shift(&mut app, 'R');
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.nav.clip_view.sampler.root_learn, "esc did not disarm");
+        play(&mut app, 50, 100, true, phosphor_midi::clock::now_micros());
+        assert_eq!(zone(&app).root(), 45, "a disarmed learn still took a root");
+
+        // ...and so does walking away from the pad map.
+        press_shift(&mut app, 'R');
+        press(&mut app, KeyCode::Tab);
+        assert!(!app.nav.clip_view.sampler.root_learn, "the arming outlived the tab");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file that says its own pitch teaches the zone its root, and one
+    /// that does not leaves it alone.
+    #[test]
+    fn a_file_name_that_says_its_pitch_teaches_the_root() {
+        let dir = scratch("keys-sniff");
+        let named = dir.join("Piano_A#1.wav");
+        write_wav(&named, 441);
+        let plain = dir.join("07_kick.wav");
+        write_wav(&plain, 441);
+
+        let mut app = sampler_app();
+        press_shift(&mut app, 'K');
+        press(&mut app, KeyCode::Char('w')); // an empty zone across the bed
+        press(&mut app, KeyCode::Char('a'));
+        type_line(&mut app, &named.display().to_string());
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(zone(&app).root(), 46, "the name did not teach the root");
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("root A#1"), "the flash did not say what it learned: {message}");
+
+        press(&mut app, KeyCode::Char('a'));
+        type_line(&mut app, &plain.display().to_string());
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(zone(&app).root(), 46, "a name with no note in it moved the root");
+
+        // On a pad that does not keytrack, a name is not worth reading: the
+        // pad plays the same sound on every key, so a root is a number
+        // nobody can hear.
+        press_shift(&mut app, 'K');
+        let before = sampler_state(&app).current().config.root;
+        press(&mut app, KeyCode::Char('a'));
+        type_line(&mut app, &named.display().to_string());
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            sampler_state(&app).current().config.root,
+            before,
+            "a pad that does not track the keyboard was retuned by a file name",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The panel, the layer list, the trim strip and the normalize all
+    /// point at the zone's own sound in keys mode — not at the pad hiding
+    /// under the caret.
+    #[test]
+    fn the_panel_and_the_strip_edit_the_zone_not_the_pad_under_it() {
+        let dir = scratch("keys-panel");
+        let mut app = keys_app(&dir);
+        let here = sampler_state(&app).cursor;
+
+        // A knob: the zone's, and every key of the zone hears it.
+        press(&mut app, KeyCode::Char('j')); // off the span, onto trig
+        press(&mut app, KeyCode::Char('j')); // poly
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(zone(&app).pad.config.poly, 2, "the knob did not turn the zone");
+        assert_eq!(
+            sampler_state(&app).pads[here].config.poly, 1,
+            "the knob turned the pad hiding under the caret",
+        );
+        press(&mut app, KeyCode::Esc);
+
+        // The trim strip opens on the zone's layer and trims it.
+        press(&mut app, KeyCode::Char('t'));
+        assert!(app.nav.clip_view.sampler.trim.is_some(), "the strip did not open on the zone");
+        press(&mut app, KeyCode::Char('l'));
+        assert!(zone(&app).pad.layers[0].start_frame > 0, "the trim missed the zone's sound");
+        press(&mut app, KeyCode::Esc);
+
+        // And so does normalize.
+        press(&mut app, KeyCode::Char('n'));
+        assert!(zone(&app).pad.layers[0].gain > 1.0, "the normalize missed the zone's sound");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A take recorded while the bed is in keys mode lands in the zone's
+    /// own sound, and every key of the zone plays it.
+    #[test]
+    fn a_take_recorded_in_keys_mode_lands_in_the_zone() {
+        let dir = scratch("keys-take");
+        let mut app = keys_app(&dir);
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Enter); // the first instrument in the list
+        press(&mut app, KeyCode::Char('r'));
+        perform(&mut app, 57);
+        press(&mut app, KeyCode::Char('r'));
+
+        assert_eq!(zone(&app).pad.layers.len(), 2, "the take did not land in the zone");
+        assert_eq!(zone(&app).pad.layers[1].name, "take 1");
+        assert_eq!(zone(&app).root(), 57, "the performance did not teach the zone its root");
+        // The pad under the caret was not touched: the take belongs to the
+        // zone, and pads mode still has whatever was on it.
+        let here = sampler_state(&app).cursor;
+        assert_eq!(sampler_state(&app).pads[here].layers.len(), 1);
+
+        press(&mut app, KeyCode::Esc); // out of source mode, kit replayed
+        let sent = synced(&app);
+        for pad in 0..phosphor_app::sampler::NUM_PADS {
+            assert!(
+                sent.contains(&(pad, 2)),
+                "the take did not reach key {pad} of the zone: {sent:?}",
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A session saved in keys mode comes back in keys mode, with its
+    /// zones, their roots and their sounds — and the pad map underneath.
+    #[test]
+    fn a_session_in_keys_mode_comes_back_as_one() {
+        let dir = scratch("keys-session");
+        let mut saving = keys_app(&dir);
+        press(&mut saving, KeyCode::Char('j')); // trig
+        press(&mut saving, KeyCode::Enter);
+        press(&mut saving, KeyCode::Char('l')); // gate
+        press(&mut saving, KeyCode::Esc);
+
+        let session = dir.join("zoned.phos");
+        saving.do_save(&session.display().to_string());
+        let mut back = app();
+        back.do_load(&session.display().to_string());
+
+        let state = back
+            .nav
+            .tracks
+            .iter()
+            .find_map(|t| t.sampler.as_deref())
+            .expect("the sampler did not come back");
+        assert_eq!(state.mode, phosphor_app::sampler::MapMode::Keys);
+        assert_eq!(state.zones.len(), 1);
+        assert_eq!(state.zones[0].keys(), phosphor_app::sampler::NUM_PADS);
+        assert_eq!(state.zones[0].root(), 60);
+        assert_eq!(state.zones[0].pad.config.trig, phosphor_plugin::sample::TrigMode::Gate);
+        assert!(state.zones[0].pad.layers[0].pcm.is_some(), "the zone's wav did not reload");
+        // The pad map rode along under it.
+        assert_eq!(state.pads[state.cursor].layers.len(), 1, "the pads were lost on the way");
+        // And the engine was told about the zone, not about the pads.
+        let sent = synced(&back);
+        assert!(
+            sent.iter().filter(|(_, layers)| *layers == 1).count()
+                == phosphor_app::sampler::NUM_PADS,
+            "the zone was not replayed into a fresh engine: {sent:?}",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Where zones overlap their layers stack, and the ninth is turned away
+    /// — which the edit that caused it says out loud, because a layer that
+    /// does not sound is a surprise and the moment to be surprised is the
+    /// moment you made it happen.
+    #[test]
+    fn zones_that_stack_past_eight_say_so_at_the_edit() {
+        let dir = scratch("keys-crowd");
+        let mut app = keys_app(&dir); // one whole-bed zone, one layer
+        {
+            let track = app.nav.tracks.iter_mut().find(|t| t.sampler.is_some()).unwrap();
+            let sampler = track.sampler.as_mut().unwrap();
+            let sound = sampler.zones[0].pad.layers[0].clone();
+            while sampler.zones[0].pad.layers.len() < phosphor_app::sampler::MAX_LAYERS {
+                sampler.zones[0].pad.layers.push(sound.clone());
+            }
+            // A second zone over the middle octave, one layer deep.
+            let mut pad = phosphor_app::sampler::PadState::empty(60);
+            pad.layers.push(sound);
+            let lo = SamplerState::pad_of_note(60).unwrap();
+            sampler.zones.push(phosphor_app::sampler::Zone::new(lo, lo + 11, pad));
+        }
+        app.sampler_follow_note(64); // inside the overlap
+        press(&mut app, KeyCode::Enter); // hold the span
+        press(&mut app, KeyCode::Char('l'));
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(
+            message.contains("do not sound"),
+            "the crowded keys were not mentioned: {message}",
+        );
+
+        let state = sampler_state(&app);
+        let key = SamplerState::pad_of_note(64).unwrap();
+        assert_eq!(
+            state.voice(key).layers.len(),
+            phosphor_app::sampler::MAX_LAYERS,
+            "the eight-layer bed did not hold where the zones overlap",
+        );
+        // Outside the overlap each zone is alone and whole.
+        let alone = SamplerState::pad_of_note(40).unwrap();
+        assert_eq!(state.voice(alone).layers.len(), phosphor_app::sampler::MAX_LAYERS);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A kit built entirely in keys mode — no pad ever touched — still
+    /// goes into the session. The defect this catches is the save leaving
+    /// the sampler out because no *pad* is occupied, which would lose every
+    /// zone the player made.
+    #[test]
+    fn a_kit_that_lives_only_in_zones_still_saves() {
+        let dir = scratch("keys-only");
+        let wav = dir.join("piano.wav");
+        write_wav(&wav, 441);
+        let session = dir.join("zones-only.phos");
+
+        let mut saving = sampler_app();
+        press_shift(&mut saving, 'K');
+        press(&mut saving, KeyCode::Char('o'));
+        press(&mut saving, KeyCode::Char('a'));
+        type_line(&mut saving, &wav.display().to_string());
+        press(&mut saving, KeyCode::Enter);
+        assert_eq!(sampler_state(&saving).occupied_pads().count(), 0, "a pad was touched");
+        saving.do_save(&session.display().to_string());
+
+        let mut back = app();
+        back.do_load(&session.display().to_string());
+        let state = back
+            .nav
+            .tracks
+            .iter()
+            .find_map(|t| t.sampler.as_deref())
+            .expect("the sampler did not come back");
+        assert_eq!(state.mode, phosphor_app::sampler::MapMode::Keys);
+        assert_eq!(state.zones.len(), 1, "the zone was left out of the file");
+        assert_eq!(state.zones[0].keys(), 12);
+        assert!(state.zones[0].pad.layers[0].pcm.is_some(), "the zone's wav did not reload");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The zone keys say what to press instead of doing nothing in pads
+    /// mode, and the layer keys say what `D` is for on a zone with nothing
+    /// on it. A key that is silent is a key a player thinks is broken.
+    #[test]
+    fn the_zone_keys_refuse_in_words_where_they_do_not_apply() {
+        let dir = scratch("keys-refuse");
+        let mut app = loaded_app(&dir);
+        for key in ['w', 'o', 's'] {
+            press(&mut app, KeyCode::Char(key));
+            let (message, _) = app.status_message.as_ref().unwrap();
+            assert!(message.contains('K'), "`{key}` in pads mode said: {message}");
+        }
+        assert!(sampler_state(&app).zones.is_empty(), "a zone was made in pads mode");
+
+        // In keys mode, on a key no zone covers.
+        press_shift(&mut app, 'K');
+        press(&mut app, KeyCode::Char('s'));
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("no zone"), "the split said: {message}");
+        press_shift(&mut app, 'R');
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("no zone"), "the root learn said: {message}");
+        assert!(!app.nav.clip_view.sampler.root_learn, "a bare key armed a learn");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

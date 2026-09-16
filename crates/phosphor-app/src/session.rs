@@ -484,8 +484,10 @@ fn extract_session(nav: &NavState, transport: &Transport) -> SessionFile {
                 .as_ref()
                 .map(|s| crate::sampler::session::SessionSampler::from_state(s))
                 // An untouched sampler writes nothing — the byte-stability
-                // rule every optional block follows.
-                .filter(|s| !s.pads.is_empty()),
+                // rule every optional block follows. "Untouched" is the
+                // sampler's own answer, because a bed in keys mode has a
+                // great deal to say with no pad occupied at all.
+                .filter(|s| !s.is_untouched()),
             fx: chain_to_session(&track.fx_chain),
             midi_fx: midi_fx_to_session(&track.midi_fx),
             pan: track.pan,

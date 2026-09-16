@@ -2,10 +2,11 @@
 //! the four switches beside the waveform.
 //!
 //! Every edit here follows [`super::sampler_ops`]'s rule to the letter —
-//! state first, then the undo step, then [`App::sync_sampler_pad`] ships
-//! the pad whole. It lives in its own file rather than in that one because
-//! the strip is a mode: it has its own keys, its own cursor, its own
-//! arithmetic ([`phosphor_app::sampler::trim`]) and its own way out.
+//! state first, then the undo step, then [`App::sync_sampler_edit`] ships
+//! every key the sound can be heard on. It lives in its own file rather
+//! than in that one because the strip is a mode: it has its own keys, its
+//! own cursor, its own arithmetic ([`phosphor_app::sampler::trim`]) and its
+//! own way out.
 //!
 //! # The grain of undo
 //!
@@ -32,13 +33,16 @@ use crate::state::undo::{UndoGesture, UndoScope};
 
 impl App {
     /// The layer the strip is on, when there is one with audio behind it.
-    fn trim_layer(&self) -> Option<(usize, usize, usize)> {
+    ///
+    /// The track and the layer's place in the stack, never the pad: which
+    /// sound the stack belongs to is the sampler's own answer, and a second
+    /// copy of it here would be the one that went stale in keys mode.
+    fn trim_layer(&self) -> Option<(usize, usize)> {
         let track_idx = self.cursor_sampler_track()?;
         let cursor = self.nav.clip_view.sampler.layer;
         let sampler = self.nav.tracks[track_idx].sampler.as_ref()?;
-        let pad = sampler.cursor;
-        sampler.pads[pad].layers.get(cursor)?.pcm.as_ref()?;
-        Some((track_idx, pad, cursor))
+        sampler.edited()?.layers.get(cursor)?.pcm.as_ref()?;
+        Some((track_idx, cursor))
     }
 
     /// `t` on the pad map: open the strip over the layer under the cursor.
@@ -78,7 +82,7 @@ impl App {
     /// `h`/`l` and `H`/`L`: move one edge of the region by one unit.
     pub(crate) fn nudge_trim(&mut self, edge: TrimEdge, delta: i32) {
         let Some(view) = self.nav.clip_view.sampler.trim else { return };
-        let Some((track_idx, pad, cursor)) = self.trim_layer() else {
+        let Some((track_idx, cursor)) = self.trim_layer() else {
             self.flash("nothing here to trim");
             return;
         };
@@ -86,7 +90,10 @@ impl App {
 
         let before = self.nav.undo_checkpoint(UndoScope::Sampler { track_idx });
         let Some(sampler) = self.nav.tracks[track_idx].sampler.as_mut() else { return };
-        let Some(layer) = sampler.pads[pad].layers.get_mut(cursor) else { return };
+        let Some((pad, _)) = sampler.edit_span() else { return };
+        let Some(layer) = sampler.edited_mut().and_then(|p| p.layers.get_mut(cursor)) else {
+            return;
+        };
         let Some(nudge) = layer.nudge_trim(edge, delta, view.unit, bpm, view.snap) else {
             return;
         };
@@ -100,7 +107,7 @@ impl App {
             "trim layer",
             UndoGesture::SamplerPad { track_idx, pad },
         );
-        self.sync_sampler_pad(track_idx, pad);
+        self.sync_sampler_edit(track_idx);
         // The audition follows the edge that moved. Moving the start and
         // hearing the old start is worse than hearing nothing.
         self.preview_sampler_layer(self.sampler_preview_mode());
@@ -157,18 +164,20 @@ impl App {
     /// The region either way — reversing a layer never moves a marker, so a
     /// trim found forwards still means the same audio when it is flipped.
     pub(crate) fn toggle_trim_reverse(&mut self) {
-        let Some((track_idx, pad, cursor)) = self.trim_layer() else {
+        let Some((track_idx, cursor)) = self.trim_layer() else {
             self.flash("nothing here to reverse");
             return;
         };
         let before = self.nav.undo_checkpoint(UndoScope::Sampler { track_idx });
         let Some(sampler) = self.nav.tracks[track_idx].sampler.as_mut() else { return };
-        let Some(layer) = sampler.pads[pad].layers.get_mut(cursor) else { return };
+        let Some(layer) = sampler.edited_mut().and_then(|p| p.layers.get_mut(cursor)) else {
+            return;
+        };
         layer.reverse = !layer.reverse;
         let reversed = layer.reverse;
         // Not folded: a direction is a decision, the way a mute is.
         self.nav.commit_undo(before, "reverse layer");
-        self.sync_sampler_pad(track_idx, pad);
+        self.sync_sampler_edit(track_idx);
         self.preview_sampler_layer(self.sampler_preview_mode());
         self.flash(if reversed { "reverse on" } else { "reverse off" });
     }

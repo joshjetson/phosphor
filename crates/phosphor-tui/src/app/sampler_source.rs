@@ -55,10 +55,13 @@ impl App {
             Some(mode) if mode.track_idx == track_idx => mode.pad,
             _ => self.nav.tracks[track_idx].sampler.as_ref().map_or(0, |s| s.cursor),
         };
+        // What it was recorded from last time, read from whatever the
+        // cursor is editing: in keys mode that is the zone's own sound,
+        // which is where the take is going to land.
         let current = self.nav.tracks[track_idx]
             .sampler
             .as_ref()
-            .and_then(|s| s.pads.get(pad))
+            .and_then(|s| s.edited())
             .and_then(|p| p.source.as_ref())
             .map(|s| s.instrument);
         self.nav.instrument_modal.open_for_pad(track_idx, pad, current);
@@ -95,7 +98,10 @@ impl App {
             else {
                 return;
             };
-            let Some(state) = sampler.pads.get_mut(pad) else { return };
+            let Some(state) = sampler.edited_mut() else {
+                self.flash(phosphor_app::sampler::SamplerState::no_zone_message());
+                return;
+            };
             let keep = state
                 .source
                 .as_ref()
@@ -180,7 +186,7 @@ impl App {
             self.flash("i picks an instrument to record this pad from");
             return;
         };
-        let (track_idx, pad) = (mode.track_idx, mode.pad);
+        let track_idx = mode.track_idx;
         // Refused *before* the performance, not after it: finding out that
         // a pad was full once the playing is over is losing the take.
         let full = self
@@ -188,7 +194,7 @@ impl App {
             .tracks
             .get(track_idx)
             .and_then(|t| t.sampler.as_ref())
-            .and_then(|s| s.room_on(pad).err());
+            .and_then(|s| s.room_here().err());
         if let Some(message) = full {
             self.flash(format!("{message} \u{00b7} d removes one"));
             return;
@@ -224,7 +230,7 @@ impl App {
     pub(crate) fn land_armed_take(&mut self) {
         let Some(mode) = self.nav.sampler_source.as_deref_mut() else { return };
         let Some(capture) = mode.capture.take() else { return };
-        let (track_idx, pad) = (mode.track_idx, mode.pad);
+        let track_idx = mode.track_idx;
         let (instrument, params) = (mode.instrument, mode.params.clone());
 
         let Some(plan) = capture.close(phosphor_midi::clock::now_micros()) else {
@@ -244,14 +250,17 @@ impl App {
         else {
             return;
         };
-        let landed = match sampler.add_take_layer(pad, &take) {
+        let landed = match sampler.add_take_here(&take) {
             Ok(index) => index,
             Err(message) => {
                 self.flash(message);
                 return;
             }
         };
-        let name = sampler.pads[pad].layers[landed].name.clone();
+        let title = sampler.edit_title();
+        let name = sampler
+            .edited()
+            .map_or_else(String::new, |state| state.layers[landed].name.clone());
         // One step, and the step is also the only other hand on the audio:
         // a take undone off a pad stays alive in history, so the engine's
         // own drop is never the last one.
@@ -259,7 +268,7 @@ impl App {
         // The panel points at what just arrived — the thing a player is
         // about to trim, turn down, or record over.
         self.nav.clip_view.sampler.layer = landed;
-        self.sync_sampler_pad(track_idx, pad);
+        self.sync_sampler_edit(track_idx);
         self.clamp_sampler_cursors();
 
         let peak = match take.peak_db() {
@@ -275,8 +284,7 @@ impl App {
             ""
         };
         self.flash(format!(
-            "pad {} \u{00b7} {name} \u{00b7} {:.2}s \u{00b7} peak {peak}{capped} \u{00b7} u undoes",
-            SamplerState::pad_label(pad),
+            "{title} \u{00b7} {name} \u{00b7} {:.2}s \u{00b7} peak {peak}{capped} \u{00b7} u undoes",
             take.seconds(),
         ));
     }
@@ -309,9 +317,8 @@ impl App {
         self.clamp_sampler_cursors();
         let cursor = self.nav.clip_view.sampler.layer;
         let Some(sampler) = self.nav.tracks[track_idx].sampler.as_ref() else { return };
-        let pad = sampler.cursor;
-        let Some(layer) = sampler.pads[pad].layers.get(cursor) else {
-            self.flash("nothing on this pad to normalize");
+        let Some(layer) = sampler.edited().and_then(|p| p.layers.get(cursor)) else {
+            self.flash(format!("nothing on {} to normalize", sampler.edit_title()));
             return;
         };
         if layer.pcm.is_none() {
@@ -339,11 +346,13 @@ impl App {
 
         let before = self.nav.undo_checkpoint(UndoScope::Sampler { track_idx });
         let Some(sampler) = self.nav.tracks[track_idx].sampler.as_mut() else { return };
-        let Some(layer) = sampler.pads[pad].layers.get_mut(cursor) else { return };
+        let Some(layer) = sampler.edited_mut().and_then(|p| p.layers.get_mut(cursor)) else {
+            return;
+        };
         layer.gain = if back_to_unity { 1.0 } else { wanted };
         let (gain, name) = (layer.gain, layer.name.clone());
         self.nav.commit_undo(before, "normalize layer");
-        self.sync_sampler_pad(track_idx, pad);
+        self.sync_sampler_edit(track_idx);
         self.stop_sampler_preview();
         self.flash(if back_to_unity {
             format!("{name} \u{00b7} level back to unity \u{00b7} n normalizes again")
