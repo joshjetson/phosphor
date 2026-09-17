@@ -98,7 +98,7 @@ impl App {
                     .collect();
 
                 // Include previously hidden notes
-                all_ticks.extend(clip.hidden_notes.drain(..));
+                all_ticks.append(&mut clip.hidden_notes);
 
                 // Step 2: partition into visible (within new_len) and hidden
                 let mut visible = Vec::new();

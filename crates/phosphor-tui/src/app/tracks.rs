@@ -84,9 +84,6 @@ impl App {
             }
         }
     }
-    /// Stop playback and silence all instruments. Called on pause, stop,
-    /// and stop-recording. Prevents notes from ringing after playback ends.
-
     /// Move the selected track's fader one press and report where it landed.
     ///
     /// The fader is the only makeup gain in the application, so where it is
@@ -298,6 +295,7 @@ impl App {
         let (effect, syncs) = self.nav.sequencer_op(op);
         if effect.child {
             self.reload_child_instrument(track_idx);
+            self.say_if_child_needs_its_own_track(track_idx);
         }
         for sync in syncs {
             let _ = self.engine.shared.mixer_command_tx.send(sync.command());
@@ -322,6 +320,33 @@ impl App {
                 self.nav.commit_undo(before, op.undo_label());
             }
         }
+    }
+
+    /// Say so when a track has been pointed at an instrument that needs a
+    /// track of its own.
+    ///
+    /// The sampler is the only one: the pads, the zones and the trim strip
+    /// live on a `SamplerState` that is created when a *track* is made a
+    /// sampler, and a sequencer's child is an instrument in the track's
+    /// plugin slot rather than a track. So a sequencer driving the sampler
+    /// gets an instrument with eighty-eight empty pads and no door to put
+    /// sounds on them — the grid runs, the meter moves, and nothing sounds.
+    ///
+    /// The honest answer for now is words rather than silence: the child
+    /// knob is left free to name it — a sequencer that could not even point
+    /// at the sampler would be a stranger dead end — and the flash says
+    /// where the pads actually live. The `[inst]` panel says the same, for
+    /// the player who arrives there instead. Wiring a real pad map onto a
+    /// sequencer's child is on the post-ladder backlog.
+    pub(crate) fn say_if_child_needs_its_own_track(&mut self, track_index: usize) {
+        let Some(track) = self.nav.tracks.get(track_index) else { return };
+        if track.instrument_type != Some(InstrumentType::Sampler) || track.sampler.is_some() {
+            return;
+        }
+        self.flash(
+            "the sampler needs its own track for pads \u{00b7} \
+             this one plays its two globals and nothing else",
+        );
     }
 
     /// Put a track's child instrument in its plugin slot, with its whole

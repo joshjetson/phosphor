@@ -5,6 +5,5 @@
 .claude/
 phosphor_debug.log
 workflow.md
-SAMPLER.md
 sessions/*.phos
 sessions/*.phos.tmp

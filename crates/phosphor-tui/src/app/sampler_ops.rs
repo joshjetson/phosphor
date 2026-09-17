@@ -31,7 +31,7 @@ use phosphor_app::sampler::knobs::PadKnob;
 use phosphor_app::sampler::{
     LayerState, MapMode, PadRow, PadState, SamplerState, ZoneEdge,
 };
-use phosphor_plugin::sample::{PreviewLayer, PreviewMode};
+use phosphor_plugin::sample::{PadConfig, PadLayer, PadPhrase, PreviewLayer, PreviewMode};
 use crate::state::undo::{UndoGesture, UndoScope};
 
 impl App {
@@ -221,9 +221,53 @@ impl App {
 
     /// Ship a stretch of keys, both ends included.
     pub(crate) fn sync_sampler_span(&mut self, track_idx: usize, (lo, hi): (usize, usize)) {
-        for pad in lo..=hi.min(phosphor_app::sampler::NUM_PADS - 1) {
-            self.sync_sampler_pad(track_idx, pad);
+        let hi = hi.min(phosphor_app::sampler::NUM_PADS - 1);
+        self.sync_sampler_pads(track_idx, lo..=hi);
+    }
+
+    /// Ship a set of keys as one command.
+    ///
+    /// The door every multi-pad sync leaves by. A zone edit changes every key
+    /// the zone covers, and one press of `l` in the trim strip under a
+    /// bed-wide zone used to queue 176 allocating commands against a drain of
+    /// four per callback — held at auto-repeat, a queue that grows faster
+    /// than it empties and an engine that falls seconds behind the screen.
+    /// [`MixerCommand::SetSamplerRange`] is one command for all of them, and
+    /// it is charged for what it carries.
+    ///
+    /// One pad still goes the old way: the range command's own `Vec` is not
+    /// free, and a knob turn on a pad is the commonest edit there is.
+    pub(crate) fn sync_sampler_pads(
+        &mut self,
+        track_idx: usize,
+        pads: impl IntoIterator<Item = usize>,
+    ) {
+        let wanted: Vec<usize> =
+            pads.into_iter().filter(|pad| *pad < phosphor_app::sampler::NUM_PADS).collect();
+        // One pad is the commonest edit in the sampler — every knob turn in
+        // pads mode — and it has a door already. Two or more travel together.
+        if wanted.len() < 2 {
+            if let Some(&pad) = wanted.first() {
+                self.sync_sampler_pad(track_idx, pad);
+            }
+            return;
         }
+        let Some(track) = self.nav.tracks.get(track_idx) else { return };
+        let (Some(track_id), Some(sampler)) = (track.mixer_id, track.sampler.as_ref()) else {
+            return;
+        };
+        let carried: Vec<(u8, PadConfig, Vec<PadLayer>, Vec<PadPhrase>)> = wanted
+            .into_iter()
+            .filter_map(|pad| {
+                let engine = sampler.engine_pad(pad)?;
+                Some((pad as u8, engine.config, engine.layers, engine.phrases))
+            })
+            .collect();
+        let _ = self
+            .engine
+            .shared
+            .mixer_command_tx
+            .send(MixerCommand::SetSamplerRange { track_id, pads: carried });
     }
 
     /// Replay everything the engine could be sounding to a fresh instance —
@@ -246,9 +290,7 @@ impl App {
             .and_then(|t| t.sampler.as_ref())
             .map(|s| s.sounding_pads())
             .unwrap_or_default();
-        for pad in pads {
-            self.sync_sampler_pad(track_idx, pad);
-        }
+        self.sync_sampler_pads(track_idx, pads);
     }
 
     /// A note-on seen by the UI's MIDI tap: the pad cursor follows the
@@ -662,9 +704,7 @@ impl App {
         if child_changed {
             self.sync_sampler_child(track_idx);
         }
-        for pad in pads {
-            self.sync_sampler_pad(track_idx, pad);
-        }
+        self.sync_sampler_pads(track_idx, pads);
         self.clamp_sampler_cursors();
     }
 }

@@ -22,12 +22,17 @@
 //!   sidecar rather than pointing at the old one.
 //! * **32-bit float.** The take was rendered in float and is going back
 //!   into a float engine; anything else is a conversion nobody asked for.
+//! * **Swept after, never during.** A save deletes the files in *this*
+//!   session's sidecar that no layer names any more, and only the ones whose
+//!   names this module could have written. A wav the player put in the
+//!   folder themselves is not ours to delete, and neither is anything
+//!   outside it. See [`prune_takes`].
 
 use std::path::{Path, PathBuf};
 
 use phosphor_plugin::sample::SamplePcm;
 
-use super::{LayerAddr, SamplerState};
+use super::{LayerAddr, SamplerState, NUM_PADS};
 
 /// The directory a session's takes live in: the session file's name
 /// without its extension, plus `.samples`, in the same directory. Beside
@@ -94,6 +99,92 @@ pub fn write_takes(session: &Path, state: &mut SamplerState) -> Result<usize, St
         written += 1;
     }
     Ok(written)
+}
+
+/// Delete the takes in this session's sidecar that no layer names any more.
+///
+/// Returns how many went. Call it *after* [`write_takes`], so the files that
+/// were just written are already named by the kit.
+///
+/// Three conditions, all of them required, because this is the one place in
+/// the sampler that removes a file a player might want:
+///
+/// 1. the file is inside **this** session's own sidecar directory;
+/// 2. its name is one [`free_name`] could have produced — a key on the bed,
+///    the take's place in the stack, and an optional collision number;
+/// 3. no layer or zone in the kit points at it.
+///
+/// A wav the player dropped into the folder by hand fails the second, and
+/// anything outside the folder fails the first. Failures to delete are
+/// ignored: an orphan beside a session is a file nobody notices, and a save
+/// that refused because a file was locked would be much worse.
+///
+/// Undo is safe across this. A take removed from a pad and then saved has
+/// its file swept, but the undo step still holds the audio — so `u` brings
+/// the layer back sounding, and the next save writes the file again because
+/// the path it names is no longer there.
+/// `kits` is **every** sampler in the session, not one of them: one sidecar
+/// serves the whole project, so pruning against a single track would sweep
+/// away the takes belonging to the track beside it.
+pub fn prune_takes<'a>(
+    session: &Path,
+    kits: impl IntoIterator<Item = &'a SamplerState>,
+) -> usize {
+    let dir = sidecar_dir(session);
+    let Ok(entries) = std::fs::read_dir(&dir) else { return 0 };
+    // What the project still names inside this sidecar, by file name.
+    // Compared by name rather than by path because the stored path is
+    // relative to the session and this walk is absolute.
+    let home = sidecar_dir(Path::new(session.file_name().unwrap_or_default()));
+    let kept: Vec<std::ffi::OsString> = kits
+        .into_iter()
+        .flat_map(SamplerState::all_layers)
+        .filter(|l| l.path.parent() == Some(home.as_path()))
+        .filter_map(|l| l.path.file_name().map(std::ffi::OsStr::to_os_string))
+        .collect();
+
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if kept.contains(&name) {
+            continue;
+        }
+        let Some(name) = name.to_str() else { continue };
+        if !is_take_name(name) {
+            continue;
+        }
+        // A directory that happens to be named like a take is not a take.
+        if !entry.path().is_file() {
+            continue;
+        }
+        if std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// Whether a file name is one [`free_name`] could have written.
+///
+/// Matched from the front, not the back, because a key's own name can hold a
+/// dash: the bottom of the bed is `A-1`, so `A-1-1.wav` is take one on the
+/// lowest key and not take one-dash-one on a key called `A`. Every label the
+/// bed has is tried, which is eighty-eight string comparisons once per save.
+fn is_take_name(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".wav") else { return false };
+    (0..NUM_PADS).any(|pad| {
+        let label = SamplerState::pad_label(pad).replace('#', "s");
+        stem.strip_prefix(&label)
+            .and_then(|rest| rest.strip_prefix('-'))
+            .is_some_and(|numbers| {
+                let parts: Vec<&str> = numbers.split('-').collect();
+                // `<take>` or `<take>-<collision>`, and nothing else.
+                (1..=2).contains(&parts.len())
+                    && parts
+                        .iter()
+                        .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+            })
+    })
 }
 
 /// A name inside `dir` that is not taken. The pad and the take's place in
@@ -294,6 +385,77 @@ mod tests {
         // A second save writes neither of them again.
         assert_eq!(write_takes(&session, &mut state).unwrap(), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A save sweeps the takes the kit no longer names — and nothing else.
+    ///
+    /// The three things it must not touch are all in one test, because the
+    /// whole risk of this feature is deleting a file somebody wanted: a wav
+    /// the player put in the folder themselves, a take another kit in the
+    /// same project still names, and anything at all outside the folder.
+    #[test]
+    fn a_save_sweeps_only_the_takes_nothing_names_any_more() {
+        let dir = scratch("prune");
+        let session = dir.join("kit.phos");
+        let mut state = SamplerState::new();
+        let pad = SamplerState::pad_of_note(60).unwrap();
+        state.add_take_layer(pad, &take(50)).unwrap();
+        state.add_take_layer(pad, &take(50)).unwrap();
+        write_takes(&session, &mut state).unwrap();
+        let kept = state.pads[pad].layers[0].path.clone();
+        let doomed = state.pads[pad].layers[1].path.clone();
+        assert!(dir.join(&kept).exists() && dir.join(&doomed).exists());
+
+        // Things this must never touch: the player's own wav in the folder,
+        // a wav outside it, and a take a second kit still names.
+        let home = dir.join("kit.samples");
+        std::fs::write(home.join("my-loop.wav"), b"mine").unwrap();
+        std::fs::write(home.join("notes.txt"), b"mine").unwrap();
+        std::fs::write(dir.join("C3-1.wav"), b"outside").unwrap();
+        let mut other = SamplerState::new();
+        other.add_take_layer(0, &take(20)).unwrap();
+        write_takes(&session, &mut other).unwrap();
+        let others = other.pads[0].layers[0].path.clone();
+
+        // The second take comes off the pad, and the save sweeps its file.
+        state.pads[pad].layers.remove(1);
+        let swept = prune_takes(&session, [&state, &other]);
+        assert_eq!(swept, 1, "the sweep took more than the one orphan");
+        assert!(!dir.join(&doomed).exists(), "the orphan survived");
+        assert!(dir.join(&kept).exists(), "a take the kit names was swept");
+        assert!(dir.join(&others).exists(), "another kit's take was swept");
+        assert!(home.join("my-loop.wav").exists(), "the player's own wav was deleted");
+        assert!(home.join("notes.txt").exists(), "a file that is not a wav was deleted");
+        assert!(dir.join("C3-1.wav").exists(), "a file outside the sidecar was deleted");
+
+        // And a second sweep with nothing to do does nothing.
+        assert_eq!(prune_takes(&session, [&state, &other]), 0);
+        // A session with no sidecar at all is not an error either.
+        assert_eq!(prune_takes(&dir.join("never-saved.phos"), [&state]), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only the names this module writes are ours to delete — including the
+    /// bottom key of the bed, whose own name carries a dash.
+    #[test]
+    fn a_take_name_is_recognised_and_nothing_else_is() {
+        for ours in ["C3-1.wav", "Cs3-2.wav", "C3-1-2.wav", "A-1-1.wav", "A-1-1-7.wav"] {
+            assert!(is_take_name(ours), "{ours} is a name this module writes");
+        }
+        for theirs in [
+            "kick.wav",
+            "C3.wav",
+            "C3-.wav",
+            "C3-1",
+            "C3-x.wav",
+            "H3-1.wav",
+            "C3-1-2-3.wav",
+            "my-loop.wav",
+            "notes.txt",
+            "",
+        ] {
+            assert!(!is_take_name(theirs), "{theirs} is not ours to delete");
+        }
     }
 
     /// A kit of nothing but wav layers writes no sidecar at all — the

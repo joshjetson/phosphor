@@ -293,14 +293,12 @@ impl App {
                 }
                 self.status_message =
                     Some(("midi effect removed (u to undo)".into(), std::time::Instant::now()));
-                return;
             }
             Some(crate::state::RackSlot::Audio(slot)) => {
-                // Fall through to the audio path below with the mapped index.
+                // The audio path, with the mapped index.
                 self.remove_audio_fx_at(index, slot);
-                return;
             }
-            None => return,
+            None => {}
         }
     }
 

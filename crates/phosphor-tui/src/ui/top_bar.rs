@@ -25,10 +25,10 @@ pub(super) fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap
     // BPM
     let bpm_sel = tp && te == TransportElement::Bpm;
     let bpm_bg = if bpm_sel { hi } else { theme::bg_val() };
+    // Bright either way: which one is selected is said by the background
+    // cell, not by the ink.
     let bpm_fg = if editing && bpm_sel {
         theme::playhead_fg()
-    } else if bpm_sel {
-        theme::amber_bright_val()
     } else {
         theme::amber_bright_val()
     };
@@ -201,7 +201,7 @@ pub(super) fn render_ruler(frame: &mut Frame, area: Rect, nav: &NavState, snap: 
     let bar_ticks = (Transport::PPQ * 4) as usize;
     let loop_start = nav.loop_editor.start as usize / bar_ticks + 1;
     // Exclusive, covering every bar the brace touches.
-    let loop_end = (nav.loop_editor.end as usize + bar_ticks - 1) / bar_ticks + 1;
+    let loop_end = (nav.loop_editor.end as usize).div_ceil(bar_ticks) + 1;
     let loop_focused = nav.loop_editor.active;
     let loop_enabled = nav.loop_editor.enabled;
 

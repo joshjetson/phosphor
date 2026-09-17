@@ -164,6 +164,41 @@ pub enum MixerCommand {
         config: phosphor_plugin::sample::PadConfig,
         layers: Vec<phosphor_plugin::sample::PadLayer>,
     },
+    /// Hand the sampler a stretch of pads at once — each one's config, its
+    /// layers and its phrases together.
+    ///
+    /// One command instead of two per key, because in keys mode a *single*
+    /// keypress can change every key on the bed: one nudge of a trim marker
+    /// under a bed-wide zone used to queue 88 `SetSamplerPad` and 88
+    /// `SetSamplerPhrases`, 176 allocating commands against a drain of four
+    /// per callback. Held at a terminal's auto-repeat that is a queue that
+    /// grows faster than it empties, and the player hears a trim they set
+    /// seconds ago.
+    ///
+    /// Measured, release, on a full bed (88 pads × 8 layers × 4 phrases):
+    /// applying the whole range is **8.6 µs**, or 18 µs counting the `Vec`s
+    /// being built and freed. One callback's own rendering with 32 voices on
+    /// it is 48 µs, and the shortest deadline the budget is sized against is
+    /// 726 µs. So the range is charged by its length — see [`command_cost`] —
+    /// rather than being made the one heavy item a callback may take, which
+    /// would have spread a single keypress over three callbacks for no
+    /// measurable gain.
+    ///
+    /// Entries past [`phosphor_plugin::sample::NUM_PADS`] are ignored: a
+    /// range can never honestly name more keys than the bed has, and the
+    /// work one command can ask for has to be bounded by something the audio
+    /// thread can see.
+    ///
+    /// The `Arc`s travel exactly as `SetSamplerPad`'s do.
+    SetSamplerRange {
+        track_id: usize,
+        pads: Vec<(
+            u8,
+            phosphor_plugin::sample::PadConfig,
+            Vec<phosphor_plugin::sample::PadLayer>,
+            Vec<phosphor_plugin::sample::PadPhrase>,
+        )>,
+    },
     /// Audition one sampler layer, or `None` to stop auditioning.
     ///
     /// The layer travels whole for the reason
@@ -290,6 +325,25 @@ pub enum MixerCommand {
 /// The cost of a command that goes to the allocator. See [`command_cost`].
 const HEAVY_COMMAND: u32 = 16;
 
+/// How many sampler pads one [`HEAVY_COMMAND`]'s worth of budget buys.
+///
+/// Measured, release, on a full bed: delivering one pad — a config copy,
+/// eight `Arc`s re-pointed, four phrase slots filled — is **0.10 µs**, and
+/// `SetInstrument`, which is what `HEAVY_COMMAND` is priced against, is
+/// **7.5 µs**. So thirty-two pads (3.2 µs, or about 6 µs once the two `Vec`s
+/// per pad are freed) sit comfortably inside one heavy command's bill, with
+/// margin for the allocator having a bad day. A whole bed is three of these:
+/// 48 of the 64 units, so the worst range a player can produce still lands
+/// inside a single callback.
+const PADS_PER_HEAVY: usize = 32;
+
+/// The most pads one [`MixerCommand::SetSamplerRange`] will apply.
+///
+/// A range can never honestly name more keys than the bed has, and the work
+/// one command can ask of the audio thread has to be bounded by something
+/// that thread can check for itself.
+const MAX_RANGE_PADS: usize = phosphor_plugin::sample::NUM_PADS;
+
 /// What one command costs, in the units [`COMMAND_BUDGET`] is denominated in.
 ///
 /// Two tiers, and the line between them is the allocator:
@@ -309,6 +363,14 @@ const HEAVY_COMMAND: u32 = 16;
 /// would be half a millisecond of it.
 fn command_cost(cmd: &MixerCommand) -> u32 {
     match cmd {
+        // The one command whose bill depends on what is inside it: a range
+        // is between one pad and a whole bed, and charging a bed the same as
+        // a pad would let one keypress do eighty-eight pads' work under a
+        // one-pad budget. Charged in whole heavy units so the currency stays
+        // the same one everything else is denominated in.
+        MixerCommand::SetSamplerRange { pads, .. } => {
+            HEAVY_COMMAND * (pads.len().min(MAX_RANGE_PADS).div_ceil(PADS_PER_HEAVY).max(1)) as u32
+        }
         MixerCommand::SetParameter { .. }
         | MixerCommand::UpdateClipPosition { .. }
         // The insert layer's cheap half: a parameter is a store inside an
@@ -1675,6 +1737,22 @@ impl Mixer {
                     }
                 }
             }
+            MixerCommand::SetSamplerRange { track_id, pads } => {
+                if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+                    if let Some(instrument) = track.instrument.as_mut() {
+                        // Bounded by the bed, whatever the sender claims —
+                        // see [`MAX_RANGE_PADS`]. Both halves of each pad go
+                        // together: a range that shipped the layers and not
+                        // the phrases would leave a performance playing on a
+                        // key the player has just emptied.
+                        for (pad, config, layers, phrases) in pads.into_iter().take(MAX_RANGE_PADS)
+                        {
+                            instrument.set_sampler_pad(pad, &config, &layers);
+                            instrument.set_sampler_phrases(pad, &phrases);
+                        }
+                    }
+                }
+            }
             MixerCommand::SetSamplerPreview { track_id, preview } => {
                 if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
                     if let Some(instrument) = track.instrument.as_mut() {
@@ -2025,6 +2103,109 @@ mod tests {
         // Threshold is "not silence", not a level check — the instruments
         // carry a deep headroom trim on their output.
         assert!(peak > 0.001, "Should produce sound, peak={peak}");
+    }
+
+    /// A whole bed delivered as one command arrives whole: every key it
+    /// names plays, phrases and layers together, and it costs one callback
+    /// rather than the forty-four the same edit used to take.
+    #[test]
+    fn a_whole_bed_of_pads_travels_as_one_command() {
+        use phosphor_plugin::sample::{PadConfig, PadLayer, PadPhrase, PhraseEvent, SamplePcm};
+        let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+        let handle = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
+        handle.config.midi_active.store(true, std::sync::atomic::Ordering::Relaxed);
+        handle.config.armed.store(true, std::sync::atomic::Ordering::Relaxed);
+        tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle }).unwrap();
+        tx.send(MixerCommand::SetInstrument {
+            track_id: 0,
+            instrument: Box::new(phosphor_dsp::sampler::Sampler::new()),
+        })
+        .unwrap();
+        tx.send(MixerCommand::SetSamplerChild {
+            track_id: 0,
+            child: Some(Box::new(PhosphorSynth::new())),
+        })
+        .unwrap();
+        while !mixer.command_rx.is_empty() {
+            mixer.drain_commands();
+        }
+
+        let data: Vec<f32> = (0..44_100)
+            .map(|i| 0.5 * (std::f32::consts::TAU * 220.0 * i as f32 / 44_100.0).sin())
+            .collect();
+        let pcm = Arc::new(SamplePcm { data, channels: 1, sample_rate: 44_100.0 });
+        let events: Arc<[PhraseEvent]> = Arc::from(vec![
+            PhraseEvent { frame: 0, status: 0x90, data1: 64, data2: 100 },
+            PhraseEvent { frame: 200_000, status: 0x80, data1: 64, data2: 0 },
+        ]);
+        // Eighty-eight pads, and eight more entries than the bed has keys —
+        // the surplus must be shrugged off rather than walked.
+        let pads: Vec<_> = (0..96u8)
+            .map(|pad| {
+                (
+                    pad,
+                    PadConfig::for_key(21u8.saturating_add(pad)),
+                    vec![PadLayer::from_pcm(Arc::clone(&pcm))],
+                    vec![PadPhrase::from_events(Arc::clone(&events), 200_001)],
+                )
+            })
+            .collect();
+        tx.send(MixerCommand::SetSamplerRange { track_id: 0, pads }).unwrap();
+        // A range for a track that is not there is a shrug, as every other
+        // sampler command's is.
+        tx.send(MixerCommand::SetSamplerRange { track_id: 99, pads: Vec::new() }).unwrap();
+
+        // The whole bed lands inside one callback's budget: three heavy
+        // units for eighty-eight pads, against a budget of four.
+        let spent = mixer.drain_commands();
+        assert!(spent <= COMMAND_BUDGET, "a bed-wide range overran the budget: {spent}");
+        assert!(mixer.command_rx.is_empty(), "the range was left half-applied");
+
+        transport.play();
+        // Both ends of the bed and the middle: a range that applied only its
+        // first pad, or shifted its indices, is silent at two of the three.
+        for note in [21u8, 60, 108] {
+            let mut output = vec![0.0f32; 2_048];
+            mixer.process(&mut output, &[make_note_on(note, 100)], &transport);
+            let peak = output.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+            assert!(peak > 0.01, "note {note} made no sound after a range delivery");
+            mixer.process(&mut output, &[make_note_off(note)], &transport);
+        }
+    }
+
+    /// A range is charged for what it carries, so one keypress cannot do a
+    /// bed's worth of work under a single pad's budget.
+    #[test]
+    fn a_range_costs_more_the_more_pads_it_carries() {
+        use phosphor_plugin::sample::PadConfig;
+        let range = |n: usize| MixerCommand::SetSamplerRange {
+            track_id: 0,
+            pads: (0..n)
+                .map(|i| (i as u8, PadConfig::for_key(60), Vec::new(), Vec::new()))
+                .collect(),
+        };
+        let one = MixerCommand::SetSamplerPad {
+            track_id: 0,
+            pad: 0,
+            config: PadConfig::for_key(60),
+            layers: Vec::new(),
+        };
+        assert_eq!(command_cost(&range(1)), HEAVY_COMMAND);
+        assert_eq!(command_cost(&range(0)), HEAVY_COMMAND, "an empty range is still a command");
+        assert_eq!(command_cost(&range(PADS_PER_HEAVY)), HEAVY_COMMAND);
+        assert_eq!(command_cost(&range(PADS_PER_HEAVY + 1)), HEAVY_COMMAND * 2);
+        assert!(command_cost(&range(MAX_RANGE_PADS)) > command_cost(&one));
+        // And the bill is bounded however long the list is, because the work
+        // is: a range never applies more pads than the bed has keys.
+        assert_eq!(
+            command_cost(&range(10_000)),
+            command_cost(&range(MAX_RANGE_PADS)),
+            "a hostile range could charge — and do — unbounded work",
+        );
+        assert!(
+            command_cost(&range(MAX_RANGE_PADS)) <= COMMAND_BUDGET,
+            "the widest honest range cannot fit in one callback",
+        );
     }
 
     #[test]
@@ -3027,7 +3208,15 @@ mod tests {
     /// The most work one callback can do, in the units [`command_cost`]
     /// returns: the budget is tested before a command is taken and charged
     /// after, so the last one can overshoot by its own cost.
-    const WORST_CALLBACK: u32 = COMMAND_BUDGET - 1 + HEAVY_COMMAND;
+    ///
+    /// The dearest single command is a whole-bed [`MixerCommand::SetSamplerRange`]
+    /// at three heavy units. In wall clock that overshoot is smaller than the
+    /// number suggests: a bed-wide range measures 13 µs against the 22 µs
+    /// three `SetInstrument`s would take, and the shortest deadline the
+    /// budget is sized against is 726 µs.
+    const MAX_COMMAND_COST: u32 =
+        HEAVY_COMMAND * MAX_RANGE_PADS.div_ceil(PADS_PER_HEAVY) as u32;
+    const WORST_CALLBACK: u32 = COMMAND_BUDGET - 1 + MAX_COMMAND_COST;
 
     /// A plugin that remembers every parameter it was given, in order, so a
     /// test can see exactly what reached the audio thread and when.

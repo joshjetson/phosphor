@@ -277,7 +277,7 @@ impl App {
             if i == cur_idx { continue; }
             if !Self::same_column(n.start_tick, col_tick, col_ticks) { continue; }
             if n.note <= cur_note { continue; }
-            if best.map_or(true, |(_, bn)| n.note < bn) {
+            if best.is_none_or(|(_, bn)| n.note < bn) {
                 best = Some((i, n.note));
             }
         }
@@ -313,7 +313,7 @@ impl App {
             if i == cur_idx { continue; }
             if !Self::same_column(n.start_tick, col_tick, col_ticks) { continue; }
             if n.note >= cur_note { continue; }
-            if best.map_or(true, |(_, bn)| n.note > bn) {
+            if best.is_none_or(|(_, bn)| n.note > bn) {
                 best = Some((i, n.note));
             }
         }
@@ -353,7 +353,7 @@ impl App {
             let dx = (cur_tick - n.start_tick) as f64 / len;
             let dy = (n.note as f64 - cur_note_val as f64).abs() * 0.0001;
             let dist = dx + dy;
-            if best.map_or(true, |(_, d)| dist < d) {
+            if best.is_none_or(|(_, d)| dist < d) {
                 best = Some((i, dist));
             }
         }
@@ -386,7 +386,7 @@ impl App {
             let dx = (n.start_tick - cur_tick) as f64 / len;
             let dy = (n.note as f64 - cur_note_val as f64).abs() * 0.0001;
             let dist = dx + dy;
-            if best.map_or(true, |(_, d)| dist < d) {
+            if best.is_none_or(|(_, d)| dist < d) {
                 best = Some((i, dist));
             }
         }
@@ -663,11 +663,12 @@ impl App {
             let count = removed_notes.len();
             self.commit_viewed_track(undo_before, "delete notes");
 
-            // Reset edit state
-            let len = self.nav.active_clip().map(|c| c.notes.len()).unwrap_or(0);
+            // Reset edit state. The cursor goes to the top of the list
+            // whatever is left in it: an empty clip has no row to stand on,
+            // and zero is where a fresh one starts either way.
             self.nav.clip_view.piano_roll.edit_selected.clear();
             self.nav.clip_view.piano_roll.edit_sub = EditSubMode::Navigate;
-            self.nav.clip_view.piano_roll.edit_cursor = if len > 0 { 0 } else { 0 };
+            self.nav.clip_view.piano_roll.edit_cursor = 0;
 
             self.send_clip_update();
             self.engine.panic();

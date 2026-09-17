@@ -170,8 +170,7 @@ fn render_run(frame: &mut Frame, area: Rect, nav: &NavState) {
     let hi = (lo + LANE_CELLS).min(targets.len());
     let mut finger_row = vec![Span::styled("  ", theme::dim())];
     let mut note_row = vec![Span::styled("  ", theme::dim())];
-    for i in lo..hi {
-        let t = &targets[i];
+    for (i, t) in targets.iter().enumerate().take(hi).skip(lo) {
         let status = run.judge.status(i);
         let fg_style = match status {
             HitState::Hit(dev) => Style::default().fg(verdict_color(dev, run.judge.window_ms)),

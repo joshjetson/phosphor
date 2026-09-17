@@ -374,9 +374,23 @@ impl App {
             return;
         }
 
-        // Space → open space menu (blocked in edit mode when in clip view)
+        // Space → open space menu (blocked in edit mode when in clip view,
+        // and while source mode has the track's plugin slot on loan).
+        //
+        // Source mode refuses every other key in words — "source mode is on
+        // pad C3 · r records · esc puts the sampler back" — because while it
+        // is on the sampler is out of the slot and nothing else on the screen
+        // means what it says. The space menu is a door into saving, loading
+        // and half the box, and it was the one key that walked straight past
+        // the refusal. It is refused here rather than swallowed, and in the
+        // mode's own words, so the answer is the same from every tab.
         let in_edit = self.nav.focused_pane == Pane::ClipView && self.nav.clip_view.piano_roll.edit_mode;
         if key.code == KeyCode::Char(' ') && !in_edit {
+            if self.in_sampler_source() {
+                dbg::user("Space → refused: source mode is on");
+                self.flash_sampler_source_keys();
+                return;
+            }
             dbg::user("Space → open space menu");
             self.nav.toggle_space_menu();
             return;
@@ -385,6 +399,13 @@ impl App {
         // Tab — blocked while piano roll is in column/row editing mode, and
         // while a step grid knob is being held: a locked control takes every
         // key, or "h adjusts" and "h moves" are the same press.
+        //
+        // The trim strip is blocked on the same grounds, and it is the same
+        // stated contract: the strip "owns every key while it is open", so
+        // `esc` is the way out of it and Tab is not. A held knob and a mode
+        // with its own key table are the same promise from the player's side,
+        // and two guards that said different things would be the kind of
+        // difference nobody can predict.
         match key.code {
             KeyCode::Tab | KeyCode::BackTab
                 if self.nav.focused_pane == Pane::ClipView
@@ -393,7 +414,8 @@ impl App {
                         || (self.nav.clip_view.clip_tab == ClipTab::Fx
                             && self.nav.clip_view.fx.locked)
                         || (self.nav.clip_view.clip_tab == ClipTab::Pads
-                            && self.nav.clip_view.sampler.locked)) =>
+                            && (self.nav.clip_view.sampler.locked
+                                || self.nav.clip_view.sampler.trim.is_some()))) =>
             {
                 return;
             }
@@ -1025,12 +1047,12 @@ impl App {
                         let target_note = self.nav.clip_view.piano_roll.row_highlight_range()
                             .map(|(_, hi)| hi)
                             .unwrap_or(self.nav.clip_view.piano_roll.cursor_note);
-                        let row_offset = Some(target_note as i16 - yank_max as i16);
+                        let row_offset = target_note as i16 - yank_max as i16;
 
-                        self.paste_selected_notes(col_start, row_offset);
+                        self.paste_selected_notes(col_start, Some(row_offset));
                         self.nav.clip_view.piano_roll.clear_all_highlights();
                         self.send_clip_update();
-                        dbg::user(&format!("piano roll: pasted notes (shift={})", row_offset.unwrap_or(0)));
+                        dbg::user(&format!("piano roll: pasted notes (shift={row_offset})"));
                     }
                     KeyCode::Char('n') => {
                         self.draw_note(col, cursor_note);

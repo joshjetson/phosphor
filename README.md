@@ -113,7 +113,7 @@ cargo run --release -- --no-midi
 
 | Instrument | Type | Voices | Sounds | Description |
 |-----------|------|--------|--------|-------------|
-| **Sampler** | Sample playback | 64 | yours | 88 pads, one per piano key, eight sounds stacked on each with their own tune, trim, reverse and mute; per-pad trigger, poly, choke group, pitch, ADSR, level, pan, root and keytracking; a trim strip with a zero-crossing snap; **keys mode**, where stretches of keys become chromatic zones playing one sound from a root; and resampling — record any instrument in the box onto a pad, free or cut to whole bars |
+| **Sampler** | Sample playback | 64 | yours | 88 pads, one per piano key, eight sounds stacked on each with their own tune, trim, reverse and mute; per-pad trigger, poly, choke group, round robin, pitch, ADSR, level, pan, root and keytracking; a trim strip with a zero-crossing snap; **keys mode**, where stretches of keys become chromatic zones playing one sound from a root; and resampling — record any instrument in the box onto a pad, free or cut to whole bars |
 
 64 is the number of voices allowed to sound at once, across the whole
 instrument rather than per pad; the pool behind it holds 80, so a voice that
@@ -393,7 +393,10 @@ off-screen is the wrong half to keep.
 
 Under it, two columns: every filled pad as a row — its key, what is on it,
 how many, how it triggers — and the panel for the pad under the caret, with
-the layer list beneath it. The mode tag in the bottom bar reads `-- PADS --`,
+the layer list beneath it. The head of the list says how much audio the kit
+is holding (`12.3 MB held`), counting a buffer shared by several pads once —
+a zone across the whole bed costs one sample, not eighty-eight. The mode tag
+in the bottom bar reads `-- PADS --`,
 `-- HOLD --` while a control is held, `-- TRIM --` in the strip,
 `-- SOURCE --` and a blinking `-- TAKE --` while you are recording.
 
@@ -494,6 +497,7 @@ keys mode the same list belongs to the zone, with `span` at the top of it and
 | `trig` | **one-shot** plays the trimmed region to its end and ignores the key coming up; **gate** sounds while the key is held and runs the release when you let go |
 | `poly` | 1–8 simultaneous hits on this pad. Past the limit the oldest is cut with a fade, never a truncation |
 | `choke` | mute group, `off` or 1–8. A hit silences every sounding voice on *other* pads in the same group — the closed hat stopping the open one |
+| `cycle` | round robin. Off, every sound on the pad that answers the hit plays and they stack. On, one of them answers and the next hit takes the next — eight snares on one key stop sounding like a machine gun |
 | `pitch` / `fine` | ±48 semitones, ±50 cents |
 | `attack` `decay` `sustain` `release` | up to 10 s a stage, sustain as a percentage. Release is floored at 5 ms by the engine, because a zero release is a click |
 | `level` | the pad's gain, from silence through −40 dB up to +12 dB |
@@ -501,9 +505,9 @@ keys mode the same list belongs to the zone, with `span` at the top of it and
 | `root` | the key that plays the sound untransposed. Defaults to the pad's own key |
 | `keytrk` | *(pads mode only)* on, the pad transposes the sound by its own distance from `root` — set `root` to the note the sample actually is and the pad plays it in tune on whatever key it sits on; off, the sound plays untransposed |
 
-A fresh pad is one-shot, poly 1, no choke, no pitch offset, attack 0, decay
-400 ms, sustain 100%, release 60 ms, unity, centred, rooted on its own key
-with keytracking off.
+A fresh pad is one-shot, poly 1, no choke, no cycle, no pitch offset, attack
+0, decay 400 ms, sustain 100%, release 60 ms, unity, centred, rooted on its
+own key with keytracking off.
 
 ### The sounds on a pad
 
@@ -520,6 +524,14 @@ moment you leave the pads tab.
 
 `m` mutes the sound without taking it off the pad. `d` removes it and asks
 first. `u` brings it back with its audio, `Ctrl+R` takes it off again.
+
+Turn `cycle` on and the stack becomes a rotation instead: successive hits hand
+out the sounds one at a time, so eight takes of the same snare are eight
+different snares rather than one thick one. A muted sound and a sound outside
+the velocity window lose their turn rather than spending it on silence, and
+where the rotation has got to is the pad's own memory — stopping the transport
+does not put it back to the first sound, and neither does editing the pad.
+Phrases are never rotated: every one on the pad fires either way.
 
 Sampler tracks are ordinary tracks in every other respect: draw notes in the
 piano roll, record from your controller, put effects in front of them. A note
@@ -616,7 +628,9 @@ opening a waveform of nothing.
 **Tempo is baked.** Event offsets are frames, decided when you played, the
 same as an audio take. A phrase does not follow a tempo change — it is a
 recording, and the sibling it has to sound like is the recording on the pad
-beside it.
+beside it. It does follow a change of *device*: the rate it was captured at
+is stored with it, so a phrase played on a 48 kHz interface plays at the
+speed you played it on a 44.1 kHz one, exactly as a sample does.
 
 Phrases go into the session inline, notes and all, with the child instrument
 and its panel. Nothing is written beside the file: a phrase has no audio, so
@@ -707,6 +721,16 @@ the old one's folder. The audio is written before the JSON: the worst crash
 leaves an orphan WAV nobody notices, rather than a session naming audio that
 is not there.
 
+The same save sweeps out the takes the kit no longer names, so a folder does
+not fill up with recordings nothing points at. Only inside that folder, and
+only files it wrote itself: a WAV you put in there by hand stays where you
+put it, and so does anything outside it.
+
+`Space+W` saves and loads a sampler preset, which is the two globals on the
+flat panel — `level` and `vel` — and nothing else. The pads, the sounds on
+them, the zones and the takes belong to the session; a preset leaves them
+exactly where they were.
+
 A file that has moved is not dropped. The pad keeps it with all its settings,
 the key goes red on the bed, the layer list says `missing`, and the status bar
 says so on open — the paths are in the debug log. Fix the path or drop the
@@ -765,6 +789,9 @@ has no word for, plus the brace.
 | `t` | Loop the region while you work |
 | `Esc` | Back to the pad map, quiet |
 
+The strip owns every key while it is open, including `Tab` — the same bargain
+a held knob strikes, and for the same reason. `Esc` is the way out.
+
 ### Keys in source mode
 
 | Key | Action |
@@ -773,6 +800,9 @@ has no word for, plus the brace.
 | `p` | Swap what `r` lands: `take: audio` or `take: phrase` |
 | `i` | Change the instrument |
 | `Esc` | End a running take; again to put the sampler back |
+
+While the mode is on, the sampler is out of the track's plugin slot. Every
+other key — `Space` included, from any tab — says so rather than acting.
 
 ---
 
@@ -1298,7 +1328,12 @@ an octave of notes at once). The row's name follows the sound — `BD` becomes
 **Sequencing a synth instead of drums.** Walk `j` to the **pattern** panel.
 Its first knob is `child` — the instrument this sequencer drives. `Enter`,
 then `h`/`l` cycle through everything in the rack: the DX7, the Jupiter-8,
-the Prophet-6, the Phatty, all of them. The rows become eight voices —
+the Prophet-6, the Phatty, all of them. (The **Sampler** is in the list too,
+but a kit belongs to a track that *is* a sampler: as a sequencer's child it
+arrives with eighty-eight empty pads, no `[pads]` tab and only its two
+globals, and both the flash and the `[inst]` panel say so. Give the sampler a
+track of its own and play it from the piano roll or your controller.) The
+rows become eight voices —
 `L1` through `L8` — and the panel above the pattern row becomes the **step**
 panel:
 

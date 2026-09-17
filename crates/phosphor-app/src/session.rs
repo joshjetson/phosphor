@@ -204,13 +204,18 @@ fn is_unity(v: &f32) -> bool {
     *v == 1.0
 }
 
+/// A number that is zero writes nothing. Shared with the sampler's own
+/// session module, for [`is_false`]'s reason.
 #[allow(clippy::trivially_copy_pass_by_ref)]
-fn is_zero(v: &f32) -> bool {
+pub(crate) fn is_zero(v: &f32) -> bool {
     *v == 0.0
 }
 
+/// A switch that is off writes nothing. Shared with the sampler's own
+/// session module, because "absent means off" has to mean the same thing in
+/// every block of the file.
 #[allow(clippy::trivially_copy_pass_by_ref)]
-fn is_false(v: &bool) -> bool {
+pub(crate) fn is_false(v: &bool) -> bool {
     !*v
 }
 

@@ -298,7 +298,6 @@ mod tests {
     /// back what was there before.
     #[test]
     fn loading_a_user_progression_is_one_undo_step() {
-        use phosphor_core::midi_fx::UserChord;
         let (mut app, ti) = app_with_track();
         app.add_midi_fx(ti, MidiFxType::Chord);
         app.set_user_progression(
@@ -323,7 +322,6 @@ mod tests {
     /// keeps its sound even if the library changes later.
     #[test]
     fn the_session_owns_the_progression() {
-        use phosphor_core::midi_fx::UserChord;
         let (mut app, ti) = app_with_track();
         app.add_midi_fx(ti, MidiFxType::Chord);
         app.set_user_progression(
@@ -346,7 +344,6 @@ mod tests {
     /// hands it to the fresh instance along with the params.
     #[test]
     fn ghosts_render_the_user_progression() {
-        use phosphor_core::midi_fx::UserChord;
         let (mut app, ti) = app_with_track();
         clip_with_note(&mut app, ti, 48);
         app.add_midi_fx(ti, MidiFxType::Chord);

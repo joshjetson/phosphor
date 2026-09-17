@@ -13,9 +13,6 @@ impl NavState {
 
     /// Handle a key press while the space menu is open.
     /// Returns a SpaceAction if an action should be performed.
-
-    /// Handle a key press while the space menu is open.
-    /// Returns a SpaceAction if an action should be performed.
     pub fn space_menu_handle(&mut self, ch: char) -> Option<SpaceAction> {
         self.space_menu.open = false;
         match ch {
@@ -270,9 +267,6 @@ impl NavState {
         }
     }
 
-    /// Adjust the currently selected synth parameter by delta.
-    /// Returns the (mixer_id, param_index, new_value) if changed, for sending to audio.
-
     pub fn enter(&mut self) -> Option<SpaceAction> {
         // Space menu open → select item via space_menu_handle using the key from cursor position
         if self.space_menu.open {
@@ -356,9 +350,6 @@ impl NavState {
             Pane::ClipView => self.focus_pane(Pane::Tracks),
         }
     }
-
-    /// Cycle tabs in the clip view (FX panel or piano roll side).
-    /// Cycle through ALL tabs in buffer 3: trk fx → synth → inst config → piano → auto → trk fx...
 
     /// Cycle tabs in the clip view (FX panel or piano roll side).
     /// Cycle through ALL tabs in buffer 3: trk fx → synth → inst config → piano → auto → trk fx...

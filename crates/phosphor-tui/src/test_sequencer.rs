@@ -831,6 +831,59 @@ mod screen {
         assert_eq!(track.clips[1].start_tick, 3840, "two clips on one bar");
     }
 
+    /// Pointing a sequencer at the sampler says where the pads are, in two
+    /// places, instead of leaving a silent dead end.
+    ///
+    /// The kit lives on a `SamplerState`, which is made when a *track* is
+    /// made a sampler; a sequencer's child is an instrument in the track's
+    /// plugin slot. So this combination gives eighty-eight empty pads, no
+    /// `[pads]` tab to put sounds on them, and a grid that runs into
+    /// silence. The child knob is left free to name the sampler — a list
+    /// with a hole in it is a stranger dead end — and both the flash and the
+    /// `[inst]` panel say where the pads actually are.
+    #[test]
+    fn a_sequencer_pointed_at_the_sampler_says_where_the_pads_are() {
+        let mut app = grid_app();
+        app.sequencer_op(SeqOp::SetChild(InstrumentType::Sampler));
+        assert_eq!(
+            app.nav.current_track().unwrap().instrument_type,
+            Some(InstrumentType::Sampler),
+            "the child knob refused the sampler outright",
+        );
+        assert!(
+            app.nav.current_track().unwrap().sampler.is_none(),
+            "a sequencer's child grew a kit of its own",
+        );
+        let status = app.live_status().unwrap_or_default().to_string();
+        assert!(
+            status.contains("needs its own track"),
+            "the swap said nothing about the pads: {status}",
+        );
+
+        // The panel a player lands on says the same thing, because the flash
+        // will have gone by the time they get there.
+        app.nav.clip_view.clip_tab = ClipTab::InstConfig;
+        let text = joined(&app, 120, 40);
+        assert!(
+            text.contains("needs its own track"),
+            "the [inst] panel is a silent dead end:\n{text}",
+        );
+        // And the two globals it does have are still drawn and still work.
+        assert!(text.contains("level"), "the panel lost the controls it does have:\n{text}");
+        assert!(text.contains("vel"), "{text}");
+
+        // A child that is not the sampler says nothing at all.
+        app.status_message = None;
+        app.sequencer_op(SeqOp::SetChild(InstrumentType::Juno60));
+        assert!(
+            app.live_status().is_none(),
+            "an ordinary child was warned about: {:?}",
+            app.live_status(),
+        );
+        let text = joined(&app, 120, 40);
+        assert!(!text.contains("needs its own track"), "the note outlived the sampler:\n{text}");
+    }
+
     /// An empty pattern has nothing to write, and says so rather than
     /// producing a clip with no notes in it.
     #[test]

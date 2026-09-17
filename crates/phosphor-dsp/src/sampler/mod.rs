@@ -221,13 +221,19 @@ impl Sampler {
         };
         self.start_phrases(&ctx, vel, offset, out);
 
+        // Which sampled layers answer this hit: all of them that match on a
+        // stacking pad, one of them on a cycling one. Asked once, because
+        // asking advances the rotation. Phrases are not in it — they are
+        // never rotated, and they have already been started above.
+        let answering = self.pads[pad_idx].answering(vel);
+
         for layer_idx in 0..MAX_LAYERS {
+            if answering & (1 << layer_idx) == 0 {
+                continue;
+            }
             let Some(trigger) = ({
                 let pad = &self.pads[pad_idx];
-                pad.layers[layer_idx]
-                    .as_ref()
-                    .filter(|slot| slot.answers(vel))
-                    .map(pad::LayerSlot::trigger)
+                pad.layers[layer_idx].as_ref().map(pad::LayerSlot::trigger)
             }) else {
                 continue;
             };
@@ -472,6 +478,9 @@ impl Plugin for Sampler {
         // for this: it is started here, with the rate and the block size the
         // sampler itself was just given.
         self.child.init(sample_rate, max_buffer_size);
+        // And the runners learn the rate they will be counting engine frames
+        // at, so a phrase captured on another device plays at its own speed.
+        self.runners.set_rate(sample_rate);
         self.dc_l.set_rate(sample_rate);
         self.dc_r.set_rate(sample_rate);
         self.dc_l.reset();
@@ -637,6 +646,12 @@ impl Plugin for Sampler {
         self.dc_r.reset();
         self.age_counter = 0;
         self.hit_counter = 0;
+        // Round robin goes back to the top here and nowhere else. A stopped
+        // transport does not rewind a hardware sampler's rotation and does
+        // not rewind this one; a panic and a fresh instrument do.
+        for pad in &mut self.pads {
+            pad.rewind_cycle();
+        }
     }
 
     fn set_sampler_pad(&mut self, pad: u8, config: &PadConfig, layers: &[PadLayer]) {
@@ -794,6 +809,168 @@ mod tests {
             (with_mute - single).abs() < 0.02,
             "a muted layer leaked: {with_mute} vs {single}"
         );
+    }
+
+    // ── Round robin ──
+
+    /// One layer per level, so the peak of a block names which one answered.
+    /// A sine rather than a constant: the DC blocker is supposed to bleed a
+    /// constant away, and a level read through it would be reading the
+    /// blocker.
+    fn ladder(levels: &[f32]) -> Vec<PadLayer> {
+        levels.iter().map(|&a| PadLayer::from_pcm(sine_pcm(a, 44_100))).collect()
+    }
+
+    /// Which layer of a ladder answered, by the level that came out. `None`
+    /// for silence; the pan law takes 3 dB off each side, so the expected
+    /// level is scaled the same way before it is matched.
+    fn answered(levels: &[f32], out: &[f32]) -> Option<usize> {
+        let heard = peak(&out[500..1_500]);
+        levels.iter().position(|&a| (heard - a * core::f32::consts::FRAC_1_SQRT_2).abs() < 0.02)
+    }
+
+    /// A pad set cycling hands out its layers one at a time, in order, round
+    /// and round. Six hits on three layers is two full laps.
+    #[test]
+    fn cycle_hands_out_one_layer_per_hit_in_order() {
+        let levels = [0.2f32, 0.5, 0.8];
+        let mut cfg = PadConfig::for_key(60);
+        cfg.cycle = true;
+        let mut s = sampler_with(60, cfg, &ladder(&levels));
+
+        let mut order = Vec::new();
+        for _ in 0..6 {
+            let (l, _) = process(&mut s, &[note_on(60, 127, 0)], 1_500);
+            order.push(answered(&levels, &l));
+            // Well clear of the poly cut's fade before the next hit.
+            process(&mut s, &[cc(120, 0)], 1_024);
+        }
+        assert_eq!(
+            order,
+            vec![Some(0), Some(1), Some(2), Some(0), Some(1), Some(2)],
+            "the rotation did not go round",
+        );
+    }
+
+    /// Off — the default — every layer that answers still sounds, and they
+    /// stack. The defect this catches is a cycle that leaked into a pad that
+    /// never asked for one.
+    #[test]
+    fn a_pad_that_does_not_cycle_still_stacks_every_layer() {
+        let one = PadLayer::from_pcm(sine_pcm(0.25, 44_100));
+        let cfg = PadConfig::for_key(60);
+        assert!(!cfg.cycle, "a fresh pad cycles");
+        let mut s = sampler_with(60, cfg, &[one.clone(), one.clone(), one]);
+        let (l, _) = process(&mut s, &[note_on(60, 127, 0)], 1_500);
+        // Same buffer, same phase: three layers sum to exactly three.
+        let expected = 0.75 * core::f32::consts::FRAC_1_SQRT_2;
+        assert!(
+            (peak(&l[500..1_500]) - expected).abs() < 0.03,
+            "three stacked layers made {}, not {expected}",
+            peak(&l[500..1_500]),
+        );
+    }
+
+    /// A muted layer loses its turn rather than spending it on silence: the
+    /// rotation is over the layers that answer, so a three-layer pad with the
+    /// middle one muted alternates between the other two.
+    #[test]
+    fn a_muted_layer_skips_its_turn_in_the_rotation() {
+        let levels = [0.2f32, 0.5, 0.8];
+        let mut layers = ladder(&levels);
+        layers[1].mute = true;
+        let mut cfg = PadConfig::for_key(60);
+        cfg.cycle = true;
+        let mut s = sampler_with(60, cfg, &layers);
+
+        let mut order = Vec::new();
+        for _ in 0..4 {
+            let (l, _) = process(&mut s, &[note_on(60, 127, 0)], 1_500);
+            order.push(answered(&levels, &l));
+            process(&mut s, &[cc(120, 0)], 1_024);
+        }
+        assert_eq!(
+            order,
+            vec![Some(0), Some(2), Some(0), Some(2)],
+            "the muted layer took a turn, or took the others' turns with it",
+        );
+    }
+
+    /// Velocity is honoured per hit, and each half of a split has a rotation
+    /// of its own: a soft hit takes the next soft layer, a hard hit the next
+    /// hard one, and neither spends the other's turn.
+    #[test]
+    fn a_cycling_pad_rotates_inside_the_velocity_window_that_answers() {
+        let levels = [0.2f32, 0.4, 0.6, 0.8];
+        let mut layers = ladder(&levels);
+        for (i, layer) in layers.iter_mut().enumerate() {
+            // Two soft, two loud.
+            let (lo, hi) = if i < 2 { (0, 63) } else { (64, 127) };
+            layer.vel_lo = lo;
+            layer.vel_hi = hi;
+        }
+        let mut cfg = PadConfig::for_key(60);
+        cfg.cycle = true;
+        let mut s = sampler_with(60, cfg, &layers);
+
+        let mut order = Vec::new();
+        for vel in [30u8, 100, 30, 100, 30, 100] {
+            let (l, _) = process(&mut s, &[note_on(60, vel, 0)], 1_500);
+            // The velocity curve scales what comes out, so the level is
+            // matched against the layer's own amplitude after it.
+            let v = f32::from(vel) / 127.0;
+            let vel_gain = 1.0 + PARAM_DEFAULTS[P_VEL] * (v * v - 1.0);
+            let scaled: Vec<f32> = levels.iter().map(|&a| a * vel_gain).collect();
+            order.push(answered(&scaled, &l));
+            process(&mut s, &[cc(120, 0)], 1_024);
+        }
+        assert_eq!(
+            order,
+            vec![Some(0), Some(2), Some(1), Some(3), Some(0), Some(2)],
+            "the two halves of the split shared one rotation",
+        );
+    }
+
+    /// The rotation is the pad's memory. A transport stop — which is the
+    /// all-sound-off gesture — leaves it where it was; the panic key's reset
+    /// takes it back to the first layer. That is the hardware convention and
+    /// it is the one a player's hands expect.
+    #[test]
+    fn the_rotation_survives_a_stop_and_is_rewound_by_a_reset() {
+        let levels = [0.2f32, 0.5, 0.8];
+        let mut cfg = PadConfig::for_key(60);
+        cfg.cycle = true;
+        let mut s = sampler_with(60, cfg, &ladder(&levels));
+
+        let (l, _) = process(&mut s, &[note_on(60, 127, 0)], 1_500);
+        assert_eq!(answered(&levels, &l), Some(0));
+        // All sound off, which is what the transport's stop edge sends.
+        process(&mut s, &[cc(120, 0)], 1_024);
+        let (l, _) = process(&mut s, &[note_on(60, 127, 0)], 1_500);
+        assert_eq!(answered(&levels, &l), Some(1), "a stop rewound the rotation");
+
+        s.reset();
+        let (l, _) = process(&mut s, &[note_on(60, 127, 0)], 1_500);
+        assert_eq!(answered(&levels, &l), Some(0), "a reset left the rotation standing");
+    }
+
+    /// Editing a pad does not rewind its rotation — in keys mode one trim
+    /// nudge re-delivers eighty-eight pads, and a rotation that restarted on
+    /// every delivery would never leave the first layer.
+    #[test]
+    fn re_delivering_a_pad_leaves_the_rotation_where_it_was() {
+        let levels = [0.2f32, 0.5, 0.8];
+        let mut cfg = PadConfig::for_key(60);
+        cfg.cycle = true;
+        let layers = ladder(&levels);
+        let mut s = sampler_with(60, cfg, &layers);
+
+        process(&mut s, &[note_on(60, 127, 0)], 1_500);
+        process(&mut s, &[cc(120, 0)], 1_024);
+        // The same pad, delivered again: what a knob turn or a trim sends.
+        load(&mut s, 60, cfg, &layers);
+        let (l, _) = process(&mut s, &[note_on(60, 127, 0)], 1_500);
+        assert_eq!(answered(&levels, &l), Some(1), "the delivery rewound the rotation");
     }
 
     #[test]
@@ -1073,6 +1250,9 @@ mod tests {
             let mut cfg = PadConfig::for_key(note);
             cfg.poly = 4;
             cfg.choke = 1;
+            // Half the bed cycling, half stacking: the rotation is asked
+            // once per hit inside `note_on`, so it is inside the claim.
+            cfg.cycle = note % 2 == 0;
             load(&mut s, note, cfg, &[layer.clone(), layer.clone()]);
         }
         let mut l = vec![0.0f32; 512];

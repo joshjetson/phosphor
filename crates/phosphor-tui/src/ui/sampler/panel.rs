@@ -297,7 +297,7 @@ mod tests {
             data2: 100,
         }]);
         let pad = state.cursor;
-        state.pads[pad].add_phrase(events, 88_200, "pad").unwrap();
+        state.pads[pad].add_phrase(events, 88_200, 0.0, "pad").unwrap();
         state.child = Some(phosphor_app::sampler::PadSource {
             instrument: phosphor_app::state::InstrumentType::DX7,
             params: vec![0.5],
@@ -332,7 +332,7 @@ mod tests {
             data2: 100,
         }]);
         let pad = state.cursor;
-        state.pads[pad].add_phrase(events, 1_000, "pad").unwrap();
+        state.pads[pad].add_phrase(events, 1_000, 0.0, "pad").unwrap();
         assert!(state.child.is_none());
         let view = SamplerView::new();
         let panel = text(&panel_lines(&map(&state, &view), 57, 40));

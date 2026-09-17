@@ -101,6 +101,8 @@ pub(crate) struct PhraseSlot {
     mute: bool,
     vel_lo: u8,
     vel_hi: u8,
+    /// The rate the frames above were counted at, or 0.0 for unknown.
+    sample_rate: f32,
 }
 
 impl PhraseSlot {
@@ -127,7 +129,28 @@ impl PhraseSlot {
             mute: phrase.mute,
             vel_lo,
             vel_hi,
+            // A rate that is not a positive number is an unknown rate, which
+            // plays as-is. NaN and negatives come from hand-edited files and
+            // have to land on the same answer as the honest zero, or a
+            // corrupt session gets a playhead that runs backwards.
+            sample_rate: if phrase.sample_rate.is_finite() && phrase.sample_rate > 0.0 {
+                phrase.sample_rate
+            } else {
+                0.0
+            },
         })
+    }
+
+    /// Capture frames per engine frame: how fast the playhead runs.
+    ///
+    /// One when the capture rate is unknown or the same as the engine's,
+    /// which is the overwhelming case and is exactly the arithmetic that was
+    /// here before this existed.
+    fn step(&self, engine_rate: f64) -> f64 {
+        if self.sample_rate <= 0.0 || engine_rate <= 0.0 {
+            return 1.0;
+        }
+        f64::from(self.sample_rate) / engine_rate
     }
 
     /// Whether this phrase answers a hit at `vel`. The layer rule, shared:
@@ -242,8 +265,19 @@ pub(super) struct PhraseRunner {
     hit: u64,
     /// Index of the next event to hand over.
     next: usize,
-    /// Playhead, in frames since this runner started.
-    frame: u64,
+    /// Playhead, in the *capture's* frames since this runner started.
+    ///
+    /// Capture frames rather than engine frames, so the event list and the
+    /// length are read in the units they were written in and only one number
+    /// has to know about the rate: [`PhraseRunner::step`], how far the
+    /// playhead moves per engine sample. `f64` because that step is not a
+    /// whole number when the two rates differ — and it is exact at 1.0, so a
+    /// phrase whose rate matches (or is unknown) advances by exactly one per
+    /// sample, which is what it always did.
+    frame: f64,
+    /// How far the playhead moves per engine frame. See
+    /// [`PhraseSlot::step`].
+    step: f64,
     frames: u64,
     /// Semitones added to every note, derived once at the start.
     shift: i16,
@@ -271,7 +305,8 @@ impl PhraseRunner {
             pad: 0,
             hit: 0,
             next: 0,
-            frame: 0,
+            frame: 0.0,
+            step: 1.0,
             frames: 0,
             shift: 0,
             vel_scale: 1.0,
@@ -293,12 +328,16 @@ impl PhraseRunner {
         self.events.is_some() && !self.ending
     }
 
-    fn start(&mut self, slot: &PhraseSlot, ctx: &RunnerStart) {
+    fn start(&mut self, slot: &PhraseSlot, ctx: &RunnerStart, engine_rate: f64) {
         self.events = Some(Arc::clone(&slot.events));
         self.pad = ctx.pad;
         self.hit = ctx.hit;
         self.next = 0;
-        self.frame = 0;
+        self.frame = 0.0;
+        // Settled once, at the start, for the reason the transposition is:
+        // a rate that could move mid-phrase would leave half a performance
+        // playing at one speed and half at another.
+        self.step = slot.step(engine_rate);
         self.frames = slot.frames;
         self.shift = if slot.transpose_with_key {
             i16::from(ctx.note) - i16::from(ctx.root)
@@ -333,7 +372,7 @@ impl PhraseRunner {
                 .events
                 .as_deref()
                 .and_then(|evs| evs.get(self.next).copied())
-                .filter(|e| e.frame <= self.frame);
+                .filter(|e| e.frame as f64 <= self.frame);
             let Some(ev) = due else { break };
             if !self.send(ev, offset, out) {
                 // The block is full. The event keeps its place in the list
@@ -342,9 +381,9 @@ impl PhraseRunner {
             }
             self.next += 1;
         }
-        self.frame += 1;
+        self.frame += self.step;
         let played_out = self.next >= self.events.as_deref().map_or(0, <[PhraseEvent]>::len);
-        if played_out && self.frame >= self.frames {
+        if played_out && self.frame >= self.frames as f64 {
             self.stop(offset, out);
         }
     }
@@ -439,7 +478,8 @@ impl PhraseRunner {
         self.events = None;
         self.ending = false;
         self.next = 0;
-        self.frame = 0;
+        self.frame = 0.0;
+        self.step = 1.0;
         self.held = [0; 2];
     }
 
@@ -453,11 +493,20 @@ impl PhraseRunner {
 /// The runners, and the rules that apply to all of them at once.
 pub(super) struct RunnerPool {
     runners: [PhraseRunner; PHRASE_RUNNERS],
+    /// The rate the engine is running at, against which a phrase's own
+    /// capture rate is read. Kept here rather than passed down every call
+    /// because it changes once, at `init`, and a phrase that is already
+    /// playing keeps the step it started with.
+    sample_rate: f64,
 }
 
 impl RunnerPool {
     pub(super) fn new() -> Self {
-        Self { runners: [const { PhraseRunner::new() }; PHRASE_RUNNERS] }
+        Self { runners: [const { PhraseRunner::new() }; PHRASE_RUNNERS], sample_rate: 44_100.0 }
+    }
+
+    pub(super) fn set_rate(&mut self, sample_rate: f64) {
+        self.sample_rate = sample_rate;
     }
 
     /// Whether anything is playing or still owes a note-off. What decides
@@ -494,7 +543,7 @@ impl RunnerPool {
         out: &mut ChildEvents,
     ) {
         if let Some(i) = self.free_slot(offset, out) {
-            self.runners[i].start(slot, ctx);
+            self.runners[i].start(slot, ctx, self.sample_rate);
         }
     }
 
@@ -1048,6 +1097,117 @@ mod tests {
             peak(&with_both[1_000..]),
             peak(&sample_only[1_000..]),
         );
+    }
+
+    /// A phrase captured on a 48 kHz device plays at the same *real* speed on
+    /// a 44.1 kHz one. The sampled sibling on the pad beside it has done this
+    /// since day one — see `voice.rs`'s
+    /// `a_48k_file_on_a_44_1k_engine_lands_events_at_real_time`, which this
+    /// mirrors for notes.
+    #[test]
+    fn a_48k_phrase_on_a_44_1k_engine_lands_notes_at_real_time() {
+        // A note 100 ms into the capture: 4 800 frames at 48 kHz, which is
+        // 4 410 frames of engine time here.
+        let mut phrase = PadPhrase::from_events(
+            Arc::from(vec![
+                PhraseEvent { frame: 0, status: 0x90, data1: 60, data2: 100 },
+                PhraseEvent { frame: 4_800, status: 0x90, data1: 64, data2: 100 },
+            ]),
+            48_000,
+        );
+        phrase.sample_rate = 48_000.0;
+        let (mut s, log) = with_phrases(60, PadConfig::for_key(60), &[phrase]);
+        run(&mut s, &[note_on(60, 127, 0)], 20, 512);
+
+        let ons = log.ons();
+        assert_eq!(ons.len(), 2, "the phrase did not play both notes");
+        assert_eq!(ons[0], (60, 100, 0), "the first note moved off the trigger");
+        let landed = ons[1].2 as i64;
+        let expected = (0.1 * SR) as i64;
+        assert!(
+            (landed - expected).abs() < 8,
+            "the second note landed at {landed}, expected about {expected}",
+        );
+
+        // And it is over after a second of *real* time — 44 100 engine
+        // frames, not the 48 000 the events are counted in. Uncompensated it
+        // would still be running at block 88.
+        run(&mut s, &[], 66, 512); // 86 blocks: 44 032 frames, just short
+        assert_eq!(s.playing_phrases(), 1, "the phrase ended early");
+        run(&mut s, &[], 2, 512);
+        assert_eq!(s.playing_phrases(), 0, "the phrase outlived its own length");
+        assert!(log.held_notes().is_empty(), "the child was left holding a note");
+    }
+
+    /// A phrase with no rate on it is every phrase written before rates
+    /// existed, and it plays exactly as it always did: one capture frame per
+    /// engine frame, whatever the device is doing.
+    #[test]
+    fn a_phrase_with_no_rate_plays_as_it_always_did() {
+        let phrase = PadPhrase::from_events(
+            Arc::from(vec![
+                PhraseEvent { frame: 0, status: 0x90, data1: 60, data2: 100 },
+                PhraseEvent { frame: 4_800, status: 0x90, data1: 64, data2: 100 },
+            ]),
+            48_000,
+        );
+        assert_eq!(phrase.sample_rate, 0.0, "a fresh phrase claims a rate");
+        let (mut s, log) = with_phrases(60, PadConfig::for_key(60), &[phrase]);
+        run(&mut s, &[note_on(60, 127, 0)], 20, 512);
+        let ons = log.ons();
+        assert_eq!(ons.len(), 2);
+        assert_eq!(ons[1].2, 4_800, "an unknown rate was compensated for anyway");
+    }
+
+    /// A nonsense rate in a hand-edited file is an unknown rate, not a
+    /// playhead that stands still or runs backwards.
+    #[test]
+    fn a_hostile_capture_rate_plays_as_if_it_were_absent() {
+        for rate in [-48_000.0f32, 0.0, f32::NAN] {
+            let mut phrase = PadPhrase::from_events(
+                Arc::from(vec![
+                    PhraseEvent { frame: 0, status: 0x90, data1: 60, data2: 100 },
+                    PhraseEvent { frame: 1_000, status: 0x80, data1: 60, data2: 0 },
+                ]),
+                2_000,
+            );
+            phrase.sample_rate = rate;
+            let (mut s, log) = with_phrases(60, PadConfig::for_key(60), &[phrase]);
+            run(&mut s, &[note_on(60, 127, 0)], 8, 512);
+            assert_eq!(log.ons().len(), 1, "rate {rate} lost the note");
+            assert_eq!(s.playing_phrases(), 0, "rate {rate} left the phrase running");
+            assert!(log.held_notes().is_empty(), "rate {rate} hung a note on the child");
+        }
+    }
+
+    /// Round robin rotates *samples*. A phrase is note traffic for a shared
+    /// instrument rather than one of several takes of a sound, so every
+    /// phrase on a cycling pad still fires on every hit — including the hits
+    /// where the pad's own layers are taking turns.
+    #[test]
+    fn round_robin_never_takes_a_turn_away_from_a_phrase() {
+        let mut cfg = PadConfig::for_key(60);
+        cfg.cycle = true;
+        let (mut s, log) = with_phrases(
+            60,
+            cfg,
+            &[held_note(64, 100, 20_000), held_note(67, 100, 20_000)],
+        );
+        // Two sampled layers beside them, which is what does take turns.
+        let layer = PadLayer::from_pcm(sine_pcm(0.4, 44_100));
+        s.set_sampler_pad(39, &cfg, &[layer.clone(), layer]);
+
+        for hit in 0..3 {
+            process(&mut s, &[note_on(60, 127, 0)], 512);
+            assert_eq!(
+                s.playing_phrases(),
+                2,
+                "hit {hit} rotated the phrases instead of firing both",
+            );
+            process(&mut s, &[cc(120, 0)], 512);
+        }
+        let notes: Vec<u8> = log.ons().iter().map(|&(note, _, _)| note).collect();
+        assert_eq!(notes, vec![64, 67, 64, 67, 64, 67], "a phrase lost a turn it never had");
     }
 
     /// A phrase is summed in ahead of the sampler's own output stage, so the

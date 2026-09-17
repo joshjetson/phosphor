@@ -21,6 +21,11 @@ pub(super) fn pad_list(map: &Map, width: usize, height: usize) -> Vec<Line<'stat
         },
         theme::dim(),
     );
+    // What the kit is costing. Dropped by `Row::push` on a narrow pane,
+    // which is right: the pads themselves come first.
+    if let Some(held) = held_label(map.state) {
+        head.push(held, theme::muted());
+    }
     let mut lines = vec![head.line()];
 
     if filled.is_empty() {
@@ -105,6 +110,36 @@ mod tests {
         assert!(list.contains("2 layers"), "{list}");
         assert!(list.contains("one-shot"), "{list}");
         assert!(list.contains('!'), "a missing file is not marked:\n{list}");
+    }
+
+    /// The kit says what it is costing, in a unit that is not a lie about a
+    /// small kit — and an empty one says nothing at all rather than `0 MB`.
+    #[test]
+    fn the_list_head_says_how_much_audio_is_held() {
+        let state = SamplerState::new();
+        let view = SamplerView::new();
+        let list = text(&pad_list(&map(&state, &view), 60, 10));
+        assert!(!list.contains("held"), "an empty kit claimed to hold something:\n{list}");
+
+        // 44 100 mono frames of f32 — 173 kB, which must not read as 0.0 MB.
+        let state = kit();
+        let list = text(&pad_list(&map(&state, &view), 60, 10));
+        assert!(list.contains("173 kB held"), "the memory line is wrong:\n{list}");
+
+        // And a kit big enough to matter reads in megabytes.
+        let mut big = SamplerState::new();
+        let pcm = std::sync::Arc::new(phosphor_plugin::sample::SamplePcm {
+            data: vec![0.0; 3_000_000],
+            channels: 2,
+            sample_rate: 44_100.0,
+        });
+        big.add_wav_layer(0, std::path::PathBuf::from("take.wav"), pcm).unwrap();
+        let list = text(&pad_list(&map(&big, &view), 60, 10));
+        assert!(list.contains("11.4 MB held"), "the megabyte line is wrong:\n{list}");
+
+        // A narrow pane drops it rather than running off its own edge.
+        let narrow = text(&pad_list(&map(&big, &view), 24, 10));
+        assert!(narrow.lines().all(|l| l.chars().count() <= 24), "the head overran:\n{narrow}");
     }
 
     /// A kit longer than the list scrolls to the pad under the caret: a

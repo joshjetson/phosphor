@@ -192,6 +192,23 @@ impl App {
         self.flash("sampler back \u{00b7} the pads are playing again");
     }
 
+    /// What source mode says to a key it does not take.
+    ///
+    /// One sentence, one place, because it is said from two: the mode's own
+    /// key table answers every key it has no use for with it, and the space
+    /// menu is refused with it from anywhere — a mode that took the track's
+    /// plugin slot has to be able to say so however the player arrived at
+    /// the key.
+    pub(crate) fn flash_sampler_source_keys(&mut self) {
+        let Some(mode) = self.nav.sampler_source.as_deref() else { return };
+        let pad = phosphor_app::sampler::SamplerState::pad_label(mode.pad);
+        let take = mode.take.label();
+        let ends = if mode.is_armed() { "ends the take" } else { "records" };
+        self.flash(format!(
+            "source mode is on pad {pad} \u{00b7} take: {take} \u{00b7} r {ends} \u{00b7} p swaps \u{00b7} esc puts the sampler back",
+        ));
+    }
+
     /// Whether the mode is on for the track under the cursor.
     pub(crate) fn in_sampler_source(&self) -> bool {
         self.nav
@@ -389,6 +406,7 @@ impl App {
         let landed = match sampler.add_phrase_here(
             Arc::clone(&phrase.events),
             phrase.frames,
+            phrase.sample_rate,
             phrase.root,
         ) {
             Ok(index) => index,

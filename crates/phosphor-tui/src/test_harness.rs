@@ -15,6 +15,11 @@ pub mod tests {
         pub app: App,
     }
 
+    // The accessors below are a complete set on purpose: a harness exists so
+    // that the next scenario can read whatever it needs without editing the
+    // harness, and the three nobody happens to call today are the ones a
+    // test written tomorrow reaches for first.
+    #[allow(dead_code)]
     impl TestApp {
         pub fn new() -> Self {
             let config = EngineConfig { buffer_size: 64, sample_rate: 44100 };

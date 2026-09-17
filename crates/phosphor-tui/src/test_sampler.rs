@@ -590,13 +590,11 @@ mod tests {
 
         press(&mut app, KeyCode::Char('u')); // undo the second load
         assert_eq!(sampler_state(&app).pads[second].layers.len(), 0);
-        let commands = app.drain_mixer_commands();
-        let cleared = commands.iter().any(|c| matches!(
-            c,
-            MixerCommand::SetSamplerPad { pad, layers, .. }
-                if *pad as usize == second && layers.is_empty()
-        ));
-        assert!(cleared, "the emptied pad was never cleared in the engine");
+        let cleared = synced(&app);
+        assert!(
+            cleared.contains(&(second, 0)),
+            "the emptied pad was never cleared in the engine: {cleared:?}",
+        );
         // The pad that was not touched still has its sound.
         assert_eq!(sampler_state(&app).pads[here].layers.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
@@ -739,6 +737,37 @@ mod tests {
         // The keyboard band stays: a player trimming still has to be able to
         // see which pad they are trimming.
         assert!(text.contains("\u{25BC}"), "the bed went away with the map:\n{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Tab does not walk out of the strip.
+    ///
+    /// The strip's own doc says it "owns every key while it is open", and a
+    /// held knob on the same tab is already guarded that way. Tab was the one
+    /// key that walked, which meant the two modes with the same stated
+    /// contract behaved differently and only one of them could be predicted.
+    /// `esc` is still the way out.
+    #[test]
+    fn tab_does_not_walk_out_of_the_trim_strip() {
+        let dir = scratch("trim-tab");
+        let mut app = loaded_app(&dir);
+        press(&mut app, KeyCode::Char('t'));
+        let tab = app.nav.clip_view.clip_tab;
+
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Tab);
+        }
+        assert_eq!(app.nav.clip_view.clip_tab, tab, "Tab walked the strip off the tab");
+        assert!(app.nav.clip_view.sampler.trim.is_some(), "the strip was left behind");
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.nav.clip_view.clip_tab, tab, "shift-Tab walked out instead");
+        assert!(app.nav.clip_view.sampler.trim.is_some());
+
+        // And `esc` still is the way out.
+        press(&mut app, KeyCode::Esc);
+        assert!(app.nav.clip_view.sampler.trim.is_none(), "esc stopped closing the strip");
+        press(&mut app, KeyCode::Tab);
+        assert_ne!(app.nav.clip_view.clip_tab, tab, "Tab stopped working once the strip was shut");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -995,8 +1024,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Walking away from the pad map stops the audition, whichever way the
-    /// player walked. Nobody presses `esc` on the way to another tab.
+    /// Walking away from the pad map stops the audition.
+    ///
+    /// A loop belongs to the strip, and the strip does not let Tab past it,
+    /// so the way out of a loop is `esc` — which silences it on the way. An
+    /// audition started on the pad map itself does follow the player out of
+    /// the tab, which is the rule this exists for: nobody presses `esc` on
+    /// the way to another tab.
     #[test]
     fn leaving_the_pads_tab_silences_a_looping_audition() {
         let dir = scratch("trim-leave");
@@ -1005,9 +1039,30 @@ mod tests {
         press(&mut app, KeyCode::Char('t')); // looping
         let _ = app.drain_mixer_commands();
 
+        // Tab is the strip's, so the loop is left playing for the player who
+        // is still looking at it.
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.nav.clip_view.clip_tab, ClipTab::Pads);
+        assert!(previews(&app).is_empty(), "the loop was silenced by a key that did nothing");
+
+        // `esc` closes the strip, and the loop goes with it.
+        press(&mut app, KeyCode::Esc);
+        assert!(app.nav.clip_view.sampler.trim.is_none());
+        assert_eq!(previews(&app), vec![None], "the loop outlived the strip");
+
+        // And from the pad map, Tab really does walk away — and takes the
+        // audition with it.
+        press(&mut app, KeyCode::Char(']'));
+        press(&mut app, KeyCode::Char('['));
+        let _ = app.drain_mixer_commands();
+        press(&mut app, KeyCode::Char('1')); // audition layer one
+        assert!(
+            previews(&app).iter().any(Option::is_some),
+            "the layer list stopped auditioning",
+        );
         press(&mut app, KeyCode::Tab);
         assert_ne!(app.nav.clip_view.clip_tab, ClipTab::Pads);
-        assert_eq!(previews(&app), vec![None], "the loop followed the player out of the tab");
+        assert_eq!(previews(&app), vec![None], "the audition followed the player out of the tab");
 
         // And one keystroke later it is not sending anything else.
         press(&mut app, KeyCode::Tab);
@@ -1174,6 +1229,46 @@ mod tests {
         press(&mut app, KeyCode::Char('i'));
         press(&mut app, KeyCode::Enter); // the first entry: Phosphor Synth
         app
+    }
+
+    /// Space is refused in words while source mode is on.
+    ///
+    /// The mode has the track's plugin slot on loan, so the sampler is not
+    /// playing and half of what the space menu opens is about a kit that is
+    /// not in the box right now. Every other key the mode does not take is
+    /// answered with a sentence; space used to be the one that opened a menu
+    /// over it instead. It is refused from every tab, because the mode is on
+    /// from every tab.
+    #[test]
+    fn space_is_refused_in_words_while_source_mode_is_on() {
+        let mut app = source_app();
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!app.nav.space_menu.open, "the space menu opened over source mode");
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("source mode is on"), "the refusal said nothing:\n{text}");
+        assert!(text.contains("esc puts the sampler back"), "no way out named:\n{text}");
+        assert!(text.contains("-- SOURCE --"), "the mode was left:\n{text}");
+
+        // From another tab too: the slot is on loan wherever the player is
+        // standing.
+        press(&mut app, KeyCode::Tab);
+        assert_ne!(app.nav.clip_view.clip_tab, ClipTab::Pads);
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!app.nav.space_menu.open, "the menu opened from the next tab along");
+        assert!(app.in_sampler_source(), "the refusal cost the mode");
+
+        // And the moment the sampler is back, space is space again.
+        for _ in 0..8 {
+            if app.nav.clip_view.clip_tab == ClipTab::Pads {
+                break;
+            }
+            press(&mut app, KeyCode::Tab);
+        }
+        assert_eq!(app.nav.clip_view.clip_tab, ClipTab::Pads, "never found the way back");
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.in_sampler_source());
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.nav.space_menu.open, "space stopped opening the menu");
     }
 
     /// `i` opens the picker for the pad, and it offers what can be
@@ -1635,17 +1730,45 @@ mod tests {
         &state.zones[index]
     }
 
-    /// Every `SetSamplerPad` the engine was sent, as `(pad, layers)`.
+    /// Every key the engine was told about, as `(pad, layers)`.
+    ///
+    /// Both shapes, flattened: a single-pad edit travels as `SetSamplerPad`
+    /// and a span travels as one `SetSamplerRange`, and what these tests
+    /// care about is which keys the engine now holds — not which envelope
+    /// they arrived in.
     fn synced(app: &App) -> Vec<(usize, usize)> {
-        app.drain_mixer_commands()
-            .into_iter()
-            .filter_map(|c| match c {
+        let mut out = Vec::new();
+        for command in app.drain_mixer_commands() {
+            match command {
                 MixerCommand::SetSamplerPad { pad, layers, .. } => {
-                    Some((pad as usize, layers.len()))
+                    out.push((pad as usize, layers.len()));
                 }
-                _ => None,
-            })
-            .collect()
+                MixerCommand::SetSamplerRange { pads, .. } => {
+                    out.extend(pads.iter().map(|(pad, _, layers, _)| (*pad as usize, layers.len())));
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// The same for phrases, as `(pad, phrases)`.
+    fn synced_phrases(app: &App) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        for command in app.drain_mixer_commands() {
+            match command {
+                MixerCommand::SetSamplerPhrases { pad, phrases, .. } => {
+                    out.push((pad as usize, phrases.len()));
+                }
+                MixerCommand::SetSamplerRange { pads, .. } => {
+                    out.extend(
+                        pads.iter().map(|(pad, _, _, phrases)| (*pad as usize, phrases.len())),
+                    );
+                }
+                _ => {}
+            }
+        }
+        out
     }
 
     /// A kit with `kick.wav` on C3 in keys mode, with one zone across the
@@ -1657,6 +1780,78 @@ mod tests {
         press(&mut app, KeyCode::Char('w'));
         let _ = app.drain_mixer_commands();
         app
+    }
+
+    /// A bed-wide zone edit is **one** command, not a hundred and seventy-six.
+    ///
+    /// The audit's S1: one press of a trim key under a zone across the bed
+    /// queued 88 `SetSamplerPad` and 88 `SetSamplerPhrases`, against a drain
+    /// of four allocating commands per callback. Held at a terminal's
+    /// auto-repeat the queue grew faster than it emptied and the engine fell
+    /// seconds behind the screen. The whole span now travels in one command
+    /// charged for what it carries.
+    #[test]
+    fn a_bed_wide_edit_is_one_command_and_not_a_hundred_and_seventy_six() {
+        let dir = scratch("keys-flood");
+        let mut app = keys_app(&dir);
+
+        // Twenty presses of the trim key: a second of auto-repeat.
+        press(&mut app, KeyCode::Char('t'));
+        let _ = app.drain_mixer_commands();
+        for _ in 0..20 {
+            press(&mut app, KeyCode::Char('l'));
+        }
+        let commands = app.drain_mixer_commands();
+        let deliveries = commands
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    MixerCommand::SetSamplerPad { .. }
+                        | MixerCommand::SetSamplerPhrases { .. }
+                        | MixerCommand::SetSamplerRange { .. }
+                )
+            })
+            .count();
+        assert_eq!(deliveries, 20, "a nudge cost more than one delivery: {deliveries}");
+        // Which used to be 20 x 176. The bound that matters is per press.
+        assert!(
+            deliveries * 176 / 20 > deliveries,
+            "the comparison this test exists to make has stopped being true",
+        );
+
+        // Every one of them is a range carrying the whole bed, and the range
+        // says the same thing the eighty-eight commands used to.
+        let range = commands
+            .iter()
+            .find_map(|c| match c {
+                MixerCommand::SetSamplerRange { pads, .. } => Some(pads),
+                _ => None,
+            })
+            .expect("a bed-wide edit did not travel as a range");
+        assert_eq!(range.len(), phosphor_app::sampler::NUM_PADS, "the range lost keys");
+        assert!(range.iter().all(|(_, _, layers, _)| layers.len() == 1), "a key went silent");
+        let notes: Vec<u8> = range.iter().map(|(pad, ..)| *pad).collect();
+        assert_eq!(notes.first().copied(), Some(0));
+        assert_eq!(notes.last().copied(), Some(phosphor_app::sampler::NUM_PADS as u8 - 1));
+
+        // ...and a single-pad edit still takes the cheap road it always did.
+        press(&mut app, KeyCode::Esc);
+        press_shift(&mut app, 'K');
+        let _ = app.drain_mixer_commands();
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('l'));
+        let commands = app.drain_mixer_commands();
+        assert!(
+            commands.iter().any(|c| matches!(c, MixerCommand::SetSamplerPad { .. })),
+            "a one-pad knob turn stopped taking the single-pad command",
+        );
+        assert!(
+            !commands.iter().any(|c| matches!(c, MixerCommand::SetSamplerRange { .. })),
+            "a one-pad knob turn built a range for one pad",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `K` puts the bed into zones and back, and says so in both places a
@@ -2788,16 +2983,7 @@ mod tests {
         );
 
         press(&mut app, KeyCode::Esc); // out of source mode, kit replayed
-        let sent: Vec<(usize, usize)> = app
-            .drain_mixer_commands()
-            .into_iter()
-            .filter_map(|c| match c {
-                MixerCommand::SetSamplerPhrases { pad, phrases, .. } => {
-                    Some((pad as usize, phrases.len()))
-                }
-                _ => None,
-            })
-            .collect();
+        let sent = synced_phrases(&app);
         for pad in 0..phosphor_app::sampler::NUM_PADS {
             assert!(
                 sent.contains(&(pad, 1)),

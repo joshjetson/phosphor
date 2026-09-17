@@ -111,6 +111,13 @@ pub struct PhraseState {
     /// Not the same as the frame of its last note-off: a phrase can end in
     /// silence, and a bar-quantised one has to.
     pub frames: u64,
+    /// The engine rate `frames` and the events were counted at, in Hz.
+    ///
+    /// Zero is unknown, which plays as-is — every phrase written before this
+    /// existed says nothing about rates and opens exactly as it always has.
+    /// Stamped at capture, so a performance recorded on a 48 kHz device and
+    /// opened on a 44.1 kHz one plays at its own speed rather than 9% slow.
+    pub sample_rate: f32,
     /// What every recorded velocity is multiplied by.
     pub gain: f32,
     /// When on, notes shift by the distance between the played key and the
@@ -124,12 +131,21 @@ pub struct PhraseState {
 impl PhraseState {
     /// A fresh phrase over the whole of `events`, at unity, answering every
     /// velocity and playing at the pitch it was recorded at.
+    ///
+    /// `sample_rate` is the engine rate the events were counted at; zero when
+    /// that is not known, which plays them as-is.
     #[must_use]
-    pub fn new(name: String, events: Arc<[PhraseEvent]>, frames: u64) -> Self {
+    pub fn new(
+        name: String,
+        events: Arc<[PhraseEvent]>,
+        frames: u64,
+        sample_rate: f32,
+    ) -> Self {
         Self {
             name,
             events,
             frames,
+            sample_rate,
             gain: 1.0,
             transpose_with_key: false,
             mute: false,
@@ -138,14 +154,17 @@ impl PhraseState {
         }
     }
 
-    /// How long it plays, in seconds at `rate`.
+    /// How long it plays, in seconds.
     ///
-    /// The engine's rate, not one of its own: the frames were measured at
-    /// capture and the engine counts them at whatever rate it is running,
-    /// so this is what the phrase will actually last for right now.
+    /// Its own capture rate when it has one, because that is what the engine
+    /// compensates to: a phrase counted in 48 kHz frames lasts the second it
+    /// was played for, on any device. `rate` — the engine's — is the fallback
+    /// for a phrase that never said what it was captured at, which is the
+    /// only reading that was ever available before rates were stamped.
     #[must_use]
     pub fn seconds(&self, rate: f32) -> f32 {
-        self.frames as f32 / rate.max(1.0)
+        let counted_at = if self.sample_rate > 0.0 { self.sample_rate } else { rate };
+        self.frames as f32 / counted_at.max(1.0)
     }
 
     /// How many notes are in it — what tells a phrase apart from the empty
@@ -166,6 +185,7 @@ impl PhraseState {
             mute: self.mute,
             vel_lo: self.vel_lo,
             vel_hi: self.vel_hi,
+            sample_rate: self.sample_rate,
         }
     }
 }
@@ -181,6 +201,7 @@ impl PartialEq for PhraseState {
         Arc::ptr_eq(&self.events, &other.events)
             && self.name == other.name
             && self.frames == other.frames
+            && self.sample_rate == other.sample_rate
             && self.gain == other.gain
             && self.transpose_with_key == other.transpose_with_key
             && self.mute == other.mute
@@ -270,19 +291,24 @@ impl PadState {
 
     /// Keep one more performance, if the bed has room for it.
     ///
+    /// `sample_rate` is the engine rate the frames were counted at, so the
+    /// performance can be played back at the speed it was played; zero when
+    /// the caller does not know, which plays it as-is.
+    ///
     /// `title` is what a refusal calls this place — "pad C3", "zone C2-B3" —
     /// the same courtesy [`PadState::add_wav`] pays.
     pub fn add_phrase(
         &mut self,
         events: Arc<[PhraseEvent]>,
         frames: u64,
+        sample_rate: f32,
         title: &str,
     ) -> Result<usize, String> {
         if self.phrases.len() >= MAX_PHRASES {
             return Err(SamplerState::phrase_full_message(title));
         }
         let name = format!("phrase {}", self.phrase_count() + 1);
-        self.phrases.push(PhraseState::new(name, events, frames));
+        self.phrases.push(PhraseState::new(name, events, frames, sample_rate));
         Ok(self.phrases.len() - 1)
     }
 
@@ -331,13 +357,14 @@ impl SamplerState {
         &mut self,
         events: Arc<[PhraseEvent]>,
         frames: u64,
+        sample_rate: f32,
         root: Option<u8>,
     ) -> Result<usize, String> {
         let title = self.edit_title();
         let index = self
             .edited_mut()
             .ok_or_else(Self::no_zone_message)?
-            .add_phrase(events, frames, &title)?;
+            .add_phrase(events, frames, sample_rate, &title)?;
         if let Some(root) = root {
             self.set_edit_root(root);
         }
@@ -366,7 +393,7 @@ mod tests {
     }
 
     fn phrase(name: &str) -> PhraseState {
-        PhraseState::new(name.into(), events(&[(0, 60)]), 44_100)
+        PhraseState::new(name.into(), events(&[(0, 60)]), 44_100, 44_100.0)
     }
 
     #[test]
@@ -383,24 +410,47 @@ mod tests {
         assert!(Arc::ptr_eq(&p.engine_phrase().events, &p.events));
     }
 
-    /// A rate the phrase was not captured at is the rate it will play at,
-    /// so that is the length the list shows.
+    /// A phrase lasts the time it was played for, on whatever device it is
+    /// opened on: the frames are counted at the rate they were captured at,
+    /// and the runner compensates. A phrase that never said what it was
+    /// captured at falls back to the engine's rate, which is the only reading
+    /// that was ever available for it.
     #[test]
-    fn the_length_is_read_at_the_rate_it_will_play_at() {
-        let p = PhraseState::new("phrase 1".into(), events(&[(0, 60)]), 48_000);
-        assert_eq!(p.seconds(48_000.0), 1.0);
-        assert!((p.seconds(44_100.0) - 1.088).abs() < 0.001);
+    fn the_length_is_read_at_the_rate_it_was_captured_at() {
+        let captured = PhraseState::new("phrase 1".into(), events(&[(0, 60)]), 48_000, 48_000.0);
+        assert_eq!(captured.seconds(48_000.0), 1.0);
+        assert_eq!(captured.seconds(44_100.0), 1.0, "the length followed the device");
         // A nonsense rate is a division nobody survives.
-        assert!(p.seconds(0.0).is_finite());
+        assert!(captured.seconds(0.0).is_finite());
+
+        let unknown = PhraseState::new("phrase 1".into(), events(&[(0, 60)]), 48_000, 0.0);
+        assert_eq!(unknown.seconds(48_000.0), 1.0);
+        assert!((unknown.seconds(44_100.0) - 1.088).abs() < 0.001);
+        assert!(unknown.seconds(0.0).is_finite());
+    }
+
+    /// The rate travels to the engine with the phrase, survives the file,
+    /// and is absent from a file that has none — the version rule every
+    /// other field on a phrase already follows.
+    #[test]
+    fn a_phrase_carries_the_rate_it_was_captured_at() {
+        let p = phrase("phrase 1");
+        assert_eq!(p.engine_phrase().sample_rate, 44_100.0);
+        // Two phrases off one recording differ when their rates differ: undo
+        // compares these, and a rate change is a change to how it plays.
+        let mut other = PhraseState::new("phrase 1".into(), Arc::clone(&p.events), 44_100, 0.0);
+        assert_ne!(p, other);
+        other.sample_rate = 44_100.0;
+        assert_eq!(p, other);
     }
 
     #[test]
     fn the_fifth_phrase_is_refused_in_words() {
         let mut pad = PadState::empty(60);
         for i in 0..MAX_PHRASES {
-            assert_eq!(pad.add_phrase(events(&[(0, 60)]), 100, "pad C3").unwrap(), i);
+            assert_eq!(pad.add_phrase(events(&[(0, 60)]), 100, 0.0, "pad C3").unwrap(), i);
         }
-        let err = pad.add_phrase(events(&[(0, 60)]), 100, "pad C3").unwrap_err();
+        let err = pad.add_phrase(events(&[(0, 60)]), 100, 0.0, "pad C3").unwrap_err();
         assert!(err.contains("four phrases"), "{err}");
         assert_eq!(pad.phrases.len(), MAX_PHRASES);
     }
@@ -410,12 +460,12 @@ mod tests {
     #[test]
     fn a_phrase_is_named_for_its_place_in_the_stack() {
         let mut pad = PadState::empty(60);
-        pad.add_phrase(events(&[(0, 60)]), 100, "pad C3").unwrap();
-        pad.add_phrase(events(&[(0, 62)]), 100, "pad C3").unwrap();
+        pad.add_phrase(events(&[(0, 60)]), 100, 0.0, "pad C3").unwrap();
+        pad.add_phrase(events(&[(0, 62)]), 100, 0.0, "pad C3").unwrap();
         let names: Vec<&str> = pad.phrases.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, vec!["phrase 1", "phrase 2"]);
         pad.phrases.remove(0);
-        pad.add_phrase(events(&[(0, 64)]), 100, "pad C3").unwrap();
+        pad.add_phrase(events(&[(0, 64)]), 100, 0.0, "pad C3").unwrap();
         assert_eq!(pad.phrases[1].name, "phrase 2");
     }
 
@@ -430,8 +480,8 @@ mod tests {
             sample_rate: 44_100.0,
         });
         state.add_wav_layer(0, std::path::PathBuf::from("kick.wav"), pcm).unwrap();
-        state.pads[0].add_phrase(events(&[(0, 60)]), 100, "pad").unwrap();
-        state.pads[0].add_phrase(events(&[(0, 62)]), 100, "pad").unwrap();
+        state.pads[0].add_phrase(events(&[(0, 60)]), 100, 0.0, "pad").unwrap();
+        state.pads[0].add_phrase(events(&[(0, 62)]), 100, 0.0, "pad").unwrap();
 
         let pad = &state.pads[0];
         assert_eq!(pad.rows(), 3);
@@ -447,7 +497,7 @@ mod tests {
     #[test]
     fn a_row_cursor_past_the_end_edits_nothing() {
         let mut pad = PadState::empty(60);
-        pad.add_phrase(events(&[(0, 60)]), 100, "pad").unwrap();
+        pad.add_phrase(events(&[(0, 60)]), 100, 0.0, "pad").unwrap();
         assert!(pad.phrase_at_row(9).is_none());
         assert!(pad.phrase_at_row(0).is_some());
     }
@@ -457,9 +507,9 @@ mod tests {
     fn a_pad_with_only_a_phrase_is_not_an_empty_pad() {
         let mut pad = PadState::empty(60);
         assert_eq!(pad.sound_label(), "\u{2014}");
-        pad.add_phrase(events(&[(0, 60)]), 100, "pad").unwrap();
+        pad.add_phrase(events(&[(0, 60)]), 100, 0.0, "pad").unwrap();
         assert_eq!(pad.sound_label(), "phrase 1");
-        pad.add_phrase(events(&[(0, 62)]), 100, "pad").unwrap();
+        pad.add_phrase(events(&[(0, 62)]), 100, 0.0, "pad").unwrap();
         assert_eq!(pad.sound_label(), "2 phrases");
     }
 
@@ -468,17 +518,17 @@ mod tests {
     #[test]
     fn a_phrase_lands_where_the_cursor_is_and_teaches_its_root() {
         let mut state = SamplerState::new();
-        state.add_phrase_here(events(&[(0, 45)]), 1_000, Some(45)).unwrap();
+        state.add_phrase_here(events(&[(0, 45)]), 1_000, 0.0, Some(45)).unwrap();
         assert_eq!(state.current().phrases.len(), 1);
         assert_eq!(state.current().config.root, 45);
 
         let mut keys = SamplerState::new();
         keys.mode = MapMode::Keys;
         // No zone under the cursor: the refusal names the three keys.
-        let err = keys.add_phrase_here(events(&[(0, 45)]), 1_000, None).unwrap_err();
+        let err = keys.add_phrase_here(events(&[(0, 45)]), 1_000, 0.0, None).unwrap_err();
         assert!(err.contains("no zone"), "{err}");
         keys.zones.push(Zone::new(0, 87, PadState::empty(60)));
-        keys.add_phrase_here(events(&[(0, 50)]), 1_000, Some(50)).unwrap();
+        keys.add_phrase_here(events(&[(0, 50)]), 1_000, 0.0, Some(50)).unwrap();
         assert_eq!(keys.zones[0].pad.phrases.len(), 1);
         assert_eq!(keys.zones[0].root(), 50, "the zone did not learn the root");
         assert!(keys.pads[keys.cursor].phrases.is_empty(), "it landed on the hidden pad");
@@ -488,11 +538,11 @@ mod tests {
     fn a_full_pad_refuses_the_arm_in_the_same_words_as_the_landing() {
         let mut state = SamplerState::new();
         for _ in 0..MAX_PHRASES {
-            state.add_phrase_here(events(&[(0, 60)]), 100, None).unwrap();
+            state.add_phrase_here(events(&[(0, 60)]), 100, 0.0, None).unwrap();
         }
         let refusal = state.phrase_room_here().unwrap_err();
         assert!(refusal.contains("four phrases"), "{refusal}");
-        assert_eq!(refusal, state.add_phrase_here(events(&[(0, 60)]), 100, None).unwrap_err());
+        assert_eq!(refusal, state.add_phrase_here(events(&[(0, 60)]), 100, 0.0, None).unwrap_err());
     }
 
     /// Two phrases off one recording are the same phrase; a second copy of
@@ -501,12 +551,12 @@ mod tests {
     #[test]
     fn phrase_equality_is_the_event_lists_identity() {
         let shared = events(&[(0, 60)]);
-        let a = PhraseState::new("phrase 1".into(), Arc::clone(&shared), 100);
-        let mut b = PhraseState::new("phrase 1".into(), shared, 100);
+        let a = PhraseState::new("phrase 1".into(), Arc::clone(&shared), 100, 0.0);
+        let mut b = PhraseState::new("phrase 1".into(), shared, 100, 0.0);
         assert_eq!(a, b);
         b.gain = 0.5;
         assert_ne!(a, b);
-        let elsewhere = PhraseState::new("phrase 1".into(), events(&[(0, 60)]), 100);
+        let elsewhere = PhraseState::new("phrase 1".into(), events(&[(0, 60)]), 100, 0.0);
         assert_ne!(a, elsewhere, "two decodes of one performance compared equal");
     }
 

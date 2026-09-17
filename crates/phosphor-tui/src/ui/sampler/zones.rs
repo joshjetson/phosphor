@@ -114,6 +114,12 @@ pub(super) fn zone_list(map: &Map, width: usize, height: usize) -> Vec<Line<'sta
         },
         theme::dim(),
     );
+    // The same memory line the pad list carries: a zone's sound is as real
+    // as a pad's, and the mode a player is in should not change what the kit
+    // admits to costing.
+    if let Some(held) = held_label(map.state) {
+        head.push(held, theme::muted());
+    }
     let mut lines = vec![head.line()];
 
     if zones.is_empty() {

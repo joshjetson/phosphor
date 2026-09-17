@@ -49,7 +49,7 @@ pub(super) fn render_space_menu(frame: &mut Frame, nav: &NavState) {
             let items = SPACE_ACTIONS;
             let col_w = 30usize; // width per column
             let rows = list_area.height as usize;
-            let cols = if rows > 0 { (items.len() + rows - 1) / rows } else { 1 };
+            let cols = if rows > 0 { items.len().div_ceil(rows) } else { 1 };
 
             let mut lines: Vec<Line> = Vec::new();
             for row in 0..rows {

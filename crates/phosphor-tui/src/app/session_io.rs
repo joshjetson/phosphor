@@ -70,11 +70,25 @@ impl App {
     /// a file like any other, and a second save has nothing to do. It is
     /// not an undo step, because saving is not an edit; it is the same
     /// state saying where it now lives.
+    /// Once the kit names every take it has, the takes it no longer names
+    /// are swept out of the sidecar. After the writing, never before it: a
+    /// file that was about to be written again would otherwise be deleted
+    /// and rewritten for nothing.
     fn write_take_sidecars(&mut self, path: &std::path::Path) -> Result<usize, String> {
         let mut written = 0usize;
         for index in 0..self.nav.tracks.len() {
             let Some(sampler) = self.nav.tracks[index].sampler.as_deref_mut() else { continue };
             written += phosphor_app::sampler::sidecar::write_takes(path, sampler)?;
+        }
+        let swept = phosphor_app::sampler::sidecar::prune_takes(
+            path,
+            self.nav.tracks.iter().filter_map(|t| t.sampler.as_deref()),
+        );
+        if swept > 0 {
+            crate::debug_log::log(
+                "SAMPLER",
+                &format!("{swept} unreferenced take(s) swept from the sidecar"),
+            );
         }
         Ok(written)
     }

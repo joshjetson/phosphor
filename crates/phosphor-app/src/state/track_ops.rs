@@ -153,10 +153,6 @@ impl NavState {
     /// Add a new instrument track. Inserts before the send/master tracks.
     /// `handle` is the shared audio-thread handle for this track.
     /// `mixer_id` is the track's ID in the mixer.
-
-    /// Add a new instrument track. Inserts before the send/master tracks.
-    /// `handle` is the shared audio-thread handle for this track.
-    /// `mixer_id` is the track's ID in the mixer.
     pub fn add_instrument_track(
         &mut self,
         instrument: InstrumentType,
@@ -225,10 +221,6 @@ impl NavState {
             self.tracks.get(track_idx).and_then(|t| t.clips.get(clip_idx)).map(|c| c.notes.len()).unwrap_or(0)
         );
     }
-
-    /// Show controls for the currently selected track and route MIDI to it.
-    /// For instrument tracks: opens clip view with Synth tab, activates MIDI input.
-    /// For bus tracks: no clip view, deactivates MIDI.
 
     /// Take the effect under the menu cursor and put it in the current
     /// strip's chain.
@@ -319,7 +311,6 @@ impl NavState {
                     if idx < track.clips.len() {
                         self.clip_view_target = Some((track_idx, idx));
                         self.clip_view_visible = true;
-                        return;
                     }
                 }
             }
@@ -439,10 +430,7 @@ impl NavState {
         }
 
         // Find the track index (we need it for clip_view_target fixup)
-        let track_idx = match self.tracks.iter().position(|t| t.mixer_id == Some(snap.track_id)) {
-            Some(idx) => idx,
-            None => return None,
-        };
+        let track_idx = self.tracks.iter().position(|t| t.mixer_id == Some(snap.track_id))?;
 
         // Record quantize: the take's notes snap to the chosen grid on the
         // way in, before the player ever sees them — and two hits pulled

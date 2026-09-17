@@ -4,55 +4,28 @@
 //! Everything here is fixed-capacity, because [`Pad::set`] runs on the
 //! audio thread when a `MixerCommand` delivers an edit: copying a config
 //! and re-pointing eight `Arc`s is real-time safe, growing a `Vec` is not.
-//! The trims are clamped here, once, at delivery — the voice trusts its
-//! region completely, so this is the only place `end < start`, a trim past
-//! the buffer, or an empty buffer can be caught.
+//! The clamps are applied here, at delivery, out of the one table in
+//! [`phosphor_plugin::sample`] that the session loader and the knobs also
+//! read — the voice trusts its region completely, so this is where `end <
+//! start`, a trim past the buffer, or an empty buffer is caught.
 
 use std::sync::Arc;
 
-use phosphor_plugin::sample::{PadConfig, PadLayer, PadPhrase, SamplePcm};
+use phosphor_plugin::sample::{
+    clamp_config, clamp_layer, trim_region, PadConfig, PadLayer, PadPhrase, SamplePcm,
+};
 
 use super::phrase::{PhraseSlot, MAX_PHRASES};
 
-/// One pad per piano key, A0..C8.
-pub const NUM_PADS: usize = 88;
+// The pad geometry lives in the interface crate, because the app addresses
+// the same eighty-eight seats and two constants that agree today are two
+// constants that disagree the day one of them is edited. Re-exported rather
+// than redeclared, so the link is the compiler's and not a comment's.
+pub use phosphor_plugin::sample::{pad_index, MAX_LAYERS, NUM_PADS, PAD_BASE_NOTE};
 
-/// MIDI note of the lowest pad (A0).
-pub const PAD_BASE_NOTE: u8 = 21;
-
-/// Layer slots per pad. The UI enforces the same cap; extras past it are
-/// dropped here rather than trusted.
-pub const MAX_LAYERS: usize = 8;
-
-/// The pad this note addresses, if any. Notes off the 88-key bed are
-/// ignored rather than wrapped — a pad map that aliases is worse than one
-/// that is silent at the extremes.
-pub fn pad_index(note: u8) -> Option<usize> {
-    let last = PAD_BASE_NOTE + (NUM_PADS as u8 - 1);
-    if (PAD_BASE_NOTE..=last).contains(&note) {
-        Some(usize::from(note - PAD_BASE_NOTE))
-    } else {
-        None
-    }
-}
-
-/// Repair a delivered velocity window.
-///
-/// Inverted ranges are the interesting case: a UI that lets a player drag
-/// the low edge past the high one would otherwise deliver a sound that can
-/// never be heard, so `hi` is lifted to `lo` rather than the pair being
-/// refused. Shared by layers and phrases because a velocity window means the
-/// same thing to both, and two repairs would eventually disagree.
-pub(crate) fn repair_vel(lo: u8, hi: u8) -> (u8, u8) {
-    let lo = lo.min(127);
-    (lo, hi.min(127).max(lo))
-}
-
-/// Whether a hit at `vel` falls inside a repaired window, inclusive.
-#[inline]
-pub(crate) fn in_vel_window(lo: u8, hi: u8, vel: u8) -> bool {
-    vel >= lo && vel <= hi
-}
+// Shared with [`super::phrase`], which asks the same question of a phrase's
+// velocity window that this file asks of a layer's.
+pub(crate) use phosphor_plugin::sample::{in_vel_window, repair_vel};
 
 /// Copy a delivered list into fixed slots, sanitizing each entry and
 /// clearing the slots past its end.
@@ -93,33 +66,29 @@ impl LayerSlot {
     /// Sanitize a delivered layer into one a voice can be pointed at, or
     /// `None` when there is nothing playable behind it.
     ///
-    /// The one place a trim is clamped. Everything downstream — the voice's
-    /// interpolator taps, its edge fades, its reverse start position —
-    /// trusts `start < end <= frames` completely, so `end < start`, a trim
-    /// past the buffer and an empty buffer are all caught here or not at
-    /// all. Audition shares it for that reason: a preview that clamped its
-    /// own region differently would be a second set of rules for the same
-    /// question.
+    /// Where the shared clamps are applied on the way in. Everything
+    /// downstream — the voice's interpolator taps, its edge fades, its
+    /// reverse start position — trusts `start < end <= frames` completely,
+    /// so an empty buffer stops here. Audition shares this door for the same
+    /// reason: a preview that clamped its own region differently would be a
+    /// second set of rules for the same question.
     pub fn from_layer(layer: &PadLayer) -> Option<Self> {
-        let frames = layer.pcm.frames();
-        if frames == 0 {
-            return None;
-        }
-        let start = layer.start_frame.min(frames - 1);
-        let end = layer.end_frame.clamp(start + 1, frames);
-        let (vel_lo, vel_hi) = repair_vel(layer.vel_lo, layer.vel_hi);
+        let (start, end) = trim_region(&layer.pcm, layer.start_frame, layer.end_frame)?;
+        // By value, so the `Arc` this clones is the one the slot keeps —
+        // one refcount bump for the whole delivery, as before.
+        let layer = clamp_layer(layer.clone());
         Some(Self {
-            pcm: Arc::clone(&layer.pcm),
-            gain: layer.gain.clamp(0.0, 4.0),
-            pan: layer.pan.clamp(-1.0, 1.0),
-            tune_st: layer.tune_st.clamp(-48, 48),
-            tune_cents: layer.tune_cents.clamp(-50, 50),
+            pcm: layer.pcm,
+            gain: layer.gain,
+            pan: layer.pan,
+            tune_st: layer.tune_st,
+            tune_cents: layer.tune_cents,
             start: start as f64,
             end: end as f64,
             reverse: layer.reverse,
             mute: layer.mute,
-            vel_lo,
-            vel_hi,
+            vel_lo: layer.vel_lo,
+            vel_hi: layer.vel_hi,
         })
     }
 
@@ -151,6 +120,26 @@ pub(crate) struct Pad {
     /// both: a sampled kick under a phrase that plays the bassline, on one
     /// key, is the arrangement the feature exists for.
     pub phrases: [Option<PhraseSlot>; MAX_PHRASES],
+    /// Which layer slots have already taken their turn this lap, one bit
+    /// each. Round robin's whole state, in a byte.
+    ///
+    /// A used-set rather than a counter, and the difference is the pad that
+    /// has velocity-split layers *and* cycles. A counter would take
+    /// `hits % answering` and hand the same two layers out forever when soft
+    /// and hard hits alternate, because each kind of hit would be advancing
+    /// the other's place. A set asks a smaller question — has this layer had
+    /// its turn yet — and both halves of the split rotate properly, while a
+    /// pad with no split rotates in plain order because the lowest unused
+    /// layer is the next one along.
+    ///
+    /// It lives on the pad rather than beside the voices because the rotation
+    /// is the *pad's* memory, the way it is on a hardware sampler: the
+    /// transport stopping does not put it back to the first layer, and
+    /// neither does editing the pad — a trim nudge in keys mode re-sends
+    /// eighty-eight pads, and a rotation that restarted on every one of them
+    /// would never leave layer one. Only [`Pad::rewind_cycle`] does, and only
+    /// the panic key and a fresh instrument reach that.
+    cycle_used: u8,
 }
 
 impl Pad {
@@ -159,6 +148,7 @@ impl Pad {
             config: PadConfig::for_key(note),
             layers: std::array::from_fn(|_| None),
             phrases: std::array::from_fn(|_| None),
+            cycle_used: 0,
         }
     }
 
@@ -168,17 +158,48 @@ impl Pad {
     /// only. A layer whose buffer is empty is dropped entirely — a voice
     /// must never be pointed at zero frames.
     pub fn set(&mut self, config: &PadConfig, layers: &[PadLayer]) {
-        let mut cfg = *config;
-        cfg.poly = cfg.poly.clamp(1, 8);
-        cfg.choke = cfg.choke.min(8);
-        cfg.pitch_st = cfg.pitch_st.clamp(-48, 48);
-        cfg.pitch_cents = cfg.pitch_cents.clamp(-50, 50);
-        cfg.sustain = cfg.sustain.clamp(0.0, 1.0);
-        cfg.level = cfg.level.clamp(0.0, 4.0);
-        cfg.pan = cfg.pan.clamp(-1.0, 1.0);
-        self.config = cfg;
-
+        self.config = clamp_config(*config);
         fill_slots(&mut self.layers, layers, LayerSlot::from_layer);
+    }
+
+    /// Which layer slots answer a hit at `vel` — every one of them when the
+    /// pad stacks, exactly one when it cycles.
+    ///
+    /// A bitmask rather than a list because it is read inside the note-on
+    /// loop and eight bits are one register. A cycling pad takes its turn out
+    /// of the layers that *answer* this hit, so a muted layer and a layer
+    /// outside the velocity window both lose their turn rather than spending
+    /// it on silence — round robin on a velocity-split pad is two rotations,
+    /// not one with holes in it.
+    ///
+    /// Advances the rotation, so it is asked exactly once per hit.
+    pub fn answering(&mut self, vel: u8) -> u8 {
+        let mut answering = 0u8;
+        for (i, slot) in self.layers.iter().enumerate() {
+            if slot.as_ref().is_some_and(|s| s.answers(vel)) {
+                answering |= 1 << i;
+            }
+        }
+        if !self.config.cycle || answering == 0 {
+            return answering;
+        }
+        // Whoever has not had a turn yet. When they all have, the lap is over
+        // and a fresh one starts — with this hit, not with the next, or a
+        // cycling pad would go silent once per lap.
+        let mut left = answering & !self.cycle_used;
+        if left == 0 {
+            self.cycle_used = 0;
+            left = answering;
+        }
+        let next = 1u8 << left.trailing_zeros();
+        self.cycle_used |= next;
+        next
+    }
+
+    /// Put the rotation back to the first layer. The panic key's reach, and
+    /// a fresh instrument's — see [`Pad::cycle_used`].
+    pub fn rewind_cycle(&mut self) {
+        self.cycle_used = 0;
     }
 
     /// Replace this pad's phrase layers with a sanitized copy.

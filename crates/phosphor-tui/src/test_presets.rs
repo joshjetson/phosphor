@@ -284,6 +284,96 @@ mod tests {
         let _ = std::fs::remove_dir_all(app.preset_dir.as_ref().unwrap());
     }
 
+    /// A sampler preset is its two globals and nothing else.
+    ///
+    /// The kit is not a panel: pads, layers, zones and takes are a data model
+    /// delivered whole by their own commands, and they belong to the session
+    /// rather than to a preset bank. What a sampler preset holds is `level`
+    /// and `vel` — the two controls the parameter system actually carries —
+    /// and loading one must leave the kit exactly where it was. A preset that
+    /// quietly emptied a bed of eighty-eight pads would be the worst kind of
+    /// data loss: undoable in principle, invisible in practice.
+    #[test]
+    fn a_sampler_preset_carries_its_two_globals_and_leaves_the_kit_alone() {
+        let mut app = app("sampler");
+        add_track(&mut app, InstrumentType::Sampler);
+        app.nav.focus_pane(Pane::Tracks);
+        assert_eq!(params(&app).len(), phosphor_dsp::sampler::PARAM_COUNT);
+
+        // A kit on the pads, so there is something a careless preset could
+        // take away.
+        let pcm = std::sync::Arc::new(phosphor_plugin::sample::SamplePcm {
+            data: vec![0.25; 1_000],
+            channels: 1,
+            sample_rate: 44_100.0,
+        });
+        let track_idx = app.nav.track_cursor;
+        {
+            let sampler = app.nav.tracks[track_idx].sampler.as_deref_mut().expect("no kit");
+            sampler
+                .add_wav_layer(39, std::path::PathBuf::from("kick.wav"), pcm)
+                .unwrap();
+            sampler.pads[39].config.cycle = true;
+            sampler.pads[39].config.choke = 4;
+        }
+
+        // Dial the two globals off their defaults and save them.
+        for (param, presses) in
+            [(phosphor_dsp::sampler::P_LEVEL, -4i32), (phosphor_dsp::sampler::P_VEL, 3)]
+        {
+            app.nav.clip_view.synth_param_cursor = param;
+            for _ in 0..presses.abs() {
+                app.nav.adjust_synth_param(if presses > 0 { 0.05 } else { -0.05 });
+            }
+        }
+        let dialled = params(&app);
+        assert_ne!(dialled, phosphor_dsp::sampler::PARAM_DEFAULTS.to_vec());
+
+        open_browser(&mut app);
+        press(&mut app, KeyCode::Enter);
+        type_name(&mut app, "quiet kit");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.nav.preset_modal.entries, vec!["quiet kit".to_string()]);
+
+        // Walk both globals somewhere else, then bring the preset back.
+        for param in [phosphor_dsp::sampler::P_LEVEL, phosphor_dsp::sampler::P_VEL] {
+            app.nav.clip_view.synth_param_cursor = param;
+            for _ in 0..4 {
+                app.nav.adjust_synth_param(0.05);
+            }
+        }
+        assert_ne!(params(&app), dialled);
+
+        assert_eq!(app.nav.preset_modal.cursor, 1);
+        let _ = app.drain_mixer_commands();
+        press(&mut app, KeyCode::Enter);
+        assert_same_panel(
+            InstrumentType::Sampler,
+            &params(&app),
+            &dialled,
+            "the sampler's globals did not come back",
+        );
+
+        // And the kit is untouched — no pad command was sent, and the pad
+        // still holds everything it held.
+        let sampler = app.nav.tracks[track_idx].sampler.as_deref().expect("the kit went away");
+        assert_eq!(sampler.pads[39].layers.len(), 1, "a preset emptied a pad");
+        assert_eq!(sampler.pads[39].layers[0].name, "kick");
+        assert!(sampler.pads[39].config.cycle, "a preset turned a pad switch off");
+        assert_eq!(sampler.pads[39].config.choke, 4);
+        let touched = app.drain_mixer_commands().into_iter().any(|c| {
+            matches!(
+                c,
+                phosphor_core::mixer::MixerCommand::SetSamplerPad { .. }
+                    | phosphor_core::mixer::MixerCommand::SetSamplerRange { .. }
+                    | phosphor_core::mixer::MixerCommand::SetSamplerPhrases { .. }
+            )
+        });
+        assert!(!touched, "loading a preset sent the engine a pad it never asked about");
+
+        let _ = std::fs::remove_dir_all(app.preset_dir.as_ref().unwrap());
+    }
+
     /// The drum rack is the reason this exists: 35 controls across eight
     /// voices, none of them reachable from the kit knob.
     #[test]

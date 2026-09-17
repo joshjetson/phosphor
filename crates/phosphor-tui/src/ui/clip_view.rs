@@ -293,11 +293,20 @@ pub(super) fn render_inst_config(frame: &mut Frame, area: Rect, nav: &NavState) 
         return;
     }
 
+    // A sampler in a plugin slot with no `SamplerState` behind it is a
+    // sequencer's child: eighty-eight empty pads and no `[pads]` tab to put
+    // sounds on them. The two globals below are real and do work; the kit is
+    // what is missing, and it lives on a track of its own. The same sentence
+    // the child knob flashes — see `App::say_if_child_needs_its_own_track`.
+    let orphaned_sampler =
+        instrument == Some(InstrumentType::Sampler) && track.sampler.is_none();
+
     // One control per cell, filled down each column and then across, so the
     // panel reads in the order the instrument lists it.
     let cell_w = INST_CELL_W.min(w);
     let columns = (w / cell_w).max(1);
-    let rows = h.saturating_sub(1).max(1);
+    let header_lines = 1 + usize::from(orphaned_sampler);
+    let rows = h.saturating_sub(header_lines).max(1);
     let per_page = columns * rows;
     let cursor = nav.clip_view.synth_param_cursor.min(count.saturating_sub(1));
     let pages = count.div_ceil(per_page);
@@ -305,6 +314,12 @@ pub(super) fn render_inst_config(frame: &mut Frame, area: Rect, nav: &NavState) 
     let first = page * per_page;
 
     let mut lines: Vec<Line> = vec![inst_header(track, instrument, count, page, pages, focused)];
+    if orphaned_sampler {
+        lines.push(Line::from(Span::styled(
+            "  the sampler needs its own track for pads \u{00b7} these two are all this one has",
+            theme::muted(),
+        )));
+    }
 
     for row in 0..rows {
         let mut spans: Vec<Span> = Vec::new();
@@ -602,10 +617,9 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
             let hl_x_start = vis_start * col_w;
             let hl_x_end = (vis_end * col_w).min(note_w);
             let hl_bg = theme::selection_bg();
-            for x in hl_x_start..hl_x_end {
-                let (ch, old_s) = gr[x];
-                let fg = old_s.fg.unwrap_or(theme::dim_val());
-                gr[x] = (ch, Style::default().fg(fg).bg(hl_bg));
+            for cell in gr.iter_mut().take(hl_x_end).skip(hl_x_start) {
+                let fg = cell.1.fg.unwrap_or(theme::dim_val());
+                cell.1 = Style::default().fg(fg).bg(hl_bg);
             }
         }
 
@@ -621,10 +635,9 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
             } else {
                 theme::col_highlight_bg()
             };
-            for x in col_start..col_end {
-                let (ch, old_s) = gr[x];
-                let fg = old_s.fg.unwrap_or(theme::dim_val());
-                gr[x] = (ch, Style::default().fg(fg).bg(col_bg));
+            for cell in gr.iter_mut().take(col_end).skip(col_start) {
+                let fg = cell.1.fg.unwrap_or(theme::dim_val());
+                cell.1 = Style::default().fg(fg).bg(col_bg);
             }
         }
 
@@ -706,7 +719,7 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
                         let frac = (pos - clip_start) as f64 / clip.length_ticks as f64;
                         // Map to visible window
                         let rel = (frac - scroll_frac) / visible_frac;
-                        if rel >= 0.0 && rel < 1.0 {
+                        if (0.0..1.0).contains(&rel) {
                             let x = (rel * note_w as f64) as usize;
                             if x < note_w {
                                 let (ch, _) = gr[x];
@@ -818,11 +831,11 @@ fn append_automation_lane(
         let band_hi = 127 - (r * 128 / bar_rows) as u8;
         let band_lo = 127u8.saturating_sub(((r + 1) * 128 / bar_rows) as u8);
         let mut cells: Vec<(char, Style)> = Vec::with_capacity(note_w);
-        for c in 0..visible_cols {
+        for (c, value) in values.iter().enumerate().take(visible_cols) {
             let is_cursor_col = cursor_vis == Some(c);
             let is_play_col = play_col == Some(c);
-            let filled = values[c].is_some_and(|v| v >= band_lo);
-            let at_top = values[c].is_some_and(|v| v >= band_lo && v <= band_hi);
+            let filled = value.is_some_and(|v| v >= band_lo);
+            let at_top = value.is_some_and(|v| v >= band_lo && v <= band_hi);
             let (ch, fg) = if at_top {
                 ('\u{2584}', theme::amber_bright_val()) // the value's own band: a cap
             } else if filled {

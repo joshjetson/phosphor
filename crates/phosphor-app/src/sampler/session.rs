@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use phosphor_plugin::sample::{PadConfig, PhraseEvent, SamplePcm, TrigMode};
+use phosphor_plugin::sample::{clamp_config, PadConfig, PhraseEvent, SamplePcm, TrigMode};
 
 use super::{
     LayerSource, LayerState, MapMode, PadSource, PadState, PhraseState, SamplerState, TakeKind,
@@ -105,6 +105,11 @@ pub struct SessionPad {
     pub pan: f32,
     pub root: u8,
     pub keytrack: bool,
+    /// Round robin. Absent when it is off, which is every pad in every
+    /// session written before it existed — so those files still read back
+    /// byte for byte, and a fresh kit still writes the bytes it always did.
+    #[serde(default, skip_serializing_if = "crate::session::is_false")]
+    pub cycle: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layers: Vec<SessionLayer>,
     /// Performances kept as notes. Written inline — a phrase is tens or
@@ -130,6 +135,11 @@ pub struct SessionPhrase {
     pub name: String,
     /// Length in engine frames — the tempo it was played at, baked.
     pub frames: u64,
+    /// The engine rate those frames were counted at. Absent on a phrase
+    /// written before rates were stamped, which plays as-is: exactly what
+    /// that phrase did on the build that wrote it.
+    #[serde(default, skip_serializing_if = "crate::session::is_zero")]
+    pub sample_rate: f32,
     pub gain: f32,
     pub transpose_with_key: bool,
     pub mute: bool,
@@ -198,6 +208,7 @@ impl SessionPad {
             pan: c.pan,
             root: c.root,
             keytrack: c.keytrack,
+            cycle: c.cycle,
             source: pad.source.as_ref().map(source_of),
             take: pad.take.key().into(),
             phrases: pad
@@ -206,6 +217,7 @@ impl SessionPad {
                 .map(|p| SessionPhrase {
                     name: p.name.clone(),
                     frames: p.frames,
+                    sample_rate: p.sample_rate,
                     gain: p.gain,
                     transpose_with_key: p.transpose_with_key,
                     mute: p.mute,
@@ -248,24 +260,26 @@ impl SessionPad {
     }
 
     /// And back, decoding each layer's file through `resolve`. Every number
-    /// is clamped on the way in: a hand-edited file must not open with a
-    /// control the knob cannot reach.
+    /// is clamped on the way in — through the same table the engine clamps
+    /// with, so a hand-edited file cannot open with a control the knob
+    /// cannot reach *or* with one the engine would quietly disagree about.
     fn to_pad(&self, resolve: &impl Fn(&Path) -> Option<Arc<SamplePcm>>) -> PadState {
-        let config = PadConfig {
+        let config = clamp_config(PadConfig {
             trig: trig_from_key(&self.trig),
-            poly: self.poly.clamp(1, 8),
-            choke: self.choke.min(8),
-            pitch_st: self.pitch_st.clamp(-48, 48),
-            pitch_cents: self.pitch_cents.clamp(-50, 50),
-            attack_ms: self.attack_ms.max(0.0),
-            decay_ms: self.decay_ms.max(0.0),
-            sustain: self.sustain.clamp(0.0, 1.0),
-            release_ms: self.release_ms.max(0.0),
-            level: self.level.clamp(0.0, 4.0),
-            pan: self.pan.clamp(-1.0, 1.0),
-            root: self.root.min(127),
+            poly: self.poly,
+            choke: self.choke,
+            pitch_st: self.pitch_st,
+            pitch_cents: self.pitch_cents,
+            attack_ms: self.attack_ms,
+            decay_ms: self.decay_ms,
+            sustain: self.sustain,
+            release_ms: self.release_ms,
+            level: self.level,
+            pan: self.pan,
+            root: self.root,
             keytrack: self.keytrack,
-        };
+            cycle: self.cycle,
+        });
         let layers = self
             .layers
             .iter()
@@ -319,6 +333,14 @@ impl SessionPad {
                     })
                     .collect(),
                 frames: p.frames,
+                // A rate that is not a positive number is an unknown rate,
+                // which plays as-is — the engine's own reading of a hostile
+                // one, so the two sides cannot disagree about a corrupt file.
+                sample_rate: if p.sample_rate.is_finite() && p.sample_rate > 0.0 {
+                    p.sample_rate
+                } else {
+                    0.0
+                },
                 gain: if p.gain.is_nan() { 1.0 } else { p.gain.clamp(0.0, super::knobs::MAX_GAIN) },
                 transpose_with_key: p.transpose_with_key,
                 mute: p.mute,
@@ -484,6 +506,40 @@ mod tests {
         assert_eq!(layer.start_frame, 100);
         assert_eq!(layer.name, "kick");
         assert!(layer.pcm.is_some());
+    }
+
+    /// Round robin survives the file, writes nothing when it is off, and is
+    /// absent from every session written before it existed — which is how a
+    /// pad saved by an older build still opens stacking its layers.
+    #[test]
+    fn round_robin_survives_the_file_and_costs_nothing_when_it_is_off() {
+        let mut state = SamplerState::new();
+        state.add_wav_layer(39, PathBuf::from("snare.wav"), pcm(10)).unwrap();
+        let off = serde_json::to_string(&SessionSampler::from_state(&state)).unwrap();
+        assert!(!off.contains("cycle"), "a pad that does not cycle wrote about it:\n{off}");
+
+        state.pads[39].config.cycle = true;
+        let json = serde_json::to_string(&SessionSampler::from_state(&state)).unwrap();
+        assert!(json.contains("\"cycle\":true"), "the switch did not reach the file:\n{json}");
+        let back: SessionSampler = serde_json::from_str(&json).unwrap();
+        let restored = back.into_state(|_| Some(pcm(10)));
+        assert!(restored.pads[39].config.cycle, "the switch did not come back");
+
+        // A zone's sound is stored as a pad, so it carries the switch too.
+        let mut keys = SamplerState::new();
+        keys.mode = MapMode::Keys;
+        let mut pad = PadState::empty(60);
+        pad.config.cycle = true;
+        keys.zones.push(Zone::new(0, 87, pad));
+        let saved = SessionSampler::from_state(&keys);
+        assert!(saved.into_state(|_| None).zones[0].pad.config.cycle);
+
+        // And a file from before it existed opens with it off.
+        let old = r#"{"pads":[{"note":60,"trig":"one-shot","poly":1,"choke":0,
+            "pitch_st":0,"pitch_cents":0,"attack_ms":0.0,"decay_ms":400.0,"sustain":1.0,
+            "release_ms":60.0,"level":1.0,"pan":0.0,"root":60,"keytrack":false}]}"#;
+        let saved: SessionSampler = serde_json::from_str(old).unwrap();
+        assert!(!saved.into_state(|_| None).pads[39].config.cycle);
     }
 
     #[test]
@@ -707,8 +763,8 @@ mod tests {
     fn a_pad_of_audio_and_phrases_survives_the_round_trip() {
         let mut state = SamplerState::new();
         state.add_wav_layer(39, PathBuf::from("kick.wav"), pcm(500)).unwrap();
-        state.pads[39].add_phrase(phrase_events(&[(0, 60), (1_000, 64)]), 44_100, "pad").unwrap();
-        state.pads[39].add_phrase(phrase_events(&[(0, 67)]), 22_050, "pad").unwrap();
+        state.pads[39].add_phrase(phrase_events(&[(0, 60), (1_000, 64)]), 44_100, 0.0, "pad").unwrap();
+        state.pads[39].add_phrase(phrase_events(&[(0, 67)]), 22_050, 0.0, "pad").unwrap();
         state.pads[39].phrases[1].gain = 0.5;
         state.pads[39].phrases[1].transpose_with_key = true;
         state.pads[39].phrases[1].mute = true;
@@ -743,6 +799,37 @@ mod tests {
         assert_eq!(child.params, vec![0.25, 0.75]);
     }
 
+    /// The rate a phrase was captured at survives the file, writes nothing
+    /// when it is unknown, and comes back as unknown from a hand-edited
+    /// nonsense — so the two sides cannot disagree about a corrupt file.
+    #[test]
+    fn a_phrases_capture_rate_survives_the_file_and_a_hostile_one_does_not() {
+        let mut state = SamplerState::new();
+        state.pads[0].add_phrase(phrase_events(&[(0, 60)]), 48_000, 0.0, "pad").unwrap();
+        let json = serde_json::to_string(&SessionSampler::from_state(&state)).unwrap();
+        assert!(
+            !json.contains("sample_rate"),
+            "an unknown rate reached the file:\n{json}",
+        );
+
+        state.pads[0].phrases[0].sample_rate = 48_000.0;
+        let json = serde_json::to_string(&SessionSampler::from_state(&state)).unwrap();
+        assert!(json.contains("\"sample_rate\":48000"), "the rate is not in the file:\n{json}");
+        let back: SessionSampler = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.into_state(|_| None).pads[0].phrases[0].sample_rate, 48_000.0);
+
+        // A hand-edited nonsense reads as unknown, which plays as-is.
+        for hostile in [-48_000.0f32, f32::NAN] {
+            let mut saved = SessionSampler::from_state(&state);
+            saved.pads[0].phrases[0].sample_rate = hostile;
+            let restored = saved.into_state(|_| None);
+            assert_eq!(
+                restored.pads[0].phrases[0].sample_rate, 0.0,
+                "a rate of {hostile} survived the door",
+            );
+        }
+    }
+
     /// A zone's phrases go into the file with the zone, because a zone's
     /// sound *is* a pad and the file stores it as one.
     #[test]
@@ -750,7 +837,7 @@ mod tests {
         let mut state = SamplerState::new();
         state.mode = MapMode::Keys;
         let mut pad = PadState::empty(60);
-        pad.add_phrase(phrase_events(&[(0, 60)]), 1_000, "zone").unwrap();
+        pad.add_phrase(phrase_events(&[(0, 60)]), 1_000, 0.0, "zone").unwrap();
         state.zones.push(Zone::new(0, 87, pad));
 
         let saved = SessionSampler::from_state(&state);
@@ -802,7 +889,7 @@ mod tests {
     fn a_hostile_phrase_list_is_survivable() {
         let mut state = SamplerState::new();
         for _ in 0..MAX_PHRASES {
-            state.pads[0].add_phrase(phrase_events(&[(0, 60)]), 100, "pad").unwrap();
+            state.pads[0].add_phrase(phrase_events(&[(0, 60)]), 100, 0.0, "pad").unwrap();
         }
         let mut saved = SessionSampler::from_state(&state);
         let fifth = saved.pads[0].phrases[0].clone();
@@ -825,7 +912,7 @@ mod tests {
     #[test]
     fn an_unknown_child_is_dropped_and_the_phrases_stay() {
         let mut state = SamplerState::new();
-        state.pads[0].add_phrase(phrase_events(&[(0, 60)]), 100, "pad").unwrap();
+        state.pads[0].add_phrase(phrase_events(&[(0, 60)]), 100, 0.0, "pad").unwrap();
         state.child = Some(PadSource {
             instrument: crate::state::InstrumentType::Rhodes,
             params: vec![0.5],

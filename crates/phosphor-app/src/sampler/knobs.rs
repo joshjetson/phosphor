@@ -11,7 +11,9 @@
 //! bypasses the parameter system entirely and is delivered whole, so the
 //! panel prints milliseconds and semitones and this module steps them.
 
-use phosphor_plugin::sample::TrigMode;
+use phosphor_plugin::sample::{
+    clamp_pitch_cents, clamp_tune_st, TrigMode, CHOKE_MAX, PAN_RANGE, POLY_RANGE,
+};
 
 use crate::format::{db_text, ms_text, note_name, pan_label};
 
@@ -20,15 +22,19 @@ use super::{MapMode, PadRow, PadState, RowKind, Zone, NUM_PADS};
 /// The top of an envelope stage. Ten seconds is longer than any sampler
 /// envelope a player reaches for and short enough that the dial's travel
 /// still means something.
+///
+/// The one limit on this panel that is the knob's own rather than the data
+/// model's — see [`phosphor_plugin::sample::clamp_config`], which floors an
+/// envelope time and deliberately does not ceiling it.
 const MAX_ENV_MS: f32 = 10_000.0;
 
-/// The top of a level control, linear — the session clamps to this too, so
-/// a hand-edited file cannot open with a pad the knob cannot reach.
+/// The top of a level control, linear.
 ///
-/// Public because it is also the ceiling on a normalize: that sets the
-/// same number this knob turns, and a gain past the end of the travel is a
-/// gain the player cannot turn back down by hand.
-pub const MAX_GAIN: f32 = 4.0;
+/// The shared ceiling, re-exported rather than restated: the session loader
+/// and the engine's delivery clamp to the same number, and a normalize stops
+/// there too — a gain past the end of the travel is a gain the player cannot
+/// turn back down by hand.
+pub use phosphor_plugin::sample::MAX_GAIN;
 
 /// The bottom of a level control's travel, in decibels. One step below it
 /// is silence, so stepping down from the floor reaches it and stepping up
@@ -40,6 +46,14 @@ const FLOOR_DB: f32 = -40.0;
 /// end. The strip's feel, chosen again here rather than borrowed, because a
 /// pad's pan and a track's pan are different controls that happen to agree.
 const PAN_STEP: f32 = 0.05;
+
+/// Half the travel of a coarse pitch control, for the dials that draw
+/// themselves either side of a centre. Read off the shared range rather than
+/// written again, so a widened range moves the dial with it.
+const TUNE_HALF: f64 = *phosphor_plugin::sample::TUNE_ST_RANGE.end() as f64;
+
+/// The same for a fine one.
+const CENTS_HALF: f64 = *phosphor_plugin::sample::PITCH_CENTS_RANGE.end() as f64;
 
 /// What a control with nothing under it reads. Never a zero: a number is a
 /// claim about a value, and there is no value here.
@@ -65,6 +79,13 @@ pub enum PadKnob {
     Trig,
     Poly,
     Choke,
+    /// Round robin: successive hits hand out the pad's layers one at a time
+    /// instead of stacking them all.
+    ///
+    /// Beside `choke` because the two are what a pad does with the sounds on
+    /// it as a group — one decides what a hit silences elsewhere, the other
+    /// what it wakes here — and because on hardware they sit together.
+    Cycle,
     PitchSt,
     PitchCents,
     Attack,
@@ -95,13 +116,14 @@ pub enum PadKnob {
 }
 
 /// How many controls a pad or a zone offers before the row cursor's own.
-const PAD_CONTROLS: usize = 13;
+const PAD_CONTROLS: usize = 14;
 
 /// The pad's own, in the order `j`/`k` walks them.
 const PAD: [PadKnob; PAD_CONTROLS] = [
     PadKnob::Trig,
     PadKnob::Poly,
     PadKnob::Choke,
+    PadKnob::Cycle,
     PadKnob::PitchSt,
     PadKnob::PitchCents,
     PadKnob::Attack,
@@ -125,6 +147,7 @@ const ZONE: [PadKnob; PAD_CONTROLS] = [
     PadKnob::Trig,
     PadKnob::Poly,
     PadKnob::Choke,
+    PadKnob::Cycle,
     PadKnob::PitchSt,
     PadKnob::PitchCents,
     PadKnob::Attack,
@@ -257,6 +280,9 @@ impl PadKnob {
             Self::Trig => "trig",
             Self::Poly => "poly",
             Self::Choke => "choke",
+            // Renoise's word, and the industry's. Not "round robin", which
+            // does not fit a knob label, and not "rr", which nobody reads.
+            Self::Cycle => "cycle",
             Self::PitchSt => "pitch",
             Self::PitchCents => "fine",
             Self::Attack => "attack",
@@ -308,6 +334,7 @@ impl PadKnob {
                     c.choke.to_string()
                 }
             }
+            Self::Cycle => on_off(c.cycle),
             Self::PitchSt => format!("{:+} st", c.pitch_st),
             Self::PitchCents => format!("{:+} ct", c.pitch_cents),
             Self::Attack => ms_text(c.attack_ms),
@@ -357,10 +384,14 @@ impl PadKnob {
             // move one: how wide the zone has got.
             Self::Span => zone.map_or(0.0, |z| z.keys() as f64 / NUM_PADS as f64),
             Self::Trig => f64::from(u8::from(c.trig == TrigMode::Gate)),
-            Self::Poly => f64::from(c.poly.clamp(1, 8) - 1) / 7.0,
-            Self::Choke => f64::from(c.choke.min(8)) / 8.0,
-            Self::PitchSt => centred(f64::from(c.pitch_st), 48.0),
-            Self::PitchCents => centred(f64::from(c.pitch_cents), 50.0),
+            Self::Poly => {
+                let poly = c.poly.clamp(*POLY_RANGE.start(), *POLY_RANGE.end());
+                f64::from(poly - POLY_RANGE.start()) / f64::from(POLY_RANGE.end() - POLY_RANGE.start())
+            }
+            Self::Choke => f64::from(c.choke.min(CHOKE_MAX)) / f64::from(CHOKE_MAX),
+            Self::Cycle => f64::from(u8::from(c.cycle)),
+            Self::PitchSt => centred(f64::from(c.pitch_st), TUNE_HALF),
+            Self::PitchCents => centred(f64::from(c.pitch_cents), CENTS_HALF),
             Self::Attack => env_frac(c.attack_ms),
             Self::Decay => env_frac(c.decay_ms),
             Self::Sustain => f64::from(c.sustain).clamp(0.0, 1.0),
@@ -373,8 +404,8 @@ impl PadKnob {
                 Some(PadRow::Layer(l)) => match self {
                     Self::LayerGain => gain_frac(l.gain),
                     Self::LayerPan => centred(f64::from(l.pan), 1.0),
-                    Self::LayerTuneSt => centred(f64::from(l.tune_st), 48.0),
-                    Self::LayerTuneCents => centred(f64::from(l.tune_cents), 50.0),
+                    Self::LayerTuneSt => centred(f64::from(l.tune_st), TUNE_HALF),
+                    Self::LayerTuneCents => centred(f64::from(l.tune_cents), CENTS_HALF),
                     Self::LayerReverse => f64::from(u8::from(l.reverse)),
                     Self::LayerMute => f64::from(u8::from(l.mute)),
                     _ => 0.0,
@@ -409,15 +440,24 @@ impl PadKnob {
             // this does nothing — see the `Span` arm of the keys.
             Self::Span => {}
             Self::Trig => c.trig = if up { TrigMode::Gate } else { TrigMode::OneShot },
-            Self::Poly => c.poly = step_int(i32::from(c.poly), delta, 1, 8) as u8,
-            Self::Choke => c.choke = step_int(i32::from(c.choke), delta, 0, 8) as u8,
+            Self::Poly => {
+                c.poly = step_int(
+                    i32::from(c.poly),
+                    delta,
+                    i32::from(*POLY_RANGE.start()),
+                    i32::from(*POLY_RANGE.end()),
+                ) as u8;
+            }
+            Self::Choke => {
+                c.choke = step_int(i32::from(c.choke), delta, 0, i32::from(CHOKE_MAX)) as u8;
+            }
+            Self::Cycle => c.cycle = up,
             Self::PitchSt => {
-                c.pitch_st = step_int(i32::from(c.pitch_st), delta * stride_by(stride, 12), -48, 48)
-                    as i8;
+                c.pitch_st = clamp_tune_st(i32::from(c.pitch_st) + delta * stride_by(stride, 12));
             }
             Self::PitchCents => {
                 c.pitch_cents =
-                    step_int(i32::from(c.pitch_cents), delta * stride_by(stride, 10), -50, 50) as i8;
+                    clamp_pitch_cents(i32::from(c.pitch_cents) + delta * stride_by(stride, 10));
             }
             Self::Attack => c.attack_ms = step_ms(c.attack_ms, delta, stride),
             Self::Decay => c.decay_ms = step_ms(c.decay_ms, delta, stride),
@@ -451,16 +491,11 @@ impl PadKnob {
                     Self::LayerPan => l.pan = step_pan(l.pan, delta, stride),
                     Self::LayerTuneSt => {
                         l.tune_st =
-                            step_int(i32::from(l.tune_st), delta * stride_by(stride, 12), -48, 48)
-                                as i8;
+                            clamp_tune_st(i32::from(l.tune_st) + delta * stride_by(stride, 12));
                     }
                     Self::LayerTuneCents => {
-                        l.tune_cents = step_int(
-                            i32::from(l.tune_cents),
-                            delta * stride_by(stride, 10),
-                            -50,
-                            50,
-                        ) as i8;
+                        l.tune_cents =
+                            clamp_pitch_cents(i32::from(l.tune_cents) + delta * stride_by(stride, 10));
                     }
                     Self::LayerReverse => l.reverse = up,
                     _ => l.mute = up,
@@ -549,7 +584,7 @@ fn step_pan(pan: f32, delta: i32, stride: bool) -> f32 {
     if target.abs() < PAN_STEP * 0.5 {
         0.0
     } else {
-        target.clamp(-1.0, 1.0)
+        target.clamp(*PAN_RANGE.start(), *PAN_RANGE.end())
     }
 }
 
@@ -578,7 +613,7 @@ mod tests {
             data1: 60,
             data2: 100,
         }]);
-        pad.add_phrase(events, 1_000, "pad").unwrap();
+        pad.add_phrase(events, 1_000, 0.0, "pad").unwrap();
         pad
     }
 
@@ -618,6 +653,35 @@ mod tests {
             "keys mode offers a switch a zone cannot turn off",
         );
         assert!(!PadKnob::ALL.contains(&PadKnob::Span), "pads mode offers a span");
+    }
+
+    /// The cycle switch sits beside choke, reads in words, and is reachable
+    /// on a zone as well as on a pad — a zone stacks layers exactly as a pad
+    /// does, so it has exactly as much use for a rotation.
+    #[test]
+    fn the_cycle_switch_is_on_both_lists_beside_choke() {
+        for list in [&PadKnob::ALL[..], &PadKnob::KEYS[..]] {
+            let at = list.iter().position(|&k| k == PadKnob::Cycle);
+            let choke = list.iter().position(|&k| k == PadKnob::Choke);
+            assert_eq!(at, choke.map(|i| i + 1), "cycle is not beside choke in {list:?}");
+        }
+        let mut pad = pad_with_layer();
+        assert!(!pad.config.cycle, "a fresh pad cycles");
+        assert_eq!(PadKnob::Cycle.value(&pad, None, None), "off");
+        assert_eq!(PadKnob::Cycle.frac(&pad, None, None), 0.0);
+
+        PadKnob::Cycle.adjust(&mut pad, 0, 1, false);
+        assert!(pad.config.cycle);
+        assert_eq!(PadKnob::Cycle.value(&pad, None, None), "on");
+        assert_eq!(PadKnob::Cycle.frac(&pad, None, None), 1.0);
+        // A switch is a switch however hard it is pressed: no stride, no
+        // travel past either end.
+        for _ in 0..20 {
+            PadKnob::Cycle.adjust(&mut pad, 0, 1, true);
+        }
+        assert!(pad.config.cycle);
+        PadKnob::Cycle.adjust(&mut pad, 0, -1, true);
+        assert!(!pad.config.cycle);
     }
 
     /// A phrase has no pan, no tune and nothing to play backwards — and in

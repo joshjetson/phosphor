@@ -201,23 +201,7 @@ impl App {
                     self.leave_sampler_source();
                 }
             }
-            _ => {
-                let pad = self
-                    .nav
-                    .sampler_source
-                    .as_deref()
-                    .map(|mode| phosphor_app::sampler::SamplerState::pad_label(mode.pad))
-                    .unwrap_or_default();
-                let take = self
-                    .nav
-                    .sampler_source
-                    .as_deref()
-                    .map_or("", |mode| mode.take.label());
-                self.flash(format!(
-                    "source mode is on pad {pad} \u{00b7} take: {take} \u{00b7} r {} \u{00b7} p swaps \u{00b7} esc puts the sampler back",
-                    if armed { "ends the take" } else { "records" },
-                ));
-            }
+            _ => self.flash_sampler_source_keys(),
         }
     }
 

@@ -194,6 +194,28 @@ impl Row {
     }
 }
 
+/// How much audio the kit is holding, for the head of whichever list is
+/// showing — `12.3 MB held`.
+///
+/// A sampler is the one instrument in the box whose memory is the player's
+/// own doing: eight takes of a two-minute pass are a hundred megabytes that
+/// nothing on the screen would otherwise mention. Shared buffers count once,
+/// which is [`SamplerState::pcm_bytes`]'s rule and the reason a zone across
+/// the whole bed reads as one sample and not eighty-eight.
+///
+/// `None` for an empty kit: a line saying `0 MB` is a line about nothing.
+/// Kilobytes under a megabyte, because a kit of drum hits is real memory and
+/// `0.0 MB` would read as none at all.
+fn held_label(state: &SamplerState) -> Option<String> {
+    const KB: usize = 1_024;
+    const MB: usize = KB * KB;
+    match state.pcm_bytes() {
+        0 => None,
+        bytes if bytes < MB => Some(format!(" \u{00b7} {} kB held", bytes.div_ceil(KB))),
+        bytes => Some(format!(" \u{00b7} {:.1} MB held", bytes as f64 / MB as f64)),
+    }
+}
+
 /// Cut a name to the room it has, with an ellipsis where it was cut.
 fn clip_text(text: &str, width: usize) -> String {
     if text.chars().count() <= width {

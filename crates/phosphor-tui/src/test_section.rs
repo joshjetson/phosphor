@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(app.nav.loop_editor.start, BAR);
         assert_eq!(app.nav.loop_editor.end, 2 * BAR);
         app.slide_loop_brace(true, false);
-        assert_eq!(app.nav.loop_editor.start, BAR + app.nav.loop_editor.step.ticks() + 0);
+        assert_eq!(app.nav.loop_editor.start, BAR + app.nav.loop_editor.step.ticks());
     }
 
     /// The full undo contract, both directions: a cut undoes and REDOES

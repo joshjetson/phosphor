@@ -137,6 +137,9 @@ pub struct RenderedPhrase {
     pub events: Arc<[PhraseEvent]>,
     /// How long the pad plays before the phrase is over, in engine frames.
     pub frames: u64,
+    /// The engine rate those frames were counted at — what lets the runner
+    /// play them back at the speed they were played, on any device.
+    pub sample_rate: f32,
     /// The pitch every note-on shared, when they shared one.
     pub root: Option<u8>,
 }
@@ -181,6 +184,9 @@ pub fn render_phrase(plan: &TakePlan, rack: &[MidiFxInstance]) -> RenderedPhrase
     RenderedPhrase {
         events,
         frames: plan.frames.max(1),
+        // Stamped here, where the rate the frames were counted at is a fact
+        // rather than a guess: the plan was built against this engine.
+        sample_rate: plan.sample_rate,
         // Read from the plan rather than from the baked stream, for the
         // reason [`single_pitch`] gives: a chord device turning one key
         // into four does not make the performance a chord.

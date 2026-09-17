@@ -37,6 +37,8 @@
 
 use std::borrow::Cow;
 
+use phosphor_plugin::sample::clamp_tune_st;
+
 use super::{PadState, PhraseState, SamplerState, MAX_LAYERS, NUM_PADS};
 
 /// What the bed means right now.
@@ -340,15 +342,14 @@ impl SamplerState {
                     break 'lending;
                 }
                 let mut lent = layer.clone();
-                // Clamped to the engine's own tune range, not the i8 the
-                // field can hold: the engine clamps at ±48, and a wider
+                // Clamped through the shared door, not the i8 the field can
+                // hold: the engine clamps at the same range, and a wider
                 // number here was a silent disagreement — the app promised
                 // -87 and the pad played -48, thirty-nine semitones sharp
                 // with nothing on the screen to say so. Two zones rooted
                 // more than four octaves apart still meet this clamp; they
                 // now at least clamp to the SAME pitch the engine plays.
-                lent.tune_st =
-                    (i32::from(lent.tune_st) + shift).clamp(-48, 48) as i8;
+                lent.tune_st = clamp_tune_st(i32::from(lent.tune_st) + shift);
                 layers.push(lent);
             }
         }
@@ -739,7 +740,7 @@ mod tests {
                 data2: 100,
             }]);
         let mut owner = zone(48, 71, 60, 0);
-        owner.pad.add_phrase(Arc::clone(&events), 44_100, "zone").unwrap();
+        owner.pad.add_phrase(Arc::clone(&events), 44_100, 0.0, "zone").unwrap();
         // Transposition off on the zone's own copy: what the materializer
         // does with it is the thing under test.
         assert!(!owner.pad.phrases[0].transpose_with_key);
@@ -779,9 +780,9 @@ mod tests {
                 data2: 100,
             }]);
         let mut low = zone(36, 59, 40, 1);
-        low.pad.add_phrase(Arc::clone(&events), 100, "zone").unwrap();
+        low.pad.add_phrase(Arc::clone(&events), 100, 0.0, "zone").unwrap();
         let mut high = zone(48, 71, 60, 1);
-        high.pad.add_phrase(events, 100, "zone").unwrap();
+        high.pad.add_phrase(events, 100, 0.0, "zone").unwrap();
         let state = keys_state(vec![low, high]);
 
         let shared = SamplerState::pad_of_note(50).unwrap();

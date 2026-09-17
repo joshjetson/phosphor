@@ -27,10 +27,10 @@ impl App {
 
     pub(crate) fn close_practice(&mut self) {
         self.stop_practice_run();
-        if self.nav.practice.progress_dirty {
-            if phosphor_app::practice::progress::save(&self.nav.practice.progress).is_ok() {
-                self.nav.practice.progress_dirty = false;
-            }
+        if self.nav.practice.progress_dirty
+            && phosphor_app::practice::progress::save(&self.nav.practice.progress).is_ok()
+        {
+            self.nav.practice.progress_dirty = false;
         }
         self.nav.practice.close();
     }

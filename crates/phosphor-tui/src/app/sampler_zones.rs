@@ -67,9 +67,9 @@ impl App {
         let pads = sampler.sounding_pads();
         let zones = sampler.zones.len();
         self.nav.commit_undo(before, "map mode");
-        for pad in pads {
-            self.sync_sampler_pad(track_idx, pad);
-        }
+        // One command for the whole union, not one per key: a bed-wide zone
+        // makes that set eighty-eight pads long.
+        self.sync_sampler_pads(track_idx, pads);
         // The two modes offer different controls, so a cursor left where it
         // was would be standing on a different knob than it was a moment
         // ago — and a *held* one would be turning it.

@@ -189,18 +189,14 @@ impl LayerState {
     /// The playable region, pulled inside the buffer.
     ///
     /// What the engine will actually play, which is what the strip has to
-    /// draw and nudge: the pad table applies exactly this clamp on delivery,
-    /// so a session hand-edited to `end_frame: 999999` must not be drawn as
-    /// if it meant it. `None` while the file behind the layer is missing —
-    /// there is no region without audio.
+    /// draw and nudge — so it is literally the engine's own clamp, called
+    /// here rather than written out a second time. A session hand-edited to
+    /// `end_frame: 999999` must not be drawn as if it meant it, and two
+    /// copies of that arithmetic agree right up until one of them is edited.
+    /// `None` while the file behind the layer is missing: there is no region
+    /// without audio.
     pub fn region(&self) -> Option<(u64, u64)> {
-        let pcm = self.pcm.as_ref()?;
-        let frames = pcm.frames();
-        if frames == 0 {
-            return None;
-        }
-        let start = self.start_frame.min(frames - 1);
-        Some((start, self.end_frame.clamp(start + 1, frames)))
+        phosphor_plugin::sample::trim_region(self.pcm.as_ref()?, self.start_frame, self.end_frame)
     }
 
     /// Move one edge of the region by `delta` presses of `unit`.

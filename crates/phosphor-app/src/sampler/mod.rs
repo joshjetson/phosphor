@@ -29,15 +29,15 @@ use crate::state::InstrumentType;
 pub use phrase::{PadRow, PhraseState, RowKind, TakeKind, MAX_PHRASES};
 pub use zones::{MapMode, Zone, ZoneEdge};
 
-/// One pad per piano key, mirroring the engine.
-pub const NUM_PADS: usize = 88;
-
-/// MIDI note of the lowest pad (A0).
-pub const PAD_BASE_NOTE: u8 = 21;
-
-/// Layer slots per pad — the engine's cap, enforced here first so the
-/// player hears "pad full" instead of a silently dropped ninth layer.
-pub const MAX_LAYERS: usize = 8;
+/// The pad geometry, shared with the engine rather than mirrored.
+///
+/// Re-exported from the interface crate both sides already depend on, so the
+/// link is the compiler's: two constants that agree today are two constants
+/// that disagree the day one of them is edited, and the symptom is the top or
+/// the bottom of the bed going quiet. [`MAX_LAYERS`] is enforced here first
+/// all the same, so the player hears "pad full" instead of a silently dropped
+/// ninth layer.
+pub use phosphor_plugin::sample::{MAX_LAYERS, NUM_PADS, PAD_BASE_NOTE};
 
 /// Where a layer's audio came from.
 ///
@@ -160,9 +160,14 @@ impl LayerState {
 
     /// The engine's view of this layer, or `None` while the file behind
     /// it is missing.
+    ///
+    /// Clamped on the way out, through the table the engine clamps with. The
+    /// app's one door to a [`PadLayer`] is also the one place it can promise
+    /// a number the pad will not play, so it promises nothing the engine
+    /// would quietly change its mind about.
     pub fn engine_layer(&self) -> Option<PadLayer> {
         let pcm = self.pcm.as_ref()?;
-        Some(PadLayer {
+        Some(phosphor_plugin::sample::clamp_layer(PadLayer {
             pcm: Arc::clone(pcm),
             gain: self.gain,
             pan: self.pan,
@@ -174,7 +179,7 @@ impl LayerState {
             mute: self.mute,
             vel_lo: self.vel_lo,
             vel_hi: self.vel_hi,
-        })
+        }))
     }
 }
 
@@ -419,9 +424,12 @@ impl SamplerState {
     }
 
     /// The pad a note addresses, if it is on the bed.
+    ///
+    /// The engine's own map, reached by the name the app already calls it by
+    /// — this was the same arithmetic written twice, and nothing linked the
+    /// two.
     pub fn pad_of_note(note: u8) -> Option<usize> {
-        let last = PAD_BASE_NOTE + (NUM_PADS as u8 - 1);
-        (PAD_BASE_NOTE..=last).contains(&note).then(|| usize::from(note - PAD_BASE_NOTE))
+        phosphor_plugin::sample::pad_index(note)
     }
 
     /// The MIDI note of a pad.
@@ -834,7 +842,7 @@ mod tests {
                 data1: 60,
                 data2: 100,
             }]);
-        s.pads[4].add_phrase(Arc::clone(&events), 500, "pad").unwrap();
+        s.pads[4].add_phrase(Arc::clone(&events), 500, 0.0, "pad").unwrap();
         assert_eq!(s.occupied_pads().collect::<Vec<_>>(), vec![4]);
         assert!(s.sounding_pads().contains(&4));
 
