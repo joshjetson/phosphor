@@ -53,12 +53,42 @@ Each instrument track gets its own synthesizer instance with independent paramet
 
 ## Quick Start
 
+Phosphor runs on Windows, macOS and Linux. Everything is installed with
+one command — but that command needs the Rust toolchain, and each
+platform has one thing to do first. Start with yours:
+
+**Windows** — install Rust from [rustup.rs](https://rustup.rs). The
+installer will say it needs the Visual Studio C++ Build Tools and offer
+to set them up — say yes; Rust compiles through them on Windows and
+nothing works without them. Then open **Windows Terminal** (built into
+Windows 11, free in the Microsoft Store on 10) rather than the old
+Command Prompt: Phosphor draws its keyboards, meters and braces in
+Unicode, and the legacy console mangles them. Audio and MIDI work out of
+the box. Your files land in `%APPDATA%\phosphor`.
+
+**macOS** — if you have never compiled anything on this machine, run
+`xcode-select --install` once and let it finish. Then install Rust from
+[rustup.rs](https://rustup.rs). Your files land in `~/.phosphor`.
+
+**Linux** — install Rust from [rustup.rs](https://rustup.rs), plus the
+ALSA headers the audio layer compiles against — without them the install
+command fails halfway with a wall of C errors. Debian/Ubuntu:
+`sudo apt install build-essential pkg-config libasound2-dev`. Fedora:
+`sudo dnf install alsa-lib-devel`. Arch: `sudo pacman -S alsa-lib`.
+Your files land in `~/.phosphor`.
+
+Then, on every platform, the same command — and after it finishes, the
+program is simply `phosphor` in your terminal:
+
 ```bash
 # Install from crates.io — the --locked flag is required. It builds with
 # the exact dependency versions the release was tested with; without it
 # cargo picks newer ones, which now demand a newer Rust than the crate's,
 # and the build fails.
 cargo install phosphor-studio --locked
+
+# Then run it
+phosphor
 
 # Or clone and build — this is how to get the newest version, which may
 # be ahead of the one published on crates.io
@@ -69,7 +99,8 @@ cargo install --path . --locked
 # Run (TUI is the default)
 cargo run --release
 
-# Run with debug logging
+# Run with debug logging (PowerShell on Windows:
+#   $env:PHOSPHOR_DEBUG=1; cargo run --release)
 PHOSPHOR_DEBUG=1 cargo run --release
 
 # Run without audio (UI development)
