@@ -710,13 +710,20 @@ mod tests {
 
     /// The header names the folder, cut from the left when it is too long —
     /// the end of a path is the part that says where you are.
+    ///
+    /// Asserted against the picker's own tidied directory rather than a
+    /// spelled-out literal: `/tmp` is not even an absolute path on Windows
+    /// (no drive), so `show` resolves it to `D:\tmp` there — which is the
+    /// code doing its job and the old literal being a Unix habit.
     #[test]
     fn the_header_keeps_the_end_of_a_long_path() {
         let mut picker = FilePicker::new();
-        picker.show(PickerPurpose::OpenSession, PathBuf::from("/tmp"), None);
-        assert_eq!(picker.header(40), "/tmp");
+        picker.show(PickerPurpose::OpenSession, std::env::temp_dir(), None);
+        assert_eq!(picker.header(400), picker.dir.display().to_string());
 
-        picker.dir = PathBuf::from("/Users/somebody/very/deep/tree/sessions");
+        let deep: PathBuf =
+            ["somebody", "very", "deep", "tree", "sessions"].iter().collect();
+        picker.dir = std::env::temp_dir().join(deep);
         let cut = picker.header(20);
         assert_eq!(cut.chars().count(), 20);
         assert!(cut.starts_with('\u{2026}'), "nothing said the path was cut: {cut}");
