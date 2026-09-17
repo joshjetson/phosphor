@@ -88,6 +88,7 @@ impl App {
         if !self.nav.space_menu.open && !self.nav.input_modal.open && !self.nav.confirm_modal.open
             && !self.nav.instrument_modal.open && !self.nav.fx_menu.open
             && !self.nav.preset_modal.open
+            && !self.nav.file_picker.open
             && !self.nav.prog_editor.open
             && !self.nav.practice.open
             && !self.nav.clip_view.piano_roll.edit_mode
@@ -126,6 +127,7 @@ impl App {
         // through, so the space menu and the transport stay reachable.
         if self.nav.practice.open
             && !self.nav.input_modal.open
+            && !self.nav.file_picker.open
             && !self.nav.space_menu.open
             && self.handle_practice_keys(key)
         {
@@ -196,6 +198,19 @@ impl App {
                 KeyCode::Char(ch) => { self.nav.input_modal.type_char(ch); }
                 _ => {}
             }
+            return;
+        }
+
+        // The file picker — the list that opens a project or puts a sound
+        // on a pad. Checked after the input modal for the preset browser's
+        // reason: `/` swaps the list for a typed path, and while that field
+        // is up it has the keys.
+        //
+        // Nothing falls out of the handler below. Every letter in it is a
+        // filter character, and a letter that reached the pane underneath
+        // would be a `d` inside a filename deleting something.
+        if self.nav.file_picker.open {
+            self.handle_file_picker_keys(key);
             return;
         }
 

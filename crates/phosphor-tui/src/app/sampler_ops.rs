@@ -58,16 +58,28 @@ impl App {
             && self.nav.clip_view.focus == ClipViewFocus::PianoRoll
     }
 
-    /// `a` on the sampler's panel: ask for a file for the pad or zone
-    /// under the cursor.
+    /// `a` on the sampler's panel: choose a file for the pad or zone under
+    /// the cursor.
+    ///
+    /// The picker, which is a list of the samples folder — see
+    /// [`App::open_sample_picker`]. `/` inside it opens the typed field
+    /// this used to be, which is [`App::open_sample_typed_prompt`].
+    ///
+    /// A full pad still gets it. Refusing here with a flash meant the path
+    /// the player was already typing ran as raw key commands — QA watched
+    /// the `d` in a filename delete a layer and the `y` confirm it. Both
+    /// roads swallow the typing; the refusal lands at Enter, with
+    /// something safely between the keys and the kit.
     pub(crate) fn open_sample_prompt(&mut self) {
         let Some(sampler) = self.cursor_sampler() else { return };
-        // A full pad still gets its prompt. Refusing here with a flash
-        // meant the path the player was already typing ran as raw key
-        // commands — QA watched the `d` in a filename delete a layer and
-        // the `y` confirm it. The prompt swallows the typing; Enter
-        // refuses in words with the field safely between the keys and
-        // the kit.
+        let title = sampler.edit_title();
+        self.open_sample_picker();
+        self.flash(format!("{title} \u{00b7} choose a sound \u{00b7} / types a path"));
+    }
+
+    /// The typed field behind the picker, for a path no list can reach.
+    pub(crate) fn open_sample_typed_prompt(&mut self) {
+        let Some(sampler) = self.cursor_sampler() else { return };
         let title = sampler.edit_title();
         self.nav.input_modal.open_named(InputModalKind::SamplePath, "");
         self.status_message = Some((
@@ -298,14 +310,13 @@ impl App {
     /// there is, and it costs one array index.
     pub(crate) fn sampler_follow_note(&mut self, note: u8) {
         // Not while a question is on the screen. The keys are the player
-        // trying sounds under a prompt or a confirm, and the answer must
-        // act on the pad the question NAMED — "remove kick from pad C3?"
-        // answered yes after a stray key press used to remove the snare,
-        // because the cursor had moved under the modal.
-        if self.nav.input_modal.open
-            || self.nav.confirm_modal.open
-            || self.nav.instrument_modal.open
-        {
+        // trying sounds under a prompt, a list or a confirm, and the answer
+        // must act on the pad the question NAMED — "remove kick from pad
+        // C3?" answered yes after a stray key press used to remove the
+        // snare, because the cursor had moved under the modal. One list of
+        // askers, on the navigation state, so a new one cannot be added
+        // without this gate learning about it.
+        if self.nav.question_is_up() {
             return;
         }
         let Some(idx) = self.cursor_sampler_track() else { return };

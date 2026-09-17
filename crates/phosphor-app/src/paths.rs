@@ -192,6 +192,72 @@ pub fn session_prompt_dir_from(local_exists: bool, sessions: Option<PathBuf>) ->
     }
 }
 
+// ── The file picker's folders ──
+
+/// The folder the session picker opens on, made if it is not there yet.
+///
+/// The same answer the save and open prompts have always started from —
+/// [`session_prompt_dir`] — as a path rather than a string. Made rather
+/// than only named: a picker that opens onto a folder the application has
+/// never written to would list nothing and say the folder could not be
+/// read, which is a true sentence and a useless one.
+pub fn session_browse_dir() -> PathBuf {
+    browse_dir(PathBuf::from(session_prompt_dir()))
+}
+
+/// The folder the sample picker opens on, made if it is not there yet —
+/// `<app dir>/samples`, the one a bare name already resolves against.
+///
+/// No home directory means no folder of ours to make, and the picker opens
+/// where the process was started instead: somewhere that exists, which is
+/// all a list needs.
+pub fn sample_browse_dir() -> PathBuf {
+    match samples_dir() {
+        Some(dir) => browse_dir(dir),
+        None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    }
+}
+
+/// `wanted`, made if it is missing, and somewhere that exists either way.
+///
+/// The working directory is the fallback rather than an error: a picker
+/// has to open on *something*, and the directory the process was started
+/// in is at least a place the player can walk out of.
+fn browse_dir(wanted: PathBuf) -> PathBuf {
+    if wanted.is_dir() || std::fs::create_dir_all(&wanted).is_ok() {
+        return wanted;
+    }
+    std::env::current_dir().unwrap_or(wanted)
+}
+
+// ── Saving ──
+
+/// Where a save lands, given what the player typed.
+///
+/// The save prompt asks for a *name* — `myjam` — and the name is written
+/// into the sessions folder, which is where every other session already is
+/// and the only place the open picker will think to look. A value with a
+/// separator in it is a path and is taken exactly as typed, which is what
+/// saving has always done and what a player who wants a file somewhere
+/// specific is entitled to.
+pub fn save_target(input: &str) -> PathBuf {
+    save_target_in(input, Path::new(&session_prompt_dir()))
+}
+
+/// [`save_target`] with the sessions folder supplied.
+pub fn save_target_in(input: &str, dir: &Path) -> PathBuf {
+    let typed = Path::new(input);
+    // Anything with more than one component has a separator in it, on
+    // every platform and including a drive prefix — `Path::components` is
+    // what knows where a separator is, rather than this module guessing at
+    // one. An empty field is handed back untouched so the caller's own
+    // "nothing was typed" check still sees nothing.
+    if input.trim().is_empty() || typed.is_absolute() || typed.components().count() > 1 {
+        return typed.to_path_buf();
+    }
+    dir.join(typed)
+}
+
 /// Where to look for a session the player named in the open prompt.
 ///
 /// An absolute path is taken as given, and so is a relative one that exists
@@ -402,6 +468,28 @@ mod tests {
         // No home directory at all: the relative path is still better than an
         // empty prompt, and it is what this did before.
         assert_eq!(session_prompt_dir_from(false, None), "sessions/");
+    }
+
+    /// A bare name is a name, and goes where the sessions go. Anything with
+    /// a separator in it is a path and is written exactly there — the
+    /// contract every save has had since the beginning.
+    #[test]
+    fn a_bare_name_saves_into_the_sessions_folder() {
+        let sessions = PathBuf::from("/home/player/.phosphor").join("sessions");
+        assert_eq!(save_target_in("myjam", &sessions), sessions.join("myjam"));
+        assert_eq!(save_target_in("my jam.phos", &sessions), sessions.join("my jam.phos"));
+
+        // A path, however it is spelled, is taken as typed.
+        for typed in ["ideas/jam.phos", "./jam.phos", "/tmp/jam.phos"] {
+            assert_eq!(
+                save_target_in(typed, &sessions),
+                PathBuf::from(typed),
+                "a typed path was moved into the sessions folder"
+            );
+        }
+        // Nothing typed stays nothing, so the caller's own check still sees
+        // an empty field rather than the folder itself.
+        assert_eq!(save_target_in("", &sessions), PathBuf::new());
     }
 
     /// Opening finds the file in the working directory first, then in the

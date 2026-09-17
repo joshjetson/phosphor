@@ -14,6 +14,8 @@
 
 #[cfg(test)]
 mod tests {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
     use crate::app::App;
     use crate::session::{SessionFile, SessionSelector};
     use crate::state::*;
@@ -23,6 +25,21 @@ mod tests {
 
     fn app() -> App {
         App::new(EngineConfig { buffer_size: 64, sample_rate: 44100 }, false, false)
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.handle_event(Event::Key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }));
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for ch in text.chars() {
+            press(app, KeyCode::Char(ch));
+        }
     }
 
     fn add_track(app: &mut App, instrument: InstrumentType) {
@@ -220,6 +237,237 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    // ── The picker ──
+    //
+    // What a player actually does: save under a name, and later open the
+    // thing they saved without remembering where this application keeps it.
+    // Both roads are driven — the list, and the typed path behind `/` —
+    // because the second one is the escape hatch and an escape hatch
+    // nothing drives is one that quietly stops working.
+
+    /// A folder for a picker to open on, with nothing of anybody else's in
+    /// it.
+    fn projects(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("phosphor-picker-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// An app whose projects folder is `dir`, with a drum track saved into
+    /// it under a bare name — the whole of what Space+S asks for.
+    fn saved_into(dir: &std::path::Path, name: &str) -> App {
+        let mut saving = app();
+        saving.browse_sessions = Some(dir.to_path_buf());
+        add_track(&mut saving, InstrumentType::DrumRack);
+        saving.nav.clip_view.synth_param_cursor = drum_rack::P_KIT;
+        for _ in 0..4 {
+            saving.nav.adjust_synth_param(0.05);
+        }
+        saving.do_save(name);
+        saving
+    }
+
+    /// Space+O, the cursor on the session, Enter — and the song is back,
+    /// kit and all. No path typed anywhere in it.
+    #[test]
+    fn the_picker_lists_a_saved_project_and_enter_opens_it() {
+        let dir = projects("open");
+        let saved = saved_into(&dir, "neon_causeway");
+        assert!(dir.join("neon_causeway.phos").is_file(), "the bare name did not land here");
+        let chosen = params_of(&saved)[drum_rack::P_KIT];
+
+        let mut opening = app();
+        opening.browse_sessions = Some(dir.clone());
+        press(&mut opening, KeyCode::Char(' '));
+        press(&mut opening, KeyCode::Char('o'));
+        assert!(opening.nav.file_picker.open, "space+o did not open the picker");
+        assert!(!opening.nav.input_modal.open, "space+o asked for a path");
+        assert_eq!(
+            opening.nav.file_picker.visible().iter().map(|e| e.name.clone()).collect::<Vec<_>>(),
+            vec!["neon_causeway.phos"],
+            "the picker did not list the project that was just saved",
+        );
+
+        press(&mut opening, KeyCode::Enter);
+        assert!(!opening.nav.file_picker.open, "the picker stayed up over its own answer");
+        assert_eq!(
+            params_of(&opening)[drum_rack::P_KIT],
+            chosen,
+            "the session opened on a different kit",
+        );
+        assert_eq!(
+            opening.nav.tracks.iter().filter(|t| t.instrument_type.is_some()).count(),
+            1,
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Typing narrows the list to the one project meant, and Enter takes
+    /// the row the narrowing left under the cursor.
+    #[test]
+    fn typing_in_the_picker_narrows_to_the_project_it_opens() {
+        let dir = projects("filter");
+        for name in ["morning_jam", "neon_causeway", "night_drive"] {
+            let _ = saved_into(&dir, name);
+        }
+
+        let mut opening = app();
+        opening.browse_sessions = Some(dir.clone());
+        opening.open_session_picker();
+        assert_eq!(opening.nav.file_picker.visible_count(), 3, "three were saved");
+
+        type_text(&mut opening, "neon");
+        assert_eq!(opening.nav.file_picker.visible_count(), 1, "the filter did not narrow");
+        press(&mut opening, KeyCode::Enter);
+        assert_eq!(
+            opening.session_path.as_deref(),
+            Some(dir.join("neon_causeway.phos").as_path()),
+            "the picker opened something other than the row it was showing",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The list shows projects and folders, and nothing else in the
+    /// directory — a `.phos` file is the only thing Enter could open.
+    #[test]
+    fn the_picker_lists_projects_and_folders_and_nothing_else() {
+        let dir = projects("listing");
+        let _ = saved_into(&dir, "jam");
+        std::fs::write(dir.join("notes.txt"), b"not a session").unwrap();
+        std::fs::write(dir.join("kick.wav"), b"not a session either").unwrap();
+        std::fs::create_dir_all(dir.join("jam.samples")).unwrap();
+
+        let mut opening = app();
+        opening.browse_sessions = Some(dir.clone());
+        opening.open_session_picker();
+        assert_eq!(
+            opening.nav.file_picker.visible().iter().map(|e| e.name.clone()).collect::<Vec<_>>(),
+            vec!["jam.samples", "jam.phos"],
+            "the picker listed something Enter cannot open",
+        );
+
+        // Enter on the folder walks into it rather than trying to open it.
+        press(&mut opening, KeyCode::Enter);
+        assert!(opening.nav.file_picker.open, "the folder closed the picker");
+        assert!(
+            opening.nav.file_picker.dir.ends_with("jam.samples"),
+            "Enter on a folder did not walk into it",
+        );
+        assert!(opening.session_path.is_none(), "walking into a folder opened a session");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Esc leaves everything exactly as it was: no session loaded, no
+    /// prompt left behind, and the keys back where they were.
+    #[test]
+    fn esc_leaves_the_session_picker_with_nothing_touched() {
+        let dir = projects("esc");
+        let _ = saved_into(&dir, "jam");
+
+        let mut opening = app();
+        opening.browse_sessions = Some(dir.clone());
+        add_track(&mut opening, InstrumentType::Rhodes);
+        let before = opening.nav.tracks.len();
+        opening.open_session_picker();
+        press(&mut opening, KeyCode::Esc);
+
+        assert!(!opening.nav.file_picker.open, "esc left the picker up");
+        assert!(!opening.nav.input_modal.open, "esc opened a field on the way out");
+        assert!(opening.session_path.is_none(), "esc opened a session");
+        assert_eq!(opening.nav.tracks.len(), before, "esc changed the song");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The picker owns every key while it is up.
+    ///
+    /// `q` quits from the tracks pane, `u` undoes from almost anywhere and a
+    /// space opens the menu — and inside a filename all three are letters.
+    /// This is the defect the sampler's prompt was built around: a key that
+    /// falls through to the pane underneath runs as a command.
+    #[test]
+    fn the_picker_swallows_the_keys_that_would_act_underneath() {
+        let dir = projects("swallow");
+        let _ = saved_into(&dir, "quiet jam");
+
+        let mut app = app();
+        app.browse_sessions = Some(dir.clone());
+        add_track(&mut app, InstrumentType::Rhodes);
+        let tracks = app.nav.tracks.len();
+        app.open_session_picker();
+
+        type_text(&mut app, "q u");
+        assert!(app.running, "`q` inside a filename quit the application");
+        assert!(!app.nav.space_menu.open, "a space inside a filename opened the menu");
+        assert_eq!(app.nav.tracks.len(), tracks, "a key reached the tracks underneath");
+        assert_eq!(app.nav.file_picker.filter, "q u", "the letters did not reach the filter");
+        assert!(app.nav.file_picker.open, "the picker closed on a letter");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ...including the keys of a room that claims them all.
+    ///
+    /// The practice room takes `j`, `k` and `enter` and lets the space menu
+    /// through — which is how a picker comes to be open over it. The letters
+    /// typed into the picker must not walk the drill list underneath.
+    #[test]
+    fn the_picker_takes_the_keys_from_the_practice_room_under_it() {
+        let dir = projects("practice");
+        let _ = saved_into(&dir, "jam");
+
+        let mut app = app();
+        app.browse_sessions = Some(dir.clone());
+        add_track(&mut app, InstrumentType::Rhodes);
+        app.open_practice();
+        assert!(app.nav.practice.open, "the practice room did not open");
+        let drill = app.nav.practice.cursor;
+
+        app.open_session_picker();
+        type_text(&mut app, "jam");
+        assert_eq!(app.nav.practice.cursor, drill, "a key walked the drill list");
+        // The `j` is the picker's own way down the list, because nothing had
+        // been typed yet; `a` and `m` are letters. Neither reached the room.
+        assert_eq!(app.nav.file_picker.filter, "am", "the letters did not reach the filter");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The escape hatch: `/` swaps the list for the typed field, and the
+    /// typed path opens exactly what it names — the road every session test
+    /// above this one drives through `do_load`.
+    #[test]
+    fn slash_swaps_the_picker_for_a_typed_path_that_still_opens() {
+        let dir = projects("typed");
+        let saved = saved_into(&dir, "neon_causeway");
+        let chosen = params_of(&saved)[drum_rack::P_KIT];
+        let path = dir.join("neon_causeway.phos");
+
+        let mut opening = app();
+        opening.browse_sessions = Some(dir.clone());
+        opening.open_session_picker();
+        press(&mut opening, KeyCode::Char('/'));
+        assert!(!opening.nav.file_picker.open, "the picker stayed up behind the field");
+        assert!(opening.nav.input_modal.open, "`/` did not offer the typed path");
+        assert_eq!(opening.nav.input_modal.kind, InputModalKind::Open);
+
+        // The field opens on the folder, so a name is all that is left to
+        // type — but the whole path works too, which is the point of it.
+        for _ in 0..opening.nav.input_modal.value().chars().count() {
+            press(&mut opening, KeyCode::Backspace);
+        }
+        type_text(&mut opening, &path.to_string_lossy());
+        press(&mut opening, KeyCode::Enter);
+
+        assert_eq!(params_of(&opening)[drum_rack::P_KIT], chosen, "the typed path opened nothing");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A saved session names every selector its instrument has, not just the

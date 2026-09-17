@@ -210,25 +210,38 @@ mod tests {
 
     // ── The save prompt ──
 
-    /// The prompt opens on the directory alone, and typing produces exactly
-    /// what was typed. It used to open on `sessions/untitled.phos` with the
-    /// cursor at the end: a player typing the name of their song got
+    /// The prompt asks for a name, and takes exactly the name it is given.
+    ///
+    /// It used to open on `sessions/untitled.phos` with the cursor at the
+    /// end: a player typing the name of their song got
     /// `sessions/untitled.phosneon_causeway`, and the file was untitled.
+    /// Then it opened on the folder alone, which was correct and still made
+    /// a player read an absolute path before they could type. Now the field
+    /// is empty and the folder is named under it.
     #[test]
     fn the_save_prompt_takes_exactly_what_is_typed() {
         let mut app = app();
         app.handle_save();
         assert!(app.nav.input_modal.open, "no prompt");
 
-        let start = app.nav.input_modal.value().to_string();
-        assert!(start.ends_with('/') || start.ends_with('\\'), "the field is not a bare directory: {start:?}");
-        assert!(!start.contains("untitled"), "the field opens with a name in it: {start:?}");
-        assert_eq!(app.nav.input_modal.cursor, start.chars().count(), "the cursor is not at the end");
+        assert_eq!(app.nav.input_modal.value(), "", "the field opens with something in it");
+        assert_eq!(app.nav.input_modal.cursor, 0);
+        let folder = app.nav.input_modal.hint().to_string();
+        assert!(
+            folder.ends_with('/') || folder.ends_with('\\'),
+            "the prompt does not name the folder it will write into: {folder:?}",
+        );
 
         type_text(&mut app, "neon_causeway");
-        assert_eq!(app.nav.input_modal.value(), format!("{start}neon_causeway"));
-        assert_eq!(app.nav.input_modal.resolved(), format!("{start}neon_causeway"));
+        assert_eq!(app.nav.input_modal.value(), "neon_causeway");
+        assert_eq!(app.nav.input_modal.resolved(), "neon_causeway");
         assert!(app.nav.input_modal.placeholder().is_empty(), "the suggestion outstayed its welcome");
+
+        // ...and the folder is on the screen, because a save that lands
+        // somewhere the prompt never named is a save that goes missing.
+        let text = screen(&app, 100, 30);
+        assert!(text.contains("neon_causeway"), "the name is not on the screen:\n{text}");
+        assert!(text.contains("into "), "the folder is not on the screen:\n{text}");
     }
 
     /// Enter on an untouched prompt still means untitled — the suggestion is
@@ -237,10 +250,9 @@ mod tests {
     fn an_untouched_save_prompt_falls_back_to_the_suggestion() {
         let mut app = app();
         app.handle_save();
-        let directory = app.nav.input_modal.value().to_string();
 
         assert_eq!(app.nav.input_modal.placeholder(), "untitled.phos");
-        assert_eq!(app.nav.input_modal.resolved(), format!("{directory}untitled.phos"));
+        assert_eq!(app.nav.input_modal.resolved(), "untitled.phos");
 
         // ...and it is on the screen, so nobody has to guess what Enter does.
         assert!(
@@ -250,27 +262,66 @@ mod tests {
     }
 
     /// A field longer than the box it is drawn in scrolls, so what is being
-    /// typed is what is visible. The application directory is an absolute
-    /// path on a machine whose home directory can be any length, and the
-    /// prompt is fifty columns wide wherever it is opened.
+    /// typed is what is visible. A name can be any length, and the prompt is
+    /// fifty columns wide wherever it is opened.
     #[test]
     fn a_long_path_scrolls_rather_than_running_off_the_prompt() {
         let mut app = app();
         app.handle_save();
-        type_text(&mut app, "a_rather_long_song_name_for_the_evening");
+        type_text(&mut app, "a_rather_long_song_name_for_the_evening_and_the_one_after_it");
 
         let text = screen(&app, 100, 30);
         assert!(
-            text.contains("evening"),
+            text.contains("after_it"),
             "the end of what was typed is not on the screen:\n{text}",
         );
         assert!(text.contains('\u{2026}'), "nothing said the field was scrolled:\n{text}");
 
         // ...and every line of the modal still fits inside its border.
-        for line in text.lines().filter(|line| line.contains("filename:")) {
+        for line in text.lines().filter(|line| line.contains("name:")) {
             let width = line.trim_end().chars().count();
             assert!(width <= 100, "the field ran off the terminal: {width}");
         }
+    }
+
+    /// The name goes into the projects folder, which is the folder the
+    /// picker opens on: a save the picker cannot find is the whole defect
+    /// this changed for.
+    #[test]
+    fn a_saved_name_lands_in_the_projects_folder() {
+        let dir = std::env::temp_dir()
+            .join(format!("phosphor-savename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut app = app();
+        app.browse_sessions = Some(dir.clone());
+
+        // The whole gesture: Space+S, a name, Enter.
+        app.handle_save();
+        type_text(&mut app, "neon_causeway");
+        press(&mut app, KeyCode::Enter);
+        assert!(dir.join("neon_causeway.phos").is_file(), "the session is not in the folder");
+        assert!(
+            app.live_status().is_some_and(|s| s.contains("saved")),
+            "the save said nothing: {:?}",
+            app.live_status(),
+        );
+
+        // ...and from then on Ctrl+S goes back to that same file rather
+        // than asking again.
+        app.handle_save();
+        assert!(!app.nav.input_modal.open, "the quick save asked for a name");
+
+        // A path is still a path: typed with a separator, it goes exactly
+        // where it says.
+        let elsewhere = dir.join("ideas");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let typed = elsewhere.join("sketch.phos");
+        app.do_save(&typed.to_string_lossy());
+        assert!(typed.is_file(), "a typed path did not land where it was typed");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A name with characters outside ASCII in it does not take the

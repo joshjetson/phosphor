@@ -52,7 +52,11 @@ impl App {
                 self.handle_save();
             }
             SpaceAction::Open => {
-                self.nav.input_modal.open_load();
+                // The list rather than the field: a player who has just
+                // saved `myjam` should not have to remember where this
+                // application keeps sessions in order to open it again.
+                // `/` inside it is still the typed path.
+                self.open_session_picker();
             }
             SpaceAction::Delete => {
                 self.handle_delete_request();

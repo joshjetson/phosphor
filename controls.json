@@ -22,8 +22,8 @@
     "m": "toggle metronome",
     "!": "panic (kill all sound)",
     "a": "add instrument track",
-    "s": "save project",
-    "o": "open project",
+    "s": "save project — asks for a NAME (not a path); the prompt names the folder it writes into",
+    "o": "open project — opens the file picker on that same folder",
     "d": "delete selected track/clip",
     "e": "enter edit mode (piano roll)",
     "q": "quantize notes to grid",
@@ -41,6 +41,19 @@
     "overwrite": "saving under a name the bank already holds rewrites that slot, after a y/n confirmation — names are slots, so no two presets can share one",
     "limits": "128 presets per instrument, 32 characters per name",
     "refusals": "a preset is refused rather than loaded when it was saved for a different instrument, with a different number of controls, or against an older panel layout"
+  },
+  "file_picker": {
+    "description": "the little file tree, opened by space+o (projects) and by a on a sampler pad (sounds). One folder at a time, listed: no recursive search, no preview, and selecting a row plays nothing. Sessions open on the projects folder (sessions/ in a checkout, otherwise ~/.phosphor/sessions/); sounds open on ~/.phosphor/samples/.",
+    "listing": "folders first, then files, each half alphabetical and case-insensitive · dot-prefixed names are skipped · files are filtered by what the picker is for (.phos for projects, .wav for sounds, either case) and folders are ALWAYS shown, so you can walk anywhere from where it opened",
+    "j/k": "move the cursor (arrows too, and ctrl+n / ctrl+p) — while nothing has been typed",
+    "Enter": "a folder: walk into it · a file: open it (a project) or land it on the pad (a sound)",
+    "h": "up one folder (left arrow too) — stops at the top of the filesystem and says so",
+    "g/G": "top / bottom of the list",
+    "typing": "letters, digits, space, . - and _ narrow the list live (case-insensitive substring); backspace widens it again. From the first letter typed, j/k/h/g/G are letters and the arrows move the cursor — the footer changes to say so. Backspace on an empty filter goes up a folder",
+    "/": "swap the list for the typed-path prompt this replaced — for paths no list can reach; esc closes that field",
+    "Esc": "close, choosing nothing",
+    "takes": "on a sampler, this session's own takes folder (<session>.samples/) is pinned at the top of the list when it exists, so a take recorded ten minutes ago is one Enter away",
+    "empty": "an empty projects folder says 'no projects yet · ctrl+s saves your first one here'; an empty samples folder says 'drop .wav files in this folder, or press / to type a path' · a folder that cannot be read says so rather than looking empty"
   },
   "tracks_pane": {
     "not_selected": {
@@ -283,7 +296,7 @@
     "create": "space then a opens the instrument menu — pick Sampler; the track opens on its [pads] tab with the keys on it",
     "pad_map": "the keyboard band across the top IS the kit: a key with sounds on it lights in the track's colour and carries the number of layers, a key whose file went missing is red, and the caret ▼ marks the pad being edited · the bed scrolls to keep the caret in sight on a narrow terminal",
     "pick_a_pad": "play a key on your MIDI controller — the pad under that key becomes the current pad (C3 to start) · h/l walk the bed one key at a time, H/L by an octave",
-    "load": "a asks for a file: type a path and press enter — a bare name like 'kick' looks in ~/.phosphor/samples/ and tries .wav for you; each load stacks another layer on the current pad, up to eight, and points the panel at what just arrived",
+    "load": "a opens the file picker on ~/.phosphor/samples/: j/k to a sound, enter lands it — type letters to narrow the list, h walks up a folder, and / swaps to the typed-path prompt (a bare name there looks in ~/.phosphor/samples/ and tries .wav for you). Each load stacks another layer on the current pad, up to eight, and points the panel at what just arrived",
     "knobs": "j/k picks a control, enter holds it, h/l turns it, H/L strides, esc lets go — held is the only time h/l stop walking the keyboard · the pad's own: trig · poly · choke · cycle · pitch · fine · attack · decay · sustain · release · level · pan · root · keytrk; then the selected layer's: level · pan · tune · fine · rev · mute",
     "layers": "[ and ] pick which sound on the pad the row knobs address, 1-8 jumps straight to one — one list, the wav/rec layers first and any phrases after them · m mutes the row (it keeps its seat) · d removes it and asks first · u brings it back with its audio or its notes, ctrl+r takes it off again",
     "cycle": "cycle turns the pad into a round robin: off (the default) every layer that answers the hit sounds and they stack, on exactly one of them answers and the next hit takes the next — eight snares on one key stop sounding like a machine gun · a muted layer and a layer outside the velocity window lose their turn rather than spending it on silence, so a velocity-split pad rotates each half on its own · phrases are never cycled: every phr row on the pad fires either way, because a phrase is note traffic for the shared child and not one of several takes of a sound · where the rotation has got to is the pad's memory: stopping the transport does not put it back to layer one, and neither does editing the pad — only the panic key does · it is a zone's control too, and it goes into the session",

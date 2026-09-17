@@ -11,14 +11,23 @@ impl App {
             // Quick save to existing path
             self.do_save(&path.display().to_string());
         } else {
-            // First save — prompt for filename
-            self.nav.input_modal.open_save("untitled.phos");
+            // First save — ask for a name, and say which folder it will be
+            // written into. The folder comes from the same place the
+            // picker's does, so the prompt cannot name one folder while the
+            // save lands in another.
+            let folder = self.projects_dir().display().to_string();
+            self.nav.input_modal.open_save("untitled.phos", &folder);
         }
     }
 
 
     pub(crate) fn do_save(&mut self, path_str: &str) {
-        let path = std::path::PathBuf::from(path_str);
+        // A bare name is a name and goes where the sessions go; anything
+        // with a separator in it is a path and is written exactly there.
+        // The prompt asks for the first of those now — see
+        // `phosphor_app::paths::save_target` — so that the picker, which
+        // only lists one folder, can find what the save wrote.
+        let path = phosphor_app::paths::save_target_in(path_str, &self.projects_dir());
         // Ensure .phos extension
         let path = if path.extension().map(|e| e == "phos").unwrap_or(false) {
             path

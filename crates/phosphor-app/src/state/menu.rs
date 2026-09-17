@@ -563,6 +563,14 @@ pub struct InputModal {
     /// `sessions/untitled.phosneon_causeway`, and the file that appeared was
     /// called untitled.
     placeholder: String,
+    /// The folder the answer will be written into, drawn dim under the
+    /// field.
+    ///
+    /// The save prompt asks for a name rather than a path now, so the
+    /// folder is no longer in the field where a player could read it — and
+    /// a prompt that writes a file somewhere it never named is how a save
+    /// goes missing. Empty on every prompt that is not about a file.
+    hint: String,
 }
 
 impl Default for InputModal {
@@ -577,62 +585,68 @@ impl InputModal {
             buffer: String::new(),
             cursor: 0,
             placeholder: String::new(),
+            hint: String::new(),
         }
     }
 
-    /// Ask for a filename to save under.
+    /// Ask for a name to save under.
     ///
-    /// The field starts in `sessions/` when the working directory has one —
-    /// a checkout being run from its own root, which is where every session
-    /// on disk already is — and in the absolute `<app dir>/sessions/`
-    /// otherwise. A bare `sessions/` resolves against wherever the process was
-    /// started, so a shortcut, an alias or a desktop launcher would write the
-    /// file successfully into a directory nobody is going to look in again.
-    /// See [`crate::paths::session_prompt_dir`].
-    /// The field holds the directory and nothing else, so the first key
-    /// pressed is the first letter of the name. `default_name` is what Enter
-    /// falls back to on an untouched prompt, and is shown dim where the name
-    /// would go — a suggestion rather than text to delete.
-    pub fn open_save(&mut self, default_name: &str) {
+    /// A name, not a path. The field is empty and the folder it will be
+    /// written into is named under it — see
+    /// [`crate::paths::session_prompt_dir`] for which folder that is and
+    /// [`crate::paths::save_target`] for the joining. The field used to
+    /// hold the folder, which meant a player saving their first song had to
+    /// read an absolute path before they could type, and every save the
+    /// picker can find is in that one folder anyway.
+    ///
+    /// A path typed here is still honoured exactly as typed, so `ideas/jam`
+    /// keeps meaning what it always did.
+    ///
+    /// `default_name` is what Enter falls back to on an untouched prompt,
+    /// and is shown dim where the name would go — a suggestion rather than
+    /// text to delete. `folder` is where the name will be written, which
+    /// the caller supplies rather than this looking it up: the save and the
+    /// prompt have to name the same folder, and two lookups are two answers
+    /// waiting to differ.
+    pub fn open_save(&mut self, default_name: &str, folder: &str) {
         self.open = true;
         self.kind = InputModalKind::SaveAs;
-        self.buffer = crate::paths::session_prompt_dir();
-        self.cursor = self.len_chars();
+        self.buffer.clear();
+        self.cursor = 0;
         self.placeholder = default_name.to_string();
+        self.hint = folder.to_string();
     }
 
-    /// Ask for a file to open. Same starting directory as [`Self::open_save`];
-    /// a relative path typed here is also looked for under the application
-    /// directory, so the way a checkout spells a session keeps working from
-    /// anywhere. See [`crate::paths::find_session`].
+    /// Ask for a path to open, typed out.
+    ///
+    /// The escape hatch behind the picker rather than the front door: `/`
+    /// in the picker opens this, for the paths a list cannot reach. It
+    /// starts on the same folder the picker does, in the field this time,
+    /// because here the folder is something to edit. A relative path typed
+    /// here is also looked for under the application directory, so the way
+    /// a checkout spells a session keeps working from anywhere. See
+    /// [`crate::paths::find_session`].
     pub fn open_load(&mut self) {
         self.open = true;
         self.kind = InputModalKind::Open;
         self.buffer = crate::paths::session_prompt_dir();
         self.cursor = self.len_chars();
         self.placeholder.clear();
+        self.hint.clear();
     }
 
     /// Name a user preset. Starts empty rather than on a suggestion, because
     /// a suggestion the player accepts by reflex is how a bank fills up with
     /// eight sounds called "juno".
     pub fn open_preset_name(&mut self) {
-        self.open = true;
-        self.kind = InputModalKind::PresetName;
-        self.buffer.clear();
-        self.cursor = 0;
-        self.placeholder.clear();
+        self.open_named(InputModalKind::PresetName, "");
     }
 
     /// Rename a track. Starts empty with the current name as the dim
     /// fallback, so Enter on an untouched prompt changes nothing and the
     /// first key pressed is the first letter of the new name.
     pub fn open_rename(&mut self, current: &str) {
-        self.open = true;
-        self.kind = InputModalKind::RenameTrack;
-        self.buffer.clear();
-        self.cursor = 0;
-        self.placeholder = current.to_string();
+        self.open_named(InputModalKind::RenameTrack, current);
     }
 
     /// A generic named prompt: empty field, `current` as the dim fallback.
@@ -642,6 +656,7 @@ impl InputModal {
         self.buffer.clear();
         self.cursor = 0;
         self.placeholder = current.to_string();
+        self.hint.clear();
     }
 
     /// How many characters are in the field.
@@ -706,10 +721,18 @@ impl InputModal {
         self.buffer.clear();
         self.cursor = 0;
         self.placeholder.clear();
+        self.hint.clear();
     }
 
     pub fn value(&self) -> &str {
         &self.buffer
+    }
+
+    /// The folder this answer goes into, for the line under the field, or
+    /// nothing when the prompt is not about a file.
+    #[must_use]
+    pub fn hint(&self) -> &str {
+        &self.hint
     }
 
     /// Whether the field names a file yet, or is still just a directory.
@@ -1384,11 +1407,21 @@ pub const HELP_TOPICS: &[HelpTopic] = &[
             Heading("sessions"),
             Key("ctrl+s", "save \u{2014} straight back to the open file"),
             Key("spc+s", "save, naming the file the first time"),
-            Key("spc+o", "open one"),
+            Key("spc+o", "open one \u{2014} a list, not a path"),
             Gap,
-            Note("The save prompt starts on the folder with the name"),
-            Note("dimmed after it: type and it is yours, or press enter"),
-            Note("to take the suggestion."),
+            Note("The save prompt asks for a name and says which"),
+            Note("folder it is writing into: type and it is yours, or"),
+            Note("press enter to take the dim suggestion."),
+            Gap,
+            Heading("the file picker"),
+            Key("j / k", "walk the list \u{00b7} enter opens what it is on"),
+            Key("h", "up a folder \u{00b7} enter on one walks into it"),
+            Key("typing", "narrows the list \u{00b7} backspace widens it"),
+            Key("/", "type a path instead \u{00b7} esc closes"),
+            Note("spc+o lists your projects; a on a sampler pad lists"),
+            Note("your samples, with this session's own takes at the"),
+            Note("top. Typing makes j and k letters \u{2014} the arrows"),
+            Note("move the cursor from then on, and the footer says so."),
             Gap,
             Heading("where they live"),
             Note("sessions/ in a checkout, and otherwise the"),

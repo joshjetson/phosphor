@@ -12,6 +12,7 @@ mod automation;
 mod midi_fx;
 mod section;
 mod clip_view;
+mod file_picker;
 mod input;
 mod loop_editor;
 mod menu;
@@ -24,6 +25,7 @@ pub use automation::*;
 pub use midi_fx::*;
 pub use section::*;
 pub use clip_view::*;
+pub use file_picker::*;
 pub use input::*;
 pub use loop_editor::*;
 pub use menu::*;
@@ -114,6 +116,12 @@ pub struct NavState {
     pub tracks: Vec<TrackState>,
     /// Text input modal (for save/open file paths).
     pub input_modal: InputModal,
+    /// The file tree: opening a project, or putting a sound on a pad.
+    ///
+    /// Beside the input modal rather than inside it, because it is a list
+    /// and not a field — and because `/` swaps one for the other, which
+    /// only works while they are two things.
+    pub file_picker: FilePicker,
     /// Confirmation modal (for delete actions).
     pub confirm_modal: ConfirmModal,
     /// Undo/redo stack.
@@ -227,6 +235,7 @@ impl NavState {
             transport_ui: TransportUiState::new(),
             tracks,
             input_modal: InputModal::new(),
+            file_picker: FilePicker::new(),
             confirm_modal: ConfirmModal::new(),
             undo_stack: undo::UndoStack::new(),
             quantize_modal: QuantizeModal::new(),
@@ -260,6 +269,21 @@ impl NavState {
     pub fn open_fx_type(&self) -> Option<FxType> {
         let slot = self.clip_view.fx.slot?;
         Some(self.current_track()?.fx_chain.get(slot)?.fx_type)
+    }
+
+    /// Whether something on the screen is asking the player a question.
+    ///
+    /// One list rather than one per asker, because everything that has to
+    /// stand still while a question is up has to agree about when that is.
+    /// The sampler's pad cursor is the reason it exists: a played key moves
+    /// it, and "remove kick from pad C3?" answered yes after a stray note
+    /// used to remove the snare.
+    #[must_use]
+    pub fn question_is_up(&self) -> bool {
+        self.input_modal.open
+            || self.confirm_modal.open
+            || self.instrument_modal.open
+            || self.file_picker.open
     }
 
     /// Whether this track is the one whose key is being monitored.

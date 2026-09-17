@@ -25,6 +25,7 @@ use phosphor_midi::ring::midi_ring_buffer;
 use crate::state::{self, ClipTab, ClipViewFocus, ConfirmKind, FxPanelTab, InputModalKind, InstrumentType, NavState, Pane, PianoRollFocus, SpaceAction, TransportElement};
 mod delete;
 mod edit_mode;
+mod file_picker;
 mod keys;
 mod fx_keys;
 mod sequencer_bounce;
@@ -77,13 +78,24 @@ pub struct App {
     next_track_id: usize,
     clip_rx: crossbeam_channel::Receiver<ClipSnapshot>,
     /// Last saved/loaded file path for Ctrl+S quick save.
-    session_path: Option<std::path::PathBuf>,
+    pub(crate) session_path: Option<std::path::PathBuf>,
     /// Where user preset banks are kept — `~/.phosphor/presets` on Unix,
     /// `%APPDATA%\phosphor\presets` on Windows, or `None` when the
     /// environment names no home directory at all. A field rather than a call
     /// so the tests can point it at a scratch directory instead of the
     /// player's own presets.
     pub(crate) preset_dir: Option<std::path::PathBuf>,
+    /// Where the file picker opens: the projects folder and the samples
+    /// folder, or `None` for "ask `phosphor_app::paths`", which is what
+    /// every running copy does.
+    ///
+    /// Fields for the reason `preset_dir` is one — a test points them at a
+    /// scratch directory rather than listing, and creating folders in, the
+    /// home directory of whoever happens to be running the suite. Resolved
+    /// when the picker opens rather than at startup, because resolving one
+    /// makes it.
+    pub(crate) browse_sessions: Option<std::path::PathBuf>,
+    pub(crate) browse_samples: Option<std::path::PathBuf>,
     /// Status message shown briefly at bottom of screen.
     pub(crate) status_message: Option<(String, std::time::Instant)>,
     /// Yanked (copied) clips, for paste and for cross-track layering. One
@@ -330,6 +342,8 @@ impl App {
             clip_rx,
             session_path: None,
             preset_dir: phosphor_app::preset::default_dir(),
+            browse_sessions: None,
+            browse_samples: None,
             // A device that would not take the requested format says so on the
             // bottom bar. Stderr is not available here — it would be painted
             // over by the UI — and silence is how the mismatch went unnoticed.
@@ -602,6 +616,10 @@ impl App {
             // How much of a help card is on the screen, so that scrolling it
             // stops where the drawing of it does.
             self.nav.space_menu.set_terminal_rows(term_h);
+            // ...and how much of the file picker's list is, for the same
+            // reason: the keys and the drawing have to agree about where
+            // the bottom of a list is.
+            file_picker::follow_terminal(&mut self.nav.file_picker, term_h);
             // Which way the effect panel's cursor keys point. The panel puts
             // bands in columns when there is room and in rows when there is
             // not, and `h` has to move the cursor the way `h` points either

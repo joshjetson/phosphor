@@ -295,7 +295,9 @@ program with `program`.
 
 **Session Management**
 - Save/load projects as `.phos` files (human-readable JSON)
-- `Ctrl+S` quick save, `Space+S` save as, `Space+O` open
+- `Ctrl+S` quick save, `Space+S` save under a name, `Space+O` open — the open
+  prompt is a **file picker**: a list of the projects folder, walked with
+  `j`/`k` and `Enter`, so nothing has to be typed from memory
 - Saves all tracks, instruments, synth parameters, clips, MIDI notes, transport settings
 - A kit, a patch or a cartridge is stored by **which one it is**, not by where its
   knob sat: a knob position only names a patch while the bank is the size it was
@@ -303,7 +305,9 @@ program with `program`.
   kind of wrong that looks perfectly reasonable
 - Atomic writes prevent file corruption
 - Default save directory: `sessions/` when you are running from a checkout,
-  otherwise `<app dir>/sessions/` — see [Where files live](#where-files-live)
+  otherwise `<app dir>/sessions/`. A name saves into it and the picker opens on
+  it — the save and the list are the same folder by construction, so what you
+  saved is in what you are shown. See [Where files live](#where-files-live)
 
 **User Presets**
 - `Space+W` opens a preset browser for the selected instrument
@@ -379,7 +383,8 @@ up to eight sampled sounds stacked on top of one another, each with its own trig
 polyphony, choke group, pitch, envelope, level, pan and root — in
 milliseconds and semitones, not in percentages of a knob.
 
-Sounds arrive three ways. You type a path and a WAV lands on the pad. Or you
+Sounds arrive three ways. You pick a WAV out of a list and it lands on the
+pad — or type its path, if it lives somewhere no list would show. Or you
 point the pad at one of the synths in this box — the Rhodes, the DX7, any of
 them — play it, and keep what you played as audio; you can then trim it by
 eye and by ear, and what plays is a region of the file rather than a new copy
@@ -400,9 +405,12 @@ a root. Drum kit or piano, on the same bed.
    88-key controller that is the fastest pad selector there is. Without one,
    `h`/`l` walk the bed a key at a time and `H`/`L` an octave. The caret
    starts at C3, under your hand.
-3. Press `a`. Type a path and press `Enter` — a bare name like `kick` looks
-   in `<app dir>/samples/` and tries `.wav` for you, so `kick` finds
-   `kick.wav`.
+3. Press `a`. A list of `<app dir>/samples/` opens: `j`/`k` to a sound and
+   `Enter` puts it on the pad. Type letters to narrow the list, `h` walks up
+   a folder and `Enter` on a folder walks into it. For a file that lives
+   somewhere else entirely, `/` swaps the list for a typed path — where a
+   bare name like `kick` still looks in `<app dir>/samples/` and tries `.wav`
+   for you.
 4. Play that key again. The pad sounds. Press `a` again to stack a second
    sound on the same pad, up to eight; they play together.
 5. `j`/`k` picks a control on the panel, `Enter` holds it, `h`/`l` turns it,
@@ -737,10 +745,11 @@ as it goes and the flash says how far short that left it.
 
 ### Files, and what a session keeps
 
-A session stores each sound's **path**, as you typed it — never the audio. A
-bare name stays a bare name and keeps resolving against `samples/` on any
-machine. Both beds are stored: the pad map, the zones, and which of the two
-the track was in when you saved.
+A session stores each sound's **path** — never the audio. A path chosen from
+the picker is stored whole, so it keeps pointing at that file wherever the
+session is opened; a bare name typed into the `/` prompt stays a bare name
+and keeps resolving against `samples/` on any machine. Both beds are stored:
+the pad map, the zones, and which of the two the track was in when you saved.
 
 A recorded take has no file until you save. Saving writes it as a 32-bit
 float WAV into **`<session>.samples/`**, beside the session file, and stores
@@ -783,7 +792,7 @@ channels is dropped), up to ten minutes a file.
 | `Esc` (held) | Let go of the control — `Enter` releases it too |
 | `[` / `]` | Pick which sound on the pad the row controls address — layers first, phrases after |
 | `1`–`8` | Jump to that sound, and play it |
-| `a` | Load a WAV onto this pad |
+| `a` | Load a WAV onto this pad — a list of `samples/`; `/` types a path instead |
 | `t` | Trim the sound under the cursor |
 | `i` | Record this pad from an instrument |
 | `n` | Normalize the sound, or put it back to unity |
@@ -1074,8 +1083,12 @@ an open one.
 
 **Load a sound onto a pad** — Open the pad map, put the caret on a pad —
 `h`/`l` walk a key, `H`/`L` an octave, or just play the key on your
-controller — and press `a`. Type a path and press `Enter`. A bare name like
-`kick` looks in `<app dir>/samples/` and tries `.wav` for you; `Esc` cancels.
+controller — and press `a`. A list of `<app dir>/samples/` opens: `j`/`k` to
+a sound, `Enter` lands it. Type letters to narrow the list, `h` goes up a
+folder, `Enter` on a folder walks into it, `Esc` cancels. If this session has
+recorded takes, its own `<session>.samples/` folder is the first row. For a
+file somewhere no list would show it, `/` swaps to a typed path — where a
+bare name like `kick` still looks in `<app dir>/samples/` and tries `.wav`.
 The sound lands as a new layer and the panel points at it. WAV files only, up
 to ten minutes. See [Sampler](#sampler--a-sound-on-every-key).
 
@@ -1112,9 +1125,12 @@ sequencer grid, `n` toggles steps the same way.
 `[`/`]` snap it to the nearest pitch above/below that already has a note.
 
 **Open / save** — `Space+S`, type a name like `myjam`, `Enter`: phosphor
-adds `.phos` and saves into `sessions/`. `Ctrl+S` then saves that same
-file instantly. `Space+O`, type the name — with or without `.phos` —
-and `Enter` opens it. See [Where files live](#where-files-live).
+adds `.phos` and saves into your projects folder, which the prompt names
+above the field. `Ctrl+S` then saves that same file instantly. `Space+O`
+opens a **list** of that folder — `j`/`k` to your project, `Enter` opens it;
+type letters to narrow a long list, `h` walks up a folder, `Esc` closes. `/`
+inside the list swaps it for a typed path, for a file kept somewhere else.
+See [Where files live](#where-files-live).
 
 **Panic** — `Space+!` from anywhere: all sound stops immediately.
 
@@ -1170,12 +1186,15 @@ take on the pad — named, selected, one `u` away. Stopped, the take starts on
 your first note and rings out to silence; rolling (`Space+P`), it is cut to
 whole bars so it loops. Playing one pitch teaches the pad its root. `i`
 changes the instrument, `Esc` ends a running take and `Esc` again puts the
-sampler back with its kit.
+sampler back with its kit. A take becomes a file the next time you save —
+into `<session>.samples/`, which is the first row of the `a` list from then
+on, so a take is reachable from any other pad in one `Enter`.
 
 **Sampler** — `Space+A` and choose *Sampler*: the track arrives with its pad
 map open and the keyboard drawn across it, eighty-eight pads, one per key.
 `h`/`l` walk the bed and `H`/`L` an octave — or play a key and the caret goes
-there. `a` loads a WAV onto the pad under the caret, `t` trims it, `i`
+there. `a` opens a list of your samples folder and puts the WAV you choose on
+the pad under the caret (`/` types a path instead), `t` trims it, `i`
 records it off another instrument, `n` normalizes it, `d` removes it. `j`/`k`
 picks a control — trigger, polyphony, choke group, pitch, ADSR, level, pan,
 root, keytracking, then the selected sound's own six — `Enter` holds it,
@@ -1229,7 +1248,7 @@ the loop section. `p` puts it down; wherever two flavors exist, lowercase
 the bed stops being one sound per key and becomes zones, a stretch of keys
 playing one sound transposed from a root. The bar reads `-- KEYS --`. `w`
 throws a zone across the whole bed, `o` across the octave the caret is in,
-and `a` then loads a sound into it — a file name ending in a note
+and `a` then picks a sound for it out of the list — a file name ending in a note
 (`Piano_C3.wav`, `kick_A#1.wav`) sets the root on the way in, and `R` learns
 it instead from the next key you play. `s` splits the zone at the caret, so a
 keyboard can be several samples wide; the left half keeps its root, the right
@@ -1270,8 +1289,8 @@ session keeps both. Full section:
 | `Space` `m` | Toggle metronome |
 | `Space` `!` | Panic — kill all sound |
 | `Space` `a` | Add instrument track |
-| `Space` `s` | Save project |
-| `Space` `o` | Open project |
+| `Space` `s` | Save project — asks for a name; the prompt says which folder it writes into |
+| `Space` `o` | Open project — a list of that same folder; `/` types a path instead |
 | `Space` `d` | Delete selected track/clip (with confirmation) |
 | `Space` `e` | Enter edit mode (note-level piano roll editing) |
 | `Space` `q` | Quantize notes to grid |
@@ -1310,6 +1329,38 @@ written, and a preset that reopens on a different drum machine is the kind of wr
 that looks perfectly reasonable. Presets written before this still load — the knob
 position is the only evidence they carry — and the status bar says to check the
 patch when one does.
+
+### File Picker — Space+O, and `a` on a sampler pad
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Move the cursor — arrows, `Ctrl+N`/`Ctrl+P` and `PgUp`/`PgDn` too |
+| `Enter` | A folder: walk into it. A file: open the project, or land the sound |
+| `h` | Up one folder (`←` too) — it stops at the top of the filesystem |
+| `g` / `G` | Top / bottom of the list |
+| *typing* | Narrow the list: letters, digits, space, `.`, `-`, `_` |
+| `Backspace` | Widen it again — and on an empty filter, up one folder |
+| `/` | Swap the list for a typed path |
+| `Esc` | Close, choosing nothing |
+
+One folder at a time, listed: folders first and then files, each half
+alphabetical whatever case it was typed in, with dot-prefixed names skipped.
+Files are filtered by what the picker is for — `.phos` for projects, `.wav`
+for sounds, either case — and **folders are always shown**, so you can walk
+from where it opened to wherever you actually keep things.
+
+`j` and `k` are the way down a list and also letters in a filename, and it
+cannot be both at once: while nothing has been typed they walk the list, and
+from the first letter typed they are letters and the arrows move the cursor.
+The footer at the bottom of the box says which of the two it is in.
+
+On a sampler, this session's own takes folder — `<session>.samples/` — is the
+first row of the list whenever it exists, so a recording made ten minutes ago
+is one `Enter` away rather than a walk out of the samples folder.
+
+It does not search, it does not recurse, and selecting a row plays nothing.
+An empty folder says what to do about it rather than showing an empty box,
+and a folder that cannot be read says that instead of looking empty.
 
 ### Step Sequencer (a track type — drives any instrument)
 
@@ -1722,19 +1773,27 @@ Inside it:
 ```
 <app dir>/config.json                    theme preference
 <app dir>/presets/<instrument>.json      one user preset bank per instrument
-<app dir>/samples/                       WAVs a bare sampler path resolves against
-<app dir>/sessions/                      sessions saved without a path
+<app dir>/samples/                       the folder `a` lists on a sampler pad
+<app dir>/sessions/                      the folder `Space+O` lists, and a name saves into
 <app dir>/progressions.json              your chord-progression library
 <app dir>/practice.json                  practice-room records (clean BPM per drill)
 ```
 
-A bare sampler path is looked for as you typed it first, then in the working
-directory, then in `<app dir>/samples/`, then in the app directory itself,
-with `.wav` tried at each step — so `kick` finds `samples/kick.wav`.
+A sampler path *typed* into the `/` prompt is looked for as you typed it
+first, then in the working directory, then in `<app dir>/samples/`, then in
+the app directory itself, with `.wav` tried at each step — so `kick` finds
+`samples/kick.wav`. A sound chosen from the list needs none of that: the row
+carries the whole path.
 
 Recorded takes are the one thing that does not live here. They are written
 beside the session that holds them, in `<session>.samples/` — so `myjam.phos`
-keeps its recordings in `myjam.samples/`, and the two move together.
+keeps its recordings in `myjam.samples/`, and the two move together. The
+sampler's `a` list puts that folder at the top of itself, so a take is one
+`Enter` away from any other pad.
+
+Both of these folders are lists rather than paths to remember: `Space+O`
+shows the sessions, `a` on a sampler pad shows the samples. See
+[File Picker](#file-picker--spaceo-and-a-on-a-sampler-pad).
 
 ### How to save and open — the short version
 
@@ -1743,34 +1802,42 @@ and press `Enter`. Phosphor adds **`.phos`** to the end for you and puts
 the file in the `sessions/` folder. From then on `Ctrl+S` saves that same
 file instantly.
 
-**To open:** press `Space+O`, type the name — `myjam` or `myjam.phos`,
-either works — and press `Enter`. Every session file ends in **`.phos`**;
-that's the extension to look for when you're browsing your files outside
-phosphor.
+**To open:** press `Space+O`. A list of that same folder opens — your
+projects, by name. `j`/`k` to the one you want and `Enter` opens it. Nothing
+to type and nothing to remember.
 
 ### The details
 
 - A session is one file with the **`.phos`** extension — human-readable JSON.
 - You never have to type the extension — saving appends `.phos` to whatever
   you enter (a wrong extension is corrected: `mysong.txt` saves as
-  `mysong.phos`), and opening a bare name finds the `.phos` file it wrote.
-- The first `Space+S` (or `Ctrl+S` on an unsaved session) prompts with a dim
-  suggestion — `sessions/untitled.phos`. The suggestion is a fallback, not
-  pre-typed text: type a name and it replaces the `untitled` part; press
-  `Enter` on an untouched prompt and the suggestion is used as-is.
+  `mysong.phos`), and the picker only lists `.phos` files anyway.
+- The save prompt asks for a **name**, not a path. The field starts empty
+  with a dim suggestion — `untitled.phos` — where the name goes, and the
+  line under it says which folder the file is going into. The suggestion is
+  a fallback, not pre-typed text: type and it is yours, or press `Enter` on
+  an untouched prompt to take it.
 - After the first save, `Ctrl+S` saves straight back to the same file, no
   prompt. `Space+S` always prompts, for saving a copy under a new name.
 - Names have no other rules — anything your filesystem accepts works. Paths
-  are allowed: typing `ideas/jam.phos` saves into an `ideas` folder.
+  are still allowed: anything with a `/` in it is written exactly there, so
+  `ideas/jam.phos` saves into an `ideas` folder.
+- The open picker lists one folder at a time and walks: `Enter` on a folder
+  goes into it, `h` comes back out, typing narrows a long list. For a
+  project kept somewhere no list would show it, `/` swaps to a typed path —
+  the prompt this replaced, and it still resolves the way it always did.
+  Full keys: [File Picker](#file-picker--spaceo-and-a-on-a-sampler-pad).
 - A sampler stores each sound's **path**, never its audio, and both beds —
   the pad map and the zones. A path that has moved keeps its pad rather than
   being dropped: the key goes red and the layer list says `missing`.
 
-The save and open prompts start in `sessions/` when the working directory has
-one — running from a checkout, which is where the sessions in this repository
-already are — and in the absolute `<app dir>/sessions/` otherwise. Opening a
-relative path looks in the working directory first and then under the
-application directory, so `sessions/take3.phos` keeps working from anywhere.
+The folder a name is saved into and the folder the picker opens on are the
+same folder: `sessions/` when the working directory has one — running from a
+checkout, which is where the sessions in this repository already are — and
+the absolute `<app dir>/sessions/` otherwise. It is made if it is not there
+yet. A relative path typed into the `/` prompt is looked for in the working
+directory first and then under the application directory, so
+`sessions/take3.phos` keeps working from anywhere.
 
 ---
 

@@ -127,6 +127,8 @@ pub fn render(
         render_quantize_modal(frame, nav);
     } else if nav.input_modal.open {
         render_input_modal(frame, nav);
+    } else if nav.file_picker.open {
+        render_file_picker(frame, nav);
     } else if nav.prog_editor.open {
         render_prog_editor(frame, nav);
     } else if nav.instrument_modal.open {

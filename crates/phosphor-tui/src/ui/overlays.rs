@@ -294,7 +294,7 @@ pub(super) fn render_input_modal(frame: &mut Frame, nav: &NavState) {
     let inner = Rect::new(mx + 2, my + 1, mw - 4, mh - 2);
 
     let prompt = match nav.input_modal.kind {
-        InputModalKind::SaveAs => "filename: ",
+        InputModalKind::SaveAs => "name: ",
         InputModalKind::Open => "path: ",
         InputModalKind::PresetName => "name: ",
         InputModalKind::RenameTrack => "name: ",
@@ -342,9 +342,25 @@ pub(super) fn render_input_modal(frame: &mut Frame, nav: &NavState) {
     field.push(Span::styled(rest, theme::amber_bright().add_modifier(Modifier::BOLD)));
     field.push(Span::styled(placeholder, theme::dim()));
 
+    // Where the answer is going, when the prompt is about a file. It takes
+    // the blank line rather than a line of its own, so the box is the same
+    // height it has always been.
+    let hint = nav.input_modal.hint();
+    let folder = if hint.is_empty() {
+        Line::from("")
+    } else {
+        Line::from(vec![
+            Span::styled("into ", theme::muted()),
+            Span::styled(
+                phosphor_app::state::elide_left(hint, (inner.width as usize).saturating_sub(5)),
+                theme::dim(),
+            ),
+        ])
+    };
+
     let lines = vec![
         Line::from(field),
-        Line::from(""),
+        folder,
         Line::from(vec![
             Span::styled("  enter", theme::dim()),
             Span::styled(" confirm  ", theme::muted()),
@@ -352,6 +368,126 @@ pub(super) fn render_input_modal(frame: &mut Frame, nav: &NavState) {
             Span::styled(" cancel", theme::muted()),
         ]),
     ];
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The file picker: one folder, listed.
+///
+/// The preset browser's box and the preset browser's keys — see
+/// [`render_preset_modal`] — because it is the same kind of thing: a list
+/// with a cursor in it and one answer. What it adds is a header naming the
+/// folder, a filter line for what has been typed, and a footer that names
+/// the way out to a typed path, which is the one thing a list cannot do.
+pub(super) fn render_file_picker(frame: &mut Frame, nav: &NavState) {
+    let picker = &nav.file_picker;
+    let area = frame.area();
+    // Wide enough for the footer and for the sentence an empty folder
+    // shows, which are the two longest lines in the box: a hint that is cut
+    // off is a hint that has to be guessed at.
+    let mw = 64u16.min(area.width.saturating_sub(4));
+    // As tall as the folder needs and no taller, up to what the terminal
+    // has: five lines of frame — two borders, the header, the filter line
+    // and the footer — around however much list there is. A box of twenty
+    // rows over a folder holding three is a lot of empty screen.
+    let rows = phosphor_app::state::picker_list_rows(area.height);
+    let shown = picker.visible_count().min(rows);
+    let mh = (shown as u16 + 5).min(phosphor_app::state::picker_box_height(area.height));
+    let mx = (area.width.saturating_sub(mw)) / 2;
+    let my = (area.height.saturating_sub(mh)) / 2;
+    let menu_area = Rect::new(mx, my, mw, mh);
+
+    frame.render_widget(Clear, menu_area);
+    frame.render_widget(
+        Block::default()
+            .style(Style::default().bg(theme::overlay_bg()))
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_style(theme::border_style())
+            .title(Span::styled(
+                format!(" {} ", picker.purpose.title()),
+                theme::amber_bright().add_modifier(Modifier::BOLD),
+            )),
+        menu_area,
+    );
+
+    let inner = Rect::new(mx + 2, my + 1, mw.saturating_sub(4), mh.saturating_sub(2));
+
+    let mut lines: Vec<Line> = vec![Line::from(Span::styled(
+        picker.header(inner.width as usize),
+        theme::muted(),
+    ))];
+
+    let visible = picker.visible();
+    for (offset, entry) in visible.iter().enumerate().skip(picker.scroll).take(rows) {
+        let here = picker.cursor == offset;
+        let style = if here {
+            theme::amber_bright().add_modifier(Modifier::BOLD)
+        } else if entry.is_dir {
+            theme::amber()
+        } else {
+            theme::normal()
+        };
+        let mut row = vec![
+            Span::styled(if here { "\u{25B6} " } else { "  " }, style),
+            Span::styled(
+                if entry.is_dir { format!("{}/", entry.name) } else { entry.name.clone() },
+                style,
+            ),
+        ];
+        // A pinned row is not where it appears to be — it is beside the
+        // session file rather than in this folder — so it says so.
+        if entry.pinned {
+            row.push(Span::styled("  this session's takes", theme::dim()));
+        }
+        lines.push(Line::from(row));
+    }
+
+    // One line for whichever of the two has something to say: what has been
+    // typed, or why there is nothing under it. They cannot both be
+    // interesting at once — a filter with matches needs no explanation.
+    if let Some(words) = picker.empty_words() {
+        lines.push(Line::from(Span::styled(format!("  {words}"), theme::dim())));
+    } else if !picker.filter.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  find ", theme::muted()),
+            Span::styled(picker.filter.as_str(), theme::amber_bright()),
+            Span::styled(
+                format!("  {} of {}", picker.visible_count(), picker.entries.len()),
+                theme::dim(),
+            ),
+        ]));
+    } else {
+        lines.push(Line::from(""));
+    }
+
+    // The footer says which of the picker's two states it is in: `j`/`k`
+    // walk the list until something is typed, and are letters after that —
+    // so the keys that move change, and the line has to change with them.
+    let footer: &[(&str, &str)] = if picker.filter.is_empty() {
+        &[
+            ("j/k", " move  "),
+            ("enter", " open  "),
+            ("h", " up  "),
+            ("type", " find  "),
+            ("/", " path  "),
+            ("esc", " close"),
+        ]
+    } else {
+        &[
+            ("\u{2191}\u{2193}", " move  "),
+            ("enter", " open  "),
+            ("bksp", " widen  "),
+            ("/", " path  "),
+            ("esc", " close"),
+        ]
+    };
+    let mut keys = vec![Span::styled("  ", theme::dim())];
+    for (key, what) in footer {
+        keys.push(Span::styled(*key, theme::dim()));
+        keys.push(Span::styled(*what, theme::muted()));
+    }
+    lines.push(Line::from(keys));
+    lines.truncate(inner.height as usize);
 
     frame.render_widget(Paragraph::new(lines), inner);
 }

@@ -3,9 +3,10 @@
 //!
 //! These drive the real key handler and the real loader against real WAV
 //! files on disk, because the sampler's whole promise is one sentence:
-//! type a path, hear the pad. Every failure mode a player can type is
+//! choose a sound, hear the pad. Every failure mode a player can reach is
 //! walked — the wrong path, the full pad, the file that moved between
-//! save and load, the `d` pressed on the wrong row.
+//! save and load, the `d` pressed on the wrong row — and both roads to a
+//! sound are driven, the picker's list and the path typed behind `/`.
 
 #[cfg(test)]
 mod tests {
@@ -18,7 +19,23 @@ mod tests {
     use phosphor_core::EngineConfig;
 
     fn app() -> App {
-        App::new(EngineConfig { buffer_size: 64, sample_rate: 44100 }, false, false)
+        let mut app = App::new(EngineConfig { buffer_size: 64, sample_rate: 44100 }, false, false);
+        // The picker opens on folders of this process's own. A test must
+        // not list — or create — anything in the home directory of whoever
+        // is running the suite, and a test that listed it would depend on
+        // what they happen to keep there.
+        app.browse_samples = Some(browse_dir("samples"));
+        app.browse_sessions = Some(browse_dir("sessions"));
+        app
+    }
+
+    /// A folder for the picker to open on, shared by every test that does
+    /// not care what is in it.
+    fn browse_dir(kind: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("phosphor-browse-{}-{kind}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     fn press(app: &mut App, code: KeyCode) {
@@ -63,6 +80,21 @@ mod tests {
         }
     }
 
+    /// Put a sound on the pad under the caret by typing its path.
+    ///
+    /// `a` opens the picker, which lists the shared samples folder; `/`
+    /// swaps that list for the field a path is typed into. The journeys
+    /// below take this road because a test's scratch directory is nowhere
+    /// the picker would ever open on — and because a road nothing drives is
+    /// a road that quietly stops working. The picker's own road is driven
+    /// by the tests that are about the picker.
+    fn load_typed(app: &mut App, path: &str) {
+        press(app, KeyCode::Char('a'));
+        press(app, KeyCode::Char('/'));
+        type_line(app, path);
+        press(app, KeyCode::Enter);
+    }
+
     /// A directory of this test's own, holding both its wavs and its
     /// session file.
     fn scratch(tag: &str) -> std::path::PathBuf {
@@ -105,9 +137,7 @@ mod tests {
         let wav = dir.join("kick.wav");
         write_wav(&wav, 4_410);
         let mut app = sampler_app();
-        press(&mut app, KeyCode::Char('a'));
-        type_line(&mut app, &wav.display().to_string());
-        press(&mut app, KeyCode::Enter);
+        load_typed(&mut app, &wav.display().to_string());
         let _ = app.drain_mixer_commands();
         app
     }
@@ -139,6 +169,8 @@ mod tests {
         assert_eq!(track.synth_params.len(), phosphor_dsp::sampler::PARAM_COUNT);
     }
 
+    /// The typed road: `a` opens the picker, `/` swaps it for the field,
+    /// and the path lands the sound exactly as it always did.
     #[test]
     fn type_a_path_and_the_pad_carries_the_sound() {
         let dir = scratch("load");
@@ -147,7 +179,13 @@ mod tests {
 
         let mut app = sampler_app();
         press(&mut app, KeyCode::Char('a'));
-        assert!(app.nav.input_modal.open, "`a` did not ask for a file");
+        assert!(app.nav.file_picker.open, "`a` did not open the picker");
+        assert_eq!(app.nav.file_picker.purpose, PickerPurpose::LoadSample);
+        assert!(!app.nav.input_modal.open, "the picker opened a text field as well");
+
+        press(&mut app, KeyCode::Char('/'));
+        assert!(!app.nav.file_picker.open, "the picker stayed up behind the field");
+        assert!(app.nav.input_modal.open, "`/` did not ask for a path");
         assert_eq!(app.nav.input_modal.kind, InputModalKind::SamplePath);
 
         type_line(&mut app, &wav.display().to_string());
@@ -163,12 +201,134 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The picker's road: the samples folder is listed, the cursor is
+    /// walked onto a wav, and Enter puts it on the pad — with its audio,
+    /// which is the half a list could plausibly forget.
+    #[test]
+    fn choosing_a_wav_from_the_picker_lands_it_on_the_pad() {
+        let samples = scratch("pickhome");
+        write_wav(&samples.join("clap.wav"), 2_205);
+        std::fs::write(samples.join("notes.txt"), b"not a sound").unwrap();
+
+        let mut app = sampler_app();
+        app.browse_samples = Some(samples.clone());
+        press(&mut app, KeyCode::Char('a'));
+        assert!(app.nav.file_picker.open, "`a` did not open the picker");
+        assert_eq!(
+            app.nav.file_picker.visible().iter().map(|e| e.name.clone()).collect::<Vec<_>>(),
+            vec!["clap.wav"],
+            "the picker listed something other than the folder's wavs",
+        );
+
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.nav.file_picker.open, "the picker stayed open over its own answer");
+        let state = sampler_state(&app);
+        let pad = state.cursor;
+        assert_eq!(state.pads[pad].layers.len(), 1, "the layer did not land");
+        assert_eq!(state.pads[pad].layers[0].name, "clap");
+        assert!(state.pads[pad].layers[0].pcm.is_some(), "the sound arrived with no audio");
+        let _ = std::fs::remove_dir_all(&samples);
+    }
+
+    /// Typing narrows the list, and Enter takes the row the narrowing left
+    /// under the cursor rather than the row that used to be there.
+    #[test]
+    fn typing_in_the_picker_narrows_the_list_to_the_sound_it_lands() {
+        let samples = scratch("pickfilter");
+        for name in ["kick.wav", "snare.wav", "shaker.wav"] {
+            write_wav(&samples.join(name), 1_000);
+        }
+
+        let mut app = sampler_app();
+        app.browse_samples = Some(samples.clone());
+        press(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.nav.file_picker.visible_count(), 3);
+
+        // `s` is a letter here and not the solo key, and the `n` after it
+        // is a letter and not the write-a-note key: a modal takes every
+        // key it is given.
+        type_line(&mut app, "sn");
+        assert_eq!(app.nav.file_picker.visible_count(), 1, "the filter did not narrow");
+        press(&mut app, KeyCode::Enter);
+
+        let state = sampler_state(&app);
+        assert_eq!(state.pads[state.cursor].layers[0].name, "snare");
+        let _ = std::fs::remove_dir_all(&samples);
+    }
+
+    /// A take recorded into this session lives beside the session file
+    /// rather than in the shared samples folder, so the picker puts that
+    /// folder at the top of the list: one Enter away instead of a walk out
+    /// of the folder it opened on.
+    #[test]
+    fn the_sessions_own_takes_are_the_first_row_of_the_picker() {
+        let dir = scratch("takes");
+        let samples = dir.join("samples");
+        std::fs::create_dir_all(&samples).unwrap();
+        let session = dir.join("jam.phos");
+        let sidecar = phosphor_app::sampler::sidecar::sidecar_dir(&session);
+        std::fs::create_dir_all(&sidecar).unwrap();
+        write_wav(&sidecar.join("take 1.wav"), 1_000);
+
+        let mut app = sampler_app();
+        app.browse_samples = Some(samples.clone());
+        app.session_path = Some(session);
+        press(&mut app, KeyCode::Char('a'));
+        let first = app.nav.file_picker.selected().expect("the picker listed nothing");
+        assert_eq!(first.name, "jam.samples", "the session's takes are not the first row");
+        assert!(first.is_dir);
+
+        press(&mut app, KeyCode::Enter);
+        assert!(app.nav.file_picker.open, "Enter on the takes folder closed the picker");
+        press(&mut app, KeyCode::Enter);
+        let state = sampler_state(&app);
+        assert_eq!(state.pads[state.cursor].layers[0].name, "take 1", "the take did not land");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An empty samples folder says what to do about it. "Nothing here" is
+    /// true and useless; a player who has arrived has a next move.
+    #[test]
+    fn an_empty_samples_folder_says_what_to_do_next() {
+        let samples = scratch("emptysamples");
+        let mut app = sampler_app();
+        app.browse_samples = Some(samples.clone());
+        press(&mut app, KeyCode::Char('a'));
+
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("drop .wav files"), "the empty folder said nothing:\n{text}");
+        assert!(text.contains("press / to type a path"), "no way out was offered:\n{text}");
+        assert!(text.contains("load sample"), "the box does not say what it is for:\n{text}");
+        let _ = std::fs::remove_dir_all(&samples);
+    }
+
+    /// Esc leaves everything exactly as it was — no prompt behind it, no
+    /// layer, nothing said that sounds like something happened.
+    #[test]
+    fn esc_leaves_the_picker_with_nothing_touched() {
+        let samples = scratch("pickesc");
+        write_wav(&samples.join("kick.wav"), 1_000);
+
+        let mut app = sampler_app();
+        app.browse_samples = Some(samples.clone());
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.nav.file_picker.open, "esc left the picker up");
+        assert!(!app.nav.input_modal.open, "esc opened a field on the way out");
+        assert_eq!(sampler_state(&app).occupied_pads().count(), 0, "esc landed a sound");
+
+        // ...and the keys are back on the pad map rather than swallowed by
+        // a list nobody can see: `l` walks the bed again.
+        let before = sampler_state(&app).cursor;
+        press(&mut app, KeyCode::Char('l'));
+        assert_eq!(sampler_state(&app).cursor, before + 1, "the keys never came back");
+        let _ = std::fs::remove_dir_all(&samples);
+    }
+
     #[test]
     fn a_wrong_path_reports_and_leaves_the_pad_alone() {
         let mut app = sampler_app();
-        press(&mut app, KeyCode::Char('a'));
-        type_line(&mut app, "/nowhere/at/all.wav");
-        press(&mut app, KeyCode::Enter);
+        load_typed(&mut app, "/nowhere/at/all.wav");
         assert_eq!(sampler_state(&app).occupied_pads().count(), 0);
         let (message, _) = app.status_message.as_ref().expect("no word to the player");
         assert!(message.contains("not found"), "unhelpful message: {message}");
@@ -184,9 +344,7 @@ mod tests {
         write_wav(&wav, 441);
         let mut app = sampler_app();
         app.sampler_follow_note(60);
-        press(&mut app, KeyCode::Char('a'));
-        type_line(&mut app, &wav.display().to_string());
-        press(&mut app, KeyCode::Enter);
+        load_typed(&mut app, &wav.display().to_string());
 
         // The delete confirm goes up on C3; a stray key must not move it.
         press(&mut app, KeyCode::Char('d'));
@@ -200,10 +358,21 @@ mod tests {
         press(&mut app, KeyCode::Char('y'));
         assert_eq!(sampler_state(&app).pads[60 - 21].layers.len(), 0, "the named pad kept its layer");
 
-        // The load prompt freezes it the same way.
+        // The picker freezes it the same way — a list is a question too,
+        // and the pad it answers is the pad it was opened on.
         press(&mut app, KeyCode::Char('a'));
-        assert!(app.nav.input_modal.open);
+        assert!(app.nav.file_picker.open);
         app.sampler_follow_note(64);
+        assert_eq!(
+            phosphor_app::sampler::SamplerState::note_of_pad(sampler_state(&app).cursor),
+            60,
+            "the picker let the cursor walk"
+        );
+
+        // ...and so does the typed field behind it.
+        press(&mut app, KeyCode::Char('/'));
+        assert!(app.nav.input_modal.open);
+        app.sampler_follow_note(65);
         assert_eq!(
             phosphor_app::sampler::SamplerState::note_of_pad(sampler_state(&app).cursor),
             60,
@@ -250,9 +419,10 @@ mod tests {
         );
     }
 
-    /// A full pad still opens the prompt: refusing at `a` meant the path
-    /// being typed ran as key commands — QA watched the `d` in a filename
-    /// delete a layer. The refusal belongs at Enter, behind the field.
+    /// A full pad still opens the picker: refusing at `a` meant the keys
+    /// the player pressed next ran as commands — QA watched the `d` in a
+    /// filename delete a layer. The refusal belongs at Enter, behind
+    /// something that swallows typing.
     #[test]
     fn a_full_pad_still_gets_its_prompt() {
         let dir = scratch("fullprompt");
@@ -260,14 +430,22 @@ mod tests {
         write_wav(&wav, 441);
         let mut app = sampler_app();
         for _ in 0..phosphor_app::sampler::MAX_LAYERS {
-            press(&mut app, KeyCode::Char('a'));
-            type_line(&mut app, &wav.display().to_string());
-            press(&mut app, KeyCode::Enter);
+            load_typed(&mut app, &wav.display().to_string());
         }
         press(&mut app, KeyCode::Char('a'));
-        assert!(app.nav.input_modal.open, "the full pad refused the prompt");
-        type_line(&mut app, "drums/yell.wav");
-        press(&mut app, KeyCode::Enter);
+        assert!(app.nav.file_picker.open, "the full pad refused the picker");
+        // Every letter of a name typed into it is a letter. `d` is the key
+        // that removes a sound, and it must not be one here.
+        let layers = sampler_state(&app).current().layers.len();
+        type_line(&mut app, "drums");
+        assert_eq!(
+            sampler_state(&app).current().layers.len(),
+            layers,
+            "a letter typed into the picker reached the pad map",
+        );
+        press(&mut app, KeyCode::Esc);
+
+        load_typed(&mut app, "drums/yell.wav");
         let state = sampler_state(&app);
         assert_eq!(state.pads[state.cursor].layers.len(), phosphor_app::sampler::MAX_LAYERS);
         let (message, _) = app.status_message.as_ref().unwrap();
@@ -292,7 +470,8 @@ mod tests {
         app.nav.focused_pane = Pane::ClipView;
         app.sampler_follow_note(64); // must not panic
         press(&mut app, KeyCode::Char('a'));
-        assert!(!app.nav.input_modal.open, "a Rhodes offered to load a sample");
+        assert!(!app.nav.file_picker.open, "a Rhodes offered to load a sample");
+        assert!(!app.nav.input_modal.open, "a Rhodes asked for a path");
     }
 
     #[test]
@@ -304,9 +483,7 @@ mod tests {
 
         let mut saving = sampler_app();
         saving.sampler_follow_note(38); // D1's pad, the snare seat
-        press(&mut saving, KeyCode::Char('a'));
-        type_line(&mut saving, &wav.display().to_string());
-        press(&mut saving, KeyCode::Enter);
+        load_typed(&mut saving, &wav.display().to_string());
         // A pad tweak that must round-trip too.
         {
             let track = saving.nav.tracks.iter_mut().find(|t| t.sampler.is_some()).unwrap();
@@ -582,9 +759,7 @@ mod tests {
         // A second pad, so the undo has more than one to think about.
         app.sampler_follow_note(SamplerState::note_of_pad(here) + 2);
         let wav = dir.join("kick.wav");
-        press(&mut app, KeyCode::Char('a'));
-        type_line(&mut app, &wav.display().to_string());
-        press(&mut app, KeyCode::Enter);
+        load_typed(&mut app, &wav.display().to_string());
         let second = sampler_state(&app).cursor;
         let _ = app.drain_mixer_commands();
 
@@ -608,9 +783,7 @@ mod tests {
         let mut app = loaded_app(&dir);
         let wav = dir.join("clap.wav");
         write_wav(&wav, 800);
-        press(&mut app, KeyCode::Char('a'));
-        type_line(&mut app, &wav.display().to_string());
-        press(&mut app, KeyCode::Enter);
+        load_typed(&mut app, &wav.display().to_string());
         assert_eq!(pad(&app).layers.len(), 2);
         // A load points the panel at what just arrived.
         assert_eq!(app.nav.clip_view.sampler.layer, 1);
@@ -658,13 +831,18 @@ mod tests {
     }
 
     /// `a` still asks for a file from the pad map, which is where a player
-    /// spends their time.
+    /// spends their time — and it asks with the list, whose `/` is the
+    /// field it used to ask with.
     #[test]
     fn a_loads_a_sound_from_the_pad_map() {
         let mut app = sampler_app();
         assert_eq!(app.nav.clip_view.clip_tab, ClipTab::Pads);
         press(&mut app, KeyCode::Char('a'));
-        assert!(app.nav.input_modal.open, "`a` did not ask for a file");
+        assert!(app.nav.file_picker.open, "`a` did not ask for a file");
+        assert_eq!(app.nav.file_picker.purpose, PickerPurpose::LoadSample);
+
+        press(&mut app, KeyCode::Char('/'));
+        assert!(app.nav.input_modal.open, "`/` did not offer the typed path");
         assert_eq!(app.nav.input_modal.kind, InputModalKind::SamplePath);
     }
 
@@ -1078,9 +1256,7 @@ mod tests {
         let mut app = loaded_app(&dir);
         let wav = dir.join("clap.wav");
         write_wav(&wav, 800);
-        press(&mut app, KeyCode::Char('a'));
-        type_line(&mut app, &wav.display().to_string());
-        press(&mut app, KeyCode::Enter);
+        load_typed(&mut app, &wav.display().to_string());
         let _ = app.drain_mixer_commands();
 
         press(&mut app, KeyCode::Char('['));
@@ -1135,9 +1311,7 @@ mod tests {
         let mut app = loaded_app(&dir);
         let wav = dir.join("clap.wav");
         write_wav(&wav, 800);
-        press(&mut app, KeyCode::Char('a'));
-        type_line(&mut app, &wav.display().to_string());
-        press(&mut app, KeyCode::Enter);
+        load_typed(&mut app, &wav.display().to_string());
 
         press(&mut app, KeyCode::Char('[')); // audition layer one
         let _ = app.drain_mixer_commands();
@@ -1169,9 +1343,7 @@ mod tests {
         let session = dir.join("trim.phos");
 
         let mut saving = sampler_app();
-        press(&mut saving, KeyCode::Char('a'));
-        type_line(&mut saving, &wav.display().to_string());
-        press(&mut saving, KeyCode::Enter);
+        load_typed(&mut saving, &wav.display().to_string());
         press(&mut saving, KeyCode::Char('t'));
         press(&mut saving, KeyCode::Char('z')); // snap off, so the frames are exact
         press(&mut saving, KeyCode::Char('l'));
@@ -1494,9 +1666,7 @@ mod tests {
         write_wav(&wav, 441);
         let mut app = sampler_app();
         for _ in 0..phosphor_app::sampler::MAX_LAYERS {
-            press(&mut app, KeyCode::Char('a'));
-            type_line(&mut app, &wav.display().to_string());
-            press(&mut app, KeyCode::Enter);
+            load_typed(&mut app, &wav.display().to_string());
         }
         press(&mut app, KeyCode::Char('i'));
         press(&mut app, KeyCode::Enter);
@@ -2188,16 +2358,12 @@ mod tests {
         let mut app = sampler_app();
         press_shift(&mut app, 'K');
         press(&mut app, KeyCode::Char('w')); // an empty zone across the bed
-        press(&mut app, KeyCode::Char('a'));
-        type_line(&mut app, &named.display().to_string());
-        press(&mut app, KeyCode::Enter);
+        load_typed(&mut app, &named.display().to_string());
         assert_eq!(zone(&app).root(), 46, "the name did not teach the root");
         let (message, _) = app.status_message.as_ref().unwrap();
         assert!(message.contains("root A#1"), "the flash did not say what it learned: {message}");
 
-        press(&mut app, KeyCode::Char('a'));
-        type_line(&mut app, &plain.display().to_string());
-        press(&mut app, KeyCode::Enter);
+        load_typed(&mut app, &plain.display().to_string());
         assert_eq!(zone(&app).root(), 46, "a name with no note in it moved the root");
 
         // On a pad that does not keytrack, a name is not worth reading: the
@@ -2205,9 +2371,7 @@ mod tests {
         // nobody can hear.
         press_shift(&mut app, 'K');
         let before = sampler_state(&app).current().config.root;
-        press(&mut app, KeyCode::Char('a'));
-        type_line(&mut app, &named.display().to_string());
-        press(&mut app, KeyCode::Enter);
+        load_typed(&mut app, &named.display().to_string());
         assert_eq!(
             sampler_state(&app).current().config.root,
             before,
@@ -2378,9 +2542,7 @@ mod tests {
         let mut saving = sampler_app();
         press_shift(&mut saving, 'K');
         press(&mut saving, KeyCode::Char('o'));
-        press(&mut saving, KeyCode::Char('a'));
-        type_line(&mut saving, &wav.display().to_string());
-        press(&mut saving, KeyCode::Enter);
+        load_typed(&mut saving, &wav.display().to_string());
         assert_eq!(sampler_state(&saving).occupied_pads().count(), 0, "a pad was touched");
         saving.do_save(&session.display().to_string());
 
