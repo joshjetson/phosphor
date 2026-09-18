@@ -2,7 +2,7 @@
   "global": {
     "Space": "open command menu",
     "Ctrl+C": "quit",
-    "Ctrl+S": "quick save",
+    "Ctrl+S": "save — straight back to the open file; on a session that has never been saved it opens the save picker",
     "u": "undo (works everywhere except modals and text entry; while recording, scraps the newest layer — the in-flight pass first, then committed takes one per press — and the transport keeps rolling)",
     "Ctrl+R": "redo (a peeled take included; recording new material clears redo)",
     "Tab": "cycle panes / tabs",
@@ -22,7 +22,7 @@
     "m": "toggle metronome",
     "!": "panic (kill all sound)",
     "a": "add instrument track",
-    "s": "save project — asks for a NAME (not a path); the prompt names the folder it writes into",
+    "s": "save project (save as, always) — opens the save picker: the folder listed, a name line to type into",
     "o": "open project — opens the file picker on that same folder",
     "d": "delete selected track/clip",
     "e": "enter edit mode (piano roll)",
@@ -43,17 +43,29 @@
     "refusals": "a preset is refused rather than loaded when it was saved for a different instrument, with a different number of controls, or against an older panel layout"
   },
   "file_picker": {
-    "description": "the little file tree, opened by space+o (projects) and by a on a sampler pad (sounds). One folder at a time, listed: no recursive search, no preview, and selecting a row plays nothing. Sessions open on the projects folder (sessions/ in a checkout, otherwise ~/.phosphor/sessions/); sounds open on ~/.phosphor/samples/.",
+    "description": "the little file tree, opened by space+o (open a project), space+s and first-time ctrl+s (save a project), and a on a sampler pad (load a sound). One folder at a time, listed: no recursive search, no preview, and selecting a row plays nothing. Projects open AND save in one folder — <app dir>/sessions, which is ~/.phosphor/sessions on macOS and Linux and %APPDATA%\\phosphor\\sessions on Windows, whatever directory you started phosphor from; sounds open on <app dir>/samples.",
     "listing": "folders first, then files, each half alphabetical and case-insensitive · dot-prefixed names are skipped · files are filtered by what the picker is for (.phos for projects, .wav for sounds, either case) and folders are ALWAYS shown, so you can walk anywhere from where it opened",
-    "j/k": "move the cursor (arrows too, and ctrl+n / ctrl+p) — while nothing has been typed",
+    "j/k": "move the cursor (arrows too, and ctrl+n / ctrl+p) — while nothing has been typed, and never in the save picker, where every letter is part of the name",
     "Enter": "a folder: walk into it · a file: open it (a project) or land it on the pad (a sound)",
-    "h": "up one folder (left arrow too) — stops at the top of the filesystem and says so",
-    "g/G": "top / bottom of the list",
+    "h": "up one folder (left arrow too) — stops at the top of the filesystem and says so. In the save picker it is a letter; the left arrow and backspace-on-an-empty-name do the walking",
+    "g/G": "top / bottom of the list (open and sample pickers)",
     "typing": "letters, digits, space, . - and _ narrow the list live (case-insensitive substring); backspace widens it again. From the first letter typed, j/k/h/g/G are letters and the arrows move the cursor — the footer changes to say so. Backspace on an empty filter goes up a folder",
-    "/": "swap the list for the typed-path prompt this replaced — for paths no list can reach; esc closes that field",
-    "Esc": "close, choosing nothing",
+    "/": "swap the list for the typed-path prompt this replaced — for paths no list can reach; esc closes that field. From the save picker it carries the name you had started typing into the field",
+    "Esc": "close, choosing nothing — in the save picker that cancels the save outright, and nothing is written",
     "takes": "on a sampler, this session's own takes folder (<session>.samples/) is pinned at the top of the list when it exists, so a take recorded ten minutes ago is one Enter away",
-    "empty": "an empty projects folder says 'no projects yet · ctrl+s saves your first one here'; an empty samples folder says 'drop .wav files in this folder, or press / to type a path' · a folder that cannot be read says so rather than looking empty"
+    "memory": "the folder you were last in is where the next picker opens, for as long as phosphor is running — so save-as after an open starts where you just were. The first picker of a run opens on the home folder",
+    "empty": "an empty projects folder says 'no projects yet · ctrl+s saves your first one here'; an empty samples folder says 'drop .wav files in this folder, or press / to type a path'; an empty folder in the save picker says 'nothing here yet · a name still saves into this folder' · a folder that cannot be read says so rather than looking empty"
+  },
+  "save_picker": {
+    "description": "space+s, and ctrl+s on a session that has never been saved. The open picker with a name line: the folders are walked the same way, the .phos files already there are listed dim for context, and what you type is the NAME rather than a filter. The file goes into the folder on the screen — the save and the list cannot disagree about where that is, which is the whole point of it.",
+    "typing": "every letter goes into the name, j k h g and G included — a name has to be able to start with any of them. The extension is shown dim after the cursor and added for you: type myjam, get myjam.phos",
+    "arrows": "↑↓ (and ctrl+n / ctrl+p, PgUp / PgDn) move the cursor · ← goes up a folder, and so does backspace on an empty name",
+    "Enter": "with a name typed: saves it into the folder on the screen · with the name empty, on a folder: walks into it · with the name empty, on a project: takes THAT project's name into the name line, so one more Enter saves over it",
+    "Backspace": "takes back a character of the name · on an empty name, goes up a folder",
+    "overwrite": "saving onto a name already in the folder asks first — y writes it, n keeps the name and the list so you can edit it into a new one",
+    "refusals": "a path separator typed into the name is refused in words (press / to type a whole path) · Enter with no name and nothing under the cursor says 'type a name · or enter on a folder to go in' · a folder that will not take the write says so and the picker stays open, so you can walk somewhere that will",
+    "Esc": "cancels the save outright — nothing is written and the name is forgotten",
+    "/": "the typed prompt behind the list, carrying whatever you had typed: a name goes into the folder the picker was showing, and a path with a separator in it is written exactly where it says"
   },
   "tracks_pane": {
     "not_selected": {

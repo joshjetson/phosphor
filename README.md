@@ -295,19 +295,20 @@ program with `program`.
 
 **Session Management**
 - Save/load projects as `.phos` files (human-readable JSON)
-- `Ctrl+S` quick save, `Space+S` save under a name, `Space+O` open — the open
-  prompt is a **file picker**: a list of the projects folder, walked with
-  `j`/`k` and `Enter`, so nothing has to be typed from memory
+- `Ctrl+S` quick save, `Space+S` save under a name, `Space+O` open — saving and
+  opening are both a **file picker**: a list of the projects folder, walked with
+  the same keys, so nothing has to be typed from memory. The save picker adds a
+  name line; the folder it writes into is the folder on the screen
 - Saves all tracks, instruments, synth parameters, clips, MIDI notes, transport settings
 - A kit, a patch or a cartridge is stored by **which one it is**, not by where its
   knob sat: a knob position only names a patch while the bank is the size it was
   when the session was written, and reopening on a different instrument is the
   kind of wrong that looks perfectly reasonable
 - Atomic writes prevent file corruption
-- Default save directory: `sessions/` when you are running from a checkout,
-  otherwise `<app dir>/sessions/`. A name saves into it and the picker opens on
-  it — the save and the list are the same folder by construction, so what you
-  saved is in what you are shown. See [Where files live](#where-files-live)
+- One projects folder: `<app dir>/sessions/`, whatever directory you started
+  phosphor from. Saving opens on it and opening opens on it — the save and the
+  list are the same folder by construction, so what you saved is in what you
+  are shown. See [Where files live](#where-files-live)
 
 **User Presets**
 - `Space+W` opens a preset browser for the selected instrument
@@ -1156,13 +1157,15 @@ sequencer grid, `n` toggles steps the same way.
 **Octaves** — In the piano roll, `{`/`}` move the cursor a whole octave;
 `[`/`]` snap it to the nearest pitch above/below that already has a note.
 
-**Open / save** — `Space+S`, type a name like `myjam`, `Enter`: phosphor
-adds `.phos` and saves into your projects folder, which the prompt names
-above the field. `Ctrl+S` then saves that same file instantly. `Space+O`
-opens a **list** of that folder — `j`/`k` to your project, `Enter` opens it;
-type letters to narrow a long list, `h` walks up a folder, `Esc` closes. `/`
-inside the list swaps it for a typed path, for a file kept somewhere else.
-See [Where files live](#where-files-live).
+**Open / save** — `Space+S` opens a **list** of your projects folder with a
+name line under it: type a name like `myjam`, `Enter`, and phosphor adds
+`.phos` and writes it into the folder on the screen. `Ctrl+S` then saves that
+same file instantly, with no list and no question. `Space+O` opens the same
+list to read from — `j`/`k` to your project, `Enter` opens it; type letters
+to narrow a long list, `h` walks up a folder, `Esc` closes. `/` inside either
+list swaps it for a typed path, for a file kept somewhere else. It is one
+folder for both, wherever you started phosphor from. See
+[Where files live](#where-files-live).
 
 **Panic** — `Space+!` from anywhere: all sound stops immediately.
 
@@ -1304,7 +1307,7 @@ session keeps both. Full section:
 |-----|--------|
 | `Space` | Open command menu |
 | `Ctrl+C` | Quit |
-| `Ctrl+S` | Quick save session |
+| `Ctrl+S` | Save — straight back to the open file; on a new session it opens the save picker |
 | `u` | Undo last action |
 | `Ctrl+R` | Redo |
 | `Tab` | Cycle between panes / tabs |
@@ -1324,7 +1327,7 @@ session keeps both. Full section:
 | `Space` `m` | Toggle metronome |
 | `Space` `!` | Panic — kill all sound |
 | `Space` `a` | Add instrument track |
-| `Space` `s` | Save project — asks for a name; the prompt says which folder it writes into |
+| `Space` `s` | Save project — the save picker: the folder listed, a name line to type into |
 | `Space` `o` | Open project — a list of that same folder; `/` types a path instead |
 | `Space` `d` | Delete selected track/clip (with confirmation) |
 | `Space` `e` | Enter edit mode (note-level piano roll editing) |
@@ -1396,6 +1399,60 @@ is one `Enter` away rather than a walk out of the samples folder.
 It does not search, it does not recurse, and selecting a row plays nothing.
 An empty folder says what to do about it rather than showing an empty box,
 and a folder that cannot be read says that instead of looking empty.
+
+Whichever picker you were in last, the next one opens on the folder you left
+it in — so a Save As after an Open starts where you just were. The first one
+of a run opens on the home folder.
+
+### Save Picker — Space+S, and the first Ctrl+S
+
+The same list, with a name line:
+
+```
+┌ save project ────────────────────────────────────────────────┐
+│ /Users/you/.phosphor/sessions                                │  ← the folder it will write into
+│ ▶ ideas/                                                     │  ← folders, to walk into
+│   neon_causeway.phos                                         │  ← what is already here, dim
+│   name myjam█.phos                                           │  ← what you are typing
+│   ↑↓ move  enter save  bksp edit  / path  esc cancel         │
+└──────────────────────────────────────────────────────────────┘
+```
+
+| Key | Action |
+|-----|--------|
+| *typing* | The **name**, not a filter — every letter, `j` `k` `h` `g` `G` included |
+| `Enter` | With a name: save it here. Name empty, on a folder: go in. Name empty, on a project: take **its** name |
+| `↑` / `↓` | Move the cursor — `Ctrl+N`/`Ctrl+P` and `PgUp`/`PgDn` too |
+| `←` | Up one folder — and so does `Backspace` on an empty name |
+| `Backspace` | Take back a character of the name |
+| `/` | Swap the list for a typed path, carrying whatever you had typed |
+| `Esc` | Cancel the save — nothing is written |
+
+The file goes into **the folder on the screen**. Walk into `ideas/` and the
+save lands in `ideas/`; the header is not decoration.
+
+`.phos` is added for you and shown dim after the cursor, so what you type
+lands in front of it. Type `myjam`, get `myjam.phos`.
+
+Every letter is part of the name here, including the five that walk the open
+picker's list. That is the one place the two lists differ, and it is
+deliberate: a name is typed from nothing, so if `j` belonged to the list no
+song could be called `jam` — and `ghost_take` would send `g` to the top of
+the list, `h` a folder upwards, and save `ost_take` somewhere you never
+chose. The arrows walk instead, and the footer says so from the first frame.
+
+**Saving over something.** `Enter` on a project already in the list takes its
+*name* into the name line — one press, nothing written. A second `Enter` asks
+`Overwrite neon_causeway.phos?  y/n`: `y` writes it, `n` gives you back the
+list with the name still there, so one more character makes it a new file.
+The same question comes up for a name you typed that happens to match.
+
+**When it will not go.** A folder that refuses the write says so on the
+bottom bar and the picker stays open with your name intact — walk somewhere
+else and press `Enter` again. `Enter` with no name and nothing under the
+cursor says `type a name · or enter on a folder to go in`. A `/` or `\`
+typed into the name is refused in words: names are names here, and `/` is the
+road for a whole path.
 
 ### Step Sequencer (a track type — drives any instrument)
 
@@ -1809,7 +1866,7 @@ Inside it:
 <app dir>/config.json                    theme preference
 <app dir>/presets/<instrument>.json      one user preset bank per instrument
 <app dir>/samples/                       the folder `a` lists on a sampler pad
-<app dir>/sessions/                      the folder `Space+O` lists, and a name saves into
+<app dir>/sessions/                      the one projects folder — `Space+S` saves into it, `Space+O` lists it
 <app dir>/progressions.json              your chord-progression library
 <app dir>/practice.json                  practice-room records (clean BPM per drill)
 ```
@@ -1827,19 +1884,25 @@ sampler's `a` list puts that folder at the top of itself, so a take is one
 `Enter` away from any other pad.
 
 Both of these folders are lists rather than paths to remember: `Space+O`
-shows the sessions, `a` on a sampler pad shows the samples. See
-[File Picker](#file-picker--spaceo-and-a-on-a-sampler-pad).
+shows the sessions, `Space+S` saves into that same list, and `a` on a sampler
+pad shows the samples. See
+[File Picker](#file-picker--spaceo-and-a-on-a-sampler-pad) and
+[Save Picker](#save-picker--spaces-and-the-first-ctrls).
 
 ### How to save and open — the short version
 
-**To save:** press `Space+S`, type a name — just the name, like `myjam` —
-and press `Enter`. Phosphor adds **`.phos`** to the end for you and puts
-the file in the `sessions/` folder. From then on `Ctrl+S` saves that same
-file instantly.
+**To save:** press `Space+S` (or `Ctrl+S` on a song you have never saved). A
+list of your projects folder opens with a `name` line under it. Type a name —
+just the name, like `myjam` — and press `Enter`. Phosphor adds **`.phos`** for
+you and writes the file into the folder shown at the top of that box. From
+then on `Ctrl+S` saves that same file instantly, no list.
 
-**To open:** press `Space+O`. A list of that same folder opens — your
+**To open:** press `Space+O`. The same folder opens as a list — your
 projects, by name. `j`/`k` to the one you want and `Enter` opens it. Nothing
 to type and nothing to remember.
+
+It is **one folder** for both, and it does not move: `<app dir>/sessions/`,
+whatever directory you started phosphor from.
 
 ### The details
 
@@ -1847,16 +1910,20 @@ to type and nothing to remember.
 - You never have to type the extension — saving appends `.phos` to whatever
   you enter (a wrong extension is corrected: `mysong.txt` saves as
   `mysong.phos`), and the picker only lists `.phos` files anyway.
-- The save prompt asks for a **name**, not a path. The field starts empty
-  with a dim suggestion — `untitled.phos` — where the name goes, and the
-  line under it says which folder the file is going into. The suggestion is
-  a fallback, not pre-typed text: type and it is yours, or press `Enter` on
-  an untouched prompt to take it.
+- The save picker asks for a **name**, not a path, and shows you the folder
+  it will write into at the top of the box — walk somewhere else and that is
+  where it goes. `.phos` is added for you, dim after the cursor.
 - After the first save, `Ctrl+S` saves straight back to the same file, no
-  prompt. `Space+S` always prompts, for saving a copy under a new name.
-- Names have no other rules — anything your filesystem accepts works. Paths
-  are still allowed: anything with a `/` in it is written exactly there, so
+  list and no question. `Space+S` always opens the picker, for saving a copy
+  under a new name or into another folder.
+- Names have no other rules — anything your filesystem accepts works, except
+  a `/` or `\`, which would mean another folder: for those, press `/` and
+  type the whole path. Paths are still honoured exactly as typed there, so
   `ideas/jam.phos` saves into an `ideas` folder.
+- A project already in the folder is listed dim while you save, so you can
+  see what you are about to sit beside — and `Enter` on one takes its name
+  for you. Writing over anything asks first. Full keys:
+  [Save Picker](#save-picker--spaces-and-the-first-ctrls).
 - The open picker lists one folder at a time and walks: `Enter` on a folder
   goes into it, `h` comes back out, typing narrows a long list. For a
   project kept somewhere no list would show it, `/` swaps to a typed path —
@@ -1866,13 +1933,19 @@ to type and nothing to remember.
   the pad map and the zones. A path that has moved keeps its pad rather than
   being dropped: the key goes red and the layer list says `missing`.
 
-The folder a name is saved into and the folder the picker opens on are the
-same folder: `sessions/` when the working directory has one — running from a
-checkout, which is where the sessions in this repository already are — and
-the absolute `<app dir>/sessions/` otherwise. It is made if it is not there
-yet. A relative path typed into the `/` prompt is looked for in the working
-directory first and then under the application directory, so
-`sessions/take3.phos` keeps working from anywhere.
+The folder a name is saved into and the folder the pickers open on are the
+same folder, and it does not depend on where you launched phosphor from:
+`<app dir>/sessions/`, made if it is not there yet. It used to prefer a
+`sessions/` directory in the working directory when there was one, which
+meant the same installation answered one folder from a checkout and another
+from anywhere else — a file would be saved correctly and then be missing
+from the list, because the save and the list had asked at different moments
+from different directories. That rule is gone.
+
+Opening is still forgiving, so nothing saved under it is stranded: a path
+typed into the `/` prompt is tried as typed, then against the working
+directory, then under the application directory, with `.phos` tried at each
+step. `sessions/take3.phos` opens from anywhere, and so does `take3`.
 
 ---
 
@@ -1939,7 +2012,7 @@ cargo test --workspace  # 2,047+ tests
 phosphor/
 ├── Cargo.toml                 # Workspace root (phosphor-studio on crates.io)
 ├── src/main.rs                # CLI entry point
-├── sessions/                  # Default save directory for .phos files
+├── sessions/                  # Example .phos files kept with the source; saving goes to <app dir>/sessions/
 ├── crates/
 │   ├── phosphor-core/         # Audio engine, mixer, transport, metronome
 │   ├── phosphor-dsp/          # Built-in instruments

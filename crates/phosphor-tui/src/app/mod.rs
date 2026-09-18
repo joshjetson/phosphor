@@ -86,8 +86,14 @@ pub struct App {
     /// player's own presets.
     pub(crate) preset_dir: Option<std::path::PathBuf>,
     /// Where the file picker opens: the projects folder and the samples
-    /// folder, or `None` for "ask `phosphor_app::paths`", which is what
-    /// every running copy does.
+    /// folder, or `None` for "ask `phosphor_app::paths`", which is where
+    /// every running copy starts.
+    ///
+    /// Also where it was *last*: the picker writes the folder it walked to
+    /// back here, so the next one opens on it — Save As after an Open starts
+    /// where the player just was rather than back at the top. Two of them
+    /// rather than one, because projects and samples are different places
+    /// and neither should follow the other.
     ///
     /// Fields for the reason `preset_dir` is one — a test points them at a
     /// scratch directory rather than listing, and creating folders in, the
@@ -96,6 +102,13 @@ pub struct App {
     /// makes it.
     pub(crate) browse_sessions: Option<std::path::PathBuf>,
     pub(crate) browse_samples: Option<std::path::PathBuf>,
+    /// The file the save picker is waiting for a yes about.
+    ///
+    /// Held here rather than re-derived when the answer comes back: the
+    /// question names a file on the screen, and the write has to be the file
+    /// that was named — not whatever the picker's name line says a moment
+    /// later.
+    pub(crate) pending_save: Option<std::path::PathBuf>,
     /// Status message shown briefly at bottom of screen.
     pub(crate) status_message: Option<(String, std::time::Instant)>,
     /// Yanked (copied) clips, for paste and for cross-track layering. One
@@ -344,6 +357,7 @@ impl App {
             preset_dir: phosphor_app::preset::default_dir(),
             browse_sessions: None,
             browse_samples: None,
+            pending_save: None,
             // A device that would not take the requested format says so on the
             // bottom bar. Stderr is not available here — it would be painted
             // over by the UI — and silence is how the mismatch went unnoticed.

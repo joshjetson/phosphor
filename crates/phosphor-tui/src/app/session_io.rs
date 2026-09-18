@@ -2,38 +2,60 @@
 
 use super::*;
 
+/// A path for the status bar, with the part the player is looking for
+/// first.
+///
+/// The bar's middle cell is about sixty columns wide and cuts what does not
+/// fit off the *right* — which on an absolute path is the filename. A save
+/// that reports `saved: /Users/somebody/Library/Application Sup…` and never
+/// reaches the name is a file going missing while being reported
+/// successfully, which is the whole family of defect this work is about. So
+/// the name comes first and the folder follows it.
+fn where_it_went(path: &std::path::Path) -> String {
+    match (path.file_name(), path.parent()) {
+        (Some(name), Some(dir)) if !dir.as_os_str().is_empty() => {
+            format!("{} \u{00b7} in {}", name.to_string_lossy(), dir.display())
+        }
+        _ => path.display().to_string(),
+    }
+}
+
 impl App {
 
     // ── Session save/load ──
 
+    /// Ctrl+S: straight back to the open file, or the save picker when
+    /// there is no open file yet.
+    ///
+    /// A session that has a path is written without a word, which is what a
+    /// quick save is for and is untouched by the picker. A session that has
+    /// none has two things to decide — which folder, and called what — and
+    /// the picker is where both of them are decided. See
+    /// [`App::open_save_picker`].
     pub(crate) fn handle_save(&mut self) {
         if let Some(ref path) = self.session_path.clone() {
-            // Quick save to existing path
             self.do_save(&path.display().to_string());
         } else {
-            // First save — ask for a name, and say which folder it will be
-            // written into. The folder comes from the same place the
-            // picker's does, so the prompt cannot name one folder while the
-            // save lands in another.
-            let folder = self.projects_dir().display().to_string();
-            self.nav.input_modal.open_save("untitled.phos", &folder);
+            self.open_save_picker();
         }
     }
 
 
-    pub(crate) fn do_save(&mut self, path_str: &str) {
+    /// Write the session to `path_str`, answering whether it landed.
+    ///
+    /// The answer is not decoration: the save picker keeps itself open over
+    /// a folder that refused the write, so the player can walk somewhere
+    /// else and press Enter again rather than being dropped back into the
+    /// song with a sentence they cannot act on.
+    pub(crate) fn do_save(&mut self, path_str: &str) -> bool {
         // A bare name is a name and goes where the sessions go; anything
         // with a separator in it is a path and is written exactly there.
-        // The prompt asks for the first of those now — see
+        // The picker's answer is already a whole path, and the prompt behind
+        // `/` asks for the first of those — see
         // `phosphor_app::paths::save_target` — so that the picker, which
         // only lists one folder, can find what the save wrote.
         let path = phosphor_app::paths::save_target_in(path_str, &self.projects_dir());
-        // Ensure .phos extension
-        let path = if path.extension().map(|e| e == "phos").unwrap_or(false) {
-            path
-        } else {
-            path.with_extension("phos")
-        };
+        let path = phosphor_app::paths::with_session_extension(path);
 
         // The takes go out first, and the save stops if they will not
         // write. A session naming audio that is not there is a kit full of
@@ -48,7 +70,7 @@ impl App {
             Err(message) => {
                 self.status_message =
                     Some((format!("save failed: {message}"), std::time::Instant::now()));
-                return;
+                return false;
             }
         }
 
@@ -56,15 +78,17 @@ impl App {
             Ok(()) => {
                 self.session_path = Some(path.clone());
                 self.status_message = Some((
-                    format!("saved: {}", path.display()),
+                    format!("saved: {}", where_it_went(&path)),
                     std::time::Instant::now(),
                 ));
+                true
             }
             Err(e) => {
                 self.status_message = Some((
                     format!("save failed: {e}"),
                     std::time::Instant::now(),
                 ));
+                false
             }
         }
     }
@@ -565,7 +589,7 @@ impl App {
             dbg::system(&format!("session load:{note}"));
         }
         self.status_message = Some((
-            format!("opened: {}{note}", path.display()),
+            format!("opened: {}{note}", where_it_went(&path)),
             std::time::Instant::now(),
         ));
     }

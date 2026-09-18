@@ -392,7 +392,13 @@ pub(super) fn render_file_picker(frame: &mut Frame, nav: &NavState) {
     // rows over a folder holding three is a lot of empty screen.
     let rows = phosphor_app::state::picker_list_rows(area.height);
     let shown = picker.visible_count().min(rows);
-    let mh = (shown as u16 + 5).min(phosphor_app::state::picker_box_height(area.height));
+    // On a save, the files are context rather than a menu — what is already
+    // in this folder, so a name can avoid them or be taken from one.
+    let saving = picker.purpose == PickerPurpose::SaveSession;
+    // ...and the name line has taken the line that usually carries the
+    // sentence an empty folder shows, so the box grows by one to keep it.
+    let body = shown + usize::from(saving && shown == 0);
+    let mh = (body as u16 + 5).min(phosphor_app::state::picker_box_height(area.height));
     let mx = (area.width.saturating_sub(mw)) / 2;
     let my = (area.height.saturating_sub(mh)) / 2;
     let menu_area = Rect::new(mx, my, mw, mh);
@@ -417,6 +423,8 @@ pub(super) fn render_file_picker(frame: &mut Frame, nav: &NavState) {
         theme::muted(),
     ))];
 
+    // The projects are drawn dim to say they are context. The folders are
+    // not: walking is still what the list is for.
     let visible = picker.visible();
     for (offset, entry) in visible.iter().enumerate().skip(picker.scroll).take(rows) {
         let here = picker.cursor == offset;
@@ -424,6 +432,8 @@ pub(super) fn render_file_picker(frame: &mut Frame, nav: &NavState) {
             theme::amber_bright().add_modifier(Modifier::BOLD)
         } else if entry.is_dir {
             theme::amber()
+        } else if saving {
+            theme::dim()
         } else {
             theme::normal()
         };
@@ -445,7 +455,29 @@ pub(super) fn render_file_picker(frame: &mut Frame, nav: &NavState) {
     // One line for whichever of the two has something to say: what has been
     // typed, or why there is nothing under it. They cannot both be
     // interesting at once — a filter with matches needs no explanation.
-    if let Some(words) = picker.empty_words() {
+    //
+    // A save takes that line for the name, always: it is the answer, and an
+    // answer that comes and goes with what happens to be in the folder is
+    // one nobody can trust. The field is the input modal's — the block
+    // cursor, and the extension dim after it so that what is typed lands
+    // before the `.phos` rather than after it, which is the mistake that
+    // produced files called `untitled`.
+    if saving {
+        // An empty folder still has something to say, and on a save it says
+        // it where the list would have been.
+        if let Some(words) = picker.empty_words() {
+            lines.push(Line::from(Span::styled(format!("  {words}"), theme::dim())));
+        }
+        lines.push(Line::from(vec![
+            Span::styled("  name ", theme::muted()),
+            Span::styled(picker.name.as_str(), theme::amber_bright().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "\u{2588}",
+                Style::default().fg(theme::overlay_bg()).bg(theme::amber_bright_val()),
+            ),
+            Span::styled(picker.name_suffix(), theme::dim()),
+        ]));
+    } else if let Some(words) = picker.empty_words() {
         lines.push(Line::from(Span::styled(format!("  {words}"), theme::dim())));
     } else if !picker.filter.is_empty() {
         lines.push(Line::from(vec![
@@ -463,26 +495,10 @@ pub(super) fn render_file_picker(frame: &mut Frame, nav: &NavState) {
     // The footer says which of the picker's two states it is in: `j`/`k`
     // walk the list until something is typed, and are letters after that —
     // so the keys that move change, and the line has to change with them.
-    let footer: &[(&str, &str)] = if picker.filter.is_empty() {
-        &[
-            ("j/k", " move  "),
-            ("enter", " open  "),
-            ("h", " up  "),
-            ("type", " find  "),
-            ("/", " path  "),
-            ("esc", " close"),
-        ]
-    } else {
-        &[
-            ("\u{2191}\u{2193}", " move  "),
-            ("enter", " open  "),
-            ("bksp", " widen  "),
-            ("/", " path  "),
-            ("esc", " close"),
-        ]
-    };
+    // The words come from the picker itself, which is what the key handler
+    // asks too, so the line cannot describe a state the keys are not in.
     let mut keys = vec![Span::styled("  ", theme::dim())];
-    for (key, what) in footer {
+    for (key, what) in picker.footer() {
         keys.push(Span::styled(*key, theme::dim()));
         keys.push(Span::styled(*what, theme::muted()));
     }

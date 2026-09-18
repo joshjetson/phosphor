@@ -49,7 +49,12 @@ impl App {
                 self.nav.instrument_modal.open_for_track();
             }
             SpaceAction::Save => {
-                self.handle_save();
+                // Save As, always: the list, the folder and the name line,
+                // even when the session already has a path. Ctrl+S is the
+                // one that writes straight back without asking — two keys,
+                // two jobs, and this is the one for saving a copy or moving
+                // a song into another folder.
+                self.open_save_picker();
             }
             SpaceAction::Open => {
                 // The list rather than the field: a player who has just

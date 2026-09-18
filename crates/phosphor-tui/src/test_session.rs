@@ -470,6 +470,572 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `/` continues the walk rather than undoing it: the field starts on
+    /// the folder the list was showing, on both pickers.
+    ///
+    /// A road out that dropped the player back at the home folder would be a
+    /// road that costs them the walk they just did — and on the save side it
+    /// would put the file somewhere other than the folder they were looking
+    /// at, which is the whole thing this work exists to prevent.
+    #[test]
+    fn the_typed_road_starts_where_the_list_had_walked_to() {
+        let dir = projects("typedwalk");
+        std::fs::create_dir_all(dir.join("ideas")).unwrap();
+
+        let mut app = app();
+        app.browse_sessions = Some(dir.clone());
+        app.open_session_picker();
+        press(&mut app, KeyCode::Enter); // into `ideas`
+        let walked = app.nav.file_picker.dir.display().to_string();
+        assert!(walked.ends_with("ideas"), "the walk did not happen: {walked}");
+
+        press(&mut app, KeyCode::Char('/'));
+        assert!(
+            app.nav.input_modal.value().starts_with(&walked),
+            "the open prompt went back to the top: {:?}",
+            app.nav.input_modal.value(),
+        );
+        press(&mut app, KeyCode::Esc);
+
+        // The save side names it under the field rather than in it, and it
+        // is the same folder — which is where the bare name will land.
+        app.open_save_picker();
+        assert!(app.nav.file_picker.dir.ends_with("ideas"), "the save picker forgot the walk");
+        press(&mut app, KeyCode::Char('/'));
+        assert_eq!(app.nav.input_modal.hint(), walked, "the save prompt named another folder");
+        type_text(&mut app, "sketch");
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            dir.join("ideas").join("sketch.phos").is_file(),
+            "the bare name did not land in the folder the prompt named",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Saving through the picker ──
+    //
+    // The other half of the same list. A save has two halves — which folder,
+    // and called what — and the field only ever asked the second one: the
+    // folder was decided somewhere else, by a rule the player could not see
+    // and could not change. These drive the whole gesture, including every
+    // way it is supposed to refuse.
+
+    /// What the terminal would show, as text.
+    fn screen(app: &App) -> String {
+        let backend = ratatui::backend::TestBackend::new(100, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let snapshot = app.engine.transport.snapshot();
+        let status = app.live_status();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &snapshot, &app.nav, status))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..40)
+            .map(|y| {
+                (0..100).map(|x| buffer[(x, y)].symbol()).collect::<String>().trim_end().to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Ctrl+S with a key held, which is how the real one arrives.
+    fn ctrl(app: &mut App, ch: char) {
+        app.handle_event(Event::Key(KeyEvent {
+            code: KeyCode::Char(ch),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }));
+    }
+
+    /// An app with a song in it and its pickers pointed at `dir`.
+    fn ready_to_save(dir: &std::path::Path, instrument: InstrumentType) -> App {
+        let mut app = app();
+        app.browse_sessions = Some(dir.to_path_buf());
+        add_track(&mut app, instrument);
+        app
+    }
+
+    /// What instrument the session file at `path` holds — read off disk, so
+    /// the assertion is about the bytes and not about what an App thinks.
+    fn saved_instrument(path: &std::path::Path) -> InstrumentType {
+        let file: SessionFile =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("no session file")).unwrap();
+        crate::session::parse_instrument_type(&file.tracks[0].instrument_type)
+            .expect("the session names an instrument this build does not have")
+    }
+
+    /// The whole first save: Ctrl+S opens the list, a name is typed, Enter
+    /// writes it into the folder on the screen — and every Ctrl+S after that
+    /// is silent.
+    #[test]
+    fn ctrl_s_on_a_new_session_opens_the_save_picker_and_a_name_writes_it() {
+        let dir = projects("savepicker");
+        let mut app = ready_to_save(&dir, InstrumentType::Rhodes);
+
+        ctrl(&mut app, 's');
+        assert!(app.nav.file_picker.open, "ctrl+s did not open the save picker");
+        assert_eq!(app.nav.file_picker.purpose, PickerPurpose::SaveSession);
+        assert!(!app.nav.input_modal.open, "ctrl+s asked for a path as well");
+        assert!(
+            app.nav.file_picker.dir.ends_with(dir.file_name().unwrap()),
+            "the save picker opened somewhere else: {}",
+            app.nav.file_picker.dir.display(),
+        );
+
+        type_text(&mut app, "neon_causeway");
+        assert_eq!(app.nav.file_picker.name, "neon_causeway", "the letters went somewhere else");
+        assert!(app.nav.file_picker.filter.is_empty(), "the name narrowed the list instead");
+
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.nav.file_picker.open, "the picker stayed up over its own answer");
+        assert!(dir.join("neon_causeway.phos").is_file(), "the name did not land in the folder");
+        // The name first, then the folder. The bottom bar cuts what does not
+        // fit off the right, and on an absolute path that is the filename —
+        // a save reported as `saved: /Users/somebody/Libr…` is a file going
+        // missing while being announced.
+        let status = app.live_status().unwrap_or_default();
+        assert!(
+            status.starts_with("saved: neon_causeway.phos"),
+            "the save did not name the file first: {status:?}",
+        );
+        assert!(
+            status.contains(&dir.display().to_string()),
+            "the save did not say which folder it went into: {status:?}",
+        );
+
+        // From here Ctrl+S is the quick save it always was: no list, no
+        // question, straight back to the same file.
+        std::fs::remove_file(dir.join("neon_causeway.phos")).unwrap();
+        ctrl(&mut app, 's');
+        assert!(!app.nav.file_picker.open, "the quick save asked again");
+        assert!(!app.nav.confirm_modal.open, "the quick save asked about its own file");
+        assert!(dir.join("neon_causeway.phos").is_file(), "the quick save wrote nothing");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Space+S is Save As, always — and it saves into the folder the picker
+    /// was walked into, which the next picker then opens on.
+    #[test]
+    fn save_as_writes_into_the_folder_the_picker_walked_into() {
+        let dir = projects("savewalk");
+        std::fs::create_dir_all(dir.join("ideas")).unwrap();
+        let mut app = ready_to_save(&dir, InstrumentType::Rhodes);
+
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('s'));
+        assert!(app.nav.file_picker.open, "space+s did not open the save picker");
+
+        // Nothing typed yet, so Enter on the folder walks into it.
+        assert_eq!(app.nav.file_picker.selected().map(|e| e.name.clone()), Some("ideas".into()));
+        press(&mut app, KeyCode::Enter);
+        assert!(app.nav.file_picker.open, "the folder closed the picker");
+        assert!(app.nav.file_picker.dir.ends_with("ideas"), "Enter did not walk in");
+
+        type_text(&mut app, "sketch");
+        press(&mut app, KeyCode::Enter);
+        assert!(dir.join("ideas").join("sketch.phos").is_file(), "the save missed the folder");
+        assert!(!dir.join("sketch.phos").exists(), "the save landed where it opened instead");
+
+        // ...and the next picker opens where the player just was, rather
+        // than back at the top.
+        app.open_session_picker();
+        assert!(
+            app.nav.file_picker.dir.ends_with("ideas"),
+            "the picker forgot where it was: {}",
+            app.nav.file_picker.dir.display(),
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A name that is already in the folder is asked about, and `y` writes
+    /// over it.
+    #[test]
+    fn the_save_picker_asks_before_it_writes_over_a_project() {
+        let dir = projects("overwrite");
+        let _ = saved_into(&dir, "911");
+        let path = dir.join("911.phos");
+        assert_eq!(saved_instrument(&path), InstrumentType::DrumRack, "the setup did not save a drum rack");
+
+        let mut app = ready_to_save(&dir, InstrumentType::Rhodes);
+        app.open_save_picker();
+        type_text(&mut app, "911");
+        press(&mut app, KeyCode::Enter);
+
+        assert!(app.nav.confirm_modal.open, "the save wrote over a project without asking");
+        assert_eq!(app.nav.confirm_modal.kind, ConfirmKind::OverwriteSession);
+        assert!(
+            app.nav.confirm_modal.message.contains("911.phos"),
+            "the question does not name the file: {}",
+            app.nav.confirm_modal.message,
+        );
+        assert_eq!(saved_instrument(&path), InstrumentType::DrumRack, "the question wrote the file anyway");
+
+        press(&mut app, KeyCode::Char('y'));
+        assert!(!app.nav.confirm_modal.open);
+        assert!(!app.nav.file_picker.open, "the picker stayed up over a finished save");
+        assert_eq!(saved_instrument(&path), InstrumentType::Rhodes, "yes did not write the file");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ...and `n` writes nothing, keeps the name, and gives the list back —
+    /// "not that file", rather than "start again".
+    #[test]
+    fn no_to_the_overwrite_question_keeps_the_name_and_the_picker() {
+        let dir = projects("overwriteno");
+        let _ = saved_into(&dir, "911");
+        let path = dir.join("911.phos");
+
+        let mut app = ready_to_save(&dir, InstrumentType::Rhodes);
+        app.open_save_picker();
+        type_text(&mut app, "911");
+        press(&mut app, KeyCode::Enter);
+        assert!(app.nav.confirm_modal.open);
+
+        press(&mut app, KeyCode::Char('n'));
+        assert!(!app.nav.confirm_modal.open, "no left the question up");
+        assert!(app.nav.file_picker.open, "no closed the picker as well");
+        assert_eq!(app.nav.file_picker.name, "911", "no threw the name away");
+        assert_eq!(saved_instrument(&path), InstrumentType::DrumRack, "no wrote the file anyway");
+        assert!(app.session_path.is_none(), "no still took the file as this session's");
+
+        // One more character and another Enter, and it is a new file: the
+        // player never had to retype anything.
+        type_text(&mut app, "2");
+        press(&mut app, KeyCode::Enter);
+        assert!(dir.join("9112.phos").is_file(), "the edited name did not save");
+        assert_eq!(saved_instrument(&path), InstrumentType::DrumRack, "the original was written after all");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Esc cancels the save outright: nothing written, nothing named, and
+    /// the song untouched.
+    #[test]
+    fn esc_in_the_save_picker_writes_nothing() {
+        let dir = projects("saveesc");
+        let mut app = ready_to_save(&dir, InstrumentType::Rhodes);
+        let tracks = app.nav.tracks.len();
+
+        app.open_save_picker();
+        type_text(&mut app, "neon_causeway");
+        press(&mut app, KeyCode::Esc);
+
+        assert!(!app.nav.file_picker.open, "esc left the picker up");
+        assert!(!app.nav.input_modal.open, "esc opened a field on the way out");
+        assert!(app.session_path.is_none(), "esc named this session anyway");
+        assert_eq!(app.nav.tracks.len(), tracks, "esc changed the song");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "esc wrote something into the folder",
+        );
+
+        // ...and the next save starts from an empty name rather than the
+        // one that was abandoned.
+        app.open_save_picker();
+        assert!(app.nav.file_picker.name.is_empty(), "the abandoned name came back");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Enter on a project already in the folder takes its *name*. It writes
+    /// nothing: a second Enter, and the question it raises, is what saving
+    /// over somebody's song costs.
+    #[test]
+    fn enter_on_a_project_takes_its_name_and_a_second_enter_saves_over_it() {
+        let dir = projects("adopt");
+        let _ = saved_into(&dir, "neon_causeway");
+        let path = dir.join("neon_causeway.phos");
+
+        let mut app = ready_to_save(&dir, InstrumentType::Rhodes);
+        app.open_save_picker();
+        assert_eq!(
+            app.nav.file_picker.selected().map(|e| e.name.clone()),
+            Some("neon_causeway.phos".into()),
+        );
+
+        press(&mut app, KeyCode::Enter);
+        assert!(app.nav.file_picker.open, "adopting a name closed the picker");
+        assert!(!app.nav.confirm_modal.open, "one press asked about writing");
+        assert_eq!(app.nav.file_picker.name, "neon_causeway", "the name was not taken");
+        assert_eq!(saved_instrument(&path), InstrumentType::DrumRack, "one press wrote the file");
+        assert!(
+            app.live_status().is_some_and(|s| s.contains("enter again")),
+            "nothing said what the next press does: {:?}",
+            app.live_status(),
+        );
+
+        press(&mut app, KeyCode::Enter);
+        assert!(app.nav.confirm_modal.open, "the second press did not ask");
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(saved_instrument(&path), InstrumentType::Rhodes, "the adopted name did not save over it");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().filter_map(Result::ok).count(),
+            1,
+            "a second file appeared beside the one being written over",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The escape hatch saves too: `/` swaps the list for the typed prompt,
+    /// carries the half-typed name into it, and names the folder it is
+    /// writing into — the one the picker was showing.
+    #[test]
+    fn slash_in_the_save_picker_still_saves_by_name() {
+        let dir = projects("savetyped");
+        let mut app = ready_to_save(&dir, InstrumentType::Rhodes);
+
+        app.open_save_picker();
+        type_text(&mut app, "neon");
+        press(&mut app, KeyCode::Char('/'));
+        assert!(!app.nav.file_picker.open, "the picker stayed up behind the field");
+        assert!(app.nav.input_modal.open, "`/` did not offer the typed prompt");
+        assert_eq!(app.nav.input_modal.kind, InputModalKind::SaveAs);
+        assert_eq!(app.nav.input_modal.value(), "neon", "the name was dropped on the way");
+        assert_eq!(
+            app.nav.input_modal.hint(),
+            app.projects_dir().display().to_string(),
+            "the prompt names a folder the save would not use",
+        );
+
+        type_text(&mut app, "_causeway");
+        press(&mut app, KeyCode::Enter);
+        assert!(dir.join("neon_causeway.phos").is_file(), "the typed road saved nothing");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The 911 test.** A file saved and then not found again is what all
+    /// of this is for.
+    ///
+    /// The save picker and the open picker are two doors onto one folder. A
+    /// project saved through the first is in the list the second shows — in
+    /// the same run and in a fresh one, because a player who quits and comes
+    /// back is the case that lost the file.
+    #[test]
+    fn the_911_test_the_save_picker_and_the_open_picker_show_one_folder() {
+        let dir = projects("911");
+        let mut saving = ready_to_save(&dir, InstrumentType::Rhodes);
+
+        ctrl(&mut saving, 's');
+        let saved_in = saving.nav.file_picker.dir.clone();
+        type_text(&mut saving, "911");
+        press(&mut saving, KeyCode::Enter);
+        let written = saving.session_path.clone().expect("the save named no file");
+
+        // The same run: Space+O lists the file that was just saved, in the
+        // folder the save picker was showing.
+        press(&mut saving, KeyCode::Char(' '));
+        press(&mut saving, KeyCode::Char('o'));
+        assert_eq!(
+            saving.nav.file_picker.dir, saved_in,
+            "the open picker opened on a different folder than the save picker",
+        );
+        assert_eq!(
+            saving.nav.file_picker.visible().iter().map(|e| e.name.clone()).collect::<Vec<_>>(),
+            vec!["911.phos"],
+            "the project that was just saved is not in the list",
+        );
+
+        // A fresh run, which is the one that lost the file: nothing carried
+        // over in memory, and the list still has it.
+        let mut opening = app();
+        opening.browse_sessions = Some(dir.clone());
+        opening.open_session_picker();
+        assert_eq!(
+            opening.nav.file_picker.visible().iter().map(|e| e.name.clone()).collect::<Vec<_>>(),
+            vec!["911.phos"],
+        );
+        press(&mut opening, KeyCode::Enter);
+        assert_eq!(opening.session_path.as_deref(), Some(written.as_path()), "it opened something else");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder that will not take the write says so and keeps the list up,
+    /// so the player can walk somewhere that will.
+    ///
+    /// Read-only directories mean nothing to root, and CI sometimes is root,
+    /// so this checks that the folder actually refuses before asserting what
+    /// the refusal looks like.
+    #[test]
+    fn a_folder_that_will_not_take_the_save_keeps_the_picker_and_says_so() {
+        let dir = projects("readonly");
+        let locked = dir.join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        let writable = std::fs::write(locked.join("probe"), b"x").is_ok();
+        if writable {
+            // Running as somebody who can write anywhere. There is no
+            // refusal to test, and pretending otherwise would be a test that
+            // passes for the wrong reason.
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        let mut app = ready_to_save(&dir, InstrumentType::Rhodes);
+        app.open_save_picker();
+        press(&mut app, KeyCode::Enter); // into `locked`
+        assert!(app.nav.file_picker.dir.ends_with("locked"));
+        type_text(&mut app, "neon_causeway");
+        press(&mut app, KeyCode::Enter);
+
+        assert!(app.nav.file_picker.open, "the refused save took the picker down with it");
+        assert_eq!(app.nav.file_picker.name, "neon_causeway", "the refused save lost the name");
+        assert!(app.session_path.is_none(), "a save that never happened named the session");
+        let status = app.live_status().unwrap_or_default();
+        assert!(status.contains("save failed"), "the refusal said nothing useful: {status:?}");
+
+        // ...and the way out is the way in: walk up, save there instead.
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Enter);
+        assert!(dir.join("neon_causeway.phos").is_file(), "there was no way to recover the save");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An empty name with nothing under the cursor does nothing, out loud.
+    #[test]
+    fn an_empty_name_over_an_empty_folder_says_what_to_do() {
+        let dir = projects("saveempty");
+        let mut app = ready_to_save(&dir, InstrumentType::Rhodes);
+        app.open_save_picker();
+        assert!(app.nav.file_picker.selected().is_none(), "the folder was not empty");
+
+        press(&mut app, KeyCode::Enter);
+        assert!(app.nav.file_picker.open, "Enter on nothing closed the picker");
+        assert!(app.session_path.is_none(), "Enter on nothing saved something");
+        let status = app.live_status().unwrap_or_default();
+        assert!(status.contains("type a name"), "Enter on nothing said nothing: {status:?}");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "a file appeared out of nothing");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The keys that walk every other list here are letters in this one, and
+    /// the walking is on the arrows.
+    ///
+    /// The pty found this one: `ghost_take` typed into a name line that lent
+    /// `g` and `h` to the list walked to the top, then up a folder, and
+    /// saved `ost_take` into a folder nobody had chosen — the same defect
+    /// this picker exists to end, arriving through the picker itself. So
+    /// every letter is a letter here, and the folder cannot move under a
+    /// name being typed.
+    #[test]
+    fn the_name_line_takes_the_letters_that_walk_every_other_list() {
+        let dir = projects("walkletter");
+        std::fs::create_dir_all(dir.join("ideas")).unwrap();
+        let mut app = ready_to_save(&dir, InstrumentType::Rhodes);
+        app.open_save_picker();
+        let opened_on = app.nav.file_picker.dir.clone();
+
+        type_text(&mut app, "ghost_take");
+        assert_eq!(app.nav.file_picker.name, "ghost_take", "the letters went to the list");
+        assert_eq!(app.nav.file_picker.dir, opened_on, "a letter walked to another folder");
+
+        press(&mut app, KeyCode::Enter);
+        assert!(dir.join("ghost_take.phos").is_file(), "the name did not save where it opened");
+        assert!(!dir.join("ideas").join("ghost_take.phos").exists());
+
+        // ...and the arrows still walk the list, so a project's name can
+        // still be taken off it.
+        app.open_save_picker();
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            app.nav.file_picker.selected().map(|e| e.name.clone()),
+            Some("ghost_take.phos".into()),
+            "the down arrow did not move the cursor",
+        );
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.nav.file_picker.name, "ghost_take", "enter did not take the name");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Everything the box has to say is actually drawn in it: the folder,
+    /// what is already there, the name with the extension waiting after the
+    /// cursor, and the keys.
+    #[test]
+    fn the_save_picker_draws_the_folder_the_name_and_the_keys() {
+        let dir = projects("savedraw");
+        let mut app = ready_to_save(&dir, InstrumentType::Rhodes);
+
+        // An empty folder is a perfectly good place to save into, and the
+        // box says so rather than reading as a dead end.
+        app.open_save_picker();
+        let empty = screen(&app);
+        assert!(empty.contains("save project"), "the box does not say what it is for:\n{empty}");
+        assert!(empty.contains("nothing here yet"), "an empty folder said nothing:\n{empty}");
+        assert!(empty.contains("name \u{2588}.phos"), "the name line is not drawn:\n{empty}");
+        assert!(empty.contains("type"), "the footer does not offer the name:\n{empty}");
+
+        let _ = saved_into(&dir, "neon_causeway");
+        app.open_save_picker();
+        type_text(&mut app, "myjam");
+        let text = screen(&app);
+        assert!(
+            text.contains("name myjam\u{2588}.phos"),
+            "the name and its extension are not on the screen:\n{text}",
+        );
+        assert!(
+            text.contains(dir.file_name().unwrap().to_str().unwrap()),
+            "the folder it will write into is not on the screen:\n{text}",
+        );
+        assert!(
+            text.contains("neon_causeway.phos"),
+            "the project already there is not shown:\n{text}",
+        );
+        assert!(text.contains("enter save"), "the footer does not say enter saves:\n{text}");
+
+        // ...and a name already carrying the extension is not offered a
+        // second one.
+        type_text(&mut app, ".phos");
+        assert!(
+            screen(&app).contains("name myjam.phos\u{2588}"),
+            "the extension was offered twice:\n{}",
+            screen(&app),
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A separator belongs to `/`'s road, not to a name — and the refusal is
+    /// a sentence rather than a shrug.
+    #[test]
+    fn a_separator_typed_into_the_name_is_refused_in_words() {
+        let dir = projects("savesep");
+        let mut app = ready_to_save(&dir, InstrumentType::Rhodes);
+        app.open_save_picker();
+
+        type_text(&mut app, "ideas");
+        press(&mut app, KeyCode::Char('\\'));
+        type_text(&mut app, "jam");
+        assert_eq!(app.nav.file_picker.name, "ideasjam", "a separator reached the name");
+        let status = app.live_status().unwrap_or_default();
+        assert!(status.contains("path"), "the refusal did not name the way to do it: {status:?}");
+
+        press(&mut app, KeyCode::Enter);
+        assert!(dir.join("ideasjam.phos").is_file(), "the name did not save");
+        assert!(!dir.join("ideas").exists(), "a folder was made out of a name");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A saved session names every selector its instrument has, not just the
     /// one at index 0 — the Jupiter has seven switches behind its patch knob
     /// and the DX7 keeps its cartridge at the far end of the panel.

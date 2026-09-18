@@ -16,6 +16,21 @@
 //! a spinner in a terminal application, and a preview is an audition with
 //! no key to stop it.
 //!
+//! # Saving is the same list
+//!
+//! A save is the same question with the answer written the other way round:
+//! *which folder*, and *called what*. So saving is a third
+//! [`PickerPurpose`] rather than a second widget — the same rows, the same
+//! walk, the same `/` escape hatch — with one line added for the name and
+//! one rule changed: typing edits the **name** instead of narrowing the
+//! list. Everything else a player already learned still holds, and the
+//! folder the save lands in is the folder they are looking at, which is the
+//! whole reason this exists. See [`FilePicker::save_path`].
+//!
+//! Typing there is *all* typing, letters and walking keys alike, and the
+//! arrows walk instead — see [`FilePicker::list_owns_letters`] for why a
+//! name that could not begin with `j` is not a name line at all.
+//!
 //! # The rules of the list
 //!
 //! * Directories first, then files, each half alphabetical and
@@ -26,12 +41,14 @@
 //!   [`PickerPurpose::shows`] — but **directories are always shown**, so
 //!   the tree can be walked out of the folder it opened on and into
 //!   wherever the player actually keeps their samples.
-//! * Typing narrows. Letters, digits, space and the three characters
-//!   filenames are actually made of (`.`, `-`, `_`) go into a filter that
-//!   is matched as a case-insensitive substring; Backspace takes one back.
-//!   The filter belongs to the view it was typed in and is cleared by a
-//!   change of directory, because a filter that survives a `cd` is a folder
-//!   that looks empty for no visible reason.
+//! * Typing narrows — on the pickers that are reading. Letters, digits,
+//!   space and the three characters filenames are actually made of (`.`,
+//!   `-`, `_`) go into a filter that is matched as a case-insensitive
+//!   substring; Backspace takes one back. The filter belongs to the view it
+//!   was typed in and is cleared by a change of directory, because a filter
+//!   that survives a `cd` is a folder that looks empty for no visible
+//!   reason. On the save picker the same keys are writing a name instead,
+//!   and that *does* survive a change of directory — see above.
 //!
 //! # Reading the directory
 //!
@@ -60,6 +77,9 @@ pub enum PickerPurpose {
     /// `a` on the sampler: the answer is a sound for the pad under the
     /// caret.
     LoadSample,
+    /// Space+S, and Ctrl+S on a session that has never been saved: the
+    /// answer is a folder and a name to write into it.
+    SaveSession,
 }
 
 impl PickerPurpose {
@@ -67,9 +87,25 @@ impl PickerPurpose {
     #[must_use]
     pub const fn extension(self) -> &'static str {
         match self {
-            Self::OpenSession => "phos",
+            Self::OpenSession | Self::SaveSession => crate::paths::SESSION_EXT,
             Self::LoadSample => "wav",
         }
+    }
+
+    /// Whether this purpose is about a session rather than a sound.
+    ///
+    /// Which of the two folders the picker is remembered in hangs off this:
+    /// opening and saving share a folder — that is the point of them — and
+    /// the sampler keeps its own.
+    #[must_use]
+    pub const fn is_session(self) -> bool {
+        matches!(self, Self::OpenSession | Self::SaveSession)
+    }
+
+    /// Whether typing goes into a name rather than into the filter.
+    #[must_use]
+    pub const fn names_a_file(self) -> bool {
+        matches!(self, Self::SaveSession)
     }
 
     /// Whether a file of this name is one of ours.
@@ -90,6 +126,7 @@ impl PickerPurpose {
         match self {
             Self::OpenSession => "open project",
             Self::LoadSample => "load sample",
+            Self::SaveSession => "save project",
         }
     }
 
@@ -100,6 +137,58 @@ impl PickerPurpose {
         match self {
             Self::OpenSession => "no projects yet \u{00b7} ctrl+s saves your first one here",
             Self::LoadSample => "drop .wav files in this folder, or press / to type a path",
+            // An empty folder is a perfectly good place to save into, so
+            // this says that rather than reading as a dead end.
+            Self::SaveSession => "nothing here yet \u{00b7} a name still saves into this folder",
+        }
+    }
+
+    /// The footer of the box, for a picker with something typed into it or
+    /// nothing.
+    ///
+    /// Two states and two lines, because the keys genuinely change: on the
+    /// open pickers the letters stop walking the list once a filter exists,
+    /// and on the save picker Enter stops meaning "go in" once a name does.
+    /// Here rather than in the renderer because these are the same facts the
+    /// key handler branches on — see [`FilePicker::list_owns_letters`] — and
+    /// a footer that says one thing while the keys do another is worse than
+    /// no footer at all.
+    #[must_use]
+    pub const fn footer(self, typed: bool) -> &'static [(&'static str, &'static str)] {
+        match (self, typed) {
+            // `\u{2190}` rather than `bksp` for the walk upwards: both do it,
+            // and this line has sixty columns to say six things in. The
+            // arrow is the one that costs three characters instead of six.
+            (Self::SaveSession, false) => &[
+                ("\u{2191}\u{2193}", " move  "),
+                ("enter", " go in  "),
+                ("\u{2190}", " up  "),
+                ("type", " name  "),
+                ("/", " path  "),
+                ("esc", " cancel"),
+            ],
+            (Self::SaveSession, true) => &[
+                ("\u{2191}\u{2193}", " move  "),
+                ("enter", " save  "),
+                ("bksp", " edit  "),
+                ("/", " path  "),
+                ("esc", " cancel"),
+            ],
+            (_, false) => &[
+                ("j/k", " move  "),
+                ("enter", " open  "),
+                ("h", " up  "),
+                ("type", " find  "),
+                ("/", " path  "),
+                ("esc", " close"),
+            ],
+            (_, true) => &[
+                ("\u{2191}\u{2193}", " move  "),
+                ("enter", " open  "),
+                ("bksp", " widen  "),
+                ("/", " path  "),
+                ("esc", " close"),
+            ],
         }
     }
 }
@@ -199,6 +288,23 @@ pub fn filter_accepts(ch: char) -> bool {
     ch.is_alphanumeric() || matches!(ch, ' ' | '.' | '-' | '_')
 }
 
+/// What a character typed at the picker did.
+///
+/// Three answers rather than a `bool`, because the caller has a different
+/// job for each: a separator in a name is the only one worth a word on the
+/// screen, and telling it apart from "that key is not a letter" is the
+/// difference between a hint and a shrug.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypedKey {
+    /// It went into the line.
+    Took,
+    /// Not a character this line takes, and nothing to say about it.
+    Refused,
+    /// A path separator typed into a name. Names are names here; a whole
+    /// path has its own road, behind `/`.
+    Separator,
+}
+
 /// A directory of files, and a cursor in it.
 #[derive(Debug)]
 pub struct FilePicker {
@@ -218,6 +324,14 @@ pub struct FilePicker {
     pub scroll: usize,
     /// What has been typed to narrow the list.
     pub filter: String,
+    /// What has been typed as the name to save under.
+    ///
+    /// Empty on every purpose but [`PickerPurpose::SaveSession`], which has
+    /// no filter — one line is typed into, and which one it is belongs to
+    /// the purpose. Unlike the filter, this survives a change of folder: it
+    /// is the answer rather than a view of the list, and a player who names
+    /// their song and then walks into `ideas/` means to save it there.
+    pub name: String,
     /// The folder could not be read at all. Kept apart from "empty",
     /// because the two have different words and only one of them is
     /// something the player did.
@@ -243,6 +357,7 @@ impl FilePicker {
             cursor: 0,
             scroll: 0,
             filter: String::new(),
+            name: String::new(),
             unreadable: false,
             page_rows: 12,
         }
@@ -260,6 +375,9 @@ impl FilePicker {
         self.open = true;
         self.purpose = purpose;
         self.dir = tidy(dir);
+        // A name belongs to the save it was typed for, and the next save
+        // starts from nothing rather than from a name somebody abandoned.
+        self.name.clear();
         self.read();
         if let Some(pinned) = pinned.filter(|p| p.is_dir()) {
             self.entries.insert(0, Entry::dir(tidy(pinned), true));
@@ -270,6 +388,7 @@ impl FilePicker {
         self.open = false;
         self.entries.clear();
         self.filter.clear();
+        self.name.clear();
         self.cursor = 0;
         self.scroll = 0;
         self.unreadable = false;
@@ -378,6 +497,144 @@ impl FilePicker {
             self.after_filter();
         }
         popped
+    }
+
+    // ── The name being saved ──
+
+    /// The line this purpose types into: the name on a save, the filter
+    /// everywhere else.
+    ///
+    /// One accessor so the keys, the footer and the renderer cannot come to
+    /// different conclusions about which of the picker's two states it is
+    /// in.
+    #[must_use]
+    pub fn typed(&self) -> &str {
+        if self.purpose.names_a_file() { &self.name } else { &self.filter }
+    }
+
+    /// Whether `j`, `k`, `h`, `g` and `G` are the list's rather than
+    /// letters.
+    ///
+    /// On the open pickers they are until something has been typed, and from
+    /// the first character they are letters — a filter is optional there,
+    /// most players never type one, and the walk has to be the walk every
+    /// other list here has.
+    ///
+    /// On the **save** picker they never are, and that is deliberate. A name
+    /// is not optional, and it is typed from nothing: if the first character
+    /// belonged to the list then no name could *begin* with `j`, `k`, `h`,
+    /// `g` or `G` — and a player typing `ghost_take` would send `g` to the
+    /// top of the list, `h` a folder upwards, and then save `ost_take` into
+    /// a folder they never chose. That is the same defect this picker was
+    /// built to end, wearing a different hat. The arrows, `ctrl+n`/`ctrl+p`
+    /// and the page keys walk instead, Backspace on an empty name still goes
+    /// up, and the footer says so from the first frame.
+    #[must_use]
+    pub fn list_owns_letters(&self) -> bool {
+        !self.purpose.names_a_file() && self.typed().is_empty()
+    }
+
+    /// The footer for the state the picker is actually in.
+    ///
+    /// Keyed on whether anything has been typed rather than on who owns the
+    /// letters, because on a save those are two different questions: the
+    /// letters are never the list's there, but Enter still means "go in"
+    /// until there is a name for it to write.
+    #[must_use]
+    pub fn footer(&self) -> &'static [(&'static str, &'static str)] {
+        self.purpose.footer(!self.typed().is_empty())
+    }
+
+    /// A letter, wherever this purpose's letters go.
+    ///
+    /// The one door, so that the key handler never has to know which line it
+    /// is feeding — the purpose knows, and it is the purpose that would be
+    /// wrong.
+    pub fn type_letter(&mut self, ch: char) -> TypedKey {
+        if self.purpose.names_a_file() {
+            return self.type_name(ch);
+        }
+        if self.type_char(ch) { TypedKey::Took } else { TypedKey::Refused }
+    }
+
+    /// A character into the name being saved under.
+    ///
+    /// Wider than the filter's set — a filter is matched against names that
+    /// already exist, while a name is being invented, and a player who wants
+    /// `take (2)!` is entitled to it. What it will not take is a path
+    /// separator: this line names a file *in the folder on the screen*, and
+    /// a name that quietly reached into another folder would put the file
+    /// somewhere the picker was not showing, which is the whole defect this
+    /// picker was built to end. `\` is refused alongside `/` on every
+    /// platform, because a session named across a separator on one of them
+    /// is a session that will not open on the other.
+    pub fn type_name(&mut self, ch: char) -> TypedKey {
+        if ch == '/' || ch == '\\' || std::path::is_separator(ch) {
+            return TypedKey::Separator;
+        }
+        if ch.is_control() {
+            return TypedKey::Refused;
+        }
+        self.name.push(ch);
+        TypedKey::Took
+    }
+
+    /// Backspace, wherever this purpose's letters go — answering whether
+    /// there was anything to take back, which is what makes an empty line's
+    /// Backspace the way up a folder.
+    pub fn backspace_typed(&mut self) -> bool {
+        if self.purpose.names_a_file() {
+            return self.name.pop().is_some();
+        }
+        self.backspace()
+    }
+
+    /// Enter on a file row with nothing typed: that file's name, in the name
+    /// line.
+    ///
+    /// The nearest thing a list has to clicking a file in a save dialog, and
+    /// it needs no key of its own: one press puts the name up where it can
+    /// be read and edited, a second press commits it — and because the file
+    /// is already there, that second press is the one the overwrite question
+    /// answers. Nothing is overwritten by a single keystroke.
+    ///
+    /// The extension comes off, because the name line adds it back — a row
+    /// adopted as `jam.phos` would read `jam.phos.phos`.
+    pub fn adopt_selected_name(&mut self) -> bool {
+        let Some(entry) = self.selected().filter(|e| !e.is_dir) else {
+            return false;
+        };
+        let stem = Path::new(&entry.name)
+            .file_stem()
+            .map_or_else(|| entry.name.clone(), |s| s.to_string_lossy().into_owned());
+        self.name = stem;
+        true
+    }
+
+    /// Where Enter would write, or `None` when nothing has been named.
+    ///
+    /// The folder on the screen joined to the name on the screen, with the
+    /// extension every session carries — one answer, used both to ask
+    /// "overwrite?" and to do the writing, because a question asked about a
+    /// different path than the one written is worse than no question.
+    #[must_use]
+    pub fn save_path(&self) -> Option<PathBuf> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            return None;
+        }
+        Some(crate::paths::with_session_extension(self.dir.join(name)))
+    }
+
+    /// The `.phos` drawn dim after the cursor on the name line, or nothing
+    /// when what has been typed already carries it — so the line never reads
+    /// `jam.phos.phos` while saving `jam.phos`.
+    #[must_use]
+    pub fn name_suffix(&self) -> &'static str {
+        if crate::paths::is_session_file(Path::new(self.name.trim())) {
+            return "";
+        }
+        crate::paths::SESSION_DOT_EXT
     }
 
     /// The cursor after the list under it changed length.
@@ -728,6 +985,193 @@ mod tests {
         assert_eq!(cut.chars().count(), 20);
         assert!(cut.starts_with('\u{2026}'), "nothing said the path was cut: {cut}");
         assert!(cut.ends_with("sessions"), "the cut took the part that matters: {cut}");
+    }
+
+    // ── Saving ──
+
+    /// The save picker lists the same two things the open one does: folders
+    /// to walk into, and the projects already here — which are context, not
+    /// a menu. Anything else in the folder is still none of its business.
+    #[test]
+    fn the_save_picker_lists_folders_to_walk_and_projects_for_context() {
+        let dir = scratch("savelist", &["jam.phos", "notes.txt", "kick.wav"], &["ideas"]);
+        let mut picker = FilePicker::new();
+        picker.show(PickerPurpose::SaveSession, dir.clone(), None);
+
+        assert_eq!(names(&picker), vec!["ideas", "jam.phos"]);
+        assert!(picker.name.is_empty(), "the name line did not start empty");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every letter goes into the name, the five that walk a list included.
+    ///
+    /// A name is typed from nothing and cannot be approximated: if `j` and
+    /// `h` belonged to the list while the name was empty, `ghost_take` would
+    /// walk to the top of the list, then up a folder, and save `ost_take`
+    /// somewhere nobody chose. The open picker can lend those keys out
+    /// because its filter is optional. This one cannot.
+    #[test]
+    fn every_letter_goes_into_the_name_including_the_ones_that_walk() {
+        let dir = scratch("savetype", &["jam.phos"], &["ideas"]);
+        let mut picker = FilePicker::new();
+        picker.show(PickerPurpose::SaveSession, dir.clone(), None);
+        assert!(!picker.list_owns_letters(), "the save picker lent the list its letters");
+
+        for ch in "ghost_take (2)!".chars() {
+            assert_eq!(picker.type_letter(ch), TypedKey::Took, "the name refused {ch:?}");
+        }
+        assert_eq!(picker.name, "ghost_take (2)!");
+        assert_eq!(picker.dir, tidy(dir.clone()), "a letter walked the picker to another folder");
+        assert_eq!(names(&picker).len(), 2, "the name narrowed the list like a filter");
+        assert!(picker.filter.is_empty(), "the letters reached the filter");
+
+        // Backspace edits the name, and says when there is nothing left —
+        // which is what makes the next press the way up a folder.
+        for _ in 0.."ghost_take (2)!".len() {
+            assert!(picker.backspace_typed());
+        }
+        assert!(picker.name.is_empty());
+        assert!(!picker.backspace_typed(), "an empty name had something to take back");
+        assert!(
+            !picker.list_owns_letters(),
+            "an emptied name handed the letters back to the list",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A name names a file in the folder on the screen. A separator would
+    /// reach into another folder — which is the one thing this picker exists
+    /// to make impossible — so it is refused, and said out loud.
+    #[test]
+    fn a_separator_typed_into_a_name_is_refused() {
+        let dir = scratch("savesep", &[], &[]);
+        let mut picker = FilePicker::new();
+        picker.show(PickerPurpose::SaveSession, dir.clone(), None);
+        picker.type_letter('a');
+
+        for ch in ['/', '\\', std::path::MAIN_SEPARATOR] {
+            assert_eq!(
+                picker.type_letter(ch),
+                TypedKey::Separator,
+                "{ch:?} went into a name",
+            );
+        }
+        assert_eq!(picker.name, "a", "a separator reached the name anyway");
+        assert_eq!(picker.type_letter('\u{7}'), TypedKey::Refused, "a control character typed");
+        assert_eq!(picker.name, "a");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Enter on a project row takes its name, extension and all, and leaves
+    /// it where it can be read and edited. Nothing is written by that press.
+    #[test]
+    fn enter_on_a_project_adopts_its_name() {
+        let dir = scratch("saveadopt", &["neon_causeway.phos"], &["ideas"]);
+        let mut picker = FilePicker::new();
+        picker.show(PickerPurpose::SaveSession, dir.clone(), None);
+
+        // The folder is the first row, and a folder is not a name.
+        assert!(!picker.adopt_selected_name(), "a folder was adopted as a name");
+        picker.move_cursor(1);
+        assert!(picker.adopt_selected_name(), "the project row was not adopted");
+        assert_eq!(picker.name, "neon_causeway", "the extension came along and would double");
+        assert_eq!(
+            picker.save_path(),
+            Some(tidy(dir.clone()).join("neon_causeway.phos")),
+            "the adopted name does not point back at the file it came from",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Where Enter writes: the folder on the screen, the name on the screen,
+    /// and the extension every session carries — added once, however the
+    /// player spelled it.
+    #[test]
+    fn the_save_path_is_the_folder_on_the_screen_and_the_name_on_it() {
+        let dir = scratch("savepath", &[], &["ideas"]);
+        let mut picker = FilePicker::new();
+        picker.show(PickerPurpose::SaveSession, dir.clone(), None);
+        assert_eq!(picker.save_path(), None, "an empty name named a file");
+        assert_eq!(picker.name_suffix(), ".phos", "the extension is not offered");
+
+        for ch in "  myjam  ".chars() {
+            picker.type_letter(ch);
+        }
+        assert_eq!(
+            picker.save_path(),
+            Some(tidy(dir.clone()).join("myjam.phos")),
+            "the name was not trimmed into the folder on the screen",
+        );
+
+        // Spelled with the extension: it is not added twice, and the line
+        // stops offering it.
+        picker.name = "myjam.phos".into();
+        assert_eq!(picker.save_path(), Some(tidy(dir.clone()).join("myjam.phos")));
+        assert_eq!(picker.name_suffix(), "");
+
+        // A name survives a walk into another folder — it is the answer, not
+        // a view of the list — and follows it into the path.
+        picker.name = "myjam".into();
+        picker.go(dir.join("ideas"));
+        assert_eq!(picker.name, "myjam", "the name was lost walking into a folder");
+        assert_eq!(
+            picker.save_path(),
+            Some(tidy(dir.join("ideas")).join("myjam.phos")),
+            "the save did not follow the picker into the folder",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The walk upwards stops at the root on a save too — with a name typed,
+    /// which is the state that has the most to lose.
+    #[test]
+    fn the_save_pickers_walk_upwards_stops_at_the_root() {
+        let mut picker = FilePicker::new();
+        picker.show(PickerPurpose::SaveSession, PathBuf::from("/"), None);
+        picker.name = "myjam".into();
+        let root = picker.dir.clone();
+        assert!(!picker.up(), "the save picker walked above the root");
+        assert_eq!(picker.dir, root);
+        assert_eq!(picker.name, "myjam", "the refused walk took the name with it");
+    }
+
+    /// The footer is the one line that says which of the two states the keys
+    /// are in, so it changes with them — on every purpose.
+    #[test]
+    fn the_footer_names_the_keys_that_are_actually_moving() {
+        let dir = scratch("footer", &["jam.phos"], &[]);
+        let mut picker = FilePicker::new();
+
+        let words = |p: &FilePicker| -> String {
+            p.footer().iter().map(|(k, w)| format!("{k}{w}")).collect()
+        };
+
+        picker.show(PickerPurpose::OpenSession, dir.clone(), None);
+        assert!(words(&picker).contains("j/k move"), "the list does not say it walks");
+        picker.type_letter('j');
+        assert!(words(&picker).contains("bksp widen"), "the filter does not say it widens");
+
+        picker.show(PickerPurpose::SaveSession, dir.clone(), None);
+        let empty = words(&picker);
+        assert!(
+            empty.contains("\u{2191}\u{2193} move") && !empty.contains("j/k"),
+            "the save footer offers letters the save picker does not answer: {empty}",
+        );
+        assert!(empty.contains("type name"), "nothing says typing names the file");
+        assert!(empty.contains("esc cancel"), "esc does not say it cancels the save");
+        assert!(empty.contains("\u{2190} up"), "nothing says how to leave the folder");
+        // Sixty columns is what the box has, borders and margins taken off.
+        assert!(
+            empty.chars().count() + 2 <= 60,
+            "the save footer does not fit the box it is drawn in: {} columns",
+            empty.chars().count() + 2,
+        );
+        picker.type_letter('j');
+        let typed = words(&picker);
+        assert!(typed.contains("enter save"), "the named state does not say enter saves");
+        assert!(typed.contains("bksp edit"), "the named state does not say bksp edits");
+        assert!(typed.contains("/ path"), "the typed-path road left the footer");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The box and the list it holds are measured once, so the keys and the

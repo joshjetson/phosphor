@@ -33,6 +33,12 @@
 //! [`Convention`] is a value rather than a `cfg` so the Windows rule can be
 //! tested on a Unix machine. A `#[cfg(windows)]` function is a function nobody
 //! here can run.
+//!
+//! The same argument settles where *sessions* go, and for the same reason:
+//! [`sessions_home`] is the single folder every save and every list answers
+//! from. When those two were separate answers, one of them consulted the
+//! working directory, and a player's song was written somewhere the picker
+//! never looked. See that function.
 
 use std::path::{Path, PathBuf};
 
@@ -65,9 +71,20 @@ const WINDOWS_DIR: &str = "phosphor";
 /// Directory name under `$HOME`.
 const UNIX_DIR: &str = ".phosphor";
 
-/// What a save or open prompt has always started with, and still does when
-/// the working directory has one.
-const LOCAL_SESSIONS: &str = "sessions";
+/// The one folder sessions live in, under the application directory.
+const SESSIONS_DIR: &str = "sessions";
+
+/// The extension every session file carries.
+///
+/// One constant rather than a `"phos"` in the saver, another in the opener
+/// and a third in the picker's filter: three spellings of the same fact are
+/// three chances for a file to be written where nothing will list it.
+pub const SESSION_EXT: &str = "phos";
+
+/// The same extension with its dot, for the places that show it to the
+/// player rather than compare it. Pinned to [`SESSION_EXT`] by a test,
+/// because `concat!` will not take a constant.
+pub const SESSION_DOT_EXT: &str = ".phos";
 
 // ── Resolution ──
 
@@ -111,7 +128,7 @@ pub fn preset_dir() -> Option<PathBuf> {
 /// Where sessions live when the player has not named somewhere else —
 /// `<app dir>/sessions`.
 pub fn session_dir() -> Option<PathBuf> {
-    app_dir().map(|dir| dir.join(LOCAL_SESSIONS))
+    app_dir().map(|dir| dir.join(SESSIONS_DIR))
 }
 
 /// Where the sampler looks for sound files by default —
@@ -160,49 +177,62 @@ pub fn find_sample_in(input: &Path, app: Option<&Path>) -> PathBuf {
     input.to_path_buf()
 }
 
-// ── Session prompts ──
+// ── The sessions home ──
 
-/// The text a save or open prompt starts the field with.
+/// The one folder sessions belong to: `<app dir>/sessions`, whatever
+/// directory the process was started in.
 ///
-/// `sessions/` when the working directory already has a `sessions` directory.
-/// That is a checkout being run from its own root, which is how this has
-/// always behaved and what the sessions already on disk are relative to.
+/// Everything that has an opinion about where a session goes answers from
+/// here — the save picker, the open picker, [`session_prompt_dir`],
+/// [`session_browse_dir`] and [`save_target`] — so that they cannot come to
+/// different answers. That is not tidiness; it is the defect this function
+/// was written to remove.
 ///
-/// Otherwise the absolute `<app dir>/sessions/`. A bare `sessions/` resolves
-/// against wherever the process was started, and a Start Menu shortcut, a
-/// Finder alias or a desktop launcher starts it somewhere the player has never
-/// looked — so the file is written successfully to a directory nobody will
-/// find again.
-pub fn session_prompt_dir() -> String {
-    session_prompt_dir_from(Path::new(LOCAL_SESSIONS).is_dir(), session_dir())
+/// **The defect.** This used to prefer a `sessions` directory in the working
+/// directory when there was one, and fall back to `<app dir>/sessions`
+/// otherwise. The save wrote one file into one folder, correctly; but launch
+/// the application from somewhere else and the *picker* consulted the new
+/// working directory, found no local `sessions`, and listed the application
+/// directory instead. A player saved `911.phos`, reopened the picker from a
+/// different terminal, and the file was not in the list. It had never moved.
+/// The two answers had. A save and an open that disagree about "the" folder
+/// lose work in the only way that matters: the file exists and nobody can
+/// find it.
+///
+/// A path typed by hand is still honoured exactly as typed — see
+/// [`save_target`] — and a session saved under the old rule still opens, by
+/// way of [`find_session`], which searches all of the old places.
+pub fn sessions_home() -> PathBuf {
+    sessions_home_from(session_dir())
 }
 
-/// [`session_prompt_dir`] with the filesystem answers supplied: whether the
-/// working directory has a `sessions` directory, and what [`session_dir`] says.
-pub fn session_prompt_dir_from(local_exists: bool, sessions: Option<PathBuf>) -> String {
-    // A forward slash even on Windows, which accepts it everywhere a
-    // backslash goes, so the string a checkout sees is one string.
-    let local = format!("{LOCAL_SESSIONS}/");
-    if local_exists {
-        return local;
-    }
-    match sessions {
-        Some(dir) => format!("{}{}", dir.display(), std::path::MAIN_SEPARATOR),
-        None => local,
-    }
+/// [`sessions_home`] with [`session_dir`]'s answer supplied.
+///
+/// `None` — an environment naming no home directory at all — is the one case
+/// with nothing better to offer than a relative `sessions`, which is what
+/// every version of this has fallen back to. It is the "there is nowhere to
+/// write" branch, not a second rule: an environment that has a home
+/// directory has exactly one sessions folder.
+pub fn sessions_home_from(sessions: Option<PathBuf>) -> PathBuf {
+    sessions.unwrap_or_else(|| PathBuf::from(SESSIONS_DIR))
+}
+
+/// The text the typed-path prompts start the field with — the sessions
+/// home, with the separator a name goes after.
+pub fn session_prompt_dir() -> String {
+    format!("{}{}", sessions_home().display(), std::path::MAIN_SEPARATOR)
 }
 
 // ── The file picker's folders ──
 
-/// The folder the session picker opens on, made if it is not there yet.
+/// The folder the session pickers open on, made if it is not there yet.
 ///
-/// The same answer the save and open prompts have always started from —
-/// [`session_prompt_dir`] — as a path rather than a string. Made rather
-/// than only named: a picker that opens onto a folder the application has
-/// never written to would list nothing and say the folder could not be
-/// read, which is a true sentence and a useless one.
+/// [`sessions_home`] as a folder that exists. Made rather than only named: a
+/// picker that opens onto a folder the application has never written to
+/// would list nothing and say the folder could not be read, which is a true
+/// sentence and a useless one.
 pub fn session_browse_dir() -> PathBuf {
-    browse_dir(PathBuf::from(session_prompt_dir()))
+    browse_dir(sessions_home())
 }
 
 /// The folder the sample picker opens on, made if it is not there yet —
@@ -241,7 +271,34 @@ fn browse_dir(wanted: PathBuf) -> PathBuf {
 /// saving has always done and what a player who wants a file somewhere
 /// specific is entitled to.
 pub fn save_target(input: &str) -> PathBuf {
-    save_target_in(input, Path::new(&session_prompt_dir()))
+    save_target_in(input, &sessions_home())
+}
+
+/// `path` carrying the extension every session file has.
+///
+/// The rule in one place: a name typed without an extension gets one, and a
+/// name typed with the wrong one is corrected — `mysong.txt` saves as
+/// `mysong.phos`. The picker needs the same answer the saver reaches, because
+/// it is the picker that asks "overwrite?" before the saver ever runs, and a
+/// question asked about a different path than the one written is worse than
+/// no question.
+///
+/// The extension already there is compared without case, the way the
+/// picker's own listing compares it: `MYJAM.PHOS` is a session file to every
+/// other part of this application, and renaming it out from under the player
+/// on the way to disk is a surprise nobody asked for.
+#[must_use]
+pub fn with_session_extension(path: PathBuf) -> PathBuf {
+    if is_session_file(&path) {
+        return path;
+    }
+    path.with_extension(SESSION_EXT)
+}
+
+/// Whether `path` already ends in the session extension, in any case.
+#[must_use]
+pub fn is_session_file(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case(SESSION_EXT))
 }
 
 /// [`save_target`] with the sessions folder supplied.
@@ -260,11 +317,15 @@ pub fn save_target_in(input: &str, dir: &Path) -> PathBuf {
 
 /// Where to look for a session the player named in the open prompt.
 ///
-/// An absolute path is taken as given, and so is a relative one that exists
-/// against the working directory — that is where it has always resolved and a
-/// checkout must keep working. Only when neither finds a file does this try
-/// the application directory, so `sessions/take3.phos` still opens after the
-/// player stops launching from the checkout.
+/// Deliberately the forgiving end of the pair. Saving has one home —
+/// [`sessions_home`] — but opening has to find files written by every rule
+/// this application has ever had, and by the player's own hand: an absolute
+/// path is taken as given, a relative one that exists against the working
+/// directory is taken next (that is where it has always resolved, and a
+/// checkout full of `sessions/*.phos` must keep opening), and only when
+/// neither finds a file does this try the application directory. So
+/// `sessions/take3.phos` opens from anywhere, and a session saved before the
+/// one-home rule is not stranded by it.
 ///
 /// Saving does not go through this. A save resolves the path exactly as typed,
 /// as it always has; it is the *prompt* that starts somewhere deterministic.
@@ -281,11 +342,11 @@ pub fn find_session_in(input: &Path, app: Option<&Path>) -> PathBuf {
     // `.phos` at every step, so `open mysong` finds `mysong.phos` exactly
     // as `save mysong` wrote it.
     let with_ext: Option<PathBuf> =
-        (input.extension().is_none()).then(|| input.with_extension("phos"));
+        (input.extension().is_none()).then(|| input.with_extension(SESSION_EXT));
     let candidates = |p: &Path| -> Vec<PathBuf> {
         let mut v = vec![p.to_path_buf()];
         if let Some(e) = &with_ext {
-            v.push(if p == input { e.clone() } else { p.with_extension("phos") });
+            v.push(if p == input { e.clone() } else { p.with_extension(SESSION_EXT) });
         }
         v
     };
@@ -301,7 +362,7 @@ pub fn find_session_in(input: &Path, app: Option<&Path>) -> PathBuf {
         return input.to_path_buf();
     };
     // `sessions/take3.phos` first, then a bare `take3.phos`.
-    for base in [app.to_path_buf(), app.join(LOCAL_SESSIONS)] {
+    for base in [app.to_path_buf(), app.join(SESSIONS_DIR)] {
         for c in candidates(&base.join(input)) {
             if c.exists() {
                 return c;
@@ -455,19 +516,47 @@ mod tests {
         }
     }
 
-    /// A checkout keeps the prompt it has always had. The absolute form only
-    /// appears where the relative one would have resolved somewhere arbitrary.
+    /// The sessions home is the application's, never the working
+    /// directory's.
     #[test]
-    fn the_prompt_prefers_a_checkouts_own_sessions_directory() {
+    fn the_sessions_home_is_the_application_folder() {
         let sessions = PathBuf::from("/home/player/.phosphor").join("sessions");
-        assert_eq!(session_prompt_dir_from(true, Some(sessions.clone())), "sessions/");
+        assert_eq!(sessions_home_from(Some(sessions.clone())), sessions);
+        // No home directory at all: a relative folder is still better than no
+        // folder, and it is what this has always fallen back to.
+        assert_eq!(sessions_home_from(None), PathBuf::from("sessions"));
+    }
+
+    /// A name typed without an extension gets one; a name typed with the
+    /// wrong one is corrected.
+    #[test]
+    fn a_session_file_always_ends_up_with_the_extension() {
+        for (typed, wanted) in [
+            ("myjam", "myjam.phos"),
+            ("myjam.phos", "myjam.phos"),
+            ("mysong.txt", "mysong.phos"),
+        ] {
+            assert_eq!(
+                with_session_extension(PathBuf::from(typed)),
+                PathBuf::from(wanted),
+                "{typed} did not come out as a session file",
+            );
+        }
+        // A dot inside a name is not an extension anybody typed: `.phos` goes
+        // on the end of the last component, which is what `Path` calls one.
         assert_eq!(
-            session_prompt_dir_from(false, Some(sessions.clone())),
-            format!("{}{}", sessions.display(), std::path::MAIN_SEPARATOR)
+            with_session_extension(PathBuf::from("take 2.1")),
+            PathBuf::from("take 2.phos"),
         );
-        // No home directory at all: the relative path is still better than an
-        // empty prompt, and it is what this did before.
-        assert_eq!(session_prompt_dir_from(false, None), "sessions/");
+        // A shouted extension is still the extension — the picker lists it,
+        // so the saver must not quietly rename it.
+        assert_eq!(
+            with_session_extension(PathBuf::from("MYJAM.PHOS")),
+            PathBuf::from("MYJAM.PHOS"),
+        );
+        assert!(is_session_file(Path::new("a.PhOs")));
+        assert!(!is_session_file(Path::new("a.wav")));
+        assert_eq!(SESSION_DOT_EXT, format!(".{SESSION_EXT}"), "the two spellings drifted");
     }
 
     /// A bare name is a name, and goes where the sessions go. Anything with
@@ -536,15 +625,22 @@ mod tests {
         std::fs::create_dir_all(app.join("sessions")).unwrap();
         std::fs::write(app.join("sessions").join("Cargo.toml"), "{}").unwrap();
 
-        // Cargo runs a test with the package root as the working directory.
-        assert!(Path::new("Cargo.toml").exists(), "this test needs a file in the working directory");
-        // `Cargo.toml` exists relative to this crate's working directory, and
-        // the same name exists in the application directory. The local one is
-        // the answer.
-        assert_eq!(
-            find_session_in(Path::new("Cargo.toml"), Some(&app)),
-            PathBuf::from("Cargo.toml")
-        );
+        // Under the lock, because this reads a relative path and another test
+        // in this module walks the process's working directory about.
+        with_process(&[], None, || {
+            // Cargo runs a test with the package root as the working directory.
+            assert!(
+                Path::new("Cargo.toml").exists(),
+                "this test needs a file in the working directory"
+            );
+            // `Cargo.toml` exists relative to this crate's working directory,
+            // and the same name exists in the application directory. The local
+            // one is the answer.
+            assert_eq!(
+                find_session_in(Path::new("Cargo.toml"), Some(&app)),
+                PathBuf::from("Cargo.toml")
+            );
+        });
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -555,19 +651,30 @@ mod tests {
     // wired to it: a correct rule reached through the wrong variable is the
     // defect this module was written to fix.
     //
-    // Every reader and writer of the process environment in this crate goes
-    // through `std::env`, which serialises them against each other, so the
-    // only thing to guard is these tests overwriting each other's setup.
+    // The environment and the working directory are both process-wide, and
+    // the test binary runs its tests in threads of one process — so a test
+    // that changes either has to have the process to itself for as long as it
+    // is looking. That is what the lock below is for, and why a test that
+    // only *reads* a relative path takes it too.
 
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static PROCESS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Run `body` with `vars` applied to the real environment and everything
     /// else this module reads removed, then put the environment back.
     fn with_env(vars: &[(&str, &str)], body: impl FnOnce()) {
-        let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        with_process(vars, None, body);
+    }
+
+    /// Run `body` with the whole process to itself: `vars` in the
+    /// environment, everything else this module reads removed, and the
+    /// working directory at `cwd` when one is named. Both are put back
+    /// afterwards, panic or not.
+    fn with_process(vars: &[(&str, &str)], cwd: Option<&Path>, body: impl FnOnce()) {
+        let guard = PROCESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         const KEYS: [&str; 4] = [OVERRIDE_VAR, "HOME", "APPDATA", "USERPROFILE"];
         let saved: Vec<(&str, Option<String>)> =
             KEYS.iter().map(|k| (*k, std::env::var(k).ok())).collect();
+        let here = std::env::current_dir().ok();
 
         for key in KEYS {
             std::env::remove_var(key);
@@ -575,9 +682,15 @@ mod tests {
         for (key, value) in vars {
             std::env::set_var(key, value);
         }
+        if let Some(cwd) = cwd {
+            std::env::set_current_dir(cwd).expect("the test's own working directory");
+        }
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
 
+        if let Some(here) = here {
+            let _ = std::env::set_current_dir(here);
+        }
         for (key, value) in saved {
             match value {
                 Some(v) => std::env::set_var(key, v),
@@ -588,6 +701,62 @@ mod tests {
         if let Err(payload) = result {
             std::panic::resume_unwind(payload);
         }
+    }
+
+    /// **The defect that lost `911.phos`, as a test.**
+    ///
+    /// The sessions home used to prefer a `sessions` directory in the working
+    /// directory. Launch from a checkout and it answered one folder; launch
+    /// from anywhere else and it answered another — and the save and the
+    /// picker asked at different moments, from different directories, and got
+    /// different answers. The file was written exactly where the save put it
+    /// and was not in the list the player was shown.
+    ///
+    /// So: the same environment, two working directories, one of which has a
+    /// `sessions` folder sitting in it, and every answer must be identical.
+    /// All four are asserted together, because it is their *agreement* that
+    /// broke rather than any one of them.
+    #[test]
+    fn the_sessions_home_does_not_move_with_the_working_directory() {
+        let root = std::env::temp_dir().join(format!("phosphor-onehome-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join("app");
+        let checkout = root.join("checkout");
+        let elsewhere = root.join("elsewhere");
+        // A working directory with its own `sessions` folder — a checkout —
+        // and one without. This is the whole of the old rule's input.
+        std::fs::create_dir_all(checkout.join("sessions")).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+
+        let answers = |from: &Path| -> (PathBuf, String, PathBuf, PathBuf) {
+            let mut out = None;
+            with_process(&[(OVERRIDE_VAR, &home.to_string_lossy())], Some(from), || {
+                out = Some((
+                    sessions_home(),
+                    session_prompt_dir(),
+                    session_browse_dir(),
+                    save_target("911"),
+                ));
+            });
+            out.expect("the answers were never taken")
+        };
+
+        let (from_checkout, from_elsewhere) = (answers(&checkout), answers(&elsewhere));
+        assert_eq!(
+            from_checkout, from_elsewhere,
+            "the sessions folder moved with the working directory",
+        );
+        // ...and it is the application's folder, not either of theirs.
+        assert_eq!(from_checkout.0, home.join("sessions"));
+        assert_eq!(from_checkout.3, home.join("sessions").join("911"));
+        assert!(
+            !from_checkout.2.starts_with(&checkout),
+            "the picker would open on the checkout: {}",
+            from_checkout.2.display(),
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The real `app_dir` reads the real variables, and the derived

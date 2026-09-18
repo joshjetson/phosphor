@@ -115,7 +115,11 @@ impl App {
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                     self.nav.confirm_modal.close();
                     // Whatever the answer was about is no longer pending.
+                    // The picker underneath, if there is one, is left exactly
+                    // as it was — name and all — because "no" means "not that
+                    // file", not "start again".
                     self.nav.preset_modal.pending_name.clear();
+                    self.pending_save = None;
                 }
                 _ => {}
             }
@@ -175,7 +179,13 @@ impl App {
                     self.nav.input_modal.close();
                     if !path.is_empty() {
                         match kind {
-                            InputModalKind::SaveAs => self.do_save(&path),
+                            // Whether it landed is the save picker's
+                            // business, not this field's: the field is
+                            // already closed, and the status bar has said so
+                            // either way.
+                            InputModalKind::SaveAs => {
+                                self.do_save(&path);
+                            }
                             InputModalKind::Open => self.do_load(&path),
                             InputModalKind::PresetName => self.request_preset_save(&path),
                             InputModalKind::RenameTrack => self.do_rename_track(&path),

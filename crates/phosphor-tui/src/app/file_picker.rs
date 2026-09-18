@@ -33,18 +33,36 @@
 //! and `ctrl+p` for hands that do not want to leave the home row — are what
 //! moves the cursor. The footer says which of the two states it is in,
 //! because a key that means two things has to be readable off the screen.
+//!
+//! The save picker types into a name rather than a filter, and there the
+//! letters are never lent out: a name is typed from nothing and has to be
+//! able to *start* with any letter, `j` and `h` included, or `jam` is not a
+//! filename a player can reach. The arrows walk instead and the footer says
+//! so from the first frame. Both pickers ask the same accessor which state
+//! they are in — `FilePicker::list_owns_letters` — so the keys and the
+//! footer cannot come to different answers.
+//!
+//! # Where the picker opens
+//!
+//! On the folder it was last in, for the life of the run, and on
+//! [`phosphor_app::paths::sessions_home`] the first time. Two folders are
+//! remembered, not one: projects and samples are different places and a
+//! player moving between them is not asking for either to follow the other.
+//! Save As after an Open therefore starts where the player just was, which
+//! is the only folder they have any reason to expect.
 
 use super::*;
 
-use phosphor_app::state::{FilePicker, PickerPurpose};
+use phosphor_app::state::{FilePicker, PickerPurpose, TypedKey};
 
 impl App {
     /// The folder projects are saved into and browsed from.
     ///
-    /// One answer for both. "Where a bare name is saved" and "where the
-    /// picker looks" being two answers that could drift apart is exactly
-    /// the defect the picker exists to remove — a player would save
-    /// `myjam` and then be shown a list without it in.
+    /// One answer for all of it: the open picker, the save picker, the
+    /// folder a bare name is written into, and the folder the typed prompts
+    /// name. "Where a bare name is saved" and "where the picker looks"
+    /// being two answers that could drift apart is exactly the defect that
+    /// lost a player's file — see [`phosphor_app::paths::sessions_home`].
     ///
     /// Made if it is missing, because a save into a folder that is not
     /// there fails, and the failure is a sentence about a path the player
@@ -60,6 +78,40 @@ impl App {
         let dir = self.projects_dir();
         crate::debug_log::user(&format!("file picker: sessions in {}", dir.display()));
         self.nav.file_picker.show(PickerPurpose::OpenSession, dir, None);
+    }
+
+    /// Space+S, and Ctrl+S on a session that has never been saved: the same
+    /// list, with a name line.
+    ///
+    /// The list rather than a bare field because a save has two halves —
+    /// which folder, and called what — and the field only ever asked the
+    /// second one. A player could read the folder off the prompt but not
+    /// change it, and could not see what was already in there to avoid
+    /// naming over it.
+    pub(crate) fn open_save_picker(&mut self) {
+        let dir = self.projects_dir();
+        crate::debug_log::user(&format!("file picker: saving into {}", dir.display()));
+        self.nav.file_picker.show(PickerPurpose::SaveSession, dir, None);
+    }
+
+    /// Remember where the picker is, so that the next one opens there.
+    ///
+    /// Called on every change of folder rather than when the picker closes:
+    /// the picker can be left by a road that closes it — `/`, or a save —
+    /// and the folder the player walked to is theirs either way.
+    fn remember_picker_dir(&mut self) {
+        let dir = self.nav.file_picker.dir.clone();
+        if self.nav.file_picker.purpose.is_session() {
+            self.browse_sessions = Some(dir);
+        } else {
+            self.browse_samples = Some(dir);
+        }
+    }
+
+    /// Walk the picker into `dir`, and remember it.
+    fn picker_go(&mut self, dir: std::path::PathBuf) {
+        self.nav.file_picker.go(dir);
+        self.remember_picker_dir();
     }
 
     /// `a` on the sampler: browse the samples folder, with this session's
@@ -107,21 +159,29 @@ impl App {
             }
             KeyCode::Enter => self.choose_in_picker(),
             KeyCode::Backspace => {
-                // Backspace widens the filter, and once there is nothing
-                // left to widen it is the other way out of a folder — which
-                // is what a lifetime of file dialogs has taught the hand.
-                if !self.nav.file_picker.backspace() {
+                // Backspace widens the filter — or takes back a character of
+                // the name — and once there is nothing left it is the other
+                // way out of a folder, which is what a lifetime of file
+                // dialogs has taught the hand.
+                if !self.nav.file_picker.backspace_typed() {
                     self.walk_picker_up();
                 }
             }
             // The typed-path road, kept open for the paths a list cannot
             // reach. The picker closes: one thing on the screen at a time.
+            // A name half typed goes with it rather than being dropped.
             KeyCode::Char('/') => {
                 let purpose = self.nav.file_picker.purpose;
+                let folder = self.nav.file_picker.dir.display().to_string();
+                let name = self.nav.file_picker.name.clone();
+                self.remember_picker_dir();
                 self.nav.file_picker.close();
                 dbg::user("file picker: / \u{2192} type a path");
                 match purpose {
-                    PickerPurpose::OpenSession => self.nav.input_modal.open_load(),
+                    PickerPurpose::OpenSession => self.nav.input_modal.open_load_in(&folder),
+                    PickerPurpose::SaveSession => {
+                        self.nav.input_modal.open_save_typed(&name, &folder);
+                    }
                     PickerPurpose::LoadSample => self.open_sample_typed_prompt(),
                 }
             }
@@ -134,11 +194,12 @@ impl App {
             // arriving as text.
             KeyCode::Char(_) if ctrl => {}
             // `j` and `k` are the way down a list and also letters in a
-            // filename. While nothing has been typed they are the list's;
-            // from the first letter on they are letters and the arrows move
-            // the cursor. See the note at the top of this file.
+            // filename. While nothing has been typed into a *filter* they
+            // are the list's; from the first letter on they are letters and
+            // the arrows move the cursor. On a save they are letters from
+            // the start. See the note at the top of this file.
             KeyCode::Char(ch) => {
-                if self.nav.file_picker.filter.is_empty() {
+                if self.nav.file_picker.list_owns_letters() {
                     match ch {
                         'j' => return self.nav.file_picker.move_cursor(1),
                         'k' => return self.nav.file_picker.move_cursor(-1),
@@ -148,7 +209,11 @@ impl App {
                         _ => {}
                     }
                 }
-                self.nav.file_picker.type_char(ch);
+                // A separator is the one refusal worth a word: the player
+                // meant a folder, and there is a key for that.
+                if self.nav.file_picker.type_letter(ch) == TypedKey::Separator {
+                    self.flash("a name cannot hold a folder \u{00b7} / types a whole path");
+                }
             }
             _ => {}
         }
@@ -156,17 +221,22 @@ impl App {
 
     /// `h`: up one folder, saying so when there is nowhere above.
     fn walk_picker_up(&mut self) {
-        if !self.nav.file_picker.up() {
+        if self.nav.file_picker.up() {
+            self.remember_picker_dir();
+        } else {
             self.flash("this is the top of the filesystem");
         }
     }
 
     /// Enter: descend into a folder, or answer with a file.
     fn choose_in_picker(&mut self) {
+        if self.nav.file_picker.purpose == PickerPurpose::SaveSession {
+            return self.enter_in_save_picker();
+        }
         let Some(entry) = self.nav.file_picker.selected() else { return };
         let path = entry.path.clone();
         if entry.is_dir {
-            self.nav.file_picker.go(path);
+            self.picker_go(path);
             return;
         }
         let purpose = self.nav.file_picker.purpose;
@@ -176,6 +246,76 @@ impl App {
         match purpose {
             PickerPurpose::OpenSession => self.do_load(&path),
             PickerPurpose::LoadSample => self.do_load_sample(&path),
+            // Answered at the top of this function: a file row in the save
+            // picker is a name to take, not a file to open.
+            PickerPurpose::SaveSession => {}
+        }
+    }
+
+    /// Enter in the save picker: write it, walk into it, or take its name.
+    ///
+    /// Three meanings for one key and no ambiguity between them, because
+    /// they are decided in order by what the player has already done. A name
+    /// has been typed: that is the answer, and Enter writes it. Nothing
+    /// typed, on a folder: Enter goes in, the way it does in every list
+    /// here. Nothing typed, on a project: Enter takes its *name*, which is
+    /// the closest a list gets to clicking a file in a save dialog — and it
+    /// writes nothing, because a second Enter (and the question it raises)
+    /// is what writing over somebody's song should cost.
+    fn enter_in_save_picker(&mut self) {
+        if self.nav.file_picker.save_path().is_some() {
+            return self.commit_picker_save();
+        }
+        let Some(entry) = self.nav.file_picker.selected() else {
+            return self.flash("type a name \u{00b7} or enter on a folder to go in");
+        };
+        if entry.is_dir {
+            let path = entry.path.clone();
+            return self.picker_go(path);
+        }
+        if self.nav.file_picker.adopt_selected_name() {
+            let name = self.nav.file_picker.name.clone();
+            self.flash(format!("name: {name} \u{00b7} enter again to save over it"));
+        }
+    }
+
+    /// Write what the name line and the folder add up to, asking first when
+    /// something of that name is already there.
+    fn commit_picker_save(&mut self) {
+        let Some(path) = self.nav.file_picker.save_path() else {
+            return self.flash("type a name \u{00b7} or enter on a folder to go in");
+        };
+        if path.exists() {
+            let name = path
+                .file_name()
+                .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+            crate::debug_log::user(&format!("save picker: {} exists \u{2192} asking", path.display()));
+            self.pending_save = Some(path);
+            self.nav
+                .confirm_modal
+                .show(crate::state::ConfirmKind::OverwriteSession, &format!("Overwrite {name}?  y/n"));
+            return;
+        }
+        self.write_from_save_picker(&path);
+    }
+
+    /// The overwrite question, answered yes.
+    pub(crate) fn overwrite_from_save_picker(&mut self) {
+        let Some(path) = self.pending_save.take() else { return };
+        self.write_from_save_picker(&path);
+    }
+
+    /// Do the save the picker asked for, and keep the picker if it would not
+    /// go.
+    ///
+    /// A folder that refuses the write — a read-only disk, somebody else's
+    /// directory — is one the player can walk out of, and closing the box
+    /// over the failure would leave them holding a sentence with nothing to
+    /// press. The name stays in the line, so the second attempt is one
+    /// Enter away.
+    fn write_from_save_picker(&mut self, path: &std::path::Path) {
+        if self.do_save(&path.display().to_string()) {
+            self.nav.file_picker.close();
         }
     }
 }

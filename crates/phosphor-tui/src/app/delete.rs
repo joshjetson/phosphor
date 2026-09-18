@@ -59,6 +59,7 @@ impl App {
                 let name = std::mem::take(&mut self.nav.preset_modal.pending_name);
                 self.do_save_preset(&name);
             }
+            ConfirmKind::OverwriteSession => self.overwrite_from_save_picker(),
         }
     }
 
@@ -151,6 +152,7 @@ impl App {
             // purpose instead of quietly doing nothing.
             ConfirmKind::DeletePreset
             | ConfirmKind::OverwritePreset
+            | ConfirmKind::OverwriteSession
             | ConfirmKind::DeleteFx
             | ConfirmKind::DeleteSamplerLayer
             | ConfirmKind::DeleteSamplerZone => {}

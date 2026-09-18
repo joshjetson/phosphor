@@ -378,6 +378,22 @@ mod tests {
             60,
             "the prompt let the cursor walk"
         );
+
+        // ...and the save picker, which is the same list with a name line
+        // on it. A new asker is a new way for the cursor to move under a
+        // question, so every one of them is driven here rather than trusted
+        // to the gate it is meant to be behind.
+        press(&mut app, KeyCode::Esc);
+        app.browse_sessions = Some(dir.clone());
+        app.open_save_picker();
+        assert_eq!(app.nav.file_picker.purpose, PickerPurpose::SaveSession);
+        assert!(app.nav.question_is_up(), "the save picker is not one of the askers");
+        app.sampler_follow_note(67);
+        assert_eq!(
+            phosphor_app::sampler::SamplerState::note_of_pad(sampler_state(&app).cursor),
+            60,
+            "the save picker let the cursor walk"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

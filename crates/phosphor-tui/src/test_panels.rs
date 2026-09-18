@@ -209,6 +209,20 @@ mod tests {
     }
 
     // ── The save prompt ──
+    //
+    // The typed prompt is the road behind `/` now rather than the front
+    // door — the save picker is the front door — so these drive it the way a
+    // player reaches it. What it does once it is open has not changed, and
+    // neither have the defects it was shaped around.
+
+    /// The save picker's `/`, which is how the typed prompt is reached.
+    fn typed_save_prompt(app: &mut App) {
+        app.handle_save();
+        assert!(app.nav.file_picker.open, "no save picker");
+        press(app, KeyCode::Char('/'));
+        assert!(app.nav.input_modal.open, "`/` did not offer the typed prompt");
+        assert!(!app.nav.file_picker.open, "the picker stayed up behind the field");
+    }
 
     /// The prompt asks for a name, and takes exactly the name it is given.
     ///
@@ -221,15 +235,18 @@ mod tests {
     #[test]
     fn the_save_prompt_takes_exactly_what_is_typed() {
         let mut app = app();
-        app.handle_save();
-        assert!(app.nav.input_modal.open, "no prompt");
+        typed_save_prompt(&mut app);
 
         assert_eq!(app.nav.input_modal.value(), "", "the field opens with something in it");
         assert_eq!(app.nav.input_modal.cursor, 0);
-        let folder = app.nav.input_modal.hint().to_string();
-        assert!(
-            folder.ends_with('/') || folder.ends_with('\\'),
-            "the prompt does not name the folder it will write into: {folder:?}",
+        // The folder named under the field is the folder the save will
+        // actually use — the picker's own, which is where `/` was pressed.
+        // Two lookups would be two answers waiting to differ, which is
+        // exactly how a file goes missing.
+        assert_eq!(
+            app.nav.input_modal.hint(),
+            app.projects_dir().display().to_string(),
+            "the prompt names a different folder than the save would use",
         );
 
         type_text(&mut app, "neon_causeway");
@@ -249,7 +266,7 @@ mod tests {
     #[test]
     fn an_untouched_save_prompt_falls_back_to_the_suggestion() {
         let mut app = app();
-        app.handle_save();
+        typed_save_prompt(&mut app);
 
         assert_eq!(app.nav.input_modal.placeholder(), "untitled.phos");
         assert_eq!(app.nav.input_modal.resolved(), "untitled.phos");
@@ -267,7 +284,7 @@ mod tests {
     #[test]
     fn a_long_path_scrolls_rather_than_running_off_the_prompt() {
         let mut app = app();
-        app.handle_save();
+        typed_save_prompt(&mut app);
         type_text(&mut app, "a_rather_long_song_name_for_the_evening_and_the_one_after_it");
 
         let text = screen(&app, 100, 30);
@@ -297,8 +314,11 @@ mod tests {
         let mut app = app();
         app.browse_sessions = Some(dir.clone());
 
-        // The whole gesture: Space+S, a name, Enter.
+        // The whole gesture, through the front door: Ctrl+S on a session
+        // with no path opens the save picker, the name is typed into it, and
+        // Enter writes it into the folder the picker is showing.
         app.handle_save();
+        assert!(app.nav.file_picker.open, "the first save did not offer the picker");
         type_text(&mut app, "neon_causeway");
         press(&mut app, KeyCode::Enter);
         assert!(dir.join("neon_causeway.phos").is_file(), "the session is not in the folder");
@@ -312,6 +332,7 @@ mod tests {
         // than asking again.
         app.handle_save();
         assert!(!app.nav.input_modal.open, "the quick save asked for a name");
+        assert!(!app.nav.file_picker.open, "the quick save offered the list again");
 
         // A path is still a path: typed with a separator, it goes exactly
         // where it says.
@@ -329,7 +350,7 @@ mod tests {
     #[test]
     fn a_name_with_wide_characters_does_not_panic() {
         let mut app = app();
-        app.handle_save();
+        typed_save_prompt(&mut app);
         type_text(&mut app, "prélude_日本");
         let _ = screen(&app, 100, 30);
         press(&mut app, KeyCode::Left);
@@ -345,7 +366,7 @@ mod tests {
     #[test]
     fn the_suggestion_gets_out_of_the_way() {
         let mut app = app();
-        app.handle_save();
+        typed_save_prompt(&mut app);
         type_text(&mut app, "b");
         assert!(app.nav.input_modal.placeholder().is_empty());
         assert!(!screen(&app, 100, 30).contains("untitled.phos"));
