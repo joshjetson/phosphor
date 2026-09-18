@@ -26,6 +26,16 @@ pub(super) fn pad_list(map: &Map, width: usize, height: usize) -> Vec<Line<'stat
     if let Some(held) = held_label(map.state) {
         head.push(held, theme::muted());
     }
+    // What the glyph on those rows means, and only where a row wears one: a
+    // legend for a mark nobody's kit carries is a column spent on nothing.
+    //
+    // Last, and so the first thing a narrow list drops — after the memory
+    // line rather than before it. A mark is explained again on the panel
+    // beside this list, in the sentence that names the instrument; how much
+    // audio the kit is holding is said here and nowhere else.
+    if filled.iter().any(|p| map.state.pads[*p].source.is_some()) {
+        head.push(format!(" \u{00b7} {SOURCE_MARK} source"), theme::dim());
+    }
     let mut lines = vec![head.line()];
 
     if filled.is_empty() {
@@ -78,6 +88,12 @@ fn pad_row(map: &Map, pad: usize, width: usize) -> Line<'static> {
     }
     if state.has_missing() {
         row.push(" !", Style::default().fg(theme::rec_active_val()).bg(theme::bg_val()));
+    }
+    // Last, so it is the first column a narrow list drops: a pad that
+    // remembers an instrument is a convenience, and a pad whose file has
+    // gone is a repair. The head above says what the mark means.
+    if state.source.is_some() {
+        row.push(format!(" {SOURCE_MARK}"), theme::amber());
     }
     row.line()
 }
@@ -140,6 +156,62 @@ mod tests {
         // A narrow pane drops it rather than running off its own edge.
         let narrow = text(&pad_list(&map(&big, &view), 24, 10));
         assert!(narrow.lines().all(|l| l.chars().count() <= 24), "the head overran:\n{narrow}");
+    }
+
+    /// A pad that remembers an instrument wears a mark, and the head says
+    /// what the mark means — but only when something is wearing one.
+    #[test]
+    fn a_pad_carrying_a_source_is_marked_and_the_mark_is_explained() {
+        let mut state = kit();
+        let view = SamplerView::new();
+        let plain = text(&pad_list(&map(&state, &view), 38, 10));
+        assert!(!plain.contains(SOURCE_MARK), "an unrecorded kit wears the mark:\n{plain}");
+        assert!(!plain.contains("\u{00b7} \u{25CE} source"), "a legend for nothing:\n{plain}");
+
+        state.pads[state.cursor].source = Some(phosphor_app::sampler::PadSource {
+            instrument: phosphor_app::state::InstrumentType::DX7,
+            params: vec![0.5; 4],
+        });
+        let shown = text(&pad_list(&map(&state, &view), 60, 10));
+        let head = shown.lines().next().unwrap();
+        assert!(head.contains("source"), "the mark is not explained:\n{shown}");
+        let row = shown.lines().find(|l| l.contains("C3")).expect("no C3 row");
+        assert!(row.contains(SOURCE_MARK), "the pad is not marked: {row}");
+
+        // The legend goes before the memory line does. How much audio the
+        // kit is holding is said here and nowhere else; the mark is
+        // explained again on the panel beside this list.
+        let narrow = text(&pad_list(&map(&state, &view), 38, 10));
+        let head = narrow.lines().next().unwrap();
+        assert!(head.contains("kB held"), "the legend cost the memory line: {head}");
+        assert!(!head.contains("\u{25CE} source"), "the head overran its own width: {head}");
+    }
+
+    /// The mark is the first column a narrow list gives up: a pad that
+    /// remembers an instrument is a convenience, and a pad whose file has
+    /// gone is a repair.
+    #[test]
+    fn the_source_mark_goes_before_the_missing_warning() {
+        let mut state = kit(); // C3's second layer has lost its file
+        state.pads[state.cursor].source = Some(phosphor_app::sampler::PadSource {
+            instrument: phosphor_app::state::InstrumentType::DX7,
+            params: vec![0.5; 4],
+        });
+        let view = SamplerView::new();
+        let mut dropped = false;
+        for width in 1..60usize {
+            let shown = text(&pad_list(&map(&state, &view), width, 10));
+            for line in shown.lines() {
+                assert!(line.chars().count() <= width, "a {width}-column list overran: {line}");
+            }
+            let Some(row) = shown.lines().find(|l| l.contains("C3")) else { continue };
+            if !row.contains(SOURCE_MARK) {
+                dropped = true;
+                continue;
+            }
+            assert!(row.contains('!'), "the mark outlived the warning at {width}: {row}");
+        }
+        assert!(dropped, "the mark never dropped, so nothing was under pressure");
     }
 
     /// A kit longer than the list scrolls to the pad under the caret: a

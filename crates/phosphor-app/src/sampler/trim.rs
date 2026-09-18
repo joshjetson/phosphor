@@ -132,6 +132,29 @@ impl TrimEdge {
     }
 }
 
+/// What `w` found when it went looking for the sound.
+///
+/// Three answers rather than a bool, because the player is owed different
+/// words for each: edges that moved want to know how far, a region that is
+/// already hugging the sound wants to be told nothing happened rather than
+/// watching a flash claim a move of zero, and a recording with nothing in it
+/// wants to hear that before it starts hunting for a marker that never went
+/// anywhere. A layer with no audio behind it is `None` — [`LayerState::nudge_trim`]'s
+/// answer to the same question.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Hug {
+    /// Both edges were pulled onto the audible part. Seconds of the
+    /// recording, signed the way the edge travelled: negative is earlier in
+    /// the file, which for the end marker is the dead air coming off.
+    Moved { start: f32, end: f32 },
+    /// The region already *is* the audible part. Nothing was touched, and
+    /// nothing goes on the undo stack.
+    Already,
+    /// Nothing anywhere in the buffer reaches the floor a take is judged
+    /// from. There is no sound to hug.
+    Silent,
+}
+
 /// What a nudge did, beyond moving the edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Nudge {
@@ -247,6 +270,42 @@ impl LayerState {
             TrimEdge::End => self.end_frame = frame,
         }
         Some(Nudge { frame, floored })
+    }
+
+    /// `w` in the strip: pull both edges onto the audible part of the
+    /// recording.
+    ///
+    /// The thresholds and the backoffs are
+    /// [`render::audible_region`](super::render::audible_region)'s, which is
+    /// the rule a fresh take is already trimmed by. A hug and an auto-trim
+    /// are the same act arriving by different doors, and a second set of
+    /// numbers here would be two rules that agree until one of them is tuned.
+    ///
+    /// `reverse` is not touched, and does not need to be: a reversed layer
+    /// plays the same frames backwards, so hugging the sound in the buffer
+    /// hugs the same sound whichever way it runs.
+    ///
+    /// `None` when there is no audio behind the layer — a missing file is
+    /// refused rather than hugged, [`Self::nudge_trim`]'s rule.
+    pub fn hug_audible(&mut self) -> Option<Hug> {
+        let (start, end) = self.region()?;
+        let pcm = self.pcm.as_ref()?;
+        let Some((lo, hi)) = super::render::audible_region(pcm) else {
+            return Some(Hug::Silent);
+        };
+        if (lo, hi) == (start, end) {
+            return Some(Hug::Already);
+        }
+        // Measured before the move, from the region the engine was actually
+        // playing rather than from whatever the fields happened to hold: a
+        // session hand-edited past the end of its buffer would otherwise
+        // report a journey nobody's markers made.
+        let rate = pcm.sample_rate.max(1.0);
+        let travel = |to: u64, from: u64| (to as f64 - from as f64) as f32 / rate;
+        let moved = Hug::Moved { start: travel(lo, start), end: travel(hi, end) };
+        self.start_frame = lo;
+        self.end_frame = hi;
+        Some(moved)
     }
 
     /// Where an edge sits in seconds of the recording — what the header
@@ -500,6 +559,129 @@ mod tests {
         assert_eq!(l.region(), Some((800, 801)));
     }
 
+    // ── `w`: hug the sound ──
+
+    /// A layer with `lead` frames of silence, `tone` frames of sound and
+    /// `trail` frames of silence after it — the shape of a take that waited
+    /// for the player and then rang out.
+    ///
+    /// A cosine rather than a sine, so the tone is at full height on its
+    /// very first sample: a sine's first frames are under the floor, and a
+    /// test that measured a backoff from them would be measuring its own
+    /// oscillator rather than the rule.
+    fn dead_air(lead: usize, tone: usize, trail: usize, rate: f32) -> LayerState {
+        let mut data = vec![0.0f32; lead];
+        data.extend((0..tone).map(|i| {
+            0.5 * (core::f32::consts::TAU * 220.0 * i as f32 / rate).cos()
+        }));
+        data.resize(data.len() + trail, 0.0);
+        let pcm = Arc::new(SamplePcm { data, channels: 1, sample_rate: rate });
+        LayerState::from_wav(PathBuf::from("take.wav"), pcm)
+    }
+
+    /// `w` pulls both markers onto the sound and says how far each moved.
+    #[test]
+    fn a_hug_pulls_both_edges_onto_the_audible_part() {
+        let rate = 44_100.0f32;
+        let (lead, tone, trail) = (44_100, 4_410, 88_200); // 1s · 0.1s · 2s
+        let mut l = dead_air(lead, tone, trail, rate);
+        assert_eq!(l.region(), Some((0, (lead + tone + trail) as u64)));
+
+        let Some(Hug::Moved { start, end }) = l.hug_audible() else {
+            panic!("a take with a sound in it refused to be hugged");
+        };
+        // 8 ms of backoff in front of the tone, which is the render's own
+        // number rather than one spelled again here.
+        assert!((start - 0.992).abs() < 0.002, "the start moved {start:.3}s");
+        // 20 ms of room past it: just under two seconds of dead air comes
+        // off the end of a 3.1 s file.
+        assert!((end + 1.980).abs() < 0.005, "the end moved {end:.3}s");
+        assert!(l.start_frame > 0 && l.start_frame < lead as u64);
+        assert!(l.end_frame > (lead + tone) as u64);
+        assert!(l.end_frame < (lead + tone + trail) as u64, "the tail stayed on");
+        // ...and the region it left is the sound plus its two margins.
+        let kept = l.seconds();
+        assert!((0.12..0.14).contains(&kept), "the hug left {kept:.3}s");
+    }
+
+    /// A second press changes nothing and says so. A flash reading
+    /// "start +0.000s" is a key that looks broken.
+    #[test]
+    fn a_region_already_hugging_the_sound_is_left_alone() {
+        let mut l = dead_air(44_100, 4_410, 88_200, 44_100.0);
+        assert!(matches!(l.hug_audible(), Some(Hug::Moved { .. })));
+        let (start, end) = (l.start_frame, l.end_frame);
+        assert_eq!(l.hug_audible(), Some(Hug::Already));
+        assert_eq!((l.start_frame, l.end_frame), (start, end), "the second press moved an edge");
+    }
+
+    /// A recording that is silence end to end refuses rather than collapsing
+    /// its region onto a millisecond of nothing.
+    #[test]
+    fn a_silent_recording_has_no_sound_to_hug() {
+        let mut l = layer(44_100, 44_100.0);
+        l.pcm = Some(Arc::new(SamplePcm {
+            data: vec![0.0; 44_100],
+            channels: 1,
+            sample_rate: 44_100.0,
+        }));
+        l.end_frame = 44_100;
+        assert_eq!(l.hug_audible(), Some(Hug::Silent));
+        assert_eq!((l.start_frame, l.end_frame), (0, 44_100), "silence moved a marker");
+
+        // A whisper under the −48 dB lead floor is silence for this purpose.
+        l.pcm = Some(Arc::new(SamplePcm {
+            data: vec![0.001; 44_100],
+            channels: 1,
+            sample_rate: 44_100.0,
+        }));
+        assert_eq!(l.hug_audible(), Some(Hug::Silent));
+    }
+
+    /// A reversed layer hugs the same frames: reverse plays the region
+    /// backwards and never moves it, so `w` means the same thing either way.
+    #[test]
+    fn a_reversed_layer_hugs_the_same_region() {
+        let rate = 44_100.0f32;
+        let mut forwards = dead_air(44_100, 4_410, 88_200, rate);
+        let mut backwards = dead_air(44_100, 4_410, 88_200, rate);
+        backwards.reverse = true;
+        assert_eq!(forwards.hug_audible(), backwards.hug_audible());
+        assert_eq!(
+            (forwards.start_frame, forwards.end_frame),
+            (backwards.start_frame, backwards.end_frame),
+        );
+        assert!(backwards.reverse, "the hug turned the layer round");
+    }
+
+    /// A hug is a trim, so everything a trim may not do it may not do: no
+    /// edge leaves the file, and the edges never meet.
+    #[test]
+    fn a_hug_never_leaves_the_file_or_inverts_the_region() {
+        let rate = 44_100.0f32;
+        // Every shape of dead air, including none at either end and a file
+        // that is nothing but its sound.
+        for (lead, tone, trail) in
+            [(0, 4_410, 0), (0, 100, 44_100), (44_100, 100, 0), (10, 10, 10), (0, 1, 0)]
+        {
+            let mut l = dead_air(lead, tone, trail, rate);
+            let frames = (lead + tone + trail) as u64;
+            let hug = l.hug_audible().expect("a layer with audio");
+            assert!(l.start_frame < l.end_frame, "{lead}/{tone}/{trail}: inverted");
+            assert!(l.end_frame <= frames, "{lead}/{tone}/{trail}: past the file");
+            assert!(l.region().is_some(), "{lead}/{tone}/{trail}: no region left");
+            assert_ne!(hug, Hug::Silent, "{lead}/{tone}/{trail}: a tone read as silence");
+        }
+    }
+
+    /// A layer whose file has gone is refused, exactly as a nudge is.
+    #[test]
+    fn a_layer_with_no_audio_refuses_the_hug_too() {
+        let mut l = layer(44_100, 44_100.0);
+        l.pcm = None;
+        assert_eq!(l.hug_audible(), None);
+    }
+
     /// The header's numbers are the layer's own seconds, whatever rate it
     /// was recorded at.
     #[test]
@@ -511,3 +693,4 @@ mod tests {
         assert!((l.edge_seconds(TrimEdge::End) - 1.5).abs() < 1e-6);
     }
 }
+

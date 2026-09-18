@@ -194,11 +194,16 @@ fn help_line(line: HelpLine, width: usize) -> Line<'static> {
 
 pub(super) fn render_instrument_modal(frame: &mut Frame, nav: &NavState) {
     let area = frame.area();
-    let mw = 40u16;
     // The same menu answers two questions — a new track, or what a sampler
     // pad is recorded from — and the list is shorter for the second, so
     // the box is measured from what it is actually about to draw.
     let items = nav.instrument_modal.items();
+    let title = nav.instrument_modal.title();
+    // Wide enough for the title it is carrying. A pad's title names the pad
+    // and the instrument it remembers, which is longer than "add
+    // instrument" — and a title ratatui has to cut is a title that stops
+    // saying the part at the end.
+    let mw = ((title.chars().count() as u16).saturating_add(6)).clamp(40, area.width);
     // 3 lines per instrument (name + desc + blank) + 3 for border/padding
     let mh = ((items.len() as u16) * 3 + 3).min(area.height.saturating_sub(2));
     let mx = (area.width.saturating_sub(mw)) / 2;
@@ -211,7 +216,7 @@ pub(super) fn render_instrument_modal(frame: &mut Frame, nav: &NavState) {
         .borders(ratatui::widgets::Borders::ALL)
         .border_style(theme::border_style())
         .title(Span::styled(
-            format!(" {} ", nav.instrument_modal.title().to_lowercase()),
+            format!(" {title} "),
             theme::amber_bright().add_modifier(Modifier::BOLD),
         ));
     frame.render_widget(block, menu_area);
@@ -228,10 +233,15 @@ pub(super) fn render_instrument_modal(frame: &mut Frame, nav: &NavState) {
             theme::normal()
         };
 
-        lines.push(Line::from(vec![
-            Span::styled(indicator, name_s),
-            Span::styled(inst.label(), name_s),
-        ]));
+        let mut name = vec![Span::styled(indicator, name_s), Span::styled(inst.label(), name_s)];
+        // The row the pad already stands on, said out loud. The cursor
+        // opens here, which without a word for it reads as a list that
+        // scrolled by itself — and picking it is the common case, so the
+        // player is owed the knowledge that one Enter is the whole job.
+        if nav.instrument_modal.is_remembered(*inst) {
+            name.push(Span::styled(" \u{00b7} this pad's source", theme::dim()));
+        }
+        lines.push(Line::from(name));
         lines.push(Line::from(vec![
             Span::styled("    ", theme::bg()),
             Span::styled(inst.description(), theme::dim()),

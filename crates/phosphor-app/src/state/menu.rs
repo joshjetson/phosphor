@@ -296,6 +296,15 @@ pub struct InstrumentModal {
     /// a cancelled pad pick cannot leave the next Space+a building a track
     /// out of a pad's answer.
     pub target: InstrumentPick,
+    /// What the pad already remembers being recorded from, when it
+    /// remembers anything.
+    ///
+    /// The cursor starts on it, which it always did — and now the menu says
+    /// so as well, on the title and beside the row. A list that silently
+    /// opens one row down is a list that looks like it opened at the top and
+    /// scrolled for no reason; the marker is what turns that into "this is
+    /// where you were".
+    pub remembered: Option<InstrumentType>,
 }
 
 impl InstrumentModal {
@@ -308,6 +317,7 @@ impl InstrumentModal {
         self.open = true;
         self.cursor = 0;
         self.target = InstrumentPick::NewTrack;
+        self.remembered = None;
     }
 
     /// Open to choose what a pad is recorded from, standing on `current`
@@ -321,9 +331,17 @@ impl InstrumentModal {
     ) {
         self.open = true;
         self.target = InstrumentPick::PadSource { track_idx, pad };
+        self.remembered = current;
         self.cursor = current
             .and_then(|want| self.items().iter().position(|&i| i == want))
             .unwrap_or(0);
+    }
+
+    /// Whether this row is the one the pad already remembers.
+    #[must_use]
+    pub fn is_remembered(&self, instrument: InstrumentType) -> bool {
+        matches!(self.target, InstrumentPick::PadSource { .. })
+            && self.remembered == Some(instrument)
     }
 
     /// The instruments this menu is offering. A pad's source list leaves
@@ -342,10 +360,24 @@ impl InstrumentModal {
     }
 
     /// What the title bar of the menu says it is for.
-    pub fn title(&self) -> &'static str {
+    ///
+    /// Lowercase already, rather than lowercased by whatever draws it: a pad
+    /// is called `C3` and not `c3`, and a title that was flattened on the way
+    /// to the screen could not say both.
+    pub fn title(&self) -> String {
         match self.target {
-            InstrumentPick::NewTrack => "Add Instrument",
-            InstrumentPick::PadSource { .. } => "Record This Pad From",
+            InstrumentPick::NewTrack => "add instrument".to_string(),
+            // A pad that remembers says which pad and what it remembers.
+            // Opening a menu already standing on a row is a question the
+            // title can answer before the player wonders about it.
+            InstrumentPick::PadSource { pad, .. } => match self.remembered {
+                Some(instrument) => format!(
+                    "source for {} \u{00b7} now: {}",
+                    crate::sampler::SamplerState::pad_label(pad),
+                    instrument.label().to_lowercase(),
+                ),
+                None => "record this pad from".to_string(),
+            },
         }
     }
 
@@ -1531,3 +1563,77 @@ pub fn help_page_rows(rows: u16, body_len: usize) -> usize {
 
 /// The tallest the help body is allowed to be, however tall the terminal is.
 const HELP_BOX_MAX: u16 = 24;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pad that remembers an instrument says which pad and which
+    /// instrument on the title, and marks the row the cursor opened on.
+    ///
+    /// The defect this pins: the menu already opened standing on the
+    /// remembered row, which without a word for it reads as a list that
+    /// scrolled by itself.
+    #[test]
+    fn the_pad_picker_says_what_the_pad_already_remembers() {
+        let mut modal = InstrumentModal::new();
+        let pad = crate::sampler::SamplerState::pad_of_note(60).unwrap();
+
+        // Nothing remembered: the plain title, no marker, cursor at the top.
+        modal.open_for_pad(2, pad, None);
+        assert_eq!(modal.title(), "record this pad from");
+        assert_eq!(modal.cursor, 0);
+        assert!(!modal.is_remembered(modal.selected()));
+
+        // Remembered: the pad's name, the instrument, and the row marked.
+        modal.open_for_pad(2, pad, Some(InstrumentType::DX7));
+        assert_eq!(modal.title(), "source for C3 \u{00b7} now: dx7");
+        assert_eq!(modal.selected(), InstrumentType::DX7, "the cursor is not on it");
+        assert!(modal.is_remembered(InstrumentType::DX7));
+        assert!(!modal.is_remembered(InstrumentType::Rhodes), "a second row was marked");
+    }
+
+    /// The add-track menu is not a pad picker, whatever the last pad pick
+    /// left behind.
+    #[test]
+    fn the_add_track_menu_never_wears_a_pads_memory() {
+        let mut modal = InstrumentModal::new();
+        modal.open_for_pad(0, 0, Some(InstrumentType::DX7));
+        modal.open_for_track();
+        assert_eq!(modal.title(), "add instrument");
+        assert_eq!(modal.remembered, None);
+        for &instrument in InstrumentType::ALL {
+            assert!(!modal.is_remembered(instrument), "{instrument:?} was marked on a track menu");
+        }
+    }
+
+    /// The title stays short enough for the box to grow to it on the
+    /// narrowest terminal this runs in.
+    ///
+    /// The menu's box is measured from the title and capped by the terminal,
+    /// so a title longer than the screen is the one case the renderer cannot
+    /// rescue — and what it would cut is the end, which is the instrument.
+    /// That the whole of it reaches the screen is checked where the screen is
+    /// (`test_sampler::the_picker_says_what_the_pad_already_remembers`); this
+    /// is the bound that makes it possible.
+    #[test]
+    fn the_longest_pad_title_still_fits_an_eighty_column_terminal() {
+        let mut modal = InstrumentModal::new();
+        let longest = InstrumentType::ALL
+            .iter()
+            .copied()
+            .filter(|i| i.is_recordable_source())
+            .map(|i| {
+                modal.open_for_pad(0, 0, Some(i));
+                modal.title().chars().count()
+            })
+            .max()
+            .unwrap();
+        // A#-1 is the widest key name on the bed, and every title has to
+        // leave room for the two spaces a border title is padded with and
+        // the two corners either side of them.
+        modal.open_for_pad(0, 1, Some(InstrumentType::Synth));
+        assert!(modal.title().contains("A#-1"), "{}", modal.title());
+        assert!(longest + 6 <= 80, "a {longest}-column title needs a box wider than the screen");
+    }
+}

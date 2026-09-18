@@ -17,6 +17,7 @@
 //!            h/l move the LOW edge and H/L the HIGH one
 //!
 //! trim strip h/l moves the START · H/L moves the END
+//!            w pulls both onto the audible part of the recording
 //!            j/k walks the unit deeper/wider · z snaps · r reverses
 //!            t loops the region · esc goes back to the map
 //!
@@ -229,6 +230,7 @@ impl App {
             KeyCode::Char('l') | KeyCode::Right => self.nudge_trim(TrimEdge::Start, 1),
             KeyCode::Char('j') | KeyCode::Down => self.walk_trim_unit(1),
             KeyCode::Char('k') | KeyCode::Up => self.walk_trim_unit(-1),
+            KeyCode::Char('w') => self.hug_trim_region(),
             KeyCode::Char('z') => self.toggle_trim_snap(),
             KeyCode::Char('r') => self.toggle_trim_reverse(),
             KeyCode::Char('t') => self.toggle_trim_loop(),

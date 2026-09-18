@@ -60,6 +60,20 @@ const LEAD_BACKOFF_MS: f32 = 8.0;
 /// release fading into nothing is part of the sound.
 const TAIL_FLOOR_DB: f32 = -60.0;
 
+/// A level being *measured*, in linear terms.
+///
+/// Deliberately not [`db_to_gain`]. That one converts a **control**, where
+/// the bottom of a fader has to be silence rather than −60 dB of signal, so
+/// it answers exactly zero at [`phosphor_core::fx::SILENT_DB`] — which is
+/// where [`TAIL_FLOOR_DB`] sits. A threshold of zero is matched by every
+/// sample in the file, including the silent ones, so the tail search found
+/// the last frame of the buffer every time and the documented −60 dB out
+/// never actually came off anything. Measuring a level and setting one are
+/// different jobs; this is the first.
+fn floor_of(db: f32) -> f32 {
+    10.0f32.powf(db / 20.0)
+}
+
 /// How much room the tail keeps past the last audible sample.
 const TAIL_PAD_MS: f32 = 20.0;
 
@@ -119,7 +133,10 @@ pub fn render_take(
         // its end is the loop point, and "helpfully" moving either would
         // break the one thing the shape is for.
         Tail::Cut => (0, pcm.frames()),
-        Tail::ToSilence { .. } => auto_trim(&pcm),
+        // A take with nothing above the floor anywhere in it keeps the whole
+        // buffer: there is no audible part to trim to, and a take trimmed to
+        // a millisecond of silence is a take the player cannot find again.
+        Tail::ToSilence { .. } => audible_region(&pcm).unwrap_or((0, pcm.frames())),
     };
     RenderedTake {
         pcm: Arc::new(pcm),
@@ -389,32 +406,52 @@ fn through_instrument(
     SamplePcm { data, channels: 2, sample_rate: plan.sample_rate }
 }
 
-/// Where the take actually begins and ends.
+/// Where the audible part of a buffer begins and ends.
 ///
-/// Non-destructive: the buffer keeps every sample and these are the marks
-/// the trim strip opens on, so a backed-off attack can always be recovered
-/// by moving the marker.
-fn auto_trim(pcm: &SamplePcm) -> (u64, u64) {
+/// Non-destructive: the buffer keeps every sample and these are only the
+/// marks, so a backed-off attack can always be recovered by moving the
+/// marker.
+///
+/// Two callers, one rule. A take that has just been rendered lands trimmed
+/// to this, and `w` in the trim strip pulls both markers onto it — the
+/// owner's dead-air case, where a reversed take waits through silence
+/// before it speaks. Thresholds written down twice are two thresholds the
+/// day one of them is tuned, and the symptom would be a hug that lands
+/// somewhere the recorder would not have.
+///
+/// `None` when nothing anywhere in the buffer reaches [`LEAD_FLOOR_DB`].
+/// The two callers want different words for that — a take keeps the whole
+/// buffer, the strip refuses and says so — and answering `(0, frames)` would
+/// let either of them claim it had found a sound.
+#[must_use]
+pub fn audible_region(pcm: &SamplePcm) -> Option<(u64, u64)> {
     let frames = pcm.frames();
+    if frames == 0 {
+        return None;
+    }
     let channels = usize::from(pcm.channels.max(1));
     let rate = pcm.sample_rate.max(1.0);
-    let lead = db_to_gain(LEAD_FLOOR_DB);
-    let tail = db_to_gain(TAIL_FLOOR_DB);
+    let lead = floor_of(LEAD_FLOOR_DB);
+    let tail = floor_of(TAIL_FLOOR_DB);
 
     let loud_at = |frame: u64| -> f32 {
         let base = frame as usize * channels;
-        pcm.data[base..base + channels].iter().fold(0.0f32, |m, s| m.max(s.abs()))
+        pcm.data
+            .get(base..base + channels)
+            .map_or(0.0, |f| f.iter().fold(0.0f32, |m, s| m.max(s.abs())))
     };
 
-    let first = (0..frames).find(|&f| loud_at(f) >= lead);
-    let Some(first) = first else { return (0, frames) };
+    let first = (0..frames).find(|&f| loud_at(f) >= lead)?;
+    // The tail is judged quieter than the lead — a release fading into
+    // nothing is part of the sound — so it can only ever be at or after the
+    // frame the lead found.
     let last = (0..frames).rev().find(|&f| loud_at(f) >= tail).unwrap_or(frames - 1);
 
     let backoff = (LEAD_BACKOFF_MS / 1000.0 * rate) as u64;
     let pad = (TAIL_PAD_MS / 1000.0 * rate) as u64;
     let start = first.saturating_sub(backoff);
     let end = (last + 1 + pad).min(frames);
-    (start, end.max(start + 1))
+    Some((start, end.max(start + 1)))
 }
 
 /// The loudest sample in a buffer, linear.
@@ -561,6 +598,84 @@ mod tests {
         assert!((7.0..=10.0).contains(&ms), "the start backed off {ms:.1} ms");
         assert!(take.end_frame <= take.pcm.frames());
         assert!(take.end_frame > take.start_frame);
+    }
+
+    /// The rule the strip's `w` shares: a buffer with a sound in it answers
+    /// where the sound is, and a buffer of silence answers nothing at all.
+    ///
+    /// The `None` is the part that matters. A take falls back to the whole
+    /// buffer and the trim strip refuses in words, and neither could tell
+    /// the two apart if this answered `(0, frames)` for both.
+    #[test]
+    fn the_audible_region_finds_the_sound_and_admits_when_there_is_none() {
+        let rate = SR;
+        // A second of silence, a tenth of a second of tone, a second of
+        // silence after it.
+        let quiet = (1.0 * rate) as usize;
+        let tone = (0.1 * rate) as usize;
+        // A cosine, so the tone is at full height on its first sample: a
+        // sine's opening frames are under the floor, and a backoff measured
+        // from them would be measuring the oscillator rather than the rule.
+        let mut data = vec![0.0f32; quiet];
+        data.extend((0..tone).map(|i| {
+            0.5 * (core::f32::consts::TAU * 220.0 * i as f32 / rate).cos()
+        }));
+        data.resize(data.len() + quiet, 0.0);
+        let frames = data.len() as u64;
+        let pcm = SamplePcm { data, channels: 1, sample_rate: rate };
+        let (start, end) = audible_region(&pcm).expect("a tone is audible");
+        // 8 ms of backoff in front of the tone, and no further.
+        let backoff = (LEAD_BACKOFF_MS / 1000.0 * rate) as u64;
+        assert_eq!(start, quiet as u64 - backoff, "the lead backoff is not 8 ms");
+        // 20 ms of room past it, and no further.
+        let pad = (TAIL_PAD_MS / 1000.0 * rate) as u64;
+        assert!(end <= (quiet + tone) as u64 + pad + 2, "the tail kept {end} of {frames}");
+        assert!(end > (quiet + tone) as u64, "the tail cut into the sound");
+
+        // Silence end to end has no region, and neither does an empty buffer.
+        let silent = SamplePcm { data: vec![0.0; 4_410], channels: 1, sample_rate: rate };
+        assert_eq!(audible_region(&silent), None);
+        let empty = SamplePcm { data: Vec::new(), channels: 2, sample_rate: rate };
+        assert_eq!(audible_region(&empty), None);
+
+        // ...and a whisper under the −48 dB floor is silence for this
+        // purpose, which is the threshold being shared rather than guessed.
+        let whisper = SamplePcm {
+            data: vec![floor_of(-60.0); 4_410],
+            channels: 1,
+            sample_rate: rate,
+        };
+        assert_eq!(audible_region(&whisper), None);
+    }
+
+    /// The floors are levels being measured, not controls being set.
+    ///
+    /// The defect this pins, exactly: [`TAIL_FLOOR_DB`] is −60 dB, which is
+    /// the decibel at which [`db_to_gain`] answers zero on purpose — a fader
+    /// at the bottom is off. A floor of zero is met by every sample there is,
+    /// so the tail search always landed on the last frame of the buffer and
+    /// the −60 dB out this file documents never came off anything.
+    #[test]
+    fn the_tail_floor_is_not_the_faders_silence() {
+        assert_eq!(db_to_gain(TAIL_FLOOR_DB), 0.0, "the trap this guards moved");
+        assert!(floor_of(TAIL_FLOOR_DB) > 0.0, "the tail floor is zero again");
+        assert!((floor_of(TAIL_FLOOR_DB) - 0.001).abs() < 1e-6);
+        // The lead floor is above the fader's silence, so both conversions
+        // agree about it — which is what makes the one above a trap rather
+        // than an obvious difference.
+        assert!((floor_of(LEAD_FLOOR_DB) - db_to_gain(LEAD_FLOOR_DB)).abs() < 1e-9);
+
+        // And the tail actually comes off now: two seconds of digital black
+        // after a tenth of a second of tone is not part of the take.
+        let rate = SR;
+        let mut data: Vec<f32> = (0..(0.1 * rate) as usize)
+            .map(|i| 0.5 * (core::f32::consts::TAU * 220.0 * i as f32 / rate).cos())
+            .collect();
+        data.resize(data.len() + (2.0 * rate) as usize, 0.0);
+        let frames = data.len() as u64;
+        let pcm = SamplePcm { data, channels: 1, sample_rate: rate };
+        let (_, end) = audible_region(&pcm).expect("a tone is audible");
+        assert!(end < frames / 2, "the tail kept {end} frames of {frames}");
     }
 
     /// A bar take keeps its window exactly: the loop point is the whole

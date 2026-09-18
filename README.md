@@ -144,7 +144,8 @@ cargo run --release -- --no-midi
 
 | Instrument | Type | Voices | Sounds | Description |
 |-----------|------|--------|--------|-------------|
-| **Sampler** | Sample playback | 64 | yours | 88 pads, one per piano key, eight sounds stacked on each with their own tune, trim, reverse and mute; per-pad trigger, poly, choke group, round robin, pitch, ADSR, level, pan, root and keytracking; a trim strip with a zero-crossing snap; **keys mode**, where stretches of keys become chromatic zones playing one sound from a root; and resampling — record any instrument in the box onto a pad, free or cut to whole bars |
+| **Sampler** | Sample playback | 64 | yours | 88 pads, one per piano key, eight sounds stacked on each with their own tune, trim, reverse and mute; per-pad trigger, poly, choke group, round robin, pitch, ADSR, level, pan, root and keytracking; a trim strip with a zero-crossing snap and a key that
+hugs the sound; **keys mode**, where stretches of keys become chromatic zones playing one sound from a root; and resampling — record any instrument in the box onto a pad, free or cut to whole bars |
 
 64 is the number of voices allowed to sound at once, across the whole
 instrument rather than per pad; the pool behind it holds 80, so a voice that
@@ -432,10 +433,13 @@ typing into, and a keyboard you can see while the control you are turning is
 off-screen is the wrong half to keep.
 
 Under it, two columns: every filled pad as a row — its key, what is on it,
-how many, how it triggers — and the panel for the pad under the caret, with
-the layer list beneath it. The head of the list says how much audio the kit
-is holding (`12.3 MB held`), counting a buffer shared by several pads once —
-a zone across the whole bed costs one sample, not eighty-eight. The mode tag
+how many, how it triggers, and `◎` when it remembers an instrument to record
+from — and the panel for the pad under the caret, with the layer list beneath
+it, the pad's `◎ source:` line when it has one, and a three-row picture of
+the sound the cursor is on under all of that. The head of the list says how
+much audio the kit is holding (`12.3 MB held`), counting a buffer shared by
+several pads once — a zone across the whole bed costs one sample, not
+eighty-eight. The mode tag
 in the bottom bar reads `-- PADS --`,
 `-- HOLD --` while a control is held, `-- TRIM --` in the strip,
 `-- SOURCE --` and a blinking `-- TAKE --` while you are recording.
@@ -595,6 +599,13 @@ markers are.
 - `z` toggles the zero-crossing snap, on by default: an edge lands on the
   nearest sign change within 5 ms, and keeps the exact frame you asked for
   when there is none.
+- `w` hugs the sound: both markers jump onto the audible part of the
+  recording, by the same rule a fresh take is already trimmed by — −48 dBFS
+  in with 8 ms of backoff, −60 dBFS out with 20 ms of room. A take that
+  opens on a second of room tone, or a reversed one that *ends* on it, is one
+  press from its own edges. One `u` puts both markers back; a second `w` says
+  the edges are already there and changes nothing; a recording with nothing
+  in it refuses in words.
 - `r` plays the region backwards. The region, not the file — a trim found
   forwards still means the same audio flipped.
 - `t` loops the region while you work on it.
@@ -605,6 +616,22 @@ what plays. The edges cannot cross and stop a millisecond apart, which the
 bar says in words. A whole nudge run — however long you hold the key — is one
 press of `u`. A sound whose file has gone missing is refused rather than
 opened onto an empty pane.
+
+### The picture under the controls
+
+The pad panel draws the sound under the cursor in three rows, under the
+controls and beside the pad list: the whole buffer, the region that plays lit
+and the cut ends dark, the `[` and `]` markers under them, and `rev` in the
+margin when the layer plays backwards. It is the trim strip's own waveform
+seen from further away — the same reduction, cached once — so a glance tells
+you whether a pad is holding a hit or a hit with a second of silence in front
+of it, without leaving the knobs.
+
+It is a look and nothing else. No key on the pad map addresses it, `t` is
+still the editor, and a phrase row or a layer whose file has gone shows its
+own words instead of an empty waveform. It is also the first thing a short
+pane gives up: the keyboard band says which pad the keys are on and the
+panel is what they are typing into, and both outrank a picture of them.
 
 ### Phrases — the performance instead of the audio
 
@@ -713,7 +740,13 @@ begins. It stops itself at 64 bars.
   where it was.
 - The pad remembers what it was recorded from *and* the panel you recorded it
   with, so `i` again reopens the picker standing on that instrument and the
-  next take of the same sound costs one `Enter`.
+  next take of the same sound costs one `Enter`. **It says so out loud**, in
+  four places: the panel carries a `◎ source: DX7 · i records more` line, the
+  filled-pad list marks the pad with `◎` and names the mark in its head
+  wherever the column fits, leaving the mode ends with `i returns to DX7`, and the picker itself opens
+  titled `source for C3 · now: dx7` with `· this pad's source` beside the row
+  the cursor is already standing on. A memory nobody can see is a memory
+  nobody uses.
 - A full pad refuses the arm before you play, not after. Finding out that a
   pad was full once the playing is over is losing the take.
 - Nothing is recorded from the audio thread. What is captured is MIDI with
@@ -854,6 +887,7 @@ has no word for, plus the brace.
 |-----|--------|
 | `h` / `l` | Move the start |
 | `H` / `L` | Move the end |
+| `w` | Hug the sound — both markers onto the audible part |
 | `j` / `k` | Nudge unit: bar · beat · 1/16 · 10 ms · 1 ms · 1 sample |
 | `z` | Zero-crossing snap on/off |
 | `r` | Play the region backwards |
@@ -1224,8 +1258,13 @@ takes you off the map to `[inst]`, which while the mode is on is that
 instrument's own panel — patch selector and all — so the sound you record is
 the sound you dialled, and the pad keeps the panel you dialled it on. `i`
 changes the instrument, `Esc` ends a running take and `Esc` again puts the
-sampler back with its kit. A take becomes a file the next time you save —
-into `<session>.samples/`, which is the first row of the `a` list from then
+sampler back with its kit — saying `i returns to DX7` on the way out, because
+that is the moment the pad's memory of the instrument stops being on the
+screen anywhere else. It does not stay off it for long: the pad panel carries
+a `◎ source: DX7 · i records more` line from then on, the filled-pad list
+marks the pad with `◎`, and `i` reopens titled `source for C3 · now: dx7`
+with the remembered row marked. A take becomes a file the next time you save
+— into `<session>.samples/`, which is the first row of the `a` list from then
 on, so a take is reachable from any other pad in one `Enter`.
 
 **Sampler** — `Space+A` and choose *Sampler*: the track arrives with its pad
@@ -1263,9 +1302,14 @@ element, `h`/`l` to walk it, `Esc` to release.
 press `t`. The file is drawn as a waveform with the part that plays lit:
 `h`/`l` move the start, `H`/`L` move the end, and `j`/`k` walk how far one
 press moves — bar, beat, 1/16, 10 ms, 1 ms, one sample. Every start nudge
-plays the region from its new start. `z` toggles the zero-crossing snap, `r`
-plays it backwards, `t` loops it while you work, `Esc` goes back. The audio
-is never rewritten, and a whole run of nudges is one press of `u`.
+plays the region from its new start. `w` hugs the sound — both markers onto
+the audible part, by the rule a fresh take is already trimmed by, which is
+the fast way off a take that opens or ends on dead air. `z` toggles the
+zero-crossing snap, `r` plays it backwards, `t` loops it while you work,
+`Esc` goes back. The audio is never rewritten, and a whole run of nudges is
+one press of `u` — as is a hug, which `u` takes back whole. You do not need
+the strip to see what a pad is holding: the pad panel draws the same waveform
+three rows tall under the controls.
 
 **Undo** — `u`, for everything: notes, knobs, effects, takes, cuts,
 stamps, pads and zones. A sweep of one knob folds into a single step. While recording,

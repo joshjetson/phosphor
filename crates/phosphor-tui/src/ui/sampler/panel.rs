@@ -1,5 +1,5 @@
-//! The pad panel: the pad's controls, the selected layer's under them, and
-//! the list of what is on the pad.
+//! The pad panel: the pad's controls, the selected layer's under them, what
+//! the pad was recorded from, and the list of what is on it.
 //!
 //! The knobs are the house's — [`super::super::knobs`] draws them, the step
 //! grid draws the same ones, and what each says is
@@ -85,8 +85,39 @@ pub(super) fn panel_lines(map: &Map, width: usize, height: usize) -> Vec<Line<'s
         rows.extend(layer_rows);
     }
 
+    rows.extend(source_line(pad, width));
     rows.extend(sound_list(map, pad, width));
     window(rows, height, cursor_row)
+}
+
+/// What this pad was last recorded from, when it has been.
+///
+/// The pad remembers an instrument and its whole panel — that is what makes
+/// `i` a one-press road back to the sound a take was made with — and until
+/// now nothing on the screen admitted it. The line says which instrument,
+/// and which key goes there, because a memory nobody can see is a memory
+/// nobody uses. In keys mode it is the zone's, which is what `pad` already
+/// is here.
+///
+/// `None` on a pad that remembers nothing, and on a pane too narrow to say
+/// the whole of "source: X": half the sentence raises a question instead of
+/// answering one, and the key that opens the picker is on the bottom bar
+/// either way.
+fn source_line(pad: &PadState, width: usize) -> Option<Line<'static>> {
+    let source = pad.source.as_ref()?;
+    let head = format!("{:w$}{SOURCE_MARK} source: ", "", w = INDENT);
+    let name = source.instrument.label();
+    if head.chars().count() + name.chars().count() > width {
+        return None;
+    }
+    let mut row = Row::new(width);
+    row.push(head, theme::dim());
+    row.push(name, theme::amber());
+    // The key, dropped before the name it belongs to — and it is worth the
+    // columns, because "records more" is the difference between a label and
+    // an offer.
+    row.push_widest(&[" \u{00b7} i records more", " \u{00b7} i"], theme::dim());
+    Some(row.line())
 }
 
 /// The panel on a key keys mode has no zone for: where the caret is, and
@@ -234,9 +265,77 @@ fn tail_of(mut row: Row, sound: PadRow<'_>, map: &Map) -> Row {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{kit, map, text};
+    use super::super::tests::{kit, map, text, zoned};
     use super::*;
-    use phosphor_app::sampler::{SamplerState, MAX_LAYERS};
+    use phosphor_app::sampler::{PadSource, SamplerState, MAX_LAYERS};
+    use phosphor_app::state::InstrumentType;
+
+    fn source_of(instrument: InstrumentType) -> PadSource {
+        PadSource { instrument, params: vec![0.5; 8] }
+    }
+
+    /// A pad that remembers an instrument says so on the panel, with the
+    /// key that goes back to it.
+    ///
+    /// The defect this pins: the pad kept the instrument and the whole panel
+    /// it was recorded with, and nothing on the screen ever admitted it — so
+    /// the one-press road back to the sound was a road only the code knew
+    /// about.
+    #[test]
+    fn a_pad_that_remembers_an_instrument_says_so() {
+        let mut state = kit();
+        let view = SamplerView::new();
+        let plain = text(&panel_lines(&map(&state, &view), 57, 40));
+        assert!(!plain.contains("source"), "a pad with no memory claimed one:\n{plain}");
+
+        state.pads[state.cursor].source = Some(source_of(InstrumentType::DX7));
+        let shown = text(&panel_lines(&map(&state, &view), 57, 40));
+        assert!(shown.contains("source: DX7"), "the panel does not name the source:\n{shown}");
+        assert!(shown.contains("i records more"), "no way back to it:\n{shown}");
+        assert!(shown.contains(SOURCE_MARK), "the line wears no mark:\n{shown}");
+    }
+
+    /// In keys mode the source belongs to the zone, which is what the panel
+    /// is drawing controls for — reading the pad under the caret instead
+    /// would name whatever was recorded on that key before the zone existed.
+    #[test]
+    fn in_keys_mode_the_source_line_is_the_zones() {
+        let mut state = zoned();
+        let view = SamplerView::new();
+        // The pad under the caret remembers one thing, the zone another.
+        state.pads[state.cursor].source = Some(source_of(InstrumentType::Rhodes));
+        state.zones[0].pad.source = Some(source_of(InstrumentType::Juno60));
+        let shown = text(&panel_lines(&map(&state, &view), 70, 40));
+        assert!(shown.contains("source: Juno-60"), "the zone's source is not shown:\n{shown}");
+        assert!(!shown.contains("Rhodes"), "the pad under the zone got a vote:\n{shown}");
+    }
+
+    /// The line gives its columns up in order rather than running off the
+    /// right edge or leaving half a sentence behind.
+    #[test]
+    fn the_source_line_drops_its_columns_before_it_overruns() {
+        let mut state = kit();
+        // The longest name there is, so the widths below are the worst case.
+        state.pads[state.cursor].source = Some(source_of(InstrumentType::Synth));
+        let view = SamplerView::new();
+        let mut seen_short = false;
+        for width in MIN_PANEL_W..60 {
+            let shown = text(&panel_lines(&map(&state, &view), width, 40));
+            for line in shown.lines() {
+                assert!(line.chars().count() <= width, "a {width}-column panel overran: {line}");
+            }
+            let Some(line) = shown.lines().find(|l| l.contains("source:")) else {
+                // Too narrow for the whole of "source: X" — and then the
+                // line is absent rather than cut in half.
+                continue;
+            };
+            assert!(line.contains("Phosphor Synth"), "the name was cut off: {line}");
+            if !line.contains("i records more") {
+                seen_short = true;
+            }
+        }
+        assert!(seen_short, "the key hint never dropped, so nothing was under pressure");
+    }
 
     /// An empty pad offers its own controls and nothing else — a gain knob
     /// for a sound that is not there is a control that answers keys and

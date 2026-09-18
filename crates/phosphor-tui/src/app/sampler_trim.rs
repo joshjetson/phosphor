@@ -14,7 +14,10 @@
 //! where the start goes, not thirty decisions, so the presses fold into one
 //! step the way a knob sweep does — one `u` puts the marker back where the
 //! run began. `r` does not fold: reversing a layer is a decision, and
-//! [`App::toggle_sampler_layer_mute`] settled that grain already.
+//! [`App::toggle_sampler_layer_mute`] settled that grain already. Neither
+//! does `w`, for the same reason and one more: it moves both markers at
+//! once, and a player who placed one by hand before pressing it should get
+//! their own trim back rather than losing it to the same `u`.
 //!
 //! # Every nudge makes a sound
 //!
@@ -26,7 +29,7 @@
 
 use super::*;
 
-use phosphor_app::sampler::trim::TrimEdge;
+use phosphor_app::sampler::trim::{Hug, TrimEdge};
 use phosphor_plugin::sample::PreviewMode;
 
 use crate::state::undo::{UndoGesture, UndoScope};
@@ -73,7 +76,7 @@ impl App {
         // player hears what they are about to change.
         self.preview_sampler_layer(PreviewMode::Once);
         self.flash(
-            "trim \u{00b7} h/l start \u{00b7} H/L end \u{00b7} j/k unit \
+            "trim \u{00b7} h/l start \u{00b7} H/L end \u{00b7} w hug \u{00b7} j/k unit \
              \u{00b7} z snap \u{00b7} t loop",
         );
     }
@@ -128,6 +131,53 @@ impl App {
                 edge.label(),
             ));
         }
+    }
+
+    /// `w`: pull both markers onto the audible part of the recording.
+    ///
+    /// The dead-air key. A take recorded with the player waiting for their
+    /// own cue opens on a second of room tone, and a reversed one waits
+    /// through the same second at the other end — which is a lot of `h` and
+    /// `L` to find by eye. The rule is the one a fresh take is already
+    /// trimmed by: [`LayerState::hug_audible`](phosphor_app::sampler::LayerState::hug_audible)
+    /// calls the render's own thresholds rather than carrying a second copy.
+    ///
+    /// One step, and not a coalesced one: a hug is a decision the way a
+    /// reverse is, and folding it into the nudge run before it would mean a
+    /// player who trimmed by hand and then pressed `w` lost both to one `u`.
+    pub(crate) fn hug_trim_region(&mut self) {
+        let Some((track_idx, cursor)) = self.trim_layer() else {
+            self.flash("nothing here to hug");
+            return;
+        };
+        let before = self.nav.undo_checkpoint(UndoScope::Sampler { track_idx });
+        let Some(sampler) = self.nav.tracks[track_idx].sampler.as_mut() else { return };
+        let Some(layer) = sampler.edited_mut().and_then(|p| p.layers.get_mut(cursor)) else {
+            return;
+        };
+        let Some(hug) = layer.hug_audible() else { return };
+        let (start, end) = match hug {
+            Hug::Moved { start, end } => (start, end),
+            // Nothing moved, so nothing is committed: a step that restores
+            // the state it captured is a press of `u` that does nothing.
+            Hug::Already => {
+                self.flash("already hugged \u{00b7} both edges are on the sound");
+                return;
+            }
+            Hug::Silent => {
+                self.flash("this take is silent \u{00b7} there is nothing to hug");
+                return;
+            }
+        };
+        let length = layer.seconds();
+        self.nav.commit_undo(before, "hug region");
+        self.sync_sampler_edit(track_idx);
+        // The region as it now stands, so the player hears what the key just
+        // decided rather than taking the numbers on trust.
+        self.preview_sampler_layer(self.sampler_preview_mode());
+        self.flash(format!(
+            "hugged \u{00b7} start {start:+.3}s \u{00b7} end {end:+.3}s \u{00b7} region {length:.3}s",
+        ));
     }
 
     /// `j`/`k`: walk the nudge unit deeper or shallower.

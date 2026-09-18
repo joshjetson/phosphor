@@ -293,13 +293,20 @@ impl App {
         // Back to the sampler's two globals, which is a much shorter panel
         // than the one the cursor may have been walking.
         self.nav.clamp_panel_cursor();
+        // The way back, always. Leaving the mode is the moment the pad's
+        // memory of the instrument stops being visible anywhere else, and a
+        // player who wants one more take of the same sound has no reason to
+        // guess that `i` is still standing on it. That clause is the point
+        // of the sentence; the one before it is what gets shortened when the
+        // bar runs out of room.
+        let back = format!(" \u{00b7} i returns to {}", mode.instrument.label());
         self.flash(if dialled {
             format!(
-                "sampler back \u{00b7} the pads are playing again \u{00b7} pad {} kept the panel you dialled",
+                "sampler back \u{00b7} the pads are playing \u{00b7} pad {} kept your panel{back}",
                 SamplerState::pad_label(mode.pad),
             )
         } else {
-            "sampler back \u{00b7} the pads are playing again".to_string()
+            format!("sampler back \u{00b7} the pads are playing{back}")
         });
     }
 

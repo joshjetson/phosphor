@@ -9,7 +9,7 @@
 //!  ▄▄███████▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄████▄▄··················
 //!        ▀▀                      ▀
 //!  ·····[························]···················
-//!  h/l start · H/L end · j/k unit · z snap · r rev · t loop · esc back
+//!  h/l start · H/L end · w hug · j/k unit · z snap · r rev · t loop · esc back
 //! ```
 //!
 //! The whole file, always — there is no zoom, and there is deliberately no
@@ -24,23 +24,17 @@
 //! at. Everything else is one row each, and on a pane too short for all of
 //! them the waveform is what shrinks.
 //!
-//! # Why the peaks are cached
-//!
-//! One column is the loudest and quietest sample in its own slice of the
-//! file, so drawing the strip reads the whole buffer once. For a drum hit
-//! that is nothing; for a ten-minute stereo take it is fifty megabytes, and
-//! the strip redraws on a timer. So the reduction is kept, keyed by the
-//! buffer it came from and the width it was taken at — and it survives every
-//! nudge, because a trim moves the markers and never the waveform.
+//! The picture itself — the reduction, its cache, the half blocks and the
+//! ruler — is [`super::wave`]'s, because the pad panel draws the same
+//! waveform three rows tall and two decimators would be two pictures of one
+//! sound.
 
 use super::*;
 
-use std::cell::RefCell;
-use std::sync::Arc;
-
 use phosphor_app::sampler::trim::{NudgeUnit, TrimEdge};
 use phosphor_app::sampler::LayerState;
-use phosphor_plugin::sample::SamplePcm;
+
+use super::wave::{marker_row, wave_rows, with_peaks};
 
 /// The tallest the waveform is drawn. Past a dozen rows a peak picture stops
 /// telling a player anything they did not already know, and the pad list
@@ -50,86 +44,11 @@ const MAX_WAVE_ROWS: usize = 12;
 /// Rows the strip spends on words: the header, the marker ruler, the keys.
 const CHROME_ROWS: usize = 3;
 
-/// A floor under the normalising peak, so that a buffer of silence draws a
-/// flat line rather than dividing by nothing and painting a wall.
-const QUIET_FLOOR: f32 = 1e-4;
-
 /// The strip's own keys, on the strip. The bottom bar says the same thing in
 /// its own shorthand; this is the row a player reads without looking away
 /// from the waveform.
-const KEYS: &str = " h/l start \u{00b7} H/L end \u{00b7} j/k unit \u{00b7} z snap \
-                    \u{00b7} r rev \u{00b7} t loop \u{00b7} esc back";
-
-/// One layer's waveform reduced to one pair of peaks per column.
-struct Peaks {
-    /// The buffer these came from, held rather than pointed at: an `Arc`
-    /// cannot be freed and its address handed to a different recording while
-    /// the cache is still comparing against it.
-    pcm: Arc<SamplePcm>,
-    width: usize,
-    /// Quietest and loudest sample in each column's slice of the file.
-    columns: Vec<(f32, f32)>,
-    /// The loudest sample anywhere, which the drawing normalises by: a take
-    /// recorded at −20 dBFS is still a waveform, and one drawn at a twentieth
-    /// of the height is a flat line with a rumour in it.
-    peak: f32,
-}
-
-thread_local! {
-    /// One entry, because one strip is open at a time.
-    static PEAKS: RefCell<Option<Peaks>> = const { RefCell::new(None) };
-}
-
-impl Peaks {
-    fn reduce(pcm: &Arc<SamplePcm>, width: usize) -> Self {
-        let frames = pcm.frames().max(1);
-        let channels = usize::from(pcm.channels.max(1));
-        let mut columns = Vec::with_capacity(width);
-        let mut peak = QUIET_FLOOR;
-        for column in 0..width {
-            // Integer arithmetic on u64 so a long file cannot lose frames to
-            // f32's mantissa: at 48 kHz a ten-minute take is 28.8 million
-            // frames, which is already past 2^24.
-            let lo = (column as u64 * frames / width as u64) as usize;
-            let hi = (((column as u64 + 1) * frames / width as u64) as usize).max(lo + 1);
-            let mut span = (0.0f32, 0.0f32);
-            for frame in lo..hi.min(frames as usize) {
-                // The first channel: a stereo file's two sides look alike at
-                // this resolution, and summing them would draw a hole
-                // wherever they disagree.
-                let s = pcm.data.get(frame * channels).copied().unwrap_or(0.0);
-                span.0 = span.0.min(s);
-                span.1 = span.1.max(s);
-                peak = peak.max(s.abs());
-            }
-            columns.push(span);
-        }
-        Self { pcm: Arc::clone(pcm), width, columns, peak }
-    }
-
-    fn is_for(&self, pcm: &Arc<SamplePcm>, width: usize) -> bool {
-        self.width == width && Arc::ptr_eq(&self.pcm, pcm)
-    }
-}
-
-/// Run `draw` against this buffer's peaks at this width, reducing it first
-/// if the cache is holding somebody else's.
-fn with_peaks<T>(pcm: &Arc<SamplePcm>, width: usize, draw: impl FnOnce(&Peaks) -> T) -> T {
-    PEAKS.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        if !slot.as_ref().is_some_and(|p| p.is_for(pcm, width)) {
-            *slot = Some(Peaks::reduce(pcm, width));
-        }
-        draw(slot.as_ref().expect("the reduction was just put there"))
-    })
-}
-
-/// The column a frame falls in. `frames` is never zero here — a layer with
-/// no frames has no region and never reaches the strip.
-fn column_of(frame: u64, frames: u64, width: usize) -> usize {
-    ((frame.min(frames) * width as u64) / frames.max(1)) as usize
-    // The exclusive end lands one past the last column; the caller clamps.
-}
+const KEYS: &str = " h/l start \u{00b7} H/L end \u{00b7} w hug \u{00b7} j/k unit \
+                    \u{00b7} z snap \u{00b7} r rev \u{00b7} t loop \u{00b7} esc back";
 
 /// The header: which layer, how long it plays, and every switch the keys
 /// can throw, in the order the keys are laid out.
@@ -165,96 +84,6 @@ fn header(
         row.push(" \u{00b7} rev", theme::amber());
     }
     row.line()
-}
-
-/// The waveform itself, `rows` tall.
-///
-/// Half blocks either side of the centre line, so the picture has twice the
-/// vertical resolution a terminal row would otherwise give it, and the
-/// centre row is always drawn: a silent passage is a line through the middle
-/// rather than a gap, which is the difference between "quiet here" and "the
-/// strip stopped drawing".
-fn wave_rows(
-    peaks: &Peaks,
-    rows: usize,
-    region: (u64, u64),
-    frames: u64,
-    lit: Style,
-    cut: Style,
-) -> Vec<Line<'static>> {
-    let width = peaks.columns.len();
-    let centre = rows / 2;
-    let half = (rows as f32 / 2.0).max(1.0);
-    let scale = 1.0 / peaks.peak.max(QUIET_FLOOR);
-    let start_col = column_of(region.0, frames, width);
-    // The end is exclusive; the column holding the last playing frame is the
-    // last lit one.
-    let end_col = column_of(region.1.saturating_sub(1), frames, width);
-
-    (0..rows)
-        .map(|row| {
-            let spans = (0..width)
-                .map(|column| {
-                    let (low, high) = peaks.columns[column];
-                    let style = if column >= start_col && column <= end_col { lit } else { cut };
-                    let reach = if row < centre {
-                        (high * scale).max(0.0) * half - (centre - row) as f32
-                    } else if row > centre {
-                        (-low * scale).max(0.0) * half - (row - centre) as f32
-                    } else {
-                        // The centre row is the zero line and is always there.
-                        1.0
-                    };
-                    let glyph = if reach >= 0.0 {
-                        "\u{2588}"
-                    } else if reach >= -0.5 {
-                        // The half nearest the centre line, so the shape
-                        // grows outward from it rather than floating.
-                        if row < centre { "\u{2584}" } else { "\u{2580}" }
-                    } else {
-                        " "
-                    };
-                    Span::styled(glyph, style)
-                })
-                .collect::<Vec<_>>();
-            Line::from(spans)
-        })
-        .collect()
-}
-
-/// The ruler under the waveform, carrying the two markers.
-fn marker_row(
-    region: (u64, u64),
-    frames: u64,
-    width: usize,
-    lit: Style,
-    cut: Style,
-    mark: Style,
-) -> Line<'static> {
-    let start = column_of(region.0, frames, width).min(width.saturating_sub(1));
-    let mut end = column_of(region.1.saturating_sub(1), frames, width).min(width.saturating_sub(1));
-    // Two markers in one column would be one marker. Given a choice the end
-    // moves, because the start is where the sound begins and is the one a
-    // player is usually looking at.
-    if end == start && width > 1 {
-        end = if start + 1 < width { start + 1 } else { start - 1 };
-    }
-    let (left, right) = (start.min(end), start.max(end));
-
-    let spans = (0..width)
-        .map(|column| {
-            if column == start {
-                Span::styled("[", mark)
-            } else if column == end {
-                Span::styled("]", mark)
-            } else if column > left && column < right {
-                Span::styled("\u{2500}", lit)
-            } else {
-                Span::styled("\u{00b7}", cut)
-            }
-        })
-        .collect::<Vec<_>>();
-    Line::from(spans)
 }
 
 /// The strip, for a pane `width` by `height`.
@@ -302,23 +131,12 @@ pub(super) fn strip_lines(map: &Map, width: usize, height: usize) -> Option<Vec<
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{kit, map, text};
+    use super::super::tests::{kit, map, ramp_kit, text};
     use super::*;
     use phosphor_app::sampler::SamplerState;
+    use phosphor_plugin::sample::SamplePcm;
     use std::path::PathBuf;
-
-    /// A kit whose C3 pad carries a ramp: every column of it is a different
-    /// height, so a picture that is not being drawn is obvious.
-    fn ramp_kit(frames: usize) -> SamplerState {
-        let mut state = SamplerState::new();
-        let data: Vec<f32> =
-            (0..frames).map(|i| (i as f32 / frames as f32) * 2.0 - 1.0).collect();
-        let pcm = Arc::new(SamplePcm { data, channels: 1, sample_rate: 44_100.0 });
-        let pad = SamplerState::pad_of_note(60).unwrap();
-        state.add_wav_layer(pad, PathBuf::from("ramp.wav"), pcm).unwrap();
-        state.cursor = pad;
-        state
-    }
+    use std::sync::Arc;
 
     fn open(unit: NudgeUnit, snap: bool) -> SamplerView {
         let mut view = SamplerView::new();

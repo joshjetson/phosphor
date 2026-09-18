@@ -12,7 +12,8 @@
 //! Under it, two columns: every filled pad as a row — what it is called,
 //! what is on it, how it triggers ([`list`]) — and the panel for the pad
 //! under the caret, in the same knobs the step grid uses, with the layer
-//! list below it ([`panel`]).
+//! list below it ([`panel`]). Under *that*, three rows of the sound the
+//! cursor is standing on, drawn small ([`wave`]).
 //!
 //! Nothing here changes a pad. The keys do that, through the sampler's
 //! ops, which are also the only thing that tells the engine.
@@ -27,6 +28,12 @@
 //! rule cannot push the panel off the bottom of the pane. The panel is what
 //! the keys are typing into, and a view that shows the keyboard and not the
 //! control being turned has given up the wrong thing.
+//!
+//! The picture of the sound is the other end of that ladder: it is the
+//! first thing dropped, before the band and long before the panel. It is
+//! informational — there is no key on this map that addresses it, and `t`
+//! is still the editor — so when the rows run out it is the one thing whose
+//! absence costs a player nothing they cannot get another way.
 
 use super::*;
 
@@ -40,11 +47,13 @@ use super::keyboard::{self, KeyPaint, INK};
 mod list;
 mod panel;
 mod strip;
+mod wave;
 mod zones;
 
 use list::pad_list;
 use panel::panel_lines;
 use strip::strip_lines;
+use wave::MINI_ROWS;
 use zones::{rule_line, zone_list};
 
 /// The lowest and highest key on the bed.
@@ -53,6 +62,16 @@ const HIGH: u8 = PAD_BASE_NOTE + 87;
 
 /// The mark a zone's root key wears on the band.
 const ROOT_MARK: char = '\u{25C6}';
+
+/// The mark a pad that remembers an instrument wears — in the filled list,
+/// and on the panel line that spells it out.
+///
+/// A pad's source is the one thing about it that no column can show and no
+/// key announces: it is set inside a mode the player has since left, and it
+/// decides what `i` will put in the track's plugin slot next time. One
+/// glyph in the list, one sentence on the panel, and the sentence is what
+/// tells a player what the glyph means.
+const SOURCE_MARK: char = '\u{25CE}';
 
 /// Below this many rows the band is dropped for the panel's sake.
 const BAND_MIN_H: usize = 12;
@@ -74,6 +93,14 @@ const INDENT: usize = 9;
 /// line saying which pad the keys are on — a knob cut in half by the right
 /// edge is worse than no knob at all.
 const MIN_PANEL_W: usize = INDENT + 20;
+
+/// Rows the panel keeps for itself before the picture under it gets any.
+///
+/// Enough for the heading, a row of the pad's own controls, the selected
+/// sound's, and the first rows of the sound list. Below that the panel is
+/// already scrolling to the control being turned, and three rows spent on a
+/// picture would be three rows the player cannot type into.
+const MINI_KEEP_H: usize = 8;
 
 /// Everything the sections read, gathered once.
 struct Map<'a> {
@@ -427,10 +454,13 @@ pub(super) fn render_pads(frame: &mut Frame, area: Rect, nav: &NavState) {
             Paragraph::new(side_list(&map, cols[0].width as usize, cols[0].height as usize)),
             cols[0],
         );
-        frame.render_widget(
-            Paragraph::new(panel_lines(&map, cols[1].width as usize, cols[1].height as usize)),
-            cols[1],
-        );
+        // The picture goes under the controls and beside the pad list,
+        // taking the panel's own column.
+        let panel = cols[1];
+        let (w, h) = (panel.width as usize, panel.height as usize);
+        let picture = mini_picture(&map, w, h);
+        let rows = picture.as_ref().map_or(0, Vec::len);
+        draw_under(frame, panel, panel_lines(&map, w, h - rows), picture);
         return;
     }
 
@@ -440,15 +470,53 @@ pub(super) fn render_pads(frame: &mut Frame, area: Rect, nav: &NavState) {
     // so that a narrow terminal still says what is on the kit. The panel
     // scrolls to the control being turned, so walking down to a layer's
     // knobs brings the layer list into view with them.
-    let body_h = body.height as usize;
     let body_w = body.width as usize;
+    let picture = mini_picture(&map, body_w, body.height as usize);
+    let body_h = (body.height as usize) - picture.as_ref().map_or(0, Vec::len);
     let mut lines = panel_lines(&map, body_w, body_h.saturating_sub(2).max(1));
     let left = body_h.saturating_sub(lines.len());
     if left > 1 {
         lines.extend(side_list(&map, body_w, left));
     }
     lines.truncate(body_h);
-    frame.render_widget(Paragraph::new(lines), body);
+    draw_under(frame, body, lines, picture);
+}
+
+/// The picture of the sound under the cursor, when the pane can spare the
+/// rows for it.
+///
+/// The first thing to go when the pane is short, and deliberately so. The
+/// band says which pad the keys are on; the panel is what they are typing
+/// into. A player who can see neither has lost more than a picture of the
+/// sound, which is why the ladder ends here rather than beginning here.
+fn mini_picture(map: &Map, width: usize, height: usize) -> Option<Vec<Line<'static>>> {
+    (height >= MINI_ROWS + MINI_KEEP_H).then(|| wave::mini_lines(map, width)).flatten()
+}
+
+/// `lines` at the top of `area`, and the picture on the rows straight under
+/// the last of them.
+///
+/// Under the *content*, not at the floor of the pane: "a visual right under
+/// the parameters" is where a player's eye already is, and a picture pinned
+/// to the bottom with four blank rows above it reads as a second panel that
+/// happens to be about the same sound.
+fn draw_under(
+    frame: &mut Frame,
+    area: Rect,
+    lines: Vec<Line<'static>>,
+    picture: Option<Vec<Line<'static>>>,
+) {
+    let used = (lines.len() as u16).min(area.height);
+    let mut top = area;
+    top.height = used;
+    frame.render_widget(Paragraph::new(lines), top);
+
+    let Some(picture) = picture else { return };
+    let rows = (picture.len() as u16).min(area.height - used);
+    let mut under = area;
+    under.y += used;
+    under.height = rows;
+    frame.render_widget(Paragraph::new(picture), under);
 }
 
 /// The column beside the panel: what is on the kit, in whichever unit the
@@ -482,6 +550,19 @@ pub(super) mod tests {
         state.add_wav_layer(pad, PathBuf::from("kick.wav"), Arc::clone(&pcm)).unwrap();
         state.add_wav_layer(pad, PathBuf::from("clap.wav"), pcm).unwrap();
         state.pads[pad].layers[1].pcm = None;
+        state.cursor = pad;
+        state
+    }
+
+    /// A kit whose C3 pad carries a ramp: every column of it is a different
+    /// height, so a picture that is not being drawn is obvious.
+    pub(in crate::ui::sampler) fn ramp_kit(frames: usize) -> SamplerState {
+        let mut state = SamplerState::new();
+        let data: Vec<f32> =
+            (0..frames).map(|i| (i as f32 / frames as f32) * 2.0 - 1.0).collect();
+        let pcm = Arc::new(SamplePcm { data, channels: 1, sample_rate: 44_100.0 });
+        let pad = SamplerState::pad_of_note(60).unwrap();
+        state.add_wav_layer(pad, PathBuf::from("ramp.wav"), pcm).unwrap();
         state.cursor = pad;
         state
     }

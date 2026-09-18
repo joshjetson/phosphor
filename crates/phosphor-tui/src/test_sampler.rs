@@ -1389,6 +1389,303 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // ── `w`: hug the sound ──
+
+    /// A wav that waits, speaks, and waits again — the shape of a take
+    /// recorded before the player's hands were on the keys, and of a
+    /// reversed one, which waits at the other end.
+    ///
+    /// A cosine, so the tone is at full height on its first sample: the
+    /// backoff the hug leaves is measured against where the sound starts,
+    /// and a sine's opening frames are under the floor.
+    fn write_dead_air_wav(path: &std::path::Path, lead: usize, tone: usize, trail: usize) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 44_100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(path, spec).unwrap();
+        for _ in 0..lead {
+            w.write_sample(0i32).unwrap();
+        }
+        for i in 0..tone {
+            let s = (core::f32::consts::TAU * 220.0 * i as f32 / 44_100.0).cos();
+            w.write_sample((s * 20_000.0) as i32).unwrap();
+        }
+        for _ in 0..trail {
+            w.write_sample(0i32).unwrap();
+        }
+        w.finalize().unwrap();
+    }
+
+    /// A sampler track carrying `dead.wav`, with the trim strip open over
+    /// it and the mixer queue drained.
+    fn dead_air_app(dir: &std::path::Path, lead: usize, tone: usize, trail: usize) -> App {
+        let wav = dir.join("dead.wav");
+        write_dead_air_wav(&wav, lead, tone, trail);
+        let mut app = sampler_app();
+        load_typed(&mut app, &wav.display().to_string());
+        press(&mut app, KeyCode::Char('t'));
+        let _ = app.drain_mixer_commands();
+        app
+    }
+
+    /// `w` pulls both markers onto the sound, says how far each moved, and
+    /// one `u` puts the whole thing back.
+    ///
+    /// The owner's case: a take that opens on a second of room tone and
+    /// rings out into two more. Finding those edges by eye is a great many
+    /// presses of `h` and `L`; the rule that found them when the take landed
+    /// is right there, and this is the key that runs it again.
+    #[test]
+    fn w_hugs_the_sound_and_one_u_puts_the_markers_back() {
+        let dir = scratch("trim-hug");
+        let (lead, tone, trail) = (44_100usize, 4_410usize, 88_200usize);
+        let mut app = dead_air_app(&dir, lead, tone, trail);
+        assert_eq!((trimmed(&app).start_frame, trimmed(&app).end_frame), (0, 136_710));
+
+        press(&mut app, KeyCode::Char('w'));
+        let layer = trimmed(&app);
+        // 8 ms of backoff in front of the sound, 20 ms of room past it —
+        // the render's own numbers, reached through the one function.
+        assert_eq!(layer.start_frame, lead as u64 - 352, "the start is not on the attack");
+        assert_eq!(layer.end_frame, (lead + tone) as u64 + 882, "the tail did not come off");
+
+        let (message, _) = app.status_message.as_ref().expect("the hug said nothing");
+        assert!(message.contains("hugged"), "unhelpful: {message}");
+        assert!(message.contains("start +0.99"), "the start's travel is wrong: {message}");
+        assert!(message.contains("end -1.98"), "the end's travel is wrong: {message}");
+
+        // The engine heard it, and the region is auditioned so the player
+        // can check the decision rather than taking the numbers on trust.
+        let sent = app.drain_mixer_commands();
+        assert!(
+            sent.iter().any(|c| matches!(c, MixerCommand::SetSamplerPad { .. })),
+            "the engine never heard the hug",
+        );
+        assert!(
+            sent.iter().any(|c| matches!(c, MixerCommand::SetSamplerPreview { .. })),
+            "the hug made no sound",
+        );
+
+        // One step, and it is the whole hug: both markers go back together.
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(
+            (trimmed(&app).start_frame, trimmed(&app).end_frame),
+            (0, 136_710),
+            "one u did not put both markers back",
+        );
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert_eq!(message, "undo: hug region");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A hug a nudge run does not swallow: a player who placed a marker by
+    /// hand and then pressed `w` gets their own trim back with one `u`.
+    #[test]
+    fn a_hug_does_not_fold_into_the_nudge_run_before_it() {
+        let dir = scratch("trim-hug-fold");
+        let mut app = dead_air_app(&dir, 44_100, 4_410, 88_200);
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Char('l'));
+        }
+        let nudged = trimmed(&app).start_frame;
+        assert!(nudged > 0, "the nudge run never moved anything");
+
+        press(&mut app, KeyCode::Char('w'));
+        assert_ne!(trimmed(&app).start_frame, nudged, "the hug did not move the start");
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(
+            trimmed(&app).start_frame,
+            nudged,
+            "one u took the nudge run back with the hug",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pressed twice, the second says so and changes nothing — a flash
+    /// reading "start +0.000s" is a key that looks broken.
+    #[test]
+    fn a_second_hug_says_the_edges_are_already_on_the_sound() {
+        let dir = scratch("trim-hug-again");
+        let mut app = dead_air_app(&dir, 44_100, 4_410, 88_200);
+        press(&mut app, KeyCode::Char('w'));
+        let (start, end) = (trimmed(&app).start_frame, trimmed(&app).end_frame);
+
+        press(&mut app, KeyCode::Char('w'));
+        assert_eq!((trimmed(&app).start_frame, trimmed(&app).end_frame), (start, end));
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("already hugged"), "unhelpful: {message}");
+
+        // And nothing went on the stack for it: `u` takes the first hug
+        // back, not a step that restored the state it captured.
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(trimmed(&app).start_frame, 0, "a no-op hug left a step behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A recording with nothing in it refuses in words rather than
+    /// collapsing its region onto a millisecond of silence.
+    #[test]
+    fn w_on_a_silent_recording_refuses_in_words() {
+        let dir = scratch("trim-hug-silent");
+        let mut app = dead_air_app(&dir, 44_100, 0, 0); // a second of nothing
+        press(&mut app, KeyCode::Char('w'));
+        assert_eq!((trimmed(&app).start_frame, trimmed(&app).end_frame), (0, 44_100));
+        let (message, _) = app.status_message.as_ref().expect("silence said nothing");
+        assert!(message.contains("silent"), "unhelpful: {message}");
+        assert!(message.contains("nothing to hug"), "unhelpful: {message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A reversed layer hugs the same frames and stays reversed: reverse
+    /// plays the region backwards and never moves it, so `w` means the same
+    /// thing either way round.
+    #[test]
+    fn a_reversed_take_hugs_the_same_region() {
+        let dir = scratch("trim-hug-rev");
+        let (lead, tone, trail) = (44_100usize, 4_410usize, 88_200usize);
+        let mut forwards = dead_air_app(&dir, lead, tone, trail);
+        press(&mut forwards, KeyCode::Char('w'));
+        let want = (trimmed(&forwards).start_frame, trimmed(&forwards).end_frame);
+
+        let mut app = dead_air_app(&dir, lead, tone, trail);
+        press(&mut app, KeyCode::Char('r'));
+        assert!(trimmed(&app).reverse, "r did not reverse the layer");
+        press(&mut app, KeyCode::Char('w'));
+        assert_eq!(
+            (trimmed(&app).start_frame, trimmed(&app).end_frame),
+            want,
+            "a reversed take hugged a different region",
+        );
+        assert!(trimmed(&app).reverse, "the hug turned the layer round");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The strip says `w` is there, on the strip and in the flash that
+    /// opens it — a key nobody can see is a key nobody presses.
+    #[test]
+    fn the_strip_offers_the_hug_where_a_player_is_looking() {
+        let dir = scratch("trim-hug-hint");
+        let app = dead_air_app(&dir, 4_410, 4_410, 4_410);
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("w hug"), "the strip's own keys do not offer it:\n{text}");
+        // ...and the sentence `t` flashed on the way in offers it too.
+        let mut fresh = sampler_app();
+        let wav = dir.join("dead.wav");
+        load_typed(&mut fresh, &wav.display().to_string());
+        press(&mut fresh, KeyCode::Char('t'));
+        let (message, _) = fresh.status_message.as_ref().unwrap();
+        assert!(message.contains("w hug"), "the opening flash does not offer it: {message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── The picture under the knobs ──
+
+    /// The panel draws the sound under the controls: two rows of waveform,
+    /// the markers under them, and the region that plays lit.
+    ///
+    /// The owner's ask — a look at the recording without leaving the
+    /// controls, so the numbers on the trim strip are not the only way to
+    /// see what a pad is holding.
+    #[test]
+    fn the_panel_draws_the_sound_under_the_controls() {
+        let dir = scratch("mini-wave");
+        let app = loaded_app(&dir);
+        let text = screen(&app, 120, 40);
+        let Some(picture) = text.lines().find(|l| l.contains("wave ")) else {
+            panic!("no picture under the panel:\n{text}");
+        };
+        assert!(picture.contains('\u{2588}'), "the picture drew nothing: {picture}");
+        // The ruler under it carries both markers.
+        let ruler = text
+            .lines()
+            .skip_while(|l| !l.contains("wave "))
+            .nth(2)
+            .expect("no ruler under the picture");
+        assert!(ruler.contains('['), "no start marker:\n{text}");
+        assert!(ruler.contains(']'), "no end marker:\n{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A phrase row has no picture: a performance is notes, and an empty
+    /// waveform under the knobs would read as the picture having broken.
+    #[test]
+    fn a_phrase_row_gets_no_picture() {
+        let dir = scratch("mini-wave-phrase");
+        let mut app = loaded_app(&dir);
+        {
+            let track = app.nav.tracks.iter_mut().find(|t| t.sampler.is_some()).unwrap();
+            let sampler = track.sampler.as_mut().unwrap();
+            let pad = sampler.cursor;
+            let events = std::sync::Arc::from(vec![phosphor_plugin::sample::PhraseEvent {
+                frame: 0,
+                status: 0x90,
+                data1: 60,
+                data2: 100,
+            }]);
+            sampler.pads[pad].add_phrase(events, 44_100, 44_100.0, "pad").unwrap();
+        }
+        // Onto the phrase row, which is after the one layer.
+        press(&mut app, KeyCode::Char(']'));
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("phr"), "the phrase row is not on the screen:\n{text}");
+        assert!(!text.contains("wave "), "a phrase drew a waveform:\n{text}");
+        // ...and back on the layer it comes straight back.
+        press(&mut app, KeyCode::Char('['));
+        assert!(screen(&app, 120, 40).contains("wave "), "the picture did not come back");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The picture is the first thing a short pane gives up. The band says
+    /// which pad the keys are on and the panel is what they are typing into;
+    /// a player who can see neither has lost more than a picture.
+    #[test]
+    fn a_short_pane_drops_the_picture_before_the_panel() {
+        let dir = scratch("mini-wave-short");
+        let app = loaded_app(&dir);
+        let mut dropped_at = None;
+        for height in (12..40u16).rev() {
+            let text = screen(&app, 120, height);
+            if text.contains("wave ") {
+                continue;
+            }
+            dropped_at = Some(height);
+            // The two things that outrank it are still there.
+            assert!(text.contains("pad C3"), "the panel went first at {height}:\n{text}");
+            assert!(text.contains("trig"), "the controls went first at {height}:\n{text}");
+            break;
+        }
+        assert!(dropped_at.is_some(), "the picture never dropped, however short the pane");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The pad map draws at every size a terminal can be, and nothing on it
+    /// runs past its own edge.
+    ///
+    /// Squares as well as the two axes: the picture is carved off the bottom
+    /// of a column whose width decides whether it is drawn at all, and the
+    /// sizes where one rule is about to change are the sizes that break.
+    #[test]
+    fn the_pad_map_draws_at_every_size() {
+        let dir = scratch("mini-wave-sizes");
+        let app = loaded_app(&dir);
+        for size in 1..200u16 {
+            for (w, h) in [(size, 40), (120, size), (size, size)] {
+                let text = screen(&app, w, h);
+                for line in text.lines() {
+                    assert!(
+                        line.chars().count() <= w as usize,
+                        "a {w}x{h} screen drew a {}-cell row",
+                        line.chars().count(),
+                    );
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // ── Source mode and the resampler ──
 
     /// Play a key through the same door the MIDI callback uses, so the
@@ -2149,7 +2446,7 @@ mod tests {
         let stored = pad_source(&app).expect("the pad forgot its source");
         assert_eq!(stored.params, dialled, "the pad did not keep the panel that was dialled");
         let (message, _) = app.status_message.as_ref().unwrap();
-        assert!(message.contains("kept the panel you dialled"), "unhelpful: {message}");
+        assert!(message.contains("kept your panel"), "unhelpful: {message}");
 
         press(&mut app, KeyCode::Char('u'));
         let (message, _) = app.status_message.as_ref().unwrap();
@@ -2210,7 +2507,7 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         let (message, _) = app.status_message.as_ref().unwrap();
         assert!(
-            !message.contains("kept the panel you dialled"),
+            !message.contains("kept your panel"),
             "leaving wrote the undone panel back: {message}",
         );
         assert_eq!(pad_source(&app).map(|s| s.params), Some(opened));
@@ -2247,6 +2544,116 @@ mod tests {
         assert!(
             app.nav.clip_view.synth_param_cursor < view.params.len(),
             "the cursor stayed out past the end of the sampler's panel",
+        );
+    }
+
+    // ── The source, made visible ──
+
+    /// A pad that remembers an instrument says so on the panel and wears a
+    /// mark in the list, and both survive a trip through the mode and back.
+    ///
+    /// The whole defect this section exists for: the pad kept the instrument
+    /// and the panel it was recorded with, and nothing on the screen ever
+    /// admitted it. The road back was a road only the code knew about.
+    #[test]
+    fn the_source_line_appears_once_a_pad_has_one_and_stays() {
+        let mut app = sampler_app();
+        let bare = screen(&app, 120, 40);
+        assert!(!bare.contains("source:"), "a fresh pad claimed a source:\n{bare}");
+
+        // Into the mode on the DX7, and straight back out again.
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j')); // DX7
+        press(&mut app, KeyCode::Enter);
+        back_to_pads(&mut app);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.nav.sampler_source.is_none(), "the mode is still on");
+
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("source: DX7"), "the panel does not name it:\n{text}");
+        assert!(text.contains("i records more"), "no way back to it on the panel:\n{text}");
+        assert!(text.contains('\u{25CE}'), "the pad list wears no mark:\n{text}");
+
+        // A round trip through keys mode and back leaves it standing: the
+        // pad's memory is the pad's, and the bed changing units is not an
+        // edit to it.
+        press(&mut app, KeyCode::Char('K'));
+        press(&mut app, KeyCode::Char('K'));
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("source: DX7"), "a trip through keys mode lost it:\n{text}");
+    }
+
+    /// Leaving the mode names the way back, and the sentence fits the bar it
+    /// is printed on.
+    ///
+    /// The clause that matters is the last one. Leaving is the moment the
+    /// pad's memory stops being on the screen anywhere else, and a bar that
+    /// cut the end off would cut off exactly the part a player needs.
+    #[test]
+    fn leaving_the_mode_names_the_way_back_inside_the_bar() {
+        // The widest case there is: the longest instrument name in the box,
+        // and a trip that dialled a knob, so the sentence carries its middle
+        // clause too.
+        let mut app = source_app();
+        tab_to_panel(&mut app);
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('l'));
+        back_to_pads(&mut app);
+        press(&mut app, KeyCode::Esc);
+
+        let (message, _) = app.status_message.as_ref().expect("leaving said nothing");
+        assert!(message.contains("sampler back"), "{message}");
+        assert!(message.contains("kept your panel"), "{message}");
+        assert!(
+            message.contains("i returns to Phosphor Synth"),
+            "the way back is not in the sentence: {message}",
+        );
+
+        // ...and the whole of it is on the bar at eighty columns of message,
+        // which is what 120 columns of terminal leaves after the mode tag.
+        let text = screen(&app, 120, 40);
+        let bar = text.lines().last().expect("no bottom bar");
+        assert!(
+            bar.contains("i returns to Phosphor Synth"),
+            "the bar cut the way back off:\n{bar}",
+        );
+    }
+
+    /// `i` on a pad that remembers says which pad and what it remembers, and
+    /// marks the row the cursor opens on.
+    #[test]
+    fn the_picker_says_what_the_pad_already_remembers() {
+        let mut app = sampler_app();
+        // Nothing remembered: the plain title, and no marker anywhere.
+        press(&mut app, KeyCode::Char('i'));
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("record this pad from"), "the plain title is gone:\n{text}");
+        assert!(!text.contains("this pad's source"), "a fresh pad was marked:\n{text}");
+
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j')); // DX7
+        press(&mut app, KeyCode::Enter);
+        back_to_pads(&mut app);
+        press(&mut app, KeyCode::Esc);
+
+        press(&mut app, KeyCode::Char('i'));
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("source for C3"), "the title does not name the pad:\n{text}");
+        assert!(text.contains("now: dx7"), "the title does not name the source:\n{text}");
+        assert!(text.contains("this pad's source"), "the row is not marked:\n{text}");
+        assert_eq!(
+            text.matches("this pad's source").count(),
+            1,
+            "more than one row was marked:\n{text}",
+        );
+
+        // Picking it is unchanged: Enter is still one press back into the
+        // sound the pad remembers.
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.nav.sampler_source.as_deref().map(|m| m.instrument),
+            Some(InstrumentType::DX7),
         );
     }
 
