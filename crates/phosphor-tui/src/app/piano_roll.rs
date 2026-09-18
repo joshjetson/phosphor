@@ -484,35 +484,34 @@ impl App {
             return;
         }
         let idx = self.nav.clip_view.synth_param_cursor;
-        if let Some(track) = self.nav.tracks.get(self.nav.track_cursor) {
-            if let Some(mixer_id) = track.mixer_id {
-                // A patch selector reloads the whole block, so the whole
-                // block goes. The Prophet-6 and the TEO-5 keep their preset
-                // in two controls — a bank and a program — and moving either
-                // one reloads it, which is what `NavState::adjust_synth_param`
-                // does and what this has to match or half a patch arrives.
-                let reloaded = idx == 0
-                    || (track.instrument_type == Some(InstrumentType::Prophet6)
-                        && idx == phosphor_dsp::prophet6::P_BANK)
-                    || (track.instrument_type == Some(InstrumentType::Teo5)
-                        && idx == phosphor_dsp::teo5::P_BANK);
-                if reloaded {
-                    // Patch changed — send ALL params to audio thread
-                    for (i, &val) in track.synth_params.iter().enumerate() {
-                        let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::SetParameter {
-                            track_id: mixer_id,
-                            param_index: i,
-                            value: val,
-                        });
-                    }
-                } else if let Some(&val) = track.synth_params.get(idx) {
-                    let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::SetParameter {
-                        track_id: mixer_id,
-                        param_index: idx,
-                        value: val,
-                    });
-                }
+        // Whose panel this is: the track's, or — while source mode has the
+        // slot on loan — the instrument a pad is being recorded from. Either
+        // way it is *this* track's slot playing it, so the command goes to
+        // this track's mixer id.
+        let Some(view) = self.nav.panel() else { return };
+        let Some(mixer_id) = self.nav.tracks.get(self.nav.track_cursor).and_then(|t| t.mixer_id)
+        else {
+            return;
+        };
+        // A preset selector reloads the whole block, so the whole block goes:
+        // half a patch is a sound nobody chose. Which control that is comes
+        // from the same door `NavState::adjust_synth_param` reloads through —
+        // `phosphor_app::discrete` — because two spellings of the rule is one
+        // spelling that eventually disagrees.
+        if phosphor_app::discrete::is_preset_selector(view.instrument, idx) {
+            for (i, &val) in view.params.iter().enumerate() {
+                let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::SetParameter {
+                    track_id: mixer_id,
+                    param_index: i,
+                    value: val,
+                });
             }
+        } else if let Some(&val) = view.params.get(idx) {
+            let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::SetParameter {
+                track_id: mixer_id,
+                param_index: idx,
+                value: val,
+            });
         }
     }
 

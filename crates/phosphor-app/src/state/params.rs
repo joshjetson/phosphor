@@ -1,8 +1,83 @@
 //! NavState methods: params.
+//!
+//! # Whose panel the clip view is showing
+//!
+//! Normally the track under the cursor: its instrument, its `synth_params`.
+//! While source mode has that track's plugin slot on loan, the slot holds
+//! the instrument a pad is being recorded from, and the panel has to show
+//! *that* — see [`crate::sampler::capture::SourceMode`] and the front end's
+//! `sampler_source`. Every route into the panel asks [`NavState::panel`]
+//! rather than reaching for `synth_params`, because a panel that draws one
+//! instrument and edits another is a mislabeled control: turning the
+//! sampler's `level` over a borrowed slot sent `SetParameter(0)` to the
+//! synth, which on most instruments is the patch selector.
 
 use super::*;
 
+/// What the instrument panel is pointed at: an instrument, and the block of
+/// values the controls draw and edit.
+///
+/// A borrow rather than a copy — the block is up to eighty-four floats and
+/// the renderer reads it every frame.
+pub struct PanelView<'a> {
+    pub instrument: InstrumentType,
+    pub params: &'a [f32],
+}
+
 impl NavState {
+
+    // ── Whose panel ──
+
+    /// The source mode borrowing the cursor track's plugin slot, if one is.
+    ///
+    /// Filtered by the cursor: a mode running on another track has no say
+    /// over what this one's panel draws.
+    #[must_use]
+    pub fn panel_source(&self) -> Option<&crate::sampler::capture::SourceMode> {
+        self.sampler_source.as_deref().filter(|mode| mode.track_idx == self.track_cursor)
+    }
+
+    /// The instrument and values the `[inst]` tab and the narrow strip draw.
+    ///
+    /// `None` on a track with no instrument at all, which is every bus.
+    #[must_use]
+    pub fn panel(&self) -> Option<PanelView<'_>> {
+        if let Some(mode) = self.panel_source() {
+            return Some(PanelView { instrument: mode.instrument, params: &mode.params });
+        }
+        let track = self.tracks.get(self.track_cursor)?;
+        Some(PanelView { instrument: track.instrument_type?, params: &track.synth_params })
+    }
+
+    /// How many controls the panel has. Zero when there is no panel.
+    #[must_use]
+    pub fn panel_len(&self) -> usize {
+        self.panel().map_or(0, |view| view.params.len())
+    }
+
+    /// The same block, to write into.
+    fn panel_mut(&mut self) -> Option<(InstrumentType, &mut Vec<f32>)> {
+        if self.panel_source().is_some() {
+            let mode = self.sampler_source.as_deref_mut()?;
+            return Some((mode.instrument, &mut mode.params));
+        }
+        let track = self.tracks.get_mut(self.track_cursor)?;
+        Some((track.instrument_type?, &mut track.synth_params))
+    }
+
+    /// Put the panel cursor back inside the panel.
+    ///
+    /// Called whenever the panel changes under it — source mode starting on
+    /// a two-knob sampler and handing over an eighty-four control DX7, and
+    /// the same swap back on the way out. A cursor left at forty over a
+    /// panel of two is a highlight nobody can see and a `k` that has to be
+    /// pressed thirty-eight times before anything moves.
+    pub fn clamp_panel_cursor(&mut self) {
+        let last = self.panel_len().saturating_sub(1);
+        if self.clip_view.synth_param_cursor > last {
+            self.clip_view.synth_param_cursor = last;
+        }
+    }
 
     /// Adjust the currently selected synth parameter by delta.
     /// Returns the (mixer_id, param_index, new_value) if changed, for sending to audio.
@@ -13,6 +88,15 @@ impl NavState {
     /// is one step, and a patch flick through six programs undoes back to
     /// the one the player started from in one press.
     pub fn adjust_synth_param(&mut self, delta: f32) -> Option<(usize, usize, f32)> {
+        // Source mode's panel is not the track's. It is the mode's working
+        // copy of the instrument in the borrowed slot, and it reaches the
+        // undo stack in one step when it is written back to the pad it
+        // belongs to — see `App::commit_source_panel`. Checkpointing here
+        // would photograph the sampler's two globals, which this key does not
+        // touch, and commit nothing.
+        if self.panel_source().is_some() {
+            return self.adjust_synth_param_inner(delta);
+        }
         let track_idx = self.track_cursor;
         let before = self.undo_checkpoint(undo::UndoScope::SynthParams { track_idx });
         let result = self.adjust_synth_param_inner(delta);
@@ -26,93 +110,36 @@ impl NavState {
 
     fn adjust_synth_param_inner(&mut self, delta: f32) -> Option<(usize, usize, f32)> {
         let idx = self.clip_view.synth_param_cursor;
-        if let Some(track) = self.tracks.get_mut(self.track_cursor) {
-            if idx < track.synth_params.len() {
-                // A selector steps by *index* rather than by adding a fraction
-                // of the knob's travel: 256 voices, or 56 patches and a
-                // three-position range switch, or fifteen kits, are coarse
-                // enough that an accumulated rounding error lands on the wrong
-                // side of a step boundary, which reads as a keypress that did
-                // nothing.
-                //
-                // Which controls those are is the instrument's own answer —
-                // see `crate::discrete`, which is also what the session format
-                // stores them through, so the two cannot drift apart.
-                let instrument = track.instrument_type?;
-                let new_val = if crate::discrete::is_discrete(instrument, idx) {
-                    crate::discrete::step(instrument, idx, track.synth_params[idx], delta > 0.0)
-                } else {
-                    (track.synth_params[idx] + delta).clamp(0.0, 1.0)
-                };
-                track.synth_params[idx] = new_val;
-
-                // When the preset selector changes, sync all params from the
-                // preset. Index 0 for every instrument — except the Prophet-6,
-                // whose preset is two selectors, a bank and a program, so
-                // moving either one has to reload the panel.
-                let is_program_selector = idx == 0
-                    || (instrument == InstrumentType::Prophet6
-                        && idx == phosphor_dsp::prophet6::P_BANK)
-                    || (instrument == InstrumentType::Teo5
-                        && idx == phosphor_dsp::teo5::P_BANK);
-                // The banks no longer agree on how many parameters an
-                // instrument has, so this collects rather than matching on a
-                // fixed-size array, and writes through a zip so a track
-                // carrying a shorter block than its instrument now has cannot
-                // index off the end of itself.
-                if is_program_selector {
-                    let new_params: Option<Vec<f32>> = match track.instrument_type {
-                        // Not the sampler: its knob 0 is an output level,
-                        // and a level move that rewrote the whole panel
-                        // from the synth's patch table was the bug waiting
-                        // in the old shared arm.
-                        Some(InstrumentType::Synth) => {
-                            Some(phosphor_dsp::synth::PhosphorSynth::params_for_patch(new_val).to_vec())
-                        }
-                        Some(InstrumentType::Jupiter8) => {
-                            Some(phosphor_dsp::jupiter::Jupiter8Synth::params_for_patch(new_val).to_vec())
-                        }
-                        Some(InstrumentType::Odyssey) => {
-                            Some(phosphor_dsp::odyssey::OdysseySynth::params_for_patch(new_val).to_vec())
-                        }
-                        Some(InstrumentType::Juno60) => {
-                            Some(phosphor_dsp::juno::Juno60Synth::params_for_patch(new_val).to_vec())
-                        }
-                        Some(InstrumentType::Rhodes) => {
-                            Some(phosphor_dsp::rhodes::RhodesPiano::params_for_patch(new_val).to_vec())
-                        }
-                        Some(InstrumentType::LittlePhatty) => {
-                            Some(phosphor_dsp::phatty::LittlePhatty::params_for_patch(new_val).to_vec())
-                        }
-                        Some(InstrumentType::Prophet6) => Some(
-                            phosphor_dsp::prophet6::params_for_program(
-                                track.synth_params[phosphor_dsp::prophet6::P_BANK],
-                                track.synth_params[phosphor_dsp::prophet6::P_PROGRAM],
-                            )
-                            .to_vec(),
-                        ),
-                        Some(InstrumentType::Teo5) => Some(
-                            phosphor_dsp::teo5::params_for_program(
-                                track.synth_params[phosphor_dsp::teo5::P_BANK],
-                                track.synth_params[phosphor_dsp::teo5::P_PROGRAM],
-                            )
-                            .to_vec(),
-                        ),
-                        _ => None,
-                    };
-                    if let Some(preset_params) = new_params {
-                        for (slot, v) in track.synth_params.iter_mut().zip(preset_params) {
-                            *slot = v;
-                        }
-                    }
-                }
-
-                if let Some(mixer_id) = track.mixer_id {
-                    return Some((mixer_id, idx, new_val));
-                }
-            }
+        let (instrument, params) = self.panel_mut()?;
+        if idx >= params.len() {
+            return None;
         }
-        None
+        // A selector steps by *index* rather than by adding a fraction of the
+        // knob's travel: 256 voices, or 56 patches and a three-position range
+        // switch, or fifteen kits, are coarse enough that an accumulated
+        // rounding error lands on the wrong side of a step boundary, which
+        // reads as a keypress that did nothing.
+        //
+        // Which controls those are is the instrument's own answer — see
+        // `crate::discrete`, which is also what the session format stores
+        // them through, so the two cannot drift apart.
+        let new_val = if crate::discrete::is_discrete(instrument, idx) {
+            crate::discrete::step(instrument, idx, params[idx], delta > 0.0)
+        } else {
+            (params[idx] + delta).clamp(0.0, 1.0)
+        };
+        params[idx] = new_val;
+        // A preset selector carries the whole panel with it. Which control
+        // that is, and what it loads, is `crate::discrete`'s answer for the
+        // same reason the stepping above is: the front end's own send has to
+        // agree about it or half a patch reaches the audio thread.
+        crate::discrete::reload_panel_for_selector(instrument, params, idx);
+
+        // The slot the panel is heard through is the cursor track's, source
+        // mode or not — that is the whole trick of the mode: the instrument
+        // *is* the track.
+        let mixer_id = self.tracks.get(self.track_cursor)?.mixer_id?;
+        Some((mixer_id, idx, new_val))
     }
 
 
@@ -640,6 +667,139 @@ mod tests {
         nav.tracks[0].instrument_type = Some(InstrumentType::Rhodes);
         nav.show_current_track_controls();
         assert_ne!(nav.clip_view.clip_tab, ClipTab::Pads);
+    }
+
+    // ── The panel source mode borrows ──
+
+    /// A sampler track at its two globals, with source mode running on it —
+    /// the state the front end is in between `i` and `esc`.
+    fn source_mode_nav(instrument: InstrumentType) -> NavState {
+        let mut nav = NavState::new(super::super::initial_tracks());
+        let mut track = TrackState::new("smplr", 0, true, TrackKind::Instrument, vec![]);
+        track.instrument_type = Some(InstrumentType::Sampler);
+        track.synth_params = phosphor_dsp::sampler::PARAM_DEFAULTS.to_vec();
+        track.sampler = Some(Box::new(crate::sampler::SamplerState::new()));
+        nav.tracks.insert(0, track);
+        nav.track_cursor = 0;
+        nav.sampler_source = Some(Box::new(crate::sampler::capture::SourceMode::new(
+            0,
+            24,
+            instrument,
+            crate::preset::defaults(instrument),
+            crate::sampler::TakeKind::Audio,
+        )));
+        nav
+    }
+
+    /// The globals a sampler track starts with, for the tests that assert
+    /// nothing touched them.
+    fn globals(nav: &NavState) -> Vec<f32> {
+        nav.tracks[0].synth_params.clone()
+    }
+
+    /// While the mode has the slot, the panel is the borrowed instrument's:
+    /// its controls, its count, its values.
+    #[test]
+    fn the_panel_draws_whatever_is_in_the_plugin_slot() {
+        let nav = source_mode_nav(InstrumentType::Rhodes);
+        let view = nav.panel().expect("a track with an instrument in its slot has a panel");
+        assert_eq!(view.instrument, InstrumentType::Rhodes);
+        assert_eq!(view.params, &crate::preset::defaults(InstrumentType::Rhodes)[..]);
+        assert_eq!(nav.panel_len(), rhodes::PARAM_COUNT);
+        // ...and it is emphatically not the sampler's two, which is the
+        // whole complaint: `level` over a slot holding a Rhodes.
+        assert_ne!(nav.panel_len(), phosphor_dsp::sampler::PARAM_NAMES.len());
+
+        // A mode running on some other track has no say over this one.
+        let mut elsewhere = source_mode_nav(InstrumentType::Rhodes);
+        elsewhere.sampler_source.as_deref_mut().unwrap().track_idx = 2;
+        assert!(elsewhere.panel_source().is_none());
+        let view = elsewhere.panel().expect("the track still has its own panel");
+        assert_eq!(view.instrument, InstrumentType::Sampler);
+    }
+
+    /// A knob turned on that panel moves the source's values and leaves the
+    /// sampler's globals exactly where they were.
+    ///
+    /// This is the hazard the panel was built to kill: the slot held the
+    /// synth while the panel drew `level`, so turning `level` sent
+    /// `SetParameter(0)` — the patch selector on most instruments — to an
+    /// instrument nobody was looking at.
+    #[test]
+    fn a_knob_in_source_mode_moves_the_source_and_not_the_sampler() {
+        let mut nav = source_mode_nav(InstrumentType::Rhodes);
+        let before_globals = globals(&nav);
+        nav.clip_view.synth_param_cursor = rhodes::P_VOICING;
+        let was = nav.sampler_source.as_deref().unwrap().params[rhodes::P_VOICING];
+
+        nav.adjust_synth_param(0.05);
+
+        let now = nav.sampler_source.as_deref().unwrap().params[rhodes::P_VOICING];
+        assert!((now - (was + 0.05)).abs() < 1e-6, "the source's knob did not move");
+        assert_eq!(globals(&nav), before_globals, "the sampler's globals moved with it");
+        // And the panel edit is not a step of its own: it reaches the undo
+        // stack when it is written back to the pad, which is the front end's
+        // door — see `App::commit_source_panel`.
+        assert!(!nav.undo_stack.can_undo(), "a knob inside the mode pushed a step");
+    }
+
+    /// The patch selector reloads the whole panel here exactly as it does on
+    /// a normal track, because both go through the same helper.
+    ///
+    /// Mirrors `the_rhodes_patch_knob_moves_one_piano_per_keypress`: same
+    /// instrument, same assertions, a borrowed slot instead of a track's own.
+    /// If the two paths ever stop sharing
+    /// [`crate::discrete::reload_panel_for_selector`], one of these two tests
+    /// goes red.
+    #[test]
+    fn the_patch_knob_loads_a_whole_panel_in_source_mode_too() {
+        let mut nav = source_mode_nav(InstrumentType::Rhodes);
+        let panel = |nav: &NavState| nav.sampler_source.as_deref().unwrap().params.clone();
+        let patch =
+            |nav: &NavState| rhodes::patch_index(panel(nav)[rhodes::P_PATCH]);
+        nav.clip_view.synth_param_cursor = rhodes::P_PATCH;
+        assert_eq!(rhodes::PATCH_NAMES[patch(&nav)], "MK1 Stage");
+
+        for step in 1..rhodes::PATCH_COUNT {
+            nav.adjust_synth_param(0.05);
+            assert_eq!(patch(&nav), step, "patch knob step {step}");
+            let now = panel(&nav);
+            let want = rhodes::RhodesPiano::params_for_patch(now[rhodes::P_PATCH]);
+            for (index, (got, wanted)) in now.iter().zip(want.iter()).enumerate().skip(1) {
+                assert!(
+                    (got - wanted).abs() < 1e-6,
+                    "{} came back as {got} where patch {step} says {wanted}",
+                    rhodes::PARAM_NAMES[index],
+                );
+            }
+        }
+        // Eight-and-twenty patches later the sampler's own panel has still
+        // never been written to.
+        assert_eq!(globals(&nav), phosphor_dsp::sampler::PARAM_DEFAULTS.to_vec());
+    }
+
+    /// The cursor cannot be left pointing past the end of a panel that
+    /// shrank under it — a sampler has two controls and a DX7 has scores.
+    #[test]
+    fn the_panel_cursor_lands_inside_a_panel_that_shrank() {
+        let mut nav = source_mode_nav(InstrumentType::DX7);
+        nav.clip_view.synth_param_cursor = dx7::PARAM_COUNT - 1;
+        nav.clamp_panel_cursor();
+        assert_eq!(nav.clip_view.synth_param_cursor, dx7::PARAM_COUNT - 1, "a valid cursor moved");
+
+        nav.sampler_source = None;
+        nav.clamp_panel_cursor();
+        assert_eq!(
+            nav.clip_view.synth_param_cursor,
+            phosphor_dsp::sampler::PARAM_NAMES.len() - 1,
+            "the cursor stayed out past the end of the sampler's panel",
+        );
+
+        // A track with no panel at all takes the cursor to zero rather than
+        // underflowing its way to `usize::MAX`.
+        nav.track_cursor = nav.tracks.len() - 1;
+        nav.clamp_panel_cursor();
+        assert_eq!(nav.clip_view.synth_param_cursor, 0);
     }
 
     #[test]

@@ -717,5 +717,6 @@ impl App {
         }
         self.sync_sampler_pads(track_idx, pads);
         self.clamp_sampler_cursors();
+        self.resync_source_panel(track_idx);
     }
 }

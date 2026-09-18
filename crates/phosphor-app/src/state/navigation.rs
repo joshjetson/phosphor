@@ -136,7 +136,10 @@ impl NavState {
             Pane::ClipView => {
                 match self.clip_view.focus {
                     ClipViewFocus::PianoRoll if self.clip_view.clip_tab == ClipTab::InstConfig => {
-                        let max = self.current_track().map_or(0, |t| t.synth_params.len());
+                        // The panel's own length, which in source mode is the
+                        // borrowed instrument's and not the sampler's two —
+                        // see `NavState::panel`.
+                        let max = self.panel_len();
                         if self.clip_view.synth_param_cursor + 1 < max {
                             self.clip_view.synth_param_cursor += 1;
                         }
@@ -150,7 +153,7 @@ impl NavState {
                     ClipViewFocus::PianoRoll => self.clip_view.piano_roll.move_down(),
                     ClipViewFocus::FxPanel => {
                         if self.clip_view.fx_panel_tab == FxPanelTab::Synth {
-                            let max = self.current_track().map(|t| t.synth_params.len()).unwrap_or(0);
+                            let max = self.panel_len();
                             if self.clip_view.synth_param_cursor + 1 < max {
                                 self.clip_view.synth_param_cursor += 1;
                             }

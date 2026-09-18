@@ -306,15 +306,29 @@ impl App {
     }
 
     /// Push a track's whole parameter block to the audio thread.
+    pub(crate) fn push_params_to_audio(&self, track_idx: usize) {
+        let Some(params) = self.nav.tracks.get(track_idx).map(|t| t.synth_params.clone()) else {
+            return;
+        };
+        self.send_params_to_slot(track_idx, &params);
+    }
+
+    /// Push a whole parameter block into a track's plugin slot.
     ///
     /// One `SetParameter` per control down the mixer command channel — the
     /// same path a knob turn and a session load take. Nothing here allocates
     /// or blocks on the audio side: the mixer drains the queue at the top of
     /// its callback and calls `set_parameter` on the plugin.
-    pub(crate) fn push_params_to_audio(&self, track_idx: usize) {
-        let Some(track) = self.nav.tracks.get(track_idx) else { return };
-        let Some(mixer_id) = track.mixer_id else { return };
-        for (i, &value) in track.synth_params.iter().enumerate() {
+    ///
+    /// The block is a parameter rather than the track's own because the slot
+    /// does not always hold the track's instrument: source mode lends it to
+    /// whatever a pad is being recorded from, and that instrument's panel
+    /// lives on the mode. See [`App::commit_source_panel`].
+    pub(crate) fn send_params_to_slot(&self, track_idx: usize, params: &[f32]) {
+        let Some(mixer_id) = self.nav.tracks.get(track_idx).and_then(|t| t.mixer_id) else {
+            return;
+        };
+        for (i, &value) in params.iter().enumerate() {
             let _ = self
                 .engine
                 .shared

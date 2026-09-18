@@ -316,6 +316,12 @@ fn source_banner(map: &Map, width: usize) -> Option<Line<'static>> {
     // out after the performance.
     let take = format!("take: {}", mode.take.label());
     let (mark, text, style) = match mode.capture.as_ref() {
+        // The road to the instrument's own panel is *not* on this line: at
+        // eighty columns of pane it is already cut short of "esc puts the
+        // sampler back", and the way out matters more than the way in. It is
+        // in the sentence every refused key answers with instead — see
+        // `App::flash_sampler_source_keys`, which is what a player pressing
+        // keys looking for a way to change the sound will hit first.
         None => (
             "\u{25B8}",
             format!(

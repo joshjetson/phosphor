@@ -456,6 +456,25 @@ mod tests {
         assert!(a.peak > 0.0, "the render made no sound at all");
     }
 
+    /// The panel is the render's, not the instrument's defaults: a take made
+    /// after the player shut the filter is a darker take.
+    ///
+    /// The seam this pins is the one the `[inst]` panel edits through in
+    /// source mode — the mode's own copy of the panel, handed to this
+    /// function when the take lands.
+    #[test]
+    fn the_panel_handed_in_is_the_panel_the_take_is_rendered_through() {
+        let plan = plan_of(&[(0, 60, true), (200_000, 60, false)], 400_000);
+        let open = crate::preset::defaults(InstrumentType::Synth);
+        let mut shut = open.clone();
+        shut[phosphor_dsp::synth::P_CUTOFF] = 0.0;
+
+        let a = render_take(&plan, &[], InstrumentType::Synth, &open);
+        let b = render_take(&plan, &[], InstrumentType::Synth, &shut);
+        assert_ne!(a.pcm.data, b.pcm.data, "the panel never reached the instrument");
+        assert!(b.peak < a.peak, "shutting the filter did not make the take darker");
+    }
+
     /// The rack runs. One key through a chord device is a chord, and a
     /// chord is not the same audio as one note.
     #[test]

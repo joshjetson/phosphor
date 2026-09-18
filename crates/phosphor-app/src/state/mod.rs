@@ -34,6 +34,7 @@ pub use track::*;
 pub use transport_ui::*;
 mod navigation;
 mod params;
+pub use params::PanelView;
 mod track_ops;
 pub use track_ops::{initial_tracks, FxAdd};
 

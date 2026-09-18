@@ -848,6 +848,14 @@ impl App {
         // the keys fell through to the piano roll underneath it, which is
         // what made it feel like a mock-up: it looked like a panel and
         // nothing typed into it arrived anywhere.
+        //
+        // In source mode this is the *borrowed* instrument's panel — see
+        // `NavState::panel` — and the keys are the same keys, deliberately.
+        // `Esc` included: on this tab it means "out of the panel" on every
+        // track in the box, and a second meaning here would be the one key
+        // that tore a mode down from a place that never says the mode is on.
+        // The mode's own `Esc` is on the pads tab, where the banner offering
+        // it is.
         if self.nav.clip_view.focus == ClipViewFocus::PianoRoll
             && self.nav.clip_view.clip_tab == ClipTab::InstConfig
         {

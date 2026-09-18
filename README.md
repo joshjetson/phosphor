@@ -721,9 +721,39 @@ begins. It stops itself at 64 bars.
   That is why a take can never glitch a performance, why it is bar-exact
   rather than however long the buffer happened to be, and why the same
   performance renders the same file every time.
-- Source mode takes three keys — `r`, `i`, `Esc` — and answers the rest in
-  words. While it is on, every key that edits a pad would be editing
-  something you cannot hear.
+- Source mode takes three keys on the pad map — `r`, `i`, `Esc` — and answers
+  the rest in words. While it is on, every key that edits a pad would be
+  editing something you cannot hear.
+
+**Dialling the sound — `Tab`.** The instrument in the slot is a real
+instrument with a real panel, and `Tab` is the road to it: from the pad map,
+one `Tab` puts you on `[inst]`, and while the mode is on that panel is the
+*source* instrument's rather than the sampler's two globals. It is headed
+`Phosphor Synth · source for pad C3` so you can see whose panel you are
+standing in. `j`/`k` pick a control and `h`/`l` turn it — the same keys as
+any other track's panel, because it is the same panel — and you hear every
+turn as you make it, since that instrument *is* the track's plugin slot. The
+patch selector loads a whole patch here exactly as it does anywhere else.
+
+What you dial is what `r` renders the take through, and the pad keeps it:
+landing a take, leaving the mode, or pressing `i` again writes the panel onto
+the pad as one undo step — and only if you actually moved something, so a
+trip through the mode that changed nothing changes nothing. Come back with
+`i` a week later and the sound is the one you recorded with.
+
+Two things worth knowing. `Esc` on that panel means what it means on every
+other panel in the box — back out to the track list — and leaves the mode
+standing; the mode's own `Esc` is on the pads tab, where the banner offering
+it is. And the sampler's own `level` and `vel` are simply not on the panel
+while the mode is on, which is the point: they used to be, over a slot
+holding a synth, so turning `level` sent an unlabelled patch change to an
+instrument nobody was looking at.
+
+One gap, honestly: `Space+W`'s preset browser cannot be opened while the mode
+is on, because `Space` is refused from every tab while the slot is on loan.
+The factory patch selector at the top of the panel is how a sound is chosen
+here; a named user preset has to wait for the browser to grow a door that
+does not go through the space menu.
 
 Recording into a **zone** works the same way, and it is how a multisampled
 instrument gets built: split the bed with `s`, stand in each range and record
@@ -839,10 +869,12 @@ a held knob strikes, and for the same reason. `Esc` is the way out.
 | `r` | Arm the take; again to end it and land it |
 | `p` | Swap what `r` lands: `take: audio` or `take: phrase` |
 | `i` | Change the instrument |
+| `Tab` | Off the map to `[inst]` — the source instrument's own panel |
 | `Esc` | End a running take; again to put the sampler back |
 
 While the mode is on, the sampler is out of the track's plugin slot. Every
-other key — `Space` included, from any tab — says so rather than acting.
+other key on the map — `Space` included, from any tab — says so rather than
+acting, and the sentence it says names `Tab` as the way to the panel.
 
 ---
 
@@ -1184,7 +1216,10 @@ plays that instrument instead of the sampler, through its own effects and
 fader, and your keys are a performance. `r` arms, you play, `r` lands the
 take on the pad — named, selected, one `u` away. Stopped, the take starts on
 your first note and rings out to silence; rolling (`Space+P`), it is cut to
-whole bars so it loops. Playing one pitch teaches the pad its root. `i`
+whole bars so it loops. Playing one pitch teaches the pad its root. `Tab`
+takes you off the map to `[inst]`, which while the mode is on is that
+instrument's own panel — patch selector and all — so the sound you record is
+the sound you dialled, and the pad keeps the panel you dialled it on. `i`
 changes the instrument, `Esc` ends a running take and `Esc` again puts the
 sampler back with its kit. A take becomes a file the next time you save —
 into `<session>.samples/`, which is the first row of the `a` list from then

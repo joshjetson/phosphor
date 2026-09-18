@@ -185,13 +185,18 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
     // two panels showing the same control differently is how one of them
     // ends up wrong.
     if nav.clip_view.fx_panel_tab == FxPanelTab::Synth {
-        let track = nav.tracks.get(nav.track_cursor);
-        let values = track.map(|t| &t.synth_params).cloned().unwrap_or_default();
+        // Whose controls these are is `NavState::panel`'s answer, not this
+        // strip's: while source mode has the track's plugin slot on loan, the
+        // instrument in the slot is the one a pad is being recorded from, and
+        // a strip still drawing the sampler's two globals would be editing
+        // one instrument under another one's labels.
+        let view = nav.panel();
+        let instrument = view.as_ref().map(|v| v.instrument);
+        let values: &[f32] = view.as_ref().map_or(&[], |v| v.params);
 
         if values.is_empty() {
             lines.push(Line::from(Span::styled("  (no instrument)", theme::dim())));
         } else {
-            let instrument = track.and_then(|t| t.instrument_type);
             let names = params::names(instrument);
             let count = values.len().min(names.len());
 
@@ -211,7 +216,7 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                 let name_s = if is_cur { theme::amber_bright().add_modifier(Modifier::BOLD) } else { theme::normal() };
                 let dim_s = if is_cur { theme::amber() } else { theme::dim() };
 
-                if let Some(label) = params::discrete_label(instrument, &values, i) {
+                if let Some(label) = params::discrete_label(instrument, values, i) {
                     lines.push(Line::from(vec![
                         Span::styled(format!(" {indicator} "), name_s),
                         Span::styled(format!("{name:<8}"), name_s),
@@ -223,7 +228,7 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                         Span::styled(format!(" {indicator} "), name_s),
                         Span::styled(format!("{name:<8}"), name_s),
                         Span::styled(params::bar(val, bar_w), if is_cur { theme::amber() } else { theme::muted() }),
-                        Span::styled(format!(" {}", params::value_text(instrument, &values, i)), dim_s),
+                        Span::styled(format!(" {}", params::value_text(instrument, values, i)), dim_s),
                     ]));
                 }
             }
@@ -281,8 +286,13 @@ pub(super) fn render_inst_config(frame: &mut Frame, area: Rect, nav: &NavState) 
         frame.render_widget(Paragraph::new(Span::styled("  select a track", theme::dim())), area);
         return;
     };
-    let instrument = track.instrument_type;
-    let values = &track.synth_params;
+    // The panel draws whatever is in the track's plugin slot. Normally that
+    // is the track's own instrument; while source mode has the slot on loan
+    // it is the instrument a pad is being recorded from, and the header below
+    // says so — see `NavState::panel`.
+    let view = nav.panel();
+    let instrument = view.as_ref().map(|v| v.instrument);
+    let values: &[f32] = view.as_ref().map_or(&[], |v| v.params);
     let names = params::names(instrument);
     let count = values.len().min(names.len());
     if count == 0 {
@@ -298,6 +308,8 @@ pub(super) fn render_inst_config(frame: &mut Frame, area: Rect, nav: &NavState) 
     // sounds on them. The two globals below are real and do work; the kit is
     // what is missing, and it lives on a track of its own. The same sentence
     // the child knob flashes — see `App::say_if_child_needs_its_own_track`.
+    // Source mode never reaches this: a sampler cannot be recorded from
+    // itself, so the borrowed instrument is never the sampler.
     let orphaned_sampler =
         instrument == Some(InstrumentType::Sampler) && track.sampler.is_none();
 
@@ -313,7 +325,8 @@ pub(super) fn render_inst_config(frame: &mut Frame, area: Rect, nav: &NavState) 
     let page = cursor / per_page;
     let first = page * per_page;
 
-    let mut lines: Vec<Line> = vec![inst_header(track, instrument, count, page, pages, focused)];
+    let mut lines: Vec<Line> =
+        vec![inst_header(nav, track, instrument, count, page, pages, focused)];
     if orphaned_sampler {
         lines.push(Line::from(Span::styled(
             "  the sampler needs its own track for pads \u{00b7} these two are all this one has",
@@ -356,7 +369,14 @@ pub(super) fn render_inst_config(frame: &mut Frame, area: Rect, nav: &NavState) 
 const INST_CELL_W: usize = 26;
 
 /// The line over the panel: whose controls these are, and which page of them.
+///
+/// In source mode it says *why* they are somebody else's — "source for pad
+/// C3" — because the alternative is a player finding a DX7's eighty-four
+/// controls on a track called `smplr` with nothing on the screen to explain
+/// it. The pad is named because the panel goes back to that pad when the
+/// mode ends.
 fn inst_header(
+    nav: &NavState,
     track: &TrackState,
     instrument: Option<InstrumentType>,
     count: usize,
@@ -374,11 +394,20 @@ fn inst_header(
                 theme::normal().add_modifier(Modifier::BOLD)
             },
         ),
-        Span::styled(
-            format!("\u{00B7} {} controls ", count),
-            theme::dim(),
-        ),
     ];
+    if let Some(mode) = nav.panel_source() {
+        spans.push(Span::styled(
+            format!(
+                "\u{00B7} source for pad {} ",
+                phosphor_app::sampler::SamplerState::pad_label(mode.pad),
+            ),
+            theme::amber(),
+        ));
+    }
+    spans.push(Span::styled(
+        format!("\u{00B7} {} controls ", count),
+        theme::dim(),
+    ));
     if pages > 1 {
         spans.push(Span::styled(format!("\u{00B7} page {}/{pages} ", page + 1), theme::muted()));
     }

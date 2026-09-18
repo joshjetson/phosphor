@@ -1430,12 +1430,7 @@ mod tests {
         assert!(app.in_sampler_source(), "the refusal cost the mode");
 
         // And the moment the sampler is back, space is space again.
-        for _ in 0..8 {
-            if app.nav.clip_view.clip_tab == ClipTab::Pads {
-                break;
-            }
-            press(&mut app, KeyCode::Tab);
-        }
+        back_to_pads(&mut app);
         assert_eq!(app.nav.clip_view.clip_tab, ClipTab::Pads, "never found the way back");
         press(&mut app, KeyCode::Esc);
         assert!(!app.in_sampler_source());
@@ -1494,6 +1489,10 @@ mod tests {
         assert_eq!(sampler_state(&app).cursor, pad, "`l` walked out of the mode's pad");
         let (message, _) = app.status_message.as_ref().unwrap();
         assert!(message.contains("source mode is on pad C3"), "unhelpful: {message}");
+        // ...and it names the road to the instrument's own panel, because a
+        // player pressing keys looking for a way to change the sound is
+        // exactly the player who has to be told where it is.
+        assert!(message.contains("tab dials it"), "no way to the panel named: {message}");
     }
 
     /// The pad remembers what it was recorded from, and `i` comes back
@@ -1889,6 +1888,482 @@ mod tests {
         app.execute_confirm(ConfirmKind::DeleteTrack);
         press(&mut app, KeyCode::Char('l')); // any key: the reconciler runs after each
         assert!(app.nav.sampler_source.is_none(), "the mode outlived its track");
+    }
+
+    // ── The panel of the instrument in the borrowed slot ──
+
+    /// Tab round the clip view until the instrument panel is the tab in
+    /// front, the way a player does. Capped, so a cycle that stops passing
+    /// through `[inst]` fails the test rather than hanging it.
+    fn tab_to_panel(app: &mut App) {
+        for _ in 0..8 {
+            if app.nav.clip_view.clip_tab == ClipTab::InstConfig
+                && app.nav.clip_view.focus == ClipViewFocus::PianoRoll
+            {
+                return;
+            }
+            press(app, KeyCode::Tab);
+        }
+        panic!("Tab never reached the instrument panel");
+    }
+
+    /// Tab back round to the pad map, which is where the mode's own keys
+    /// live. The clip view is where the keys are going either way.
+    fn back_to_pads(app: &mut App) {
+        app.nav.focused_pane = Pane::ClipView;
+        for _ in 0..8 {
+            if app.nav.clip_view.clip_tab == ClipTab::Pads
+                && app.nav.clip_view.focus == ClipViewFocus::PianoRoll
+            {
+                return;
+            }
+            press(app, KeyCode::Tab);
+        }
+        panic!("Tab never came back to the pad map");
+    }
+
+    /// The panel the mode is editing.
+    fn source_params(app: &App) -> Vec<f32> {
+        app.nav.sampler_source.as_deref().expect("source mode is not on").params.clone()
+    }
+
+    /// What the pad under the cursor remembers about its source.
+    fn pad_source(app: &App) -> Option<phosphor_app::sampler::PadSource> {
+        sampler_state(app).edited().and_then(|p| p.source.clone())
+    }
+
+    /// The sampler's own two globals, which nothing in this section may move.
+    fn sampler_globals(app: &App) -> Vec<f32> {
+        app.nav
+            .tracks
+            .iter()
+            .find(|t| t.sampler.is_some())
+            .expect("no sampler track")
+            .synth_params
+            .clone()
+    }
+
+    /// Tab off the pads and the panel is the instrument in the slot — which
+    /// while the mode is on is the source, not the sampler.
+    ///
+    /// The header says so in words, because a DX7's eighty-four controls on
+    /// a track called `smplr` needs an explanation on the screen and not in
+    /// the manual.
+    #[test]
+    fn the_panel_in_source_mode_is_the_source_instruments() {
+        let mut app = source_app(); // the phosphor synth
+        tab_to_panel(&mut app);
+
+        let view = app.nav.panel().expect("the track has no panel at all");
+        assert_eq!(view.instrument, InstrumentType::Synth);
+        assert_eq!(view.params.len(), phosphor_dsp::synth::PARAM_COUNT);
+        assert_eq!(view.params, &source_params(&app)[..], "the panel is not the mode's copy");
+
+        let text = screen(&app, 120, 40);
+        assert!(text.contains("Phosphor Synth"), "the panel does not name it:\n{text}");
+        assert!(text.contains("source for pad C3"), "no word on whose panel it is:\n{text}");
+        assert!(text.contains("patch"), "the source's first control is missing:\n{text}");
+        assert!(
+            !text.contains("\u{00b7} 2 controls"),
+            "the sampler's two globals are still the panel:\n{text}",
+        );
+        // ...and the mode is still announced everywhere it was.
+        assert!(text.contains("-- SOURCE --"), "the bar stopped saying the mode is on:\n{text}");
+    }
+
+    /// A knob turned on that panel moves the source and reaches the audio
+    /// thread, and the sampler's own globals are left exactly alone.
+    ///
+    /// The hazard this replaced: the panel drew `level` while the slot held a
+    /// synth, so one press of `l` sent `SetParameter(0)` — the patch selector
+    /// on most instruments — to an instrument nobody was looking at.
+    #[test]
+    fn a_knob_on_the_source_panel_edits_the_source_and_not_the_sampler() {
+        let mut app = source_app();
+        tab_to_panel(&mut app);
+        let globals = sampler_globals(&app);
+        // Off the patch selector and onto a knob, so this measures one
+        // control rather than a whole patch.
+        press(&mut app, KeyCode::Char('j'));
+        let index = app.nav.clip_view.synth_param_cursor;
+        assert_eq!(index, 1, "j did not walk the source's controls");
+        let before = source_params(&app);
+        let _ = app.drain_mixer_commands();
+
+        press(&mut app, KeyCode::Char('l'));
+
+        let after = source_params(&app);
+        assert!(after[index] > before[index], "l did not turn the source's knob");
+        assert_eq!(
+            before.iter().zip(&after).filter(|(a, b)| a != b).count(),
+            1,
+            "one keypress moved more than one control",
+        );
+        assert_eq!(sampler_globals(&app), globals, "the sampler's globals moved with it");
+
+        let track_id = app
+            .nav
+            .tracks
+            .iter()
+            .find(|t| t.sampler.is_some())
+            .and_then(|t| t.mixer_id)
+            .expect("the sampler track has no mixer id");
+        let sent: Vec<(usize, f32)> = app
+            .drain_mixer_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                MixerCommand::SetParameter { track_id: id, param_index, value }
+                    if id == track_id =>
+                {
+                    Some((param_index, value))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sent, vec![(index, after[index])], "the slot was told the wrong thing");
+    }
+
+    /// The patch selector reloads the whole panel and every value of it goes
+    /// to the slot — the same rule the panel obeys on any other track,
+    /// because it is the same helper behind both.
+    #[test]
+    fn the_patch_selector_in_source_mode_loads_the_whole_panel() {
+        let mut app = sampler_app();
+        press(&mut app, KeyCode::Char('i'));
+        for _ in 0..6 {
+            press(&mut app, KeyCode::Char('j')); // down to the Rhodes
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.nav.sampler_source.as_deref().map(|m| m.instrument),
+            Some(InstrumentType::Rhodes),
+        );
+        tab_to_panel(&mut app);
+        let globals = sampler_globals(&app);
+        assert_eq!(app.nav.clip_view.synth_param_cursor, phosphor_dsp::rhodes::P_PATCH);
+        let before = source_params(&app);
+        let _ = app.drain_mixer_commands();
+
+        press(&mut app, KeyCode::Char('l'));
+
+        let after = source_params(&app);
+        let want = phosphor_dsp::rhodes::RhodesPiano::params_for_patch(
+            after[phosphor_dsp::rhodes::P_PATCH],
+        );
+        assert_ne!(before[0], after[0], "the patch did not change");
+        assert!(
+            before.iter().zip(&after).filter(|(a, b)| a != b).count() > 1,
+            "the patch changed and the panel behind it did not",
+        );
+        for i in 1..phosphor_dsp::rhodes::PARAM_COUNT {
+            assert!(
+                (after[i] - want[i]).abs() < 1e-6,
+                "{} is not the patch's",
+                phosphor_dsp::rhodes::PARAM_NAMES[i],
+            );
+        }
+        assert_eq!(sampler_globals(&app), globals, "the sampler's globals followed the patch");
+
+        // Half a patch in the slot is a sound nobody chose: all of it goes.
+        let sent = app
+            .drain_mixer_commands()
+            .into_iter()
+            .filter(|c| matches!(c, MixerCommand::SetParameter { .. }))
+            .count();
+        assert_eq!(sent, after.len(), "the slot got part of a patch");
+    }
+
+    /// Esc on the panel is the panel's Esc — out to the track list, the way
+    /// it is on every other track — and the mode is still on behind it.
+    ///
+    /// The mode's own Esc lives on the pads tab, where the banner offering it
+    /// is; a second meaning here would be the one key that tore a mode down
+    /// from a place that never said the mode was on.
+    #[test]
+    fn esc_on_the_panel_leaves_the_panel_and_not_the_mode() {
+        let mut app = source_app();
+        tab_to_panel(&mut app);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.nav.focused_pane, Pane::Tracks, "esc did not leave the panel");
+        assert!(app.nav.sampler_source.is_some(), "esc on the panel tore the mode down");
+
+        // Back to the pads, where `r` still arms and Esc still means the
+        // mode: a trip through the panel costs the mode nothing.
+        back_to_pads(&mut app);
+        press(&mut app, KeyCode::Char('r'));
+        assert!(
+            app.nav.sampler_source.as_deref().is_some_and(SourceMode::is_armed),
+            "r stopped arming after a trip through the panel",
+        );
+        press(&mut app, KeyCode::Char('r'));
+        press(&mut app, KeyCode::Esc);
+        assert!(app.nav.sampler_source.is_none(), "esc on the pads stopped leaving the mode");
+    }
+
+    /// Leaving writes the dialled panel onto the pad — once, undoably, and
+    /// only when a knob was actually moved.
+    #[test]
+    fn leaving_writes_the_panel_back_once_and_only_when_it_changed() {
+        // A trip that touched nothing changes nothing: no step, no source
+        // rewritten, no session churn. The step `u` finds is the one the
+        // mode's own door pushed on the way in.
+        let mut app = source_app();
+        let entered = pad_source(&app).expect("entering did not record the source");
+        tab_to_panel(&mut app);
+        press(&mut app, KeyCode::Char('j')); // walking the panel is not editing it
+        back_to_pads(&mut app);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.nav.sampler_source.is_none());
+        assert_eq!(pad_source(&app), Some(entered.clone()), "an untouched trip rewrote the pad");
+        press(&mut app, KeyCode::Char('u'));
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert_eq!(message, "undo: pad source", "an untouched trip left a step behind: {message}");
+
+        // A trip that turned a knob writes it back, in one step that `u`
+        // takes off.
+        let mut app = source_app();
+        tab_to_panel(&mut app);
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('l'));
+        let dialled = source_params(&app);
+        assert_ne!(dialled, entered.params, "the knob never moved");
+        back_to_pads(&mut app);
+        press(&mut app, KeyCode::Esc);
+
+        let stored = pad_source(&app).expect("the pad forgot its source");
+        assert_eq!(stored.params, dialled, "the pad did not keep the panel that was dialled");
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(message.contains("kept the panel you dialled"), "unhelpful: {message}");
+
+        press(&mut app, KeyCode::Char('u'));
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert_eq!(message, "undo: pad source panel", "the write-back was not one named step");
+        assert_eq!(
+            pad_source(&app).map(|s| s.params),
+            Some(entered.params),
+            "one u did not take the panel edit back",
+        );
+        // ...and the step under it is the mode's entry, not a second
+        // write-back: a sweep of knobs is one step, not one per knob.
+        press(&mut app, KeyCode::Char('u'));
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert_eq!(message, "undo: pad source", "the write-back left more than one step");
+    }
+
+    /// `u` inside the mode takes the panel on the screen back with it, and
+    /// the slot hears the old numbers again.
+    ///
+    /// The pad is the truth and the mode holds a working copy. Without the
+    /// resync, undoing the step that wrote the panel onto the pad changed
+    /// nothing a player could see — and then lost the undo again the moment
+    /// the mode ended, because leaving writes the working copy back.
+    #[test]
+    fn undo_inside_the_mode_takes_the_panel_back_with_it() {
+        let mut app = source_app();
+        let opened = source_params(&app);
+        tab_to_panel(&mut app);
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('l'));
+        let dialled = source_params(&app);
+        assert_ne!(dialled, opened, "the knob never moved");
+
+        // Landing a take writes the panel onto the pad, then lands the take:
+        // two acts, two steps.
+        back_to_pads(&mut app);
+        press(&mut app, KeyCode::Char('r'));
+        perform(&mut app, 60);
+        press(&mut app, KeyCode::Char('r'));
+        assert_eq!(pad_source(&app).map(|s| s.params), Some(dialled.clone()));
+
+        press(&mut app, KeyCode::Char('u')); // the take
+        assert_eq!(source_params(&app), dialled, "undoing the take moved the panel");
+        let _ = app.drain_mixer_commands();
+
+        press(&mut app, KeyCode::Char('u')); // the panel
+        assert_eq!(source_params(&app), opened, "the panel on the screen ignored the undo");
+        assert!(app.nav.sampler_source.is_some(), "undo tore the mode down");
+        let sent = app
+            .drain_mixer_commands()
+            .into_iter()
+            .filter(|c| matches!(c, MixerCommand::SetParameter { .. }))
+            .count();
+        assert_eq!(sent, opened.len(), "the slot was not given the panel that came back");
+
+        // ...and leaving now has nothing to write back, because the working
+        // copy and the pad agree again.
+        press(&mut app, KeyCode::Esc);
+        let (message, _) = app.status_message.as_ref().unwrap();
+        assert!(
+            !message.contains("kept the panel you dialled"),
+            "leaving wrote the undone panel back: {message}",
+        );
+        assert_eq!(pad_source(&app).map(|s| s.params), Some(opened));
+    }
+
+    /// The sampler's own two globals are out of reach while the mode is on,
+    /// and back — with the cursor inside them — the moment it ends.
+    ///
+    /// The second half is the papercut the first half creates: a cursor left
+    /// at control sixty of a DX7 over a panel of two is a highlight nobody
+    /// can see and a `k` that has to be pressed fifty-eight times.
+    #[test]
+    fn the_sampler_gets_its_panel_back_with_the_cursor_inside_it() {
+        let mut app = sampler_app();
+        let globals = sampler_globals(&app);
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j')); // the DX7, which has scores of controls
+        press(&mut app, KeyCode::Enter);
+        tab_to_panel(&mut app);
+        for _ in 0..40 {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        let deep = app.nav.clip_view.synth_param_cursor;
+        assert!(deep > 1, "j never walked past the sampler's two controls");
+        assert_eq!(sampler_globals(&app), globals, "the sampler's globals were reachable");
+
+        back_to_pads(&mut app);
+        press(&mut app, KeyCode::Esc);
+
+        let view = app.nav.panel().expect("the sampler came back with no panel");
+        assert_eq!(view.instrument, InstrumentType::Sampler);
+        assert_eq!(view.params, &globals[..], "the globals came back changed");
+        assert!(
+            app.nav.clip_view.synth_param_cursor < view.params.len(),
+            "the cursor stayed out past the end of the sampler's panel",
+        );
+    }
+
+    /// The contract in the file's own words: a player who tweaked the DX7 and
+    /// pressed `i` again gets the DX7 they tweaked.
+    #[test]
+    fn a_player_who_tweaked_the_dx7_gets_the_dx7_they_tweaked() {
+        let mut app = sampler_app();
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j')); // DX7
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.nav.sampler_source.as_deref().map(|m| m.instrument),
+            Some(InstrumentType::DX7),
+        );
+        tab_to_panel(&mut app);
+        press(&mut app, KeyCode::Char('j')); // off the voice selector
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Char('l'));
+        }
+        let dialled = source_params(&app);
+        assert_ne!(
+            dialled,
+            phosphor_app::preset::defaults(InstrumentType::DX7),
+            "the panel was never tweaked",
+        );
+
+        // `i` again on the same pad, same instrument: the tweak is what comes
+        // back, not the defaults and not the numbers the mode started with.
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(source_params(&app), dialled, "the second visit lost the tweak");
+
+        // ...and so does a visit after the sampler has been back in the slot.
+        back_to_pads(&mut app);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.nav.sampler_source.is_none());
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(source_params(&app), dialled, "a round trip through the sampler lost it");
+        assert_eq!(
+            app.nav.instrument_modal.selected(),
+            InstrumentType::DX7,
+            "the picker stopped opening on the pad's own instrument",
+        );
+    }
+
+    /// The take is rendered through the panel that was dialled, not through
+    /// the one the mode opened with: two takes of the same instrument with
+    /// different panels are different audio.
+    #[test]
+    fn a_take_is_rendered_through_the_panel_on_the_screen() {
+        let mut app = source_app();
+        press(&mut app, KeyCode::Char('r'));
+        perform(&mut app, 60);
+        press(&mut app, KeyCode::Char('r'));
+
+        // Shut the filter, which is the loudest thing on this panel.
+        tab_to_panel(&mut app);
+        app.nav.clip_view.synth_param_cursor = phosphor_dsp::synth::P_CUTOFF;
+        for _ in 0..30 {
+            press(&mut app, KeyCode::Char('h'));
+        }
+        assert!(
+            source_params(&app)[phosphor_dsp::synth::P_CUTOFF] < 0.05,
+            "the cutoff never came down",
+        );
+        back_to_pads(&mut app);
+        press(&mut app, KeyCode::Char('r'));
+        perform(&mut app, 60);
+        press(&mut app, KeyCode::Char('r'));
+
+        let pad = sampler_state(&app).cursor;
+        let layers = &sampler_state(&app).pads[pad].layers;
+        assert_eq!(layers.len(), 2, "two takes did not land");
+        let open = layers[0].pcm.as_ref().expect("take 1 has no audio");
+        let shut = layers[1].pcm.as_ref().expect("take 2 has no audio");
+        // Both takes start at their first note, so the frames line up and
+        // the only thing that can differ over the common prefix is the panel.
+        let frames = open.data.len().min(shut.data.len()).min(4_096);
+        assert!(frames > 0, "a take with no frames in it");
+        assert!(
+            open.data[..frames] != shut.data[..frames],
+            "the second take came out of the first take's panel",
+        );
+        let energy = |data: &[f32]| data[..frames].iter().map(|s| s * s).sum::<f32>();
+        assert!(
+            energy(&shut.data) < energy(&open.data),
+            "shutting the filter did not make the take darker",
+        );
+
+        // And the pad now remembers the panel the second take was played on.
+        assert_eq!(
+            pad_source(&app).map(|s| s.params),
+            Some(source_params(&app)),
+            "the pad kept the panel the mode opened with",
+        );
+    }
+
+    /// A phrase's child takes the dialled panel too — the child is rendered
+    /// from the pad's source, and the pad's source is what was on the screen.
+    #[test]
+    fn a_phrase_child_takes_the_panel_that_was_dialled() {
+        let mut app = source_app();
+        press(&mut app, KeyCode::Char('p')); // r lands a phrase
+        tab_to_panel(&mut app);
+        press(&mut app, KeyCode::Char('j'));
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Char('l'));
+        }
+        let dialled = source_params(&app);
+        assert_ne!(
+            dialled,
+            phosphor_app::preset::defaults(InstrumentType::Synth),
+            "the panel was never tweaked, so this proves nothing",
+        );
+        back_to_pads(&mut app);
+
+        press(&mut app, KeyCode::Char('r'));
+        perform(&mut app, 60);
+        press(&mut app, KeyCode::Char('r'));
+
+        let child = sampler_state(&app).child.clone().expect("the phrase landed with no child");
+        assert_eq!(child.instrument, InstrumentType::Synth);
+        assert_eq!(child.params, dialled, "the child took the panel the mode opened with");
+        // ...and the engine was handed that child, not the defaults.
+        let sent = app.drain_mixer_commands().into_iter().any(|c| matches!(
+            c,
+            MixerCommand::SetSamplerChildParam { param_index, value, .. }
+                if param_index == 1 && (value - dialled[1]).abs() < 1e-6
+        ));
+        assert!(sent, "the engine's child never got the dialled panel");
     }
 
     // ── Keys mode: the bed as zones ──
@@ -3160,3 +3635,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+

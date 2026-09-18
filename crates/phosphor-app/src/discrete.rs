@@ -83,6 +83,108 @@ pub fn step(instrument: InstrumentType, param: usize, value: f32, up: bool) -> f
     }
 }
 
+// ── The selector that carries a whole panel ──
+
+/// Whether moving `param` loads a whole new panel rather than one value.
+///
+/// Index 0 on the instruments whose factory patch *is* their front panel, and
+/// two controls on the two whose factory set is a bank and a program: moving
+/// either of those names a different program, so either one reloads. Four
+/// instruments select nothing from the front panel and say so here — the DX7
+/// and the drum rack keep the chosen voice inside the plugin and leave the
+/// panel's controls alone, the sampler's knob 0 is an output level, and the
+/// sequencer has no panel of its own.
+///
+/// The sampler's arm is the one worth naming twice: it used to fall through
+/// to "index 0 reloads", so turning a sampler's level rewrote its two globals
+/// out of the phosphor synth's patch table.
+#[must_use]
+pub fn is_preset_selector(instrument: InstrumentType, param: usize) -> bool {
+    match instrument {
+        InstrumentType::Prophet6 => {
+            param == phosphor_dsp::prophet6::P_PROGRAM
+                || param == phosphor_dsp::prophet6::P_BANK
+        }
+        InstrumentType::Teo5 => {
+            param == phosphor_dsp::teo5::P_PROGRAM || param == phosphor_dsp::teo5::P_BANK
+        }
+        InstrumentType::Synth
+        | InstrumentType::Jupiter8
+        | InstrumentType::Odyssey
+        | InstrumentType::Juno60
+        | InstrumentType::Rhodes
+        | InstrumentType::LittlePhatty => param == 0,
+        InstrumentType::Sampler
+        | InstrumentType::DrumRack
+        | InstrumentType::DX7
+        | InstrumentType::Sequencer => false,
+    }
+}
+
+/// Load the panel the selector at `param` now names, over `params` in place.
+///
+/// `true` when the block was rewritten, which is the caller's cue to send
+/// every value to the audio thread: half a patch is a sound nobody chose.
+///
+/// One door, because there are two panels that need it — the track's own, and
+/// the one source mode borrows for the instrument in a sampler's slot — and a
+/// second copy of this match is a second place to forget an instrument.
+///
+/// The write is a zip and every read is a `get`, so a block that is shorter
+/// than the instrument's panel (a session saved before a bank grew) cannot
+/// index off the end of itself either way.
+pub fn reload_panel_for_selector(
+    instrument: InstrumentType,
+    params: &mut [f32],
+    param: usize,
+) -> bool {
+    if !is_preset_selector(instrument, param) {
+        return false;
+    }
+    let at = |index: usize| params.get(index).copied().unwrap_or(0.0);
+    let loaded: Vec<f32> = match instrument {
+        InstrumentType::Synth => {
+            phosphor_dsp::synth::PhosphorSynth::params_for_patch(at(param)).to_vec()
+        }
+        InstrumentType::Jupiter8 => {
+            phosphor_dsp::jupiter::Jupiter8Synth::params_for_patch(at(param)).to_vec()
+        }
+        InstrumentType::Odyssey => {
+            phosphor_dsp::odyssey::OdysseySynth::params_for_patch(at(param)).to_vec()
+        }
+        InstrumentType::Juno60 => {
+            phosphor_dsp::juno::Juno60Synth::params_for_patch(at(param)).to_vec()
+        }
+        InstrumentType::Rhodes => {
+            phosphor_dsp::rhodes::RhodesPiano::params_for_patch(at(param)).to_vec()
+        }
+        InstrumentType::LittlePhatty => {
+            phosphor_dsp::phatty::LittlePhatty::params_for_patch(at(param)).to_vec()
+        }
+        InstrumentType::Prophet6 => phosphor_dsp::prophet6::params_for_program(
+            at(phosphor_dsp::prophet6::P_BANK),
+            at(phosphor_dsp::prophet6::P_PROGRAM),
+        )
+        .to_vec(),
+        InstrumentType::Teo5 => phosphor_dsp::teo5::params_for_program(
+            at(phosphor_dsp::teo5::P_BANK),
+            at(phosphor_dsp::teo5::P_PROGRAM),
+        )
+        .to_vec(),
+        // Unreachable behind the guard above, and spelled out rather than
+        // caught by a wildcard so that an instrument added to the rack has to
+        // answer this question on its way in.
+        InstrumentType::Sampler
+        | InstrumentType::DrumRack
+        | InstrumentType::DX7
+        | InstrumentType::Sequencer => return false,
+    };
+    for (slot, value) in params.iter_mut().zip(loaded) {
+        *slot = value;
+    }
+    true
+}
+
 /// Every position of a selector, in order, as knob values.
 ///
 /// `None` when `param` is not a selector. Never empty otherwise.
@@ -268,6 +370,85 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Which control carries a whole panel, spelled out per instrument.
+    ///
+    /// The sampler's two are the entries that matter: its knob 0 is an output
+    /// level, and the rule that said "index 0 reloads" rewrote a sampler's
+    /// globals out of the phosphor synth's patch table.
+    #[test]
+    fn only_a_preset_selector_carries_a_whole_panel() {
+        use InstrumentType as I;
+        assert!(is_preset_selector(I::Synth, synth::P_PATCH));
+        assert!(is_preset_selector(I::Juno60, juno::P_PATCH));
+        assert!(is_preset_selector(I::Rhodes, rhodes::P_PATCH));
+        assert!(is_preset_selector(I::Jupiter8, jupiter::P_PATCH));
+        assert!(is_preset_selector(I::Odyssey, odyssey::P_PATCH));
+        assert!(is_preset_selector(I::LittlePhatty, phatty::P_PATCH));
+        // Two controls each, because their factory set is a bank and a
+        // program and moving either names a different program.
+        assert!(is_preset_selector(I::Prophet6, prophet6::P_PROGRAM));
+        assert!(is_preset_selector(I::Prophet6, prophet6::P_BANK));
+        assert!(is_preset_selector(I::Teo5, teo5::P_PROGRAM));
+        assert!(is_preset_selector(I::Teo5, teo5::P_BANK));
+
+        // Never a fader.
+        assert!(!is_preset_selector(I::Juno60, juno::P_CUTOFF));
+        assert!(!is_preset_selector(I::Prophet6, prophet6::P_LP_CUTOFF));
+        // Never the sampler, whose knob 0 is a level.
+        assert!(!is_preset_selector(I::Sampler, 0));
+        assert!(!is_preset_selector(I::Sampler, 1));
+        // And not the two whose chosen voice lives inside the plugin: the
+        // panel's controls are theirs either way, so reloading it would
+        // throw away numbers the patch never set.
+        assert!(!is_preset_selector(I::DX7, dx7::P_PATCH));
+        assert!(!is_preset_selector(I::DrumRack, drum_rack::P_KIT));
+        assert!(!is_preset_selector(I::Sequencer, 0));
+    }
+
+    /// The reload rewrites the block it is handed, and cannot be made to
+    /// panic by a block that is the wrong length — a session file is a text
+    /// file somebody can edit, and a bank that grew leaves short blocks
+    /// behind.
+    #[test]
+    fn a_reload_fills_the_block_it_is_given_and_no_more() {
+        let mut panel = rhodes::PARAM_DEFAULTS.to_vec();
+        panel[rhodes::P_PATCH] = knob_at(InstrumentType::Rhodes, rhodes::P_PATCH, 5).unwrap();
+        assert!(reload_panel_for_selector(InstrumentType::Rhodes, &mut panel, rhodes::P_PATCH));
+        let want = rhodes::RhodesPiano::params_for_patch(panel[rhodes::P_PATCH]);
+        assert_eq!(panel, want.to_vec());
+
+        // A fader reloads nothing and moves nothing.
+        let mut untouched = panel.clone();
+        assert!(!reload_panel_for_selector(
+            InstrumentType::Rhodes,
+            &mut untouched,
+            rhodes::P_VOICING
+        ));
+        assert_eq!(untouched, panel);
+
+        // Short blocks: written as far as they go, read with `get`, and
+        // never indexed off the end. The Prophet-6 is the pessimistic case —
+        // its program is two controls, and a one-value block is missing one
+        // of them.
+        let mut short = vec![0.5, 0.25, 0.75];
+        assert!(reload_panel_for_selector(InstrumentType::Rhodes, &mut short, 0));
+        assert_eq!(short.len(), 3);
+        let mut tiny = vec![0.5];
+        assert!(reload_panel_for_selector(InstrumentType::Prophet6, &mut tiny, 0));
+        assert_eq!(tiny.len(), 1);
+        let mut empty: Vec<f32> = Vec::new();
+        assert!(reload_panel_for_selector(InstrumentType::Teo5, &mut empty, 0));
+        assert!(empty.is_empty());
+
+        // And the instruments that select nothing from the front panel keep
+        // their numbers, whichever control is asked about.
+        let mut sampler = phosphor_dsp::sampler::PARAM_DEFAULTS.to_vec();
+        for index in 0..sampler.len() {
+            assert!(!reload_panel_for_selector(InstrumentType::Sampler, &mut sampler, index));
+        }
+        assert_eq!(sampler, phosphor_dsp::sampler::PARAM_DEFAULTS.to_vec());
     }
 
     /// The defect this whole module exists for, played out on the control it

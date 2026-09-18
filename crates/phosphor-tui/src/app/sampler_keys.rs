@@ -23,6 +23,8 @@
 //! source     r starts the take · r again ends it · i swaps the instrument
 //!            p swaps what r lands: audio, or the phrase itself
 //!            esc puts the sampler back · the pad is fixed
+//!            tab leaves the map for the [inst] panel, which while the
+//!            mode is on is the SOURCE instrument's — patch and all
 //! ```
 //!
 //! `h`/`l` do two jobs on the map, and `enter` is what tells them apart:
@@ -50,6 +52,14 @@
 //! the bed, because the mode belongs to the pad it was entered on and a
 //! cursor that wandered off it would leave the banner naming one pad and
 //! the take landing on another.
+//!
+//! It owns them *here*, on the map. `Tab` is still the road to the rest of
+//! the clip view, and the panel at the end of it is the borrowed
+//! instrument's while the mode is on — see [`phosphor_app::state::NavState::panel`].
+//! That is where the sound being recorded is dialled, and it is why the
+//! refusals above are a refusal to edit a pad rather than a refusal to
+//! leave: a mode with no way to change the instrument it is playing is a
+//! mode that can only record the defaults.
 //!
 //! Keys mode changes what the keys *address*, never what they mean: `a`
 //! still loads a sound, `t` still trims one, `j`/`k` still walk the

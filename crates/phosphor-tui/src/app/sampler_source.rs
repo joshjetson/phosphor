@@ -93,6 +93,13 @@ impl App {
             self.leave_sampler_source();
         }
 
+        // Whatever the outgoing mode's panel was dialled to belongs to its
+        // pad before anything else happens. `i` pressed a second time on the
+        // same pad is the case that needs it: the answer below reads the
+        // pad's memory back, and without this it would read the numbers the
+        // mode *started* with rather than the ones on the screen.
+        self.commit_source_panel();
+
         // The pad remembers what it was recorded from — and the panel it
         // was recorded with, so the next take of the same sound is one key
         // away. Keeping the numbers when the instrument has not changed is
@@ -128,6 +135,9 @@ impl App {
         self.install_instrument(track_idx, instrument, &params);
         self.nav.sampler_source =
             Some(Box::new(SourceMode::new(track_idx, pad, instrument, params, take)));
+        // The panel under the cursor is the borrowed instrument's from here
+        // until the sampler comes back, and the two are not the same length.
+        self.nav.clamp_panel_cursor();
         self.flash(format!(
             "source: {} \u{00b7} pad {} \u{00b7} take: {} \u{00b7} play it \u{00b7} r records \u{00b7} p swaps \u{00b7} esc puts the sampler back",
             instrument.label(),
@@ -180,16 +190,117 @@ impl App {
         });
     }
 
+    /// Write the mode's panel onto the pad it belongs to, when it differs
+    /// from what the pad already remembers. Returns whether it did.
+    ///
+    /// [`SourceMode::params`] is the working copy: the numbers the borrowed
+    /// slot is playing, the numbers the render will replay, and the numbers
+    /// the `[inst]` panel edits while the mode is on. The pad's own memory of
+    /// them is written at the three moments the working copy stops being the
+    /// live one — a take landing, the mode ending, and the instrument being
+    /// swapped under it — because those are the moments the player would
+    /// otherwise lose a sound they dialled.
+    ///
+    /// **Only when it differs.** A trip through the mode that touched no knob
+    /// must not put a step on the undo stack or a change in the session file;
+    /// a player who pressed `i`, listened, and pressed `esc` changed nothing
+    /// and should find nothing changed.
+    ///
+    /// One step rather than one per knob, and it is the only undo a panel
+    /// edit inside the mode gets: the whole dial-up is the act, the same way
+    /// a knob sweep on a normal track coalesces into one.
+    pub(crate) fn commit_source_panel(&mut self) -> bool {
+        let Some(mode) = self.nav.sampler_source.as_deref() else { return false };
+        let track_idx = mode.track_idx;
+        let stored = self
+            .nav
+            .tracks
+            .get(track_idx)
+            .and_then(|t| t.sampler.as_deref())
+            .and_then(SamplerState::edited)
+            .and_then(|pad| pad.source.as_ref());
+        if stored
+            .is_some_and(|s| s.instrument == mode.instrument && s.params == mode.params)
+        {
+            return false;
+        }
+        let source = PadSource { instrument: mode.instrument, params: mode.params.clone() };
+
+        let before = self.nav.undo_checkpoint(UndoScope::Sampler { track_idx });
+        if let Some(state) = self
+            .nav
+            .tracks
+            .get_mut(track_idx)
+            .and_then(|t| t.sampler.as_deref_mut())
+            .and_then(SamplerState::edited_mut)
+        {
+            state.source = Some(source);
+        }
+        self.nav.commit_undo(before, "pad source panel");
+        true
+    }
+
+    /// Source mode's panel follows the pad when history moves under it.
+    ///
+    /// The pad is the truth and [`SourceMode::params`] is a working copy, so
+    /// undoing the step that wrote a panel onto the pad has to take the panel
+    /// on the screen — and the sound in the slot — back with it. Without
+    /// this, `u` is a key that visibly does nothing and then loses its work
+    /// again the moment the mode ends.
+    ///
+    /// Only while the restored source names the same instrument. Undoing past
+    /// the moment the mode began names a different one, and putting a
+    /// different instrument in the slot is the mode's own job — `i`'s — not
+    /// history's.
+    pub(crate) fn resync_source_panel(&mut self, track_idx: usize) {
+        let Some(mode) = self.nav.sampler_source.as_deref() else { return };
+        if mode.track_idx != track_idx {
+            return;
+        }
+        let Some(source) = self
+            .nav
+            .tracks
+            .get(track_idx)
+            .and_then(|t| t.sampler.as_deref())
+            .and_then(SamplerState::edited)
+            .and_then(|pad| pad.source.as_ref())
+        else {
+            return;
+        };
+        if source.instrument != mode.instrument || source.params == mode.params {
+            return;
+        }
+        let params = source.params.clone();
+        if let Some(mode) = self.nav.sampler_source.as_deref_mut() {
+            mode.params.clone_from(&params);
+        }
+        self.send_params_to_slot(track_idx, &params);
+        self.nav.clamp_panel_cursor();
+    }
+
     /// `esc` in source mode: the sampler comes back, with its kit.
     ///
     /// The instance the mixer builds is empty, so every occupied pad is
     /// replayed into it. A take landed during the mode is already in that
     /// set, which is why nothing has to be shipped twice.
     pub(crate) fn leave_sampler_source(&mut self) {
+        // The panel goes home before the mode does, or a sound dialled up and
+        // never recorded dies with the mode that was playing it.
+        let dialled = self.commit_source_panel();
         let Some(mode) = self.nav.sampler_source.take() else { return };
         self.reload_child_instrument(mode.track_idx);
         self.restore_sampler_pads(mode.track_idx);
-        self.flash("sampler back \u{00b7} the pads are playing again");
+        // Back to the sampler's two globals, which is a much shorter panel
+        // than the one the cursor may have been walking.
+        self.nav.clamp_panel_cursor();
+        self.flash(if dialled {
+            format!(
+                "sampler back \u{00b7} the pads are playing again \u{00b7} pad {} kept the panel you dialled",
+                SamplerState::pad_label(mode.pad),
+            )
+        } else {
+            "sampler back \u{00b7} the pads are playing again".to_string()
+        });
     }
 
     /// What source mode says to a key it does not take.
@@ -199,13 +310,18 @@ impl App {
     /// menu is refused with it from anywhere — a mode that took the track's
     /// plugin slot has to be able to say so however the player arrived at
     /// the key.
+    ///
+    /// It is also where the instrument's own panel is advertised. A player
+    /// pressing keys on the pad map looking for a way to change the sound is
+    /// exactly the player who needs to be told, and this is the sentence they
+    /// will hit first — the banner has no room left for it.
     pub(crate) fn flash_sampler_source_keys(&mut self) {
         let Some(mode) = self.nav.sampler_source.as_deref() else { return };
         let pad = phosphor_app::sampler::SamplerState::pad_label(mode.pad);
         let take = mode.take.label();
         let ends = if mode.is_armed() { "ends the take" } else { "records" };
         self.flash(format!(
-            "source mode is on pad {pad} \u{00b7} take: {take} \u{00b7} r {ends} \u{00b7} p swaps \u{00b7} esc puts the sampler back",
+            "source mode is on pad {pad} \u{00b7} take: {take} \u{00b7} r {ends} \u{00b7} tab dials it \u{00b7} esc puts the sampler back",
         ));
     }
 
@@ -306,6 +422,10 @@ impl App {
         let Some(capture) = mode.capture.take() else { return };
         let track_idx = mode.track_idx;
         let (instrument, params, kind) = (mode.instrument, mode.params.clone(), mode.take);
+        // The panel this take was played on is the pad's from now on: the
+        // next `i` on it opens the sound that was just recorded, not the one
+        // the mode started with. Its own step, before the take's.
+        self.commit_source_panel();
 
         let Some(plan) = capture.close(phosphor_midi::clock::now_micros()) else {
             self.flash("nothing played \u{00b7} no take landed \u{00b7} r tries again");
