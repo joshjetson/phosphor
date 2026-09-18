@@ -538,7 +538,7 @@ keys mode the same list belongs to the zone, with `span` at the top of it and
 | Control | What it does |
 |---------|--------------|
 | `span` | *(keys mode only)* the zone's two edges, low and high. `Enter` holds it and `h`/`l` / `H`/`L` move them |
-| `trig` | **one-shot** plays the trimmed region to its end and ignores the key coming up; **gate** sounds while the key is held and runs the release when you let go |
+| `trig` | **one-shot** plays the trimmed region to its end and ignores the key coming up; **gate** sounds while the key is held and runs the release when you let go; **mono** plays like a one-shot but the next note on *any* pad cuts it — last-note-wins across the whole sampler, so only one mono voice sounds at a time (monosynth bass, 808 glides) |
 | `poly` | 1–8 simultaneous hits on this pad. Past the limit the oldest is cut with a fade, never a truncation |
 | `choke` | mute group, `off` or 1–8. A hit silences every sounding voice on *other* pads in the same group — the closed hat stopping the open one |
 | `cycle` | round robin. Off, every sound on the pad that answers the hit plays and they stack. On, one of them answers and the next hit takes the next — eight snares on one key stop sounding like a machine gun |
@@ -549,7 +549,8 @@ keys mode the same list belongs to the zone, with `span` at the top of it and
 | `root` | the key that plays the sound untransposed. Defaults to the pad's own key |
 | `keytrk` | *(pads mode only)* on, the pad transposes the sound by its own distance from `root` — set `root` to the note the sample actually is and the pad plays it in tune on whatever key it sits on; off, the sound plays untransposed |
 
-A fresh pad is one-shot, poly 1, no choke, no cycle, no pitch offset, attack
+The `trig` knob steps one-shot → gate → mono and stops at each end. A
+fresh pad is one-shot, poly 1, no choke, no cycle, no pitch offset, attack
 0, decay 400 ms, sustain 100%, release 60 ms, unity, centred, rooted on its
 own key with keytracking off.
 

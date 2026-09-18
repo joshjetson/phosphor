@@ -24,6 +24,7 @@ fn trig_key(t: TrigMode) -> &'static str {
     match t {
         TrigMode::OneShot => "one-shot",
         TrigMode::Gate => "gate",
+        TrigMode::Mono => "mono",
     }
 }
 
@@ -32,6 +33,7 @@ fn trig_key(t: TrigMode) -> &'static str {
 fn trig_from_key(s: &str) -> TrigMode {
     match s {
         "gate" => TrigMode::Gate,
+        "mono" => TrigMode::Mono,
         _ => TrigMode::OneShot,
     }
 }

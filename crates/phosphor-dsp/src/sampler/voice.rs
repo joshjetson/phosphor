@@ -235,6 +235,12 @@ impl SamplerVoice {
         self.pcm = None;
     }
 
+    /// A mono voice: the next note played anywhere is meant to cut it.
+    /// False once it is already dying, so it is not asked to yield twice.
+    pub(crate) fn is_mono(&self) -> bool {
+        self.trig == TrigMode::Mono && !self.killing && self.stage != EnvStage::Dead
+    }
+
     /// Sounding at all, kill fade included.
     pub(crate) fn is_sounding(&self) -> bool {
         self.stage != EnvStage::Dead

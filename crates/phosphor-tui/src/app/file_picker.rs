@@ -97,13 +97,17 @@ impl App {
         // retype), and typing replaces it for a spin-off. This is the
         // common case — save what I just changed — and it should cost the
         // one key the player reached for.
-        if let Some(stem) = self
-            .session_path
-            .as_deref()
-            .and_then(std::path::Path::file_stem)
-            .map(|s| s.to_string_lossy().into_owned())
-        {
-            self.nav.file_picker.suggest_name(&stem);
+        if let Some(open) = self.session_path.clone() {
+            if let Some(stem) = open.file_stem().map(|s| s.to_string_lossy().into_owned()) {
+                self.nav.file_picker.suggest_name(&stem);
+            }
+            // And land the cursor on that session's own row when it is in
+            // the folder shown, so the file about to be saved over is the
+            // one highlighted — a player who reaches for the list should
+            // find their session there, not a neighbour to overwrite.
+            if let Some(name) = open.file_name().map(|n| n.to_string_lossy().into_owned()) {
+                self.nav.file_picker.focus_named(&name);
+            }
         }
     }
 

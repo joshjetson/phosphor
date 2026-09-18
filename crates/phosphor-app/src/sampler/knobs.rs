@@ -325,6 +325,7 @@ impl PadKnob {
             Self::Trig => match c.trig {
                 TrigMode::OneShot => "one-shot".into(),
                 TrigMode::Gate => "gate".into(),
+                TrigMode::Mono => "mono".into(),
             },
             Self::Poly => c.poly.to_string(),
             Self::Choke => {
@@ -383,7 +384,13 @@ impl PadKnob {
             // edges, so it shows the thing a player is watching while they
             // move one: how wide the zone has got.
             Self::Span => zone.map_or(0.0, |z| z.keys() as f64 / NUM_PADS as f64),
-            Self::Trig => f64::from(u8::from(c.trig == TrigMode::Gate)),
+            // Three positions along the dial, in the order the knob steps:
+            // one-shot, gate, mono.
+            Self::Trig => match c.trig {
+                TrigMode::OneShot => 0.0,
+                TrigMode::Gate => 0.5,
+                TrigMode::Mono => 1.0,
+            },
             Self::Poly => {
                 let poly = c.poly.clamp(*POLY_RANGE.start(), *POLY_RANGE.end());
                 f64::from(poly - POLY_RANGE.start()) / f64::from(POLY_RANGE.end() - POLY_RANGE.start())
@@ -439,7 +446,19 @@ impl PadKnob {
             // [`crate::sampler::SamplerState::move_zone_edge`] moves it and
             // this does nothing — see the `Span` arm of the keys.
             Self::Span => {}
-            Self::Trig => c.trig = if up { TrigMode::Gate } else { TrigMode::OneShot },
+            // one-shot ↔ gate ↔ mono, and it stops at the ends rather than
+            // wrapping — a switch a player is stepping through should not
+            // loop back on them without warning.
+            Self::Trig => {
+                c.trig = match (c.trig, up) {
+                    (TrigMode::OneShot, true) => TrigMode::Gate,
+                    (TrigMode::Gate, true) => TrigMode::Mono,
+                    (TrigMode::Mono, true) => TrigMode::Mono,
+                    (TrigMode::Mono, false) => TrigMode::Gate,
+                    (TrigMode::Gate, false) => TrigMode::OneShot,
+                    (TrigMode::OneShot, false) => TrigMode::OneShot,
+                };
+            }
             Self::Poly => {
                 c.poly = step_int(
                     i32::from(c.poly),

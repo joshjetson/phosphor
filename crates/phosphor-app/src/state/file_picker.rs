@@ -496,6 +496,17 @@ impl FilePicker {
         self.matching().nth(self.cursor)
     }
 
+    /// Put the cursor on the visible row whose file name is `name`, if it is
+    /// in the list. Used to land the save picker on the session already open,
+    /// so the row a player is about to save over is the one under the
+    /// cursor — not a neighbour they might overwrite by reflex.
+    pub fn focus_named(&mut self, name: &str) {
+        let row = self.matching().position(|e| e.name == name);
+        if let Some(row) = row {
+            self.cursor = row;
+        }
+    }
+
     /// Walk the list, stopping at both ends: a cursor that wraps round is a
     /// cursor that opens the wrong file on a long list.
     pub fn move_cursor(&mut self, delta: i32) {

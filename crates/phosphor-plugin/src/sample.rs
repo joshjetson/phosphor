@@ -144,6 +144,14 @@ pub enum TrigMode {
     OneShot,
     /// Sounds while the key is held; release runs the amp release.
     Gate,
+    /// Monophonic, last-note-wins across the whole instrument: like a
+    /// one-shot, release is ignored, but the *next note played on any pad*
+    /// cuts it. Only one mono voice ever sounds, and it always yields to
+    /// whatever comes next — the behaviour of a monosynth bass or an 808
+    /// glide, where a new note is meant to steal the one before it. A
+    /// non-mono pad's note still cuts a sounding mono voice; the mono voice
+    /// is the one that gives way.
+    Mono,
 }
 
 /// Everything a pad is, apart from its layers.

@@ -385,6 +385,12 @@ mod tests {
         // The open session's name is offered, so Enter alone would save it.
         assert_eq!(app.nav.file_picker.name, "918", "the name was not offered");
         assert!(app.nav.file_picker.name_suggested);
+        // ...and the cursor is on the session's own row, not a neighbour.
+        assert_eq!(
+            app.nav.file_picker.selected().map(|e| e.name.clone()),
+            Some("918.phos".into()),
+            "the cursor did not land on the open session",
+        );
         // And the sidecar is not a row that could take the cursor.
         assert!(
             !app.nav.file_picker.visible().iter().any(|e| e.name == "918.samples"),

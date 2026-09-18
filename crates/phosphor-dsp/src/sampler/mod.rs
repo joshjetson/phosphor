@@ -202,6 +202,20 @@ impl Sampler {
             );
         }
 
+        // Mono: any note-on anywhere cuts every sounding mono voice. It is
+        // last-note-wins across the whole instrument — the newest note
+        // always steals the mono one, whatever pad either belongs to, which
+        // is what a monosynth bass or an 808 glide wants. Done before this
+        // hit's own voices start, so a mono pad retriggering itself is cut
+        // by the same rule rather than a special case. Runners (phrases)
+        // are left alone: a phrase is a performance, not a single note, and
+        // has no business being a mono voice.
+        for voice in &mut self.voices {
+            if voice.is_active() && voice.is_mono() {
+                voice.kill();
+            }
+        }
+
         // Poly: make room for this hit among the pad's own.
         self.enforce_poly(pad_idx, poly, offset, out);
 
@@ -1124,6 +1138,53 @@ mod tests {
         process(&mut s, &[cc(123, 0)], 8_192);
         assert_eq!(s.sounding_on(39), 0, "the gate ignored all-notes-off");
         assert_eq!(s.sounding_on(41), 1, "the one-shot obeyed a note-off");
+    }
+
+    /// Mono is last-note-wins across the whole instrument: a sounding mono
+    /// voice is cut by the next note-on anywhere — even a one-shot pad's —
+    /// and it ignores its own key release, like a one-shot.
+    #[test]
+    fn a_mono_voice_yields_to_the_next_note_from_any_pad() {
+        let long = PadLayer::from_pcm(constant_pcm(0.5, 441_000));
+        let mut mono = PadConfig::for_key(60);
+        mono.trig = TrigMode::Mono;
+        let shot = PadConfig::for_key(62); // one-shot, no choke
+        let mut s = sampler_with(60, mono, &[long.clone()]);
+        load(&mut s, 62, shot, &[long.clone()]);
+        load(&mut s, 64, shot, &[long]); // E4, another one-shot
+
+        // The mono note sounds and ignores its own release.
+        process(&mut s, &[note_on(60, 127, 0)], 256);
+        assert_eq!(s.sounding_on(39), 1, "the mono pad never sounded");
+        process(&mut s, &[note_off(60, 0)], 8_192);
+        assert_eq!(s.sounding_on(39), 1, "mono obeyed a key release");
+
+        // A plain one-shot on another pad cuts the mono voice — and the
+        // one-shot itself keeps sounding, because it is not mono.
+        process(&mut s, &[note_on(62, 127, 0)], 8_192);
+        assert_eq!(s.sounding_on(39), 0, "the mono voice did not yield to the next note");
+        assert_eq!(s.sounding_on(41), 1, "the one-shot that cut it did not itself sound");
+
+        // The one-shot is not mono, so a further note leaves it alone.
+        process(&mut s, &[note_on(64, 127, 0)], 512);
+        assert_eq!(s.sounding_on(41), 1, "a one-shot was cut as if it were mono");
+    }
+
+    /// Two mono voices never coexist: the second cuts the first, so only
+    /// the newest mono note is ever heard.
+    #[test]
+    fn only_one_mono_voice_sounds_at_a_time() {
+        let long = PadLayer::from_pcm(constant_pcm(0.5, 441_000));
+        let mut mono = PadConfig::for_key(60);
+        mono.trig = TrigMode::Mono;
+        let mut mono_b = PadConfig::for_key(63);
+        mono_b.trig = TrigMode::Mono;
+        let mut s = sampler_with(60, mono, &[long.clone()]);
+        load(&mut s, 63, mono_b, &[long]);
+        process(&mut s, &[note_on(60, 127, 0)], 256);
+        process(&mut s, &[note_on(63, 127, 0)], 8_192);
+        assert_eq!(s.sounding_on(39), 0, "the first mono voice was not cut");
+        assert_eq!(s.sounding_on(42), 1, "the newest mono voice is not sounding");
     }
 
     #[test]
