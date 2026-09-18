@@ -245,6 +245,16 @@ pub fn read_dir_sorted(dir: &Path, purpose: PickerPurpose) -> std::io::Result<Ve
         if !is_dir && !purpose.shows(&name) {
             continue;
         }
+        // A `<name>.samples` folder beside its own `<name>.phos` is this
+        // application's own take store, not a place to open or save a
+        // project. Listing it in a session picker put the cursor on it —
+        // folders sort first — and Enter walked *into* it, which is how a
+        // session came to be saved inside another session's samples folder.
+        // It stays visible in the sample picker, which is how a player
+        // reaches the takes it holds.
+        if is_dir && purpose.is_session() && is_sidecar_dir(dir, &name) {
+            continue;
+        }
         entries.push(Entry { name, path, is_dir, pinned: false });
     }
     // Cached keys: a sort calls its comparator many times per element, and
@@ -252,6 +262,16 @@ pub fn read_dir_sorted(dir: &Path, purpose: PickerPurpose) -> std::io::Result<Ve
     // over. `!is_dir` sorts false before true, which puts folders first.
     entries.sort_by_cached_key(|entry| (!entry.is_dir, entry.name.to_lowercase()));
     Ok(entries)
+}
+
+/// Whether `name` is a session's own `.samples` sidecar living beside it —
+/// `918.samples` next to `918.phos`. Precise on purpose: a folder a player
+/// happened to call `drum.samples` with no `drum.phos` beside it is theirs,
+/// and stays listed.
+fn is_sidecar_dir(parent: &Path, name: &str) -> bool {
+    name.strip_suffix(".samples").is_some_and(|stem| {
+        parent.join(stem).with_extension(crate::paths::SESSION_EXT).exists()
+    })
 }
 
 // ── The picker ──
@@ -332,6 +352,12 @@ pub struct FilePicker {
     /// is the answer rather than a view of the list, and a player who names
     /// their song and then walks into `ideas/` means to save it there.
     pub name: String,
+    /// The name was offered rather than typed — the session already open,
+    /// put in the line so that saving over it costs one Enter. The first
+    /// character typed or backspaced clears it, because a suggestion a
+    /// player types on top of should not become `918mytake`. Enter accepts
+    /// it whole. Only [`PickerPurpose::SaveSession`] ever sets it.
+    pub name_suggested: bool,
     /// The folder could not be read at all. Kept apart from "empty",
     /// because the two have different words and only one of them is
     /// something the player did.
@@ -358,6 +384,7 @@ impl FilePicker {
             scroll: 0,
             filter: String::new(),
             name: String::new(),
+            name_suggested: false,
             unreadable: false,
             page_rows: 12,
         }
@@ -378,10 +405,18 @@ impl FilePicker {
         // A name belongs to the save it was typed for, and the next save
         // starts from nothing rather than from a name somebody abandoned.
         self.name.clear();
+        self.name_suggested = false;
         self.read();
         if let Some(pinned) = pinned.filter(|p| p.is_dir()) {
             self.entries.insert(0, Entry::dir(tidy(pinned), true));
         }
+    }
+
+    /// Offer a name Enter accepts and typing replaces — the session already
+    /// open, so saving over it is one key and a spin-off is just typing.
+    pub fn suggest_name(&mut self, stem: &str) {
+        self.name = stem.to_string();
+        self.name_suggested = true;
     }
 
     pub fn close(&mut self) {
@@ -389,6 +424,7 @@ impl FilePicker {
         self.entries.clear();
         self.filter.clear();
         self.name.clear();
+        self.name_suggested = false;
         self.cursor = 0;
         self.scroll = 0;
         self.unreadable = false;
@@ -575,6 +611,12 @@ impl FilePicker {
         if ch.is_control() {
             return TypedKey::Refused;
         }
+        // A suggested name is typed *over*, not into: the first real
+        // character is the start of a spin-off's name, not `918x`.
+        if self.name_suggested {
+            self.name.clear();
+            self.name_suggested = false;
+        }
         self.name.push(ch);
         TypedKey::Took
     }
@@ -584,6 +626,16 @@ impl FilePicker {
     /// Backspace the way up a folder.
     pub fn backspace_typed(&mut self) -> bool {
         if self.purpose.names_a_file() {
+            // Backspacing a suggestion clears the whole thing at once: it
+            // was offered, not built letter by letter, so taking it back a
+            // letter at a time would be editing a word the player never
+            // typed.
+            if self.name_suggested {
+                let had = !self.name.is_empty();
+                self.name.clear();
+                self.name_suggested = false;
+                return had;
+            }
             return self.name.pop().is_some();
         }
         self.backspace()
@@ -765,6 +817,61 @@ mod tests {
 
     fn names(picker: &FilePicker) -> Vec<String> {
         picker.visible().iter().map(|e| e.name.clone()).collect()
+    }
+
+    /// A session's own `.samples` sidecar is hidden from the session
+    /// pickers — the field report: it sorted first, the cursor landed on
+    /// it, Enter walked in, and a save dropped `918.phos` inside
+    /// `918.samples`. A `.samples` folder with no session beside it, and
+    /// the same folder in the sample picker, both stay visible.
+    #[test]
+    fn a_sidecar_folder_hides_from_the_session_pickers_only() {
+        let dir = scratch("sidecar", &["918.phos"], &["918.samples", "orphan.samples", "beats"]);
+        let mut picker = FilePicker::new();
+
+        picker.show(PickerPurpose::OpenSession, dir.clone(), None);
+        assert!(!names(&picker).contains(&"918.samples".to_string()),
+            "the session's own sidecar is still in the open picker");
+        assert!(names(&picker).contains(&"orphan.samples".to_string()),
+            "a .samples folder with no session beside it was wrongly hidden");
+        assert!(names(&picker).contains(&"beats".to_string()));
+
+        picker.show(PickerPurpose::SaveSession, dir.clone(), None);
+        assert!(!names(&picker).contains(&"918.samples".to_string()),
+            "the sidecar is walkable in the save picker — the exact trap");
+
+        // The sample picker still shows it: that is how takes are reached.
+        picker.show(PickerPurpose::LoadSample, dir.clone(), None);
+        assert!(names(&picker).contains(&"918.samples".to_string()),
+            "the sample picker lost the folder its takes live in");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The open session's name is offered in the save line: Enter accepts
+    /// it whole for a one-key overwrite, and the first character typed
+    /// replaces it rather than appending — a spin-off is `mix2`, never
+    /// `918mix2`. Backspace on the suggestion clears it in one.
+    #[test]
+    fn a_suggested_name_is_accepted_whole_or_typed_over() {
+        let dir = scratch("suggest", &[], &[]);
+        let mut picker = FilePicker::new();
+        picker.show(PickerPurpose::SaveSession, dir.clone(), None);
+        picker.suggest_name("918");
+        assert_eq!(picker.save_path(), Some(dir.join("918.phos")), "the suggestion is not the name");
+
+        // Typing replaces the whole suggestion.
+        assert_eq!(picker.type_name('m'), TypedKey::Took);
+        assert_eq!(picker.type_name('2'), TypedKey::Took);
+        assert_eq!(picker.save_path(), Some(dir.join("m2.phos")), "the suggestion was appended to");
+
+        // Backspacing a fresh suggestion clears it in one.
+        picker.suggest_name("918");
+        assert!(picker.backspace_typed());
+        assert_eq!(picker.name, "");
+        assert!(!picker.name_suggested);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Folders first, then files, each half alphabetical whatever case they

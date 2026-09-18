@@ -478,9 +478,17 @@ pub(super) fn render_file_picker(frame: &mut Frame, nav: &NavState) {
         if let Some(words) = picker.empty_words() {
             lines.push(Line::from(Span::styled(format!("  {words}"), theme::dim())));
         }
+        // A suggested name (the open session's, offered for a one-key
+        // overwrite) is drawn dim: it reads as "enter to keep this, type to
+        // replace it" rather than as something already typed.
+        let name_style = if picker.name_suggested {
+            theme::dim()
+        } else {
+            theme::amber_bright().add_modifier(Modifier::BOLD)
+        };
         lines.push(Line::from(vec![
             Span::styled("  name ", theme::muted()),
-            Span::styled(picker.name.as_str(), theme::amber_bright().add_modifier(Modifier::BOLD)),
+            Span::styled(picker.name.as_str(), name_style),
             Span::styled(
                 "\u{2588}",
                 Style::default().fg(theme::overlay_bg()).bg(theme::amber_bright_val()),

@@ -333,33 +333,93 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The list shows projects and folders, and nothing else in the
-    /// directory — a `.phos` file is the only thing Enter could open.
+    /// The list shows projects and real folders, and nothing else — not the
+    /// loose files Enter cannot open, and not a session's own `.samples`
+    /// sidecar, which used to sort first, take the cursor, and swallow the
+    /// next save into itself.
     #[test]
     fn the_picker_lists_projects_and_folders_and_nothing_else() {
         let dir = projects("listing");
         let _ = saved_into(&dir, "jam");
         std::fs::write(dir.join("notes.txt"), b"not a session").unwrap();
         std::fs::write(dir.join("kick.wav"), b"not a session either").unwrap();
-        std::fs::create_dir_all(dir.join("jam.samples")).unwrap();
+        std::fs::create_dir_all(dir.join("jam.samples")).unwrap(); // the sidecar
+        std::fs::create_dir_all(dir.join("ideas")).unwrap(); // a real folder
 
         let mut opening = app();
         opening.browse_sessions = Some(dir.clone());
         opening.open_session_picker();
         assert_eq!(
             opening.nav.file_picker.visible().iter().map(|e| e.name.clone()).collect::<Vec<_>>(),
-            vec!["jam.samples", "jam.phos"],
-            "the picker listed something Enter cannot open",
+            vec!["ideas", "jam.phos"],
+            "the picker listed the sidecar or a loose file",
         );
 
-        // Enter on the folder walks into it rather than trying to open it.
+        // Enter on the real folder walks into it rather than opening a session.
         press(&mut opening, KeyCode::Enter);
         assert!(opening.nav.file_picker.open, "the folder closed the picker");
         assert!(
-            opening.nav.file_picker.dir.ends_with("jam.samples"),
+            opening.nav.file_picker.dir.ends_with("ideas"),
             "Enter on a folder did not walk into it",
         );
         assert!(opening.session_path.is_none(), "walking into a folder opened a session");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The field report, fixed: save a project, change something, Space+S,
+    /// press Enter — it saves straight over the same file, no confirm, no
+    /// second copy nested in the sidecar. The sidecar folder that used to
+    /// derail this is not even in the list.
+    #[test]
+    fn saving_over_the_open_session_is_one_key() {
+        let dir = projects("overwrite");
+        let mut app = saved_into(&dir, "918");
+        let session = dir.join("918.phos");
+        assert_eq!(app.session_path.as_deref(), Some(session.as_path()));
+        // A recorded take would put a sidecar here; make one so the trap is
+        // present exactly as it was in the field.
+        std::fs::create_dir_all(dir.join("918.samples")).unwrap();
+
+        app.open_save_picker();
+        // The open session's name is offered, so Enter alone would save it.
+        assert_eq!(app.nav.file_picker.name, "918", "the name was not offered");
+        assert!(app.nav.file_picker.name_suggested);
+        // And the sidecar is not a row that could take the cursor.
+        assert!(
+            !app.nav.file_picker.visible().iter().any(|e| e.name == "918.samples"),
+            "the sidecar is still in the save list",
+        );
+
+        press(&mut app, KeyCode::Enter);
+        // Straight over the same file: no overwrite question for your own
+        // open session, and the picker is done.
+        assert!(!app.nav.confirm_modal.open, "overwriting your own session asked a question");
+        assert!(!app.nav.file_picker.open, "the save did not close the picker");
+        assert_eq!(app.session_path.as_deref(), Some(session.as_path()));
+        // Exactly one 918.phos, and none hiding inside the sidecar.
+        assert!(session.exists());
+        assert!(!dir.join("918.samples").join("918.phos").exists(), "a second copy nested itself");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Typing turns the same save into a spin-off: the offered name is
+    /// replaced, not appended, and a fresh file is written beside the
+    /// original — which stays untouched.
+    #[test]
+    fn typing_over_the_offered_name_saves_a_spinoff() {
+        let dir = projects("spinoff");
+        let mut app = saved_into(&dir, "918");
+        app.open_save_picker();
+        assert_eq!(app.nav.file_picker.name, "918");
+
+        type_text(&mut app, "919");
+        assert_eq!(app.nav.file_picker.name, "919", "the name was appended, not replaced");
+        press(&mut app, KeyCode::Enter);
+        assert!(dir.join("919.phos").exists(), "the spin-off was not written");
+        assert!(dir.join("918.phos").exists(), "the original was lost");
+        assert_eq!(app.session_path.as_deref(), Some(dir.join("919.phos").as_path()));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -952,17 +1012,16 @@ mod tests {
         assert!(dir.join("ghost_take.phos").is_file(), "the name did not save where it opened");
         assert!(!dir.join("ideas").join("ghost_take.phos").exists());
 
-        // ...and the arrows still walk the list, so a project's name can
-        // still be taken off it.
+        // Re-opening now offers that session's name for a one-key
+        // overwrite — and the arrows still walk the list underneath it.
         app.open_save_picker();
+        assert_eq!(app.nav.file_picker.name, "ghost_take", "the open session's name was not offered");
         press(&mut app, KeyCode::Down);
         assert_eq!(
             app.nav.file_picker.selected().map(|e| e.name.clone()),
             Some("ghost_take.phos".into()),
             "the down arrow did not move the cursor",
         );
-        press(&mut app, KeyCode::Enter);
-        assert_eq!(app.nav.file_picker.name, "ghost_take", "enter did not take the name");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -92,6 +92,19 @@ impl App {
         let dir = self.projects_dir();
         crate::debug_log::user(&format!("file picker: saving into {}", dir.display()));
         self.nav.file_picker.show(PickerPurpose::SaveSession, dir, None);
+        // When a session is already open, its name is offered in the line:
+        // Enter saves straight over it (no folder to walk to, no name to
+        // retype), and typing replaces it for a spin-off. This is the
+        // common case — save what I just changed — and it should cost the
+        // one key the player reached for.
+        if let Some(stem) = self
+            .session_path
+            .as_deref()
+            .and_then(std::path::Path::file_stem)
+            .map(|s| s.to_string_lossy().into_owned())
+        {
+            self.nav.file_picker.suggest_name(&stem);
+        }
     }
 
     /// Remember where the picker is, so that the next one opens there.
@@ -285,7 +298,15 @@ impl App {
         let Some(path) = self.nav.file_picker.save_path() else {
             return self.flash("type a name \u{00b7} or enter on a folder to go in");
         };
-        if path.exists() {
+        // Saving over the session you already have open is not clobbering
+        // someone's work — it is the point of saving. The overwrite question
+        // is for a *different* existing file, so a name that resolves to the
+        // current session's own path writes straight through.
+        let is_current = self
+            .session_path
+            .as_deref()
+            .is_some_and(|open| open == path);
+        if path.exists() && !is_current {
             let name = path
                 .file_name()
                 .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
