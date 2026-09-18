@@ -816,6 +816,15 @@ pub struct Room {
     pub run: Option<Run>,
     pub progress: progress::Progress,
     pub progress_dirty: bool,
+    /// The last click the engine was told to run: `Some((bpm, pattern))`
+    /// while the drill click owns the metronome, `None` after the off was
+    /// sent. A shadow of the command stream rather than of any engine
+    /// state — the point is that the top bar can SAY the metronome is on
+    /// loan. A free-running click at a drill tempo is indistinguishable
+    /// by ear from "the whole application has the wrong tempo", and one
+    /// field report of exactly that cost a day of measuring an engine
+    /// that turned out to be honest.
+    pub engine_click: Option<(u32, u8)>,
 }
 
 

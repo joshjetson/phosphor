@@ -67,11 +67,36 @@ pub(super) fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap
             .bg(if loop_sel { hi } else { theme::bg_val() }))
     };
 
-    // Metronome
+    // Metronome — or the drill click, when the practice room has the
+    // metronome on loan. The loaned click free-runs at its own tempo and
+    // pattern by design, and by ear that is indistinguishable from "the
+    // whole application has the wrong tempo"; naming it here is what keeps
+    // that from ever being a mystery again.
     let met_sel = tp && te == TransportElement::Metronome;
-    let met = Span::styled("\u{266A}", Style::default()
-        .fg(if snap.metronome { theme::amber_val() } else { theme::dim_val() })
-        .bg(if met_sel { hi } else { theme::bg_val() }));
+    let met = if let Some((bpm, pattern)) = nav.practice.engine_click {
+        let word = if pattern == 1 {
+            format!("\u{266A}drill@{bpm}\u{00b7}2&4")
+        } else {
+            format!("\u{266A}drill@{bpm}")
+        };
+        Span::styled(word, Style::default()
+            .fg(theme::rec_active_val())
+            .bg(if met_sel { hi } else { theme::bg_val() }))
+    } else {
+        Span::styled("\u{266A}".to_string(), Style::default()
+            .fg(if snap.metronome { theme::amber_val() } else { theme::dim_val() })
+            .bg(if met_sel { hi } else { theme::bg_val() }))
+    };
+
+    // The audio thread missing its deadlines. Never decoration: when this
+    // is on the screen, playback is genuinely running slower than the
+    // song, and the debug log says so in sentences.
+    let struggling = nav.audio_struggling.then(|| {
+        Span::styled(
+            " \u{26A0}audio",
+            Style::default().fg(theme::rec_active_val()).bg(theme::bg_val()),
+        )
+    });
 
     // The safety limiter, when it is working. Silent otherwise: a readout
     // that is always on screen showing 0.0 teaches the eye to ignore it, and
@@ -159,6 +184,9 @@ pub(super) fn render_top_bar(frame: &mut Frame, area: Rect, nav: &NavState, snap
     if let Some(take) = take {
         middle.push(Span::styled("  ", theme::bg()));
         middle.push(take);
+    }
+    if let Some(warn) = struggling {
+        middle.push(warn);
     }
     middle.extend(lim);
     frame.render_widget(

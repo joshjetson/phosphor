@@ -260,3 +260,25 @@ impl App {
         }
     }
 }
+
+impl App {
+    /// Once a frame: turn the engine's overrun counter into the top bar's
+    /// warning. The callback cannot speak; this is where its counting
+    /// becomes words. The warning outlives the spike by three seconds so
+    /// a *pattern* of misses reads as a steady flag rather than a flicker.
+    pub(crate) fn poll_audio_overruns(&mut self) {
+        let now = self.engine.shared.overruns.load(std::sync::atomic::Ordering::Relaxed);
+        if now != self.audio_overruns_seen {
+            self.audio_overruns_seen = now;
+            self.audio_warn_until =
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
+            crate::debug_log::log(
+                "AUDIO",
+                &format!("callback overran its deadline (total {now}) — playback stretches when this repeats; close heavy programs or lower the track count"),
+            );
+        }
+        self.nav.audio_struggling = self
+            .audio_warn_until
+            .is_some_and(|until| std::time::Instant::now() < until);
+    }
+}

@@ -151,6 +151,12 @@ pub struct App {
     /// armed track a note landed on — and the cost of being wrong is one
     /// press of `u` peeling the other layer first.
     pub(crate) live_take_notes: usize,
+    /// The overrun count last read from the engine, and how long the top
+    /// bar keeps warning after it moves. A single overrun is a spike; the
+    /// warning holding for a few seconds is what makes a *pattern* of them
+    /// visible to an ear that only knows "everything sounds slow".
+    pub(crate) audio_overruns_seen: u32,
+    pub(crate) audio_warn_until: Option<std::time::Instant>,
     /// The receiving end of the mixer command channel, kept alive only when
     /// there is no mixer to own it — which is only ever in tests, since a
     /// headless app has no audio thread.
@@ -261,10 +267,13 @@ impl App {
         crate::debug_log::log(
             "AUDIO",
             &format!(
-                "engine at {}Hz, blocks up to {} frames, device: {}",
+                "engine at {}Hz, blocks up to {} frames, device: {}, channels: {}",
                 config.sample_rate,
                 max_buffer_frames,
                 if backend.is_some() { "yes" } else { "none" },
+                backend
+                    .as_ref()
+                    .map_or_else(|| "-".into(), |b| b.channels().to_string()),
             ),
         );
         if let Some(notice) = format_notice.as_deref() {
@@ -318,6 +327,11 @@ impl App {
                 panic_flag,
                 vu_levels,
             );
+            // The callback reports missed deadlines into the shared
+            // counter; the top bar turns them into a warning the player
+            // can see. Silent overruns stretch time — see the counter's
+            // doc for the field report that taught this.
+            engine_audio.wire_overruns(engine.shared.overruns.clone());
             // Drain and discard any MIDI events that arrived during init
             engine_audio.flush_midi();
             let transport_clone = transport.clone();
@@ -370,6 +384,8 @@ impl App {
             held_notes: Vec::new(),
             recorded_notes: Vec::new(),
             live_take_notes: 0,
+            audio_overruns_seen: 0,
+            audio_warn_until: None,
             #[cfg(test)]
             mixer_rx: mixer_rx_test,
         };
@@ -590,6 +606,7 @@ impl App {
             // armed. Drained whether or not anything is armed, so the channel
             // cannot grow while a controller is idling.
             self.poll_step_record();
+            self.poll_audio_overruns();
             for track in &self.nav.tracks {
                 track.sync_to_audio();
             }

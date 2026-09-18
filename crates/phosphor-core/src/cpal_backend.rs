@@ -287,11 +287,17 @@ impl CpalBackend {
         if channels != 2 {
             // Everything past this point — `Mixer::process`, `EngineAudio` —
             // is written for interleaved stereo and divides the block length
-            // by two to get the frame count. A device with any other channel
-            // count is not handled, only reported.
-            tracing::warn!(
-                "Audio device reports {channels} channels; the mixer is stereo and \
-                 the output will be wrong"
+            // by two to get the frame count. On any other channel count the
+            // stream callback bridges: the engine always renders stereo into
+            // a scratch of its own, and the bridge folds or spreads it into
+            // the device's frame. Before the bridge existed this was only a
+            // warning, and the un-divided arithmetic did something far worse
+            // than wrong channels: the transport advanced channels/2 times
+            // too fast or too slow, so a mono Bluetooth route played every
+            // song at half tempo while every number on the screen was right.
+            tracing::info!(
+                "Audio device reports {channels} channels; bridging the stereo \
+                 engine to it"
             );
         }
 
@@ -315,27 +321,56 @@ impl CpalBackend {
 
     /// Start the audio stream, calling `callback` for each buffer.
     /// The callback receives an interleaved f32 buffer: [L, R, L, R, ...]
+    ///
+    /// The engine's contract is stereo, whatever the device says: on a
+    /// device with any other channel count the callback renders into a
+    /// stereo scratch and [`fold_stereo_into`] carries it to the device's
+    /// frame. The engine must never see the device's channel count —
+    /// everything downstream divides by two to turn samples into frames,
+    /// and a block that is not stereo-shaped bends *time*, not just the
+    /// channel map.
     pub fn start<F>(&mut self, mut callback: F) -> Result<()>
     where
         F: FnMut(&mut [f32]) + Send + 'static,
     {
         let config = self.config.clone();
-        let scratch_len = (self.format.max_buffer_frames as usize) * (self.format.channels as usize);
+        let channels = self.format.channels as usize;
+        let max_frames = self.format.max_buffer_frames as usize;
+        let scratch_len = max_frames * channels;
 
         let stream = match self.sample_format {
-            SampleFormat::F32 => self.device.build_output_stream(
-                &config,
-                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    callback(data);
-                },
-                |err| tracing::error!("Audio stream error: {err}"),
-                None,
-            )?,
+            SampleFormat::F32 => {
+                // The bridge scratch, allocated here and never in the
+                // callback. Unused (and empty of cost) on the stereo
+                // devices that are nearly every device.
+                let mut stereo_buf = vec![0.0f32; max_frames * 2];
+                self.device.build_output_stream(
+                    &config,
+                    move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                        if channels == 2 {
+                            callback(data);
+                            return;
+                        }
+                        let frames = data.len() / channels.max(1);
+                        let need = frames * 2;
+                        if stereo_buf.len() < need {
+                            stereo_buf.resize(need, 0.0);
+                        }
+                        let stereo = &mut stereo_buf[..need];
+                        stereo.fill(0.0);
+                        callback(stereo);
+                        fold_stereo_into(stereo, data, channels);
+                    },
+                    |err| tracing::error!("Audio stream error: {err}"),
+                    None,
+                )?
+            }
             SampleFormat::I16 => {
                 // Allocated here, not per callback: the conversion buffer used
                 // to be a `vec!` inside the closure, which is a heap
                 // allocation on the audio thread every single block.
                 let mut float_buf = vec![0.0f32; scratch_len];
+                let mut stereo_buf = vec![0.0f32; max_frames * 2];
                 self.device.build_output_stream(
                     &config,
                     move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
@@ -344,8 +379,20 @@ impl CpalBackend {
                             float_buf.resize(n, 0.0);
                         }
                         let float_buf = &mut float_buf[..n];
-                        float_buf.fill(0.0);
-                        callback(float_buf);
+                        if channels == 2 {
+                            float_buf.fill(0.0);
+                            callback(float_buf);
+                        } else {
+                            let frames = n / channels.max(1);
+                            let need = frames * 2;
+                            if stereo_buf.len() < need {
+                                stereo_buf.resize(need, 0.0);
+                            }
+                            let stereo = &mut stereo_buf[..need];
+                            stereo.fill(0.0);
+                            callback(stereo);
+                            fold_stereo_into(stereo, float_buf, channels);
+                        }
                         for (out, &inp) in data.iter_mut().zip(float_buf.iter()) {
                             *out = (inp * f32::from(i16::MAX)) as i16;
                         }
@@ -369,7 +416,37 @@ impl CpalBackend {
             tracing::info!("Audio stream stopped");
         }
     }
+}
 
+/// Carry a stereo block into a device frame of any width.
+///
+/// Mono folds the pair at half gain each, which keeps a centred sound at
+/// the level it had on either speaker. Wider devices get the pair on
+/// their first two channels and silence on the rest — a surround device
+/// asked to play a stereo DAW is fronts-plus-nothing, not a guess at a
+/// downmix nobody chose. Lengths are taken as they come: the loops walk
+/// whole frames and a ragged tail sample is left as the fill it carries.
+fn fold_stereo_into(stereo: &[f32], data: &mut [f32], channels: usize) {
+    match channels {
+        0 => {}
+        1 => {
+            for (out, pair) in data.iter_mut().zip(stereo.chunks_exact(2)) {
+                *out = (pair[0] + pair[1]) * 0.5;
+            }
+        }
+        _ => {
+            for (frame, pair) in data.chunks_exact_mut(channels).zip(stereo.chunks_exact(2)) {
+                frame[0] = pair[0];
+                frame[1] = pair[1];
+                for extra in &mut frame[2..] {
+                    *extra = 0.0;
+                }
+            }
+        }
+    }
+}
+
+impl CpalBackend {
     /// The format the device granted. Build the engine from this, not from
     /// what was requested.
     pub fn format(&self) -> StreamFormat {
@@ -407,6 +484,38 @@ mod tests {
     use super::*;
 
     // These cover the decision, not the driver: no sound card is involved.
+
+    /// The stereo bridge: a mono device folds the pair, a wide one gets
+    /// fronts and silence, and the degenerate shapes are shrugs. The
+    /// bridge is what keeps a non-stereo device from bending time — the
+    /// engine always sees stereo-shaped blocks, so its samples-to-frames
+    /// division stays true.
+    #[test]
+    fn the_bridge_folds_and_spreads_without_bending_anything() {
+        // Mono: centred content keeps its level.
+        let stereo = [0.5, 0.5, -0.25, 0.25, 1.0, 0.0];
+        let mut mono = [9.0f32; 3];
+        fold_stereo_into(&stereo, &mut mono, 1);
+        assert_eq!(mono, [0.5, 0.0, 0.5]);
+
+        // Four channels: fronts carry the pair, the rest is silence, and
+        // whatever was in the buffer is overwritten, not summed.
+        let mut quad = [9.0f32; 12];
+        fold_stereo_into(&stereo, &mut quad, 4);
+        assert_eq!(&quad[0..4], &[0.5, 0.5, 0.0, 0.0]);
+        assert_eq!(&quad[4..8], &[-0.25, 0.25, 0.0, 0.0]);
+        assert_eq!(&quad[8..12], &[1.0, 0.0, 0.0, 0.0]);
+
+        // Zero channels cannot happen, and also cannot panic.
+        fold_stereo_into(&stereo, &mut [], 0);
+
+        // A ragged tail (device buffer not a whole number of frames) walks
+        // the whole frames and leaves the tail alone.
+        let mut ragged = [9.0f32; 5];
+        fold_stereo_into(&stereo, &mut ragged, 4);
+        assert_eq!(&ragged[0..4], &[0.5, 0.5, 0.0, 0.0]);
+        assert_eq!(ragged[4], 9.0);
+    }
 
     /// The device this was developed against: MacBook Pro Speakers, sitting at
     /// 48000 Hz, offering four discrete rates and blocks of 15..=4096.

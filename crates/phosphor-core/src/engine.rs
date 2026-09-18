@@ -63,6 +63,14 @@ pub struct EngineShared {
     pub mixer_command_tx: Sender<MixerCommand>,
     /// Per-track handles for UI to read VU / write mute/solo/arm/volume.
     pub track_handles: Vec<Arc<TrackHandle>>,
+    /// Callbacks that took longer than the audio they rendered, counted on
+    /// the audio thread and read by the UI. A missed deadline here does not
+    /// glitch — it *stretches time*: the transport advances per callback,
+    /// so a machine that cannot keep up plays everything slower while every
+    /// number on the screen stays right. That once read as "the whole
+    /// application has the wrong tempo" and took a day of measurement to
+    /// disprove; now it is a counter and a warning instead.
+    pub overruns: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl EngineShared {
@@ -75,6 +83,7 @@ impl EngineShared {
             vu_levels: Arc::new(VuLevels::new()),
             mixer_command_tx: tx,
             track_handles: Vec::new(),
+            overruns: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
     }
 
@@ -87,6 +96,7 @@ impl EngineShared {
             vu_levels: Arc::new(VuLevels::new()),
             mixer_command_tx: tx,
             track_handles: Vec::new(),
+            overruns: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
     }
 
@@ -113,6 +123,9 @@ pub struct EngineAudio {
     plugin_buf_r: Vec<f32>,
     /// Per-track mixer. Processes all tracks and mixes to master.
     mixer: Option<Mixer>,
+    /// See [`EngineShared::overruns`]. `None` on the paths that never
+    /// wired one (tests, the legacy engine).
+    overruns: Option<Arc<std::sync::atomic::AtomicU32>>,
 }
 
 impl EngineAudio {
@@ -136,6 +149,7 @@ impl EngineAudio {
             plugin_buf_l: vec![0.0; buf_size],
             plugin_buf_r: vec![0.0; buf_size],
             mixer: None,
+            overruns: None,
         };
         s.synth.init(config.sample_rate as f64, buf_size);
         s
@@ -190,7 +204,13 @@ impl EngineAudio {
             plugin_buf_l: vec![0.0; buf_size],
             plugin_buf_r: vec![0.0; buf_size],
             mixer: Some(mixer),
+            overruns: None,
         }
+    }
+
+    /// Give the callback the shared overrun counter to report into.
+    pub fn wire_overruns(&mut self, counter: Arc<std::sync::atomic::AtomicU32>) {
+        self.overruns = Some(counter);
     }
 
     /// Drain and discard any pending MIDI events. Call before starting
@@ -230,9 +250,23 @@ impl EngineAudio {
 
         // If we have a mixer, delegate to it
         if let Some(ref mut mixer) = self.mixer {
+            // Timed against the deadline: a callback that takes longer
+            // than the audio it renders does not glitch, it stretches
+            // time, because the transport advances per callback. The
+            // counter is the only honest witness — see
+            // [`EngineShared::overruns`]. `Instant::now` is a clock read,
+            // safe on this thread.
+            let started = std::time::Instant::now();
             mixer.process(output, &self.midi_scratch, transport);
             // Advance transport after processing (so playback reads the pre-advance position)
             transport.advance(num_frames as u32, self.sample_rate);
+            if let Some(overruns) = &self.overruns {
+                let budget_us =
+                    (num_frames as u64 * 1_000_000) / u64::from(self.sample_rate.max(1));
+                if started.elapsed().as_micros() as u64 > budget_us {
+                    overruns.fetch_add(1, Ordering::Relaxed);
+                }
+            }
             return;
         }
 

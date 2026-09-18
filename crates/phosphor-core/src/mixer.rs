@@ -2559,6 +2559,158 @@ mod tests {
     }
 
     /// The practice click runs with the transport parked, and pattern 1
+    /// A clip's quarter notes land one real half-second apart at 120 BPM —
+    /// the song itself, measured the way the metronome is below. The two
+    /// tests together bracket a field report of "everything sounds half
+    /// speed": if both are green, the audio engine's clock is honest end
+    /// to end and the cause lives above it.
+    #[test]
+    fn clip_notes_land_on_the_beat_at_both_device_rates() {
+        use crate::clip::ClipEvent;
+        for sr in [44_100u32, 48_000] {
+            let (tx, rx) = mixer_command_channel();
+            let (clip_tx, _clip_rx) = clip_snapshot_channel();
+            let master_vu = Arc::new(VuLevels::new());
+            let transport = Arc::new(Transport::new(120.0));
+            let mut mixer = Mixer::new(rx, master_vu, clip_tx, sr, 256);
+            let handle = Arc::new(TrackHandle::new(0, TrackKind::Instrument));
+            handle.config.armed.store(true, std::sync::atomic::Ordering::Relaxed);
+            tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle }).unwrap();
+            tx.send(MixerCommand::SetInstrument {
+                track_id: 0,
+                instrument: Box::new(PhosphorSynth::new()),
+            })
+            .unwrap();
+            // One bar, four quarter notes.
+            tx.send(MixerCommand::CreateClip {
+                track_id: 0,
+                start_tick: 0,
+                length_ticks: Transport::PPQ * 4,
+            })
+            .unwrap();
+            let mut events = Vec::new();
+            for beat in 0..4i64 {
+                let on = beat * Transport::PPQ;
+                events.push(ClipEvent { tick: on, status: 0x90, data1: 60, data2: 110 });
+                events.push(ClipEvent {
+                    tick: on + Transport::PPQ / 4,
+                    status: 0x80,
+                    data1: 60,
+                    data2: 0,
+                });
+            }
+            tx.send(MixerCommand::UpdateClip { track_id: 0, clip_index: 0, events }).unwrap();
+            transport.play();
+
+            let mut onsets: Vec<usize> = Vec::new();
+            let block = 256usize;
+            let blocks = (2 * sr as usize) / block; // one bar plus slack
+            for b in 0..blocks {
+                let mut out = vec![0.0f32; block * 2];
+                mixer.process(&mut out, &[], &transport);
+                transport.advance(block as u32, sr);
+                for (i, frame) in out.chunks(2).enumerate() {
+                    let level = frame[0].abs().max(frame[1].abs());
+                    let at = b * block + i;
+                    // One onset per note: the refractory gap does the
+                    // work, because a synth's own envelope wobbles across
+                    // any amplitude hysteresis. Notes are a half-second
+                    // apart; 200 ms of deafness cannot miss one.
+                    if level > 0.02
+                        && onsets.last().is_none_or(|&last| at - last > sr as usize / 5)
+                    {
+                        onsets.push(at);
+                    }
+                }
+            }
+            let beat = sr as usize / 2;
+            assert_eq!(
+                onsets.len(),
+                4,
+                "{sr} Hz: {} note onsets in one bar at {:?}",
+                onsets.len(),
+                onsets.iter().map(|o| *o as f64 / f64::from(sr)).collect::<Vec<_>>()
+            );
+            for pair in onsets.windows(2) {
+                let gap = pair[1] - pair[0];
+                // 256 samples of slack (~6 ms): onset detection rides the
+                // synth's own attack, which crosses the threshold at
+                // slightly different envelope points note to note. A real
+                // timing defect is a beat's worth of error, not six ms.
+                assert!(
+                    (gap as i64 - beat as i64).abs() < 256,
+                    "{sr} Hz: notes {gap} apart, a beat is {beat}"
+                );
+            }
+        }
+    }
+
+    /// The session metronome clicks once per beat at the transport's own
+    /// tempo — measured as onset spacing in rendered audio, at the two
+    /// device rates that exist in the field. A field report of "120 sounds
+    /// slow" is either this test failing or something outside the mixer;
+    /// green here is what sends the search up a layer.
+    #[test]
+    fn the_metronome_clicks_on_the_beat_at_both_device_rates() {
+        for sr in [44_100u32, 48_000] {
+            let (tx, rx) = mixer_command_channel();
+            let (clip_tx, _clip_rx) = clip_snapshot_channel();
+            let master_vu = Arc::new(VuLevels::new());
+            let transport = Arc::new(Transport::new(120.0));
+            let mut mixer = Mixer::new(rx, master_vu, clip_tx, sr, 256);
+            drop(tx);
+            if !transport.is_metronome_on() {
+                transport.toggle_metronome();
+            }
+            transport.play();
+
+            // Four seconds of stereo-interleaved output, one block at a time.
+            let mut onsets: Vec<usize> = Vec::new();
+            let mut above = false;
+            let block = 256usize;
+            let blocks = (4 * sr as usize) / block;
+            for b in 0..blocks {
+                let mut out = vec![0.0f32; block * 2];
+                mixer.process(&mut out, &[], &transport);
+                // The engine advances after processing; the harness must
+                // too, or the metronome stares at beat zero forever.
+                transport.advance(block as u32, sr);
+                for (i, frame) in out.chunks(2).enumerate() {
+                    let level = frame[0].abs().max(frame[1].abs());
+                    let at = b * block + i;
+                    // A click is a burst of cycles: one onset per burst,
+                    // enforced by a 50 ms refractory gap rather than by
+                    // amplitude hysteresis, which single cycles defeat.
+                    if level > 0.05
+                        && !above
+                        && onsets.last().is_none_or(|&last| at - last > sr as usize / 20)
+                    {
+                        onsets.push(at);
+                        above = true;
+                    } else if level < 0.02 {
+                        above = false;
+                    }
+                }
+            }
+            // 120 BPM = one click every half second, whatever the rate.
+            let beat = sr as usize / 2;
+            assert!(
+                onsets.len() >= 7,
+                "{sr} Hz: only {} clicks in four seconds at {:?}",
+                onsets.len(),
+                onsets.iter().map(|o| *o as f64 / f64::from(sr)).collect::<Vec<_>>()
+            );
+            for pair in onsets.windows(2) {
+                let gap = pair[1] - pair[0];
+                assert!(
+                    (gap as i64 - beat as i64).abs() < 64,
+                    "{sr} Hz: clicks {} apart, a beat is {beat}",
+                    gap
+                );
+            }
+        }
+    }
+
     /// clicks half as often — beats 2 and 4 only, the jazz convention.
     #[test]
     fn the_practice_click_runs_without_the_transport() {

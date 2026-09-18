@@ -43,6 +43,7 @@ impl App {
 
     fn stop_practice_run(&mut self) {
         self.nav.practice.stop();
+        self.nav.practice.engine_click = None;
         let _ = self
             .engine
             .shared
@@ -56,8 +57,14 @@ impl App {
         let running = self.nav.practice.run.is_some();
         let cmd = if running && click != ClickMode::Off && self.nav.practice.mode == judge::Mode::Flow
         {
+            // The shadow follows the command: the top bar reads it, so a
+            // click on loan to the drills is never mistaken for the song's
+            // metronome — the mistake reads as "the whole app is at the
+            // wrong tempo", and once cost a day of proving it was not.
+            self.nav.practice.engine_click = Some((bpm, click.pattern()));
             MixerCommand::SetPracticeClick { bpm: f64::from(bpm), pattern: click.pattern() }
         } else {
+            self.nav.practice.engine_click = None;
             MixerCommand::SetPracticeClick { bpm: 0.0, pattern: 0 }
         };
         let _ = self.engine.shared.mixer_command_tx.send(cmd);

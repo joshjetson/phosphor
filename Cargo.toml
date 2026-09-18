@@ -11,7 +11,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.82"
+version = "0.3.83"
 edition = "2021"
 license = "MIT"
 rust-version = "1.75"
@@ -66,13 +66,27 @@ proptest = "1"
 assert_no_alloc = "1.1"
 
 # Internal crates
-phosphor-app = { path = "crates/phosphor-app", version = "0.3.82" }
-phosphor-core = { path = "crates/phosphor-core", version = "0.3.82" }
-phosphor-dsp = { path = "crates/phosphor-dsp", version = "0.3.82" }
-phosphor-midi = { path = "crates/phosphor-midi", version = "0.3.82" }
-phosphor-plugin = { path = "crates/phosphor-plugin", version = "0.3.82" }
-phosphor-tui = { path = "crates/phosphor-tui", version = "0.3.82" }
-phosphor-gui = { path = "crates/phosphor-gui", version = "0.3.82" }
+phosphor-app = { path = "crates/phosphor-app", version = "0.3.83" }
+phosphor-core = { path = "crates/phosphor-core", version = "0.3.83" }
+phosphor-dsp = { path = "crates/phosphor-dsp", version = "0.3.83" }
+phosphor-midi = { path = "crates/phosphor-midi", version = "0.3.83" }
+phosphor-plugin = { path = "crates/phosphor-plugin", version = "0.3.83" }
+phosphor-tui = { path = "crates/phosphor-tui", version = "0.3.83" }
+phosphor-gui = { path = "crates/phosphor-gui", version = "0.3.83" }
+
+# Audio cannot run at debug speed. An unoptimized DSP path misses the
+# callback's deadline on a full session, and a missed deadline here does
+# not glitch — it stretches time, because the transport advances per
+# callback: a ten-track song under `cargo run` played at 0.8x while every
+# number on the screen stayed right. The audio-path crates are therefore
+# optimized even in dev builds; the app and UI crates stay at debug
+# levels, which is where the debugging actually happens.
+[profile.dev.package.phosphor-dsp]
+opt-level = 3
+[profile.dev.package.phosphor-core]
+opt-level = 3
+[profile.dev.package.dasp]
+opt-level = 3
 
 # Root binary
 [package]

@@ -7,6 +7,48 @@ mod tests {
     use phosphor_core::EngineConfig;
 
     use crate::app::App;
+
+    fn top_bar(app: &App) -> String {
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let snapshot = app.engine.transport.snapshot();
+        terminal
+            .draw(|frame| crate::ui::render(frame, &snapshot, &app.nav, None))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..120).map(|x| buffer.cell((x, 0)).unwrap().symbol().to_string()).collect()
+    }
+
+    /// When the audio callback has been missing its deadlines, the top
+    /// bar says so — a starved callback stretches time with every number
+    /// still right, and that must never again be a mystery.
+    #[test]
+    fn the_top_bar_warns_when_audio_falls_behind() {
+        let mut app = app();
+        assert!(!top_bar(&app).contains("audio"), "the warning is on before any overrun");
+        app.nav.audio_struggling = true;
+        assert!(top_bar(&app).contains("\u{26A0}audio"), "an overrun went unnamed");
+        app.nav.audio_struggling = false;
+        assert!(!top_bar(&app).contains("audio"), "the warning outlived the trouble");
+    }
+
+    /// While the drill click owns the metronome, the top bar says so by
+    /// name — a free-running click at a drill tempo is indistinguishable
+    /// by ear from the whole application running at the wrong tempo, and
+    /// exactly that report once cost a day of measuring an engine that
+    /// was honest all along.
+    #[test]
+    fn the_top_bar_names_the_click_on_loan() {
+        let mut app = app();
+        assert!(!top_bar(&app).contains("drill@"), "the loan is shown before it exists");
+        app.nav.practice.engine_click = Some((60, 1));
+        let bar = top_bar(&app);
+        assert!(bar.contains("drill@60"), "the loaned click is unnamed: {bar}");
+        assert!(bar.contains("2&4"), "the half-feel pattern is unnamed: {bar}");
+        app.nav.practice.engine_click = None;
+        assert!(!top_bar(&app).contains("drill@"), "the tell outlived the loan");
+    }
+
     use crate::state::InstrumentType;
 
     fn app() -> App {

@@ -98,6 +98,13 @@ pub const MAX_VISIBLE_TRACKS: usize = 5;
 
 #[derive(Debug)]
 pub struct NavState {
+    /// The audio callback has been missing its deadline lately. Set each
+    /// frame from the engine's overrun counter; the top bar shows it. A
+    /// starved callback does not glitch, it stretches time, and time
+    /// stretching with every number still right reads as "the whole
+    /// application is broken" — this flag is the difference between that
+    /// mystery and one glance.
+    pub audio_struggling: bool,
     pub focused_pane: Pane,
     pub track_cursor: usize,
     pub track_scroll: usize,
@@ -220,6 +227,7 @@ pub struct NavState {
 impl NavState {
     pub fn new(tracks: Vec<TrackState>) -> Self {
         Self {
+            audio_struggling: false,
             focused_pane: Pane::Tracks,
             track_cursor: 0,
             track_scroll: 0,
