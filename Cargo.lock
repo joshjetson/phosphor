@@ -2573,6 +2573,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "minreq"
+version = "2.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05015102dad0f7d61691ca347e9d9d9006685a64aefb3d79eecf62665de2153d"
+dependencies = [
+ "rustls",
+ "rustls-webpki",
+ "webpki-roots",
+]
+
+[[package]]
 name = "mio"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3131,7 +3142,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phosphor-app"
-version = "0.3.85"
+version = "0.3.86"
 dependencies = [
  "anyhow",
  "hound",
@@ -3146,7 +3157,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-core"
-version = "0.3.85"
+version = "0.3.86"
 dependencies = [
  "anyhow",
  "assert_no_alloc",
@@ -3164,7 +3175,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-dsp"
-version = "0.3.85"
+version = "0.3.86"
 dependencies = [
  "criterion",
  "dasp",
@@ -3176,7 +3187,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-gui"
-version = "0.3.85"
+version = "0.3.86"
 dependencies = [
  "anyhow",
  "eframe",
@@ -3188,7 +3199,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-midi"
-version = "0.3.85"
+version = "0.3.86"
 dependencies = [
  "anyhow",
  "midir",
@@ -3201,7 +3212,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-plugin"
-version = "0.3.85"
+version = "0.3.86"
 dependencies = [
  "proptest",
  "thiserror 2.0.18",
@@ -3209,7 +3220,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-studio"
-version = "0.3.85"
+version = "0.3.86"
 dependencies = [
  "anyhow",
  "clap",
@@ -3222,13 +3233,14 @@ dependencies = [
 
 [[package]]
 name = "phosphor-tui"
-version = "0.3.85"
+version = "0.3.86"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
  "crossterm",
  "hound",
  "midir",
+ "minreq",
  "phosphor-app",
  "phosphor-core",
  "phosphor-dsp",
@@ -3660,6 +3672,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
+name = "ring"
+version = "0.17.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "getrandom 0.2.17",
+ "libc",
+ "untrusted",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "ringbuf"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3718,6 +3744,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustls"
+version = "0.21.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f56a14d1f48b391359b22f731fd4bd7e43c97f3c50eee276f3aa09c94784d3e"
+dependencies = [
+ "log",
+ "ring",
+ "rustls-webpki",
+ "sct",
+]
+
+[[package]]
+name = "rustls-webpki"
+version = "0.101.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b6275d1ee7a1cd780b64aca7726599a1dbc893b1e64144529e55c3c2f745765"
+dependencies = [
+ "ring",
+ "untrusted",
+]
+
+[[package]]
 name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3761,6 +3809,16 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "sct"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da046153aa2352493d6cb7da4b6e5c0c057d8a1d0a9aa8560baffdd945acd414"
+dependencies = [
+ "ring",
+ "untrusted",
+]
 
 [[package]]
 name = "sctk-adwaita"
@@ -4383,6 +4441,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
+name = "untrusted"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
+
+[[package]]
 name = "url"
 version = "2.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4724,6 +4788,12 @@ dependencies = [
  "url",
  "web-sys",
 ]
+
+[[package]]
+name = "webpki-roots"
+version = "0.25.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f20c57d8d7db6d3b86154206ae5d8fba62dd39573114de97c2cb0578251f8e1"
 
 [[package]]
 name = "wgpu"

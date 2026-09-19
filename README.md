@@ -122,6 +122,20 @@ cargo run --release -- --no-midi
    columns with room for all of it; `Tab` again for the piano roll
 7. Press `Space` then `v` to change the color theme
 
+### Staying up to date
+
+The first time you run a version you have not seen, phosphor shows a
+**what's new** card — a short note on what changed, scrollable with `j`/`k`,
+closed with `Esc` or `Enter`. It reads the same summaries kept in
+[`CHANGELOG.md`](CHANGELOG.md).
+
+Phosphor also checks crates.io in the background — at most once every six
+hours, and silently if you are offline — and if a newer version is published
+it shows a single line in the bottom bar telling you the one command that
+updates it: `cargo install phosphor-studio --locked`. Press `Esc` at the track
+list to dismiss it. To turn the check off entirely, set
+`PHOSPHOR_NO_UPDATE_CHECK=1` in your environment.
+
 ---
 
 ## Instruments

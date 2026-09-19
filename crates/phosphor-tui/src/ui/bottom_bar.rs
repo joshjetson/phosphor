@@ -172,6 +172,27 @@ pub(super) fn render_bottom_bar(
         return;
     }
 
+    // A newer version is on crates.io. A courtesy, not an alarm: it names the
+    // one command that updates and how to wave it away, and it yields the bar
+    // to a live status message above and to a typed clip number, both of which
+    // are the moment's business in a way a standing notice is not.
+    if let Some(newer) = nav.update_notice().filter(|_| nav.number_buf.display().is_empty()) {
+        let rest = Rect::new(
+            cols[1].x,
+            area.y,
+            area.right().saturating_sub(cols[1].x),
+            area.height,
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(crate::update::notice_line(newer), theme::amber_bright()),
+                Span::styled("  \u{00b7} esc dismiss", theme::dim()),
+            ])),
+            rest,
+        );
+        return;
+    }
+
     let d = "\u{00B7}";
     let keys: Vec<(&str, &str)> = if nav.loop_editor.active {
         let toggle = if nav.loop_editor.enabled { "off" } else { "on" };

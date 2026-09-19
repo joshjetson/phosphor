@@ -17,3 +17,5 @@ pub mod sampler;
 pub mod sequencer;
 pub mod session;
 pub mod state;
+pub mod version;
+pub mod whats_new;

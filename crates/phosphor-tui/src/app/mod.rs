@@ -46,6 +46,8 @@ mod section_ops;
 mod tracks;
 mod transport;
 mod undo_redo;
+mod update_ops;
+mod whats_new;
 use crate::ui;
 
 /// Shared MIDI status for the UI to display.
@@ -157,6 +159,12 @@ pub struct App {
     /// visible to an ear that only knows "everything sounds slow".
     pub(crate) audio_overruns_seen: u32,
     pub(crate) audio_warn_until: Option<std::time::Instant>,
+    /// Where the background update check leaves a newer crates.io version for
+    /// the UI to read. The slot is allocated here — an empty `Arc<Mutex<_>>`
+    /// costs nothing and touches no network — but the thread that fills it is
+    /// spawned only from the real launch path (see [`crate::run`]), so a
+    /// headless app has an update slot that stays `None` forever.
+    pub(crate) update_notice: crate::update::UpdateNotice,
     /// The receiving end of the mixer command channel, kept alive only when
     /// there is no mixer to own it — which is only ever in tests, since a
     /// headless app has no audio thread.
@@ -386,6 +394,7 @@ impl App {
             live_take_notes: 0,
             audio_overruns_seen: 0,
             audio_warn_until: None,
+            update_notice: std::sync::Arc::new(std::sync::Mutex::new(None)),
             #[cfg(test)]
             mixer_rx: mixer_rx_test,
         };
@@ -607,6 +616,7 @@ impl App {
             // cannot grow while a controller is idling.
             self.poll_step_record();
             self.poll_audio_overruns();
+            self.poll_update_notice();
             for track in &self.nav.tracks {
                 track.sync_to_audio();
             }
@@ -651,6 +661,12 @@ impl App {
             // reason: the keys and the drawing have to agree about where
             // the bottom of a list is.
             file_picker::follow_terminal(&mut self.nav.file_picker, term_h);
+            // ...and the what's-new card, whose prose wraps to the width it is
+            // drawn in, so its scroll clamp needs both dimensions.
+            self.nav.whats_new.set_layout(
+                term_h,
+                phosphor_app::state::card_inner_width(term_w),
+            );
             // Which way the effect panel's cursor keys point. The panel puts
             // bands in columns when there is room and in rows when there is
             // not, and `h` has to move the cursor the way `h` points either

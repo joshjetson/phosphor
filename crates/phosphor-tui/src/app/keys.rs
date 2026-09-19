@@ -65,6 +65,25 @@ impl App {
             return;
         }
 
+        // The what's-new card, shown once after an update. Ctrl+C above still
+        // quits, but with the card up nothing else reaches the app: Esc or
+        // Enter dismisses it (and records the version as seen), j/k scroll it,
+        // and every other key is swallowed so a startup card cannot be typed
+        // through into the session underneath.
+        if self.nav.whats_new.open {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => self.dismiss_whats_new(),
+                KeyCode::Char('j') | KeyCode::Down => self.nav.whats_new.scroll_body(1),
+                KeyCode::Char('k') | KeyCode::Up => self.nav.whats_new.scroll_body(-1),
+                KeyCode::PageDown => self.nav.whats_new.scroll_body(8),
+                KeyCode::PageUp => self.nav.whats_new.scroll_body(-8),
+                KeyCode::Char('g') | KeyCode::Home => self.nav.whats_new.scroll_body(-9999),
+                KeyCode::Char('G') | KeyCode::End => self.nav.whats_new.scroll_body(9999),
+                _ => {}
+            }
+            return;
+        }
+
         // Ctrl+S → quick save
         if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
             dbg::user("Ctrl+S → save");
@@ -102,6 +121,18 @@ impl App {
                 self.perform_redo();
                 return;
             }
+        }
+
+        // The crates.io update notice, when one is up: Esc waves it away, but
+        // only at the top level where Esc is otherwise idle — see
+        // `update_notice_dismissible`, which is what keeps this from stealing
+        // the Esc that backs out of a menu or a mode.
+        if self.nav.update_notice().is_some()
+            && key.code == KeyCode::Esc
+            && self.update_notice_dismissible()
+        {
+            self.nav.update_dismissed = true;
+            return;
         }
 
         // Confirmation modal — y/n

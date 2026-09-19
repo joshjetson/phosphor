@@ -11,7 +11,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.85"
+version = "0.3.86"
 edition = "2021"
 license = "MIT"
 rust-version = "1.75"
@@ -53,6 +53,12 @@ hound = "3"
 anyhow = "1"
 thiserror = "2"
 
+# HTTP for the crates.io update check. A pure-Rust TLS stack only: `https-rustls`
+# pulls rustls + ring + bundled webpki roots, and no `openssl-sys`/`native-tls`,
+# so the one-command `cargo install phosphor-studio --locked` keeps working on a
+# machine with no system OpenSSL. Enforced by a test and by `cargo tree`.
+minreq = { version = "2.14", default-features = false, features = ["https-rustls"] }
+
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -66,13 +72,13 @@ proptest = "1"
 assert_no_alloc = "1.1"
 
 # Internal crates
-phosphor-app = { path = "crates/phosphor-app", version = "0.3.85" }
-phosphor-core = { path = "crates/phosphor-core", version = "0.3.85" }
-phosphor-dsp = { path = "crates/phosphor-dsp", version = "0.3.85" }
-phosphor-midi = { path = "crates/phosphor-midi", version = "0.3.85" }
-phosphor-plugin = { path = "crates/phosphor-plugin", version = "0.3.85" }
-phosphor-tui = { path = "crates/phosphor-tui", version = "0.3.85" }
-phosphor-gui = { path = "crates/phosphor-gui", version = "0.3.85" }
+phosphor-app = { path = "crates/phosphor-app", version = "0.3.86" }
+phosphor-core = { path = "crates/phosphor-core", version = "0.3.86" }
+phosphor-dsp = { path = "crates/phosphor-dsp", version = "0.3.86" }
+phosphor-midi = { path = "crates/phosphor-midi", version = "0.3.86" }
+phosphor-plugin = { path = "crates/phosphor-plugin", version = "0.3.86" }
+phosphor-tui = { path = "crates/phosphor-tui", version = "0.3.86" }
+phosphor-gui = { path = "crates/phosphor-gui", version = "0.3.86" }
 
 # Audio cannot run at debug speed. An unoptimized DSP path misses the
 # callback's deadline on a full session, and a missed deadline here does

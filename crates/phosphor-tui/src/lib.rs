@@ -48,8 +48,13 @@ mod test_sampler;
 mod test_session;
 #[cfg(test)]
 mod test_undo;
+#[cfg(test)]
+mod test_update;
+#[cfg(test)]
+mod test_whats_new;
 mod theme;
 mod ui;
+mod update;
 
 use anyhow::Result;
 use phosphor_core::AudioRequest;
@@ -84,5 +89,11 @@ pub fn run(request: AudioRequest, enable_audio: bool, enable_midi: bool) -> Resu
     }));
 
     let mut app = app::App::new_with_splash(request, enable_audio, enable_midi)?;
+    // Both notices are wired here, in the real launch, and never in `App::new`:
+    // the card reads the last-seen file and the update check spawns a thread and
+    // reaches the network — none of which a headless test may do. A test builds
+    // its app through `App::new`, so it never meets either.
+    app.show_whats_new_on_startup();
+    app.start_update_check();
     app.run()
 }

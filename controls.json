@@ -342,5 +342,15 @@
     "memory": "the head of the pad list (and of the zone list) says how much audio the kit is holding — '12.3 MB held' — counting a buffer shared by several pads once, so a zone across the whole bed costs one sample and not eighty-eight · it is not there at all on an empty kit",
     "presets": "space then w saves and loads the sampler's two globals, level and vel, and nothing else: the pads, layers, zones and takes are the session's, not a preset bank's, and loading a preset leaves the kit exactly where it was",
     "trigger_modes": "each pad's trig knob has three modes: one-shot (a press plays the whole trimmed region, release ignored), gate (sounds while held, release runs the amp release), and mono (last-note-wins across the whole sampler — plays like a one-shot but the next note played on ANY pad cuts it, even a one-shot pad's; only one mono voice ever sounds, for monosynth bass and 808-style glides)"
+  },
+  "whats_new": {
+    "description": "Shown once at startup, the first time you run a version you have not seen. A centred card listing what changed, newest first, in the same words as CHANGELOG.md. A first-ever run shows only the current version's card, never the whole history.",
+    "esc / enter": "close the card and record this version as seen, so it does not come back",
+    "j/k": "scroll the card when it is longer than the screen",
+    "g / G": "jump to the top / bottom of the card"
+  },
+  "update_notice": {
+    "description": "A one-line notice in the bottom bar when a newer phosphor-studio is published on crates.io, reading 'vX.Y.Z available · cargo install phosphor-studio --locked'. The check runs on a background thread at most once every 6 hours and is silent on any failure, so being offline costs nothing. Set PHOSPHOR_NO_UPDATE_CHECK=1 (to anything) to turn it off entirely.",
+    "esc": "dismiss the notice for this session — only at the plain track list, where esc is otherwise idle, so it never steals the esc that backs out of a menu or a mode"
   }
 }

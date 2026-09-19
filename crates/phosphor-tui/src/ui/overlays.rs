@@ -171,6 +171,90 @@ fn render_help_card(frame: &mut Frame, nav: &NavState, topic: &HelpTopic) {
     );
 }
 
+/// The "what's new" card, shown once after an update.
+///
+/// Built on the help card's shape — a centred, bordered, scrollable box in the
+/// same overlay colours — because it is the same kind of thing: a body too long
+/// to size to the terminal, read with `j`/`k` and closed with Esc. The entries
+/// and their wrapped lines come from [`WhatsNewCard::lines`], the same flatten
+/// the scroll clamp measures, so the keys and the drawing agree about the bottom.
+pub(super) fn render_whats_new(frame: &mut Frame, nav: &NavState) {
+    let card = &nav.whats_new;
+    let area = frame.area();
+    let width = card_box_width(area.width);
+    let inner_width = card_inner_width(area.width);
+    let lines = card.lines(inner_width);
+    let height = card_box_height(area.height, lines.len());
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = area.height.saturating_sub(height + 1);
+    let rect = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, rect);
+    frame.render_widget(
+        Block::default()
+            .style(Style::default().bg(theme::overlay_bg()))
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_style(theme::border_style())
+            .title(Span::styled(
+                " what's new ",
+                theme::amber_bright().add_modifier(Modifier::BOLD),
+            )),
+        rect,
+    );
+
+    let inner = Rect::new(rect.x + 2, rect.y + 1, rect.width.saturating_sub(4), rect.height.saturating_sub(2));
+    let rows = inner.height.saturating_sub(1) as usize;
+    let scroll = card.scroll.min(lines.len().saturating_sub(rows.max(1)));
+
+    let body: Vec<Line> = lines
+        .iter()
+        .skip(scroll)
+        .take(rows)
+        .map(|line| whats_new_line(line, inner.width as usize))
+        .collect();
+    frame.render_widget(
+        Paragraph::new(body),
+        Rect::new(inner.x, inner.y, inner.width, rows as u16),
+    );
+
+    // The footer: how to get out, and how much is left below the window.
+    let more = lines.len().saturating_sub(scroll + rows);
+    let mut footer = vec![
+        Span::styled("esc/enter", theme::amber()),
+        Span::styled(" close  ", theme::muted()),
+    ];
+    if lines.len() > rows {
+        footer.push(Span::styled("j/k", theme::amber()));
+        footer.push(Span::styled(" scroll  ", theme::muted()));
+        footer.push(Span::styled(
+            if more > 0 { format!("\u{2193} {more} more") } else { "\u{2193} end".to_string() },
+            theme::dim(),
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(footer)),
+        Rect::new(inner.x, inner.y + rows as u16, inner.width, 1),
+    );
+}
+
+/// One line of the what's-new card.
+fn whats_new_line(line: &WhatsNewLine, _width: usize) -> Line<'static> {
+    match line {
+        WhatsNewLine::Version { version, title } => Line::from(vec![
+            Span::styled(
+                format!("v{version}"),
+                theme::amber_bright().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  {title}"),
+                Style::default().fg(theme::highlight_val()).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        WhatsNewLine::Body(text) => Line::from(Span::styled(text.clone(), theme::normal())),
+        WhatsNewLine::Gap => Line::from(""),
+    }
+}
+
 /// One line of a card.
 fn help_line(line: HelpLine, width: usize) -> Line<'static> {
     match line {

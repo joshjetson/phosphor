@@ -20,6 +20,7 @@ mod sampler_view;
 mod track;
 mod transport_ui;
 pub mod undo;
+mod whats_new;
 
 pub use automation::*;
 pub use midi_fx::*;
@@ -32,6 +33,7 @@ pub use menu::*;
 pub use sampler_view::*;
 pub use track::*;
 pub use transport_ui::*;
+pub use whats_new::*;
 mod navigation;
 mod params;
 pub use params::PanelView;
@@ -222,6 +224,20 @@ pub struct NavState {
     /// stop; this is the mirror the status bar and the track strip blink from.
     /// Never written to a session — it is a monitoring switch, not a setting.
     pub key_listen: Option<usize>,
+    /// The "what's new" card, shown once after an update.
+    ///
+    /// Closed and empty in every headless build: it is filled only by the real
+    /// launch path, after it has read the last-seen version off disk, so no
+    /// test ever meets it by accident. See [`crate::whats_new`].
+    pub whats_new: WhatsNewCard,
+    /// A newer version found on crates.io, ready for the bottom bar to name,
+    /// or `None` when there is nothing newer (the ordinary case, and every
+    /// headless build — only the real launch's background check ever sets it).
+    pub update_available: Option<String>,
+    /// Whether the player has dismissed the update notice this session. The
+    /// notice is a courtesy, not an alarm; once waved away it stays away until
+    /// the next launch.
+    pub update_dismissed: bool,
 }
 
 impl NavState {
@@ -265,7 +281,20 @@ impl NavState {
             sample_rate: 48_000,
             tempo_bpm: 120.0,
             key_listen: None,
+            whats_new: WhatsNewCard::new(),
+            update_available: None,
+            update_dismissed: false,
         }
+    }
+
+    /// The update notice for the bottom bar: `Some` when crates.io has a newer
+    /// version and the player has not waved it away yet.
+    #[must_use]
+    pub fn update_notice(&self) -> Option<&str> {
+        if self.update_dismissed {
+            return None;
+        }
+        self.update_available.as_deref()
     }
 
     /// The kind of effect whose panel is open, if one is.

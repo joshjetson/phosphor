@@ -120,8 +120,12 @@ pub fn render(
     }
     render_bottom_bar(frame, chunks[ci], nav, status);
 
-    // Overlays
-    if nav.confirm_modal.open {
+    // Overlays. The what's-new card is checked first: it is shown at startup,
+    // before the player has touched anything, and takes the screen until it is
+    // dismissed — nothing else can be open beneath it.
+    if nav.whats_new.open {
+        render_whats_new(frame, nav);
+    } else if nav.confirm_modal.open {
         render_confirm_modal(frame, nav);
     } else if nav.quantize_modal.open {
         render_quantize_modal(frame, nav);
