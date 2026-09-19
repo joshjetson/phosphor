@@ -36,7 +36,13 @@ use crate::version;
 /// The path climbs `src` → `phosphor-app` → `crates` → repository root, which is
 /// where `CHANGELOG.md` lives; a test parses this constant to keep the wiring
 /// honest if the file is ever moved.
-pub const CHANGELOG: &str = include_str!("../../../CHANGELOG.md");
+// The file lives INSIDE this crate — `crates/phosphor-app/CHANGELOG.md`,
+// with a symlink at the repo root for anyone browsing there. `cargo
+// publish` packages each crate in isolation, so a repo-root path
+// (`../../../CHANGELOG.md`) is outside the tarball and the verify build
+// cannot find it: the crate must embed a file it owns. The root symlink is
+// not in any crate's package and cannot break one.
+pub const CHANGELOG: &str = include_str!("../CHANGELOG.md");
 
 /// The file under the application directory that remembers the newest version
 /// whose card has been dismissed.
