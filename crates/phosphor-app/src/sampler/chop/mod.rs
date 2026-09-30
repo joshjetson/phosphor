@@ -25,10 +25,12 @@
 //! frames, and one coordinate system is one fewer conversion to get wrong.
 
 pub mod bands;
+pub mod controls;
 pub mod grid;
 pub mod land;
 pub mod markers;
 pub mod onset;
+pub mod plan;
 
 #[cfg(test)]
 pub(crate) mod testkit;

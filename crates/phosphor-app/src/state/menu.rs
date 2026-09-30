@@ -582,6 +582,8 @@ pub enum InputModalKind {
     ProgressionName,
     /// A sample file to put on the sampler's current pad.
     SamplePath,
+    /// A recording to open in the chop screen.
+    ChopPath,
 }
 
 #[derive(Debug)]

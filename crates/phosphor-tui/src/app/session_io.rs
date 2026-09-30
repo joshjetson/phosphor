@@ -254,6 +254,8 @@ impl App {
         // tracks that are about to stop existing; undoing one afterwards
         // would restore a piece of the old session into the new one.
         self.nav.undo_stack.clear();
+        // A chop set up on the old session's kit has nowhere to land.
+        self.nav.sampler_chop = None;
 
         // Apply transport settings. The tempo mirror moves with the
         // transport, as it does on every tempo edit — undo checkpoints read

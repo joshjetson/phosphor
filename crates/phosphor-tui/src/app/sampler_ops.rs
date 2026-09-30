@@ -485,10 +485,20 @@ impl App {
             self.stop_sampler_preview();
             return;
         };
-        let _ = self.engine.shared.mixer_command_tx.send(MixerCommand::SetSamplerPreview {
-            track_id: mixer_id,
-            preview: Some(PreviewLayer { config: pad.config, layer, mode }),
-        });
+        let config = pad.config;
+        self.send_sampler_preview(mixer_id, PreviewLayer { config, layer, mode });
+    }
+
+    /// Start an audition of exactly this sound on the track the mixer knows
+    /// as `mixer_id`. The one place a preview is sent, so that the one place
+    /// that stops it ([`App::stop_sampler_preview`]) always knows about it.
+    pub(crate) fn send_sampler_preview(&mut self, mixer_id: usize, preview: PreviewLayer) {
+        let mode = preview.mode;
+        let _ = self
+            .engine
+            .shared
+            .mixer_command_tx
+            .send(MixerCommand::SetSamplerPreview { track_id: mixer_id, preview: Some(preview) });
         self.sampler_preview = Some((mixer_id, mode));
     }
 

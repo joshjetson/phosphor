@@ -7,6 +7,7 @@
 //!            j/k picks a control · enter holds it · h/l adjusts · H/L strides
 //!            [ ] picks a layer · 1-8 jumps to one · m mutes · d removes
 //!            a loads a sound onto the pad · t trims it · n normalizes it
+//!            c chops it across the keys · C picks a recording to chop
 //!            i records the pad from an instrument · esc goes back
 //!            K switches the bed between pads and keys
 //!
@@ -20,6 +21,8 @@
 //!            w pulls both onto the audible part of the recording
 //!            j/k walks the unit deeper/wider · z snaps · r reverses
 //!            t loops the region · esc goes back to the map
+//!
+//! chop       its own screen and its own keys — see `sampler_chop`
 //!
 //! source     r starts the take · r again ends it · i swaps the instrument
 //!            p swaps what r lands: audio, or the phrase itself
@@ -85,6 +88,11 @@ impl App {
 
         if self.in_sampler_source() {
             self.handle_source_keys(key);
+            return;
+        }
+
+        if self.chop_has_the_keys() {
+            self.handle_chop_keys(key);
             return;
         }
 
@@ -159,6 +167,8 @@ impl App {
             KeyCode::Char('i') => self.open_pad_source_picker(),
             KeyCode::Char('n') => self.normalize_sampler_layer(),
             KeyCode::Char('t') => self.open_trim_strip(),
+            KeyCode::Char('c') => self.open_chop_here(),
+            KeyCode::Char('C') => self.open_chop_picker(),
             KeyCode::Char('K') => self.toggle_sampler_map_mode(),
             // The zone keys. They say so rather than doing nothing in pads
             // mode, because a key that is silent is a key a player thinks

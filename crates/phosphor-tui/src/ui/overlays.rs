@@ -377,6 +377,7 @@ pub(super) fn render_input_modal(frame: &mut Frame, nav: &NavState) {
         InputModalKind::RenameTrack => " rename track ",
         InputModalKind::ProgressionName => " name progression ",
         InputModalKind::SamplePath => " load sample ",
+        InputModalKind::ChopPath => " chop a recording ",
     };
     let block = Block::default()
         .style(Style::default().bg(theme::overlay_bg()))
@@ -393,7 +394,7 @@ pub(super) fn render_input_modal(frame: &mut Frame, nav: &NavState) {
         InputModalKind::PresetName => "name: ",
         InputModalKind::RenameTrack => "name: ",
         InputModalKind::ProgressionName => "name: ",
-        InputModalKind::SamplePath => "path: ",
+        InputModalKind::SamplePath | InputModalKind::ChopPath => "path: ",
     };
 
     // The field, as characters rather than bytes: a path can contain any of

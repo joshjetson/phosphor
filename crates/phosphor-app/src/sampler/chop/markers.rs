@@ -121,8 +121,12 @@ impl Markers {
     /// neighbours and the region's edges rather than passing them, so the
     /// list's order is the slices' order and the keys' order, always.
     ///
+    /// `snap` pulls it onto a zero crossing. Off for a player moving a cut a
+    /// sample at a time: the snap reaches a millisecond, and would undo the
+    /// very step they asked for.
+    ///
     /// Returns where it landed.
-    pub fn nudge(&mut self, pcm: &SamplePcm, index: usize, delta: i64) -> Option<u64> {
+    pub fn nudge(&mut self, pcm: &SamplePcm, index: usize, delta: i64, snap: bool) -> Option<u64> {
         let current = self.list.get(index)?;
         let low = match index.checked_sub(1) {
             Some(prev) => self.list[prev].frame + self.min_gap,
@@ -138,9 +142,10 @@ impl Markers {
         let wanted = current.frame.saturating_add_signed(delta).clamp(low, high);
         // The snap may not undo the clamp: a crossing past a neighbour is a
         // crossing the player did not ask for.
-        let snapped = Marker::at(pcm, wanted, current.strength, true);
-        let frame = if (low..=high).contains(&snapped.frame) { snapped.frame } else { wanted };
-        self.list[index] = Marker { frame, ..snapped };
+        let strength = current.strength;
+        let snapped = if snap { Marker::at(pcm, wanted, strength, true).frame } else { wanted };
+        let frame = if (low..=high).contains(&snapped) { snapped } else { wanted };
+        self.list[index] = Marker { frame, strength, pinned: true };
         Some(frame)
     }
 
@@ -226,7 +231,7 @@ mod tests {
         let mut m = Markers::new(0, 2_000, RATE);
         m.propose(proposed(&[(100, 0.0), (400, 0.0)]));
         let added = m.add(&pcm, 700).unwrap();
-        m.nudge(&pcm, 0, 50);
+        m.nudge(&pcm, 0, 50, true);
         m.propose(proposed(&[(300, 0.0), (710, 0.0), (1_200, 0.0)]));
         assert_eq!(frames(&m), vec![150, 300, 700, 1_200], "the moved and the added cut must survive");
         assert!(m.list()[0].pinned && m.list()[2].pinned);
@@ -251,11 +256,11 @@ mod tests {
         let pcm = flat();
         let mut m = Markers::new(100, 1_000, RATE);
         m.propose(proposed(&[(200, 0.0), (500, 0.0), (800, 0.0)]));
-        assert_eq!(m.nudge(&pcm, 1, -1_000), Some(240), "passed the cut before it");
-        assert_eq!(m.nudge(&pcm, 1, 1_000), Some(760), "passed the cut after it");
-        assert_eq!(m.nudge(&pcm, 0, -1_000), Some(100), "left the region");
-        assert_eq!(m.nudge(&pcm, 2, 1_000), Some(999), "left the region");
-        assert_eq!(m.nudge(&pcm, 9, 1), None);
+        assert_eq!(m.nudge(&pcm, 1, -1_000, true), Some(240), "passed the cut before it");
+        assert_eq!(m.nudge(&pcm, 1, 1_000, true), Some(760), "passed the cut after it");
+        assert_eq!(m.nudge(&pcm, 0, -1_000, true), Some(100), "left the region");
+        assert_eq!(m.nudge(&pcm, 2, 1_000, true), Some(999), "left the region");
+        assert_eq!(m.nudge(&pcm, 9, 1, true), None);
         assert!(m.list().iter().all(|c| c.pinned), "a moved cut is the player's");
     }
 
@@ -269,8 +274,10 @@ mod tests {
         // Crossings sit on the multiples of seven, and 1 ms of reach at
         // 1 kHz is one frame: 502 has none within one and stays, 505 has
         // one at 504 and goes there.
-        assert_eq!(m.nudge(&pcm, 0, 2), Some(502));
-        assert_eq!(m.nudge(&pcm, 0, 3), Some(504));
+        assert_eq!(m.nudge(&pcm, 0, 2, true), Some(502));
+        assert_eq!(m.nudge(&pcm, 0, 3, true), Some(504));
+        // Unsnapped, a step of one is a step of one.
+        assert_eq!(m.nudge(&pcm, 0, 1, false), Some(505));
     }
 
     #[test]

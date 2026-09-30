@@ -227,6 +227,7 @@ impl App {
                                 }
                             }
                             InputModalKind::SamplePath => self.do_load_sample(&path),
+                            InputModalKind::ChopPath => self.do_chop_file(&path),
                         }
                     }
                 }
@@ -461,7 +462,7 @@ impl App {
         // `esc` is the way out of it and Tab is not. A held knob and a mode
         // with its own key table are the same promise from the player's side,
         // and two guards that said different things would be the kind of
-        // difference nobody can predict.
+        // difference nobody can predict. The chop screen is a third such mode.
         match key.code {
             KeyCode::Tab | KeyCode::BackTab
                 if self.nav.focused_pane == Pane::ClipView
@@ -471,7 +472,8 @@ impl App {
                             && self.nav.clip_view.fx.locked)
                         || (self.nav.clip_view.clip_tab == ClipTab::Pads
                             && (self.nav.clip_view.sampler.locked
-                                || self.nav.clip_view.sampler.trim.is_some()))) =>
+                                || self.nav.clip_view.sampler.trim.is_some()
+                                || self.nav.chop_here().is_some()))) =>
             {
                 return;
             }

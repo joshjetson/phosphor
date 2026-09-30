@@ -34,7 +34,7 @@ use super::*;
 use phosphor_app::sampler::trim::{NudgeUnit, TrimEdge};
 use phosphor_app::sampler::LayerState;
 
-use super::wave::{marker_row, wave_rows, with_peaks};
+use super::wave::{marker_row, region_paint, wave_rows, with_peaks};
 
 /// The tallest the waveform is drawn. Past a dozen rows a peak picture stops
 /// telling a player anything they did not already know, and the pad list
@@ -116,7 +116,8 @@ pub(super) fn strip_lines(map: &Map, width: usize, height: usize) -> Option<Vec<
     let wave = height.saturating_sub(CHROME_ROWS).clamp(1, MAX_WAVE_ROWS);
     if height > 1 {
         lines.extend(with_peaks(pcm, width, |peaks| {
-            wave_rows(peaks, wave.min(height - 1), region, frames, lit, cut)
+            let paint = region_paint(region, frames, peaks.columns.len(), lit, cut);
+            wave_rows(peaks, wave.min(height - 1), paint)
         }));
     }
     if height > lines.len() {

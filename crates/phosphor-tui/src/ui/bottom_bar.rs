@@ -90,7 +90,11 @@ pub(super) fn render_bottom_bar(
         // own mode again: it takes every key the map takes and means
         // something else by all of them — and so, one level up, does keys
         // mode, where the same keys address zones instead of pads.
-        if nav.clip_view.sampler.trim.is_some() {
+        if nav.chop_here().is_some_and(|c| c.held) {
+            ("-- HOLD --", theme::amber_bright())
+        } else if nav.chop_here().is_some() {
+            ("-- CHOP --", theme::amber_bright())
+        } else if nav.clip_view.sampler.trim.is_some() {
             ("-- TRIM --", theme::amber_bright())
         } else if nav.clip_view.sampler.root_learn {
             // Blinking, like every other tag that means "the box is
@@ -280,6 +284,17 @@ pub(super) fn render_bottom_bar(
                 } else {
                     "record"
                 }), ("i","instrument"), ("esc","sampler")],
+            // The chop screen: rows and a way to land, or — holding a cut —
+            // the brace's two edges and the unit.
+            Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Pads
+                && nav.clip_view.focus == ClipViewFocus::PianoRoll
+                && nav.chop_here().is_some_and(|c| c.held) =>
+                vec![("hl","cut"),("H/L","end"),("jk","unit"),("esc","let go")],
+            Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Pads
+                && nav.clip_view.focus == ClipViewFocus::PianoRoll
+                && nav.chop_here().is_some() =>
+                vec![("jk","row"),("hl","change"),("enter","hold"),("a/d","add/del"),
+                     ("p","play"),("c","land"),("esc","cancel")],
             // The trim strip. `h`/`l` take an edge rather than a pad, which
             // is the one thing about this mode a player has to know.
             Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Pads
@@ -312,7 +327,7 @@ pub(super) fn render_bottom_bar(
             Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Pads
                 && nav.clip_view.focus == ClipViewFocus::PianoRoll =>
                 vec![("hl","pad"),("jk","knob"),("[]","layer"),("i","source"),
-                     ("a","load"),("t","trim"),("K","keys")],
+                     ("a","load"),("t","trim"),("c","chop"),("K","keys")],
             // Note editing: proximity nav, selection, and the velocity ride.
             Pane::ClipView if nav.clip_view.piano_roll.edit_mode =>
                 vec![("hjkl","note"),("enter","sel"),(",.","vel"),("<>","vel\u{00b1}"),

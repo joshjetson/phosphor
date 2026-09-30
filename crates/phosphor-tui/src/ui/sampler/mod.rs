@@ -44,12 +44,14 @@ use phosphor_app::sampler::{
 
 use super::keyboard::{self, KeyPaint, INK};
 
+mod chop;
 mod list;
 mod panel;
 mod strip;
 mod wave;
 mod zones;
 
+use chop::{chop_lines, target_keys};
 use list::pad_list;
 use panel::panel_lines;
 use strip::strip_lines;
@@ -114,6 +116,8 @@ struct Map<'a> {
     /// The engine's rate. A phrase's length is frames, so the seconds the
     /// list prints are the seconds it will actually play for here.
     rate: f32,
+    /// The chop screen, when it is open on this track.
+    chop: Option<&'a phosphor_app::state::ChopScreen>,
 }
 
 impl Map<'_> {
@@ -256,7 +260,12 @@ fn clip_text(text: &str, width: usize) -> String {
 /// The caret over the key being edited, the keyboard under it, and — in
 /// keys mode — the rule that braces each zone.
 fn band_lines(map: &Map, width: usize) -> Vec<Line<'static>> {
-    let cursor_note = SamplerState::note_of_pad(map.state.cursor);
+    // While a chop is open the caret is the landing's, not the pad
+    // cursor's: the keys the slices will take are what the band is about,
+    // and the window follows them so they are on screen however far up the
+    // player moves them.
+    let caret = map.chop.map_or(map.state.cursor, |chop| chop.plan.first);
+    let cursor_note = SamplerState::note_of_pad(caret);
     let lo = keyboard::window_lo(LOW, HIGH, width, cursor_note);
 
     let mut lines = vec![caret_line(map, lo, cursor_note, width)];
@@ -281,8 +290,22 @@ fn key_paint(map: &Map, note: u8) -> KeyPaint {
     let Some(index) = SamplerState::pad_of_note(note) else {
         return KeyPaint::plain(note);
     };
+    // While a chop is being set up the band shows where it will land, key by
+    // key: amber where a slice will go, red where a key is in the way.
+    if let Some((lo, hi)) = map.chop.and_then(target_keys) {
+        if (lo..=hi).contains(&index) {
+            let blocked = phosphor_app::sampler::chop::land::holds_sound(&map.state.pads[index]);
+            return KeyPaint::lit(if blocked {
+                theme::rec_active_val()
+            } else {
+                theme::amber_bright_val()
+            });
+        }
+    }
     let (count, missing) = map.state.key_load(index);
-    let paint = if index == map.state.cursor {
+    // The pad cursor is not lit under a chop: two keys in the same amber,
+    // one a target and one not, is a band that says the chop lands on both.
+    let paint = if index == map.state.cursor && map.chop.is_none() {
         KeyPaint::lit(theme::amber_bright_val())
     } else if missing {
         KeyPaint::lit(theme::rec_active_val())
@@ -407,6 +430,7 @@ pub(super) fn render_pads(frame: &mut Frame, area: Rect, nav: &NavState) {
             .as_deref()
             .filter(|mode| mode.track_idx == nav.track_cursor),
         rate: nav.sample_rate as f32,
+        chop: nav.chop_here(),
     };
 
     let mut body = area;
@@ -434,6 +458,13 @@ pub(super) fn render_pads(frame: &mut Frame, area: Rect, nav: &NavState) {
         if body.height == 0 {
             return;
         }
+    }
+
+    // The chop screen takes the body the way the strip does, for the same
+    // reason, and before it: the chop is the mode the keys are in.
+    if let Some(lines) = chop_lines(&map, body.width as usize, body.height as usize) {
+        frame.render_widget(Paragraph::new(lines), body);
+        return;
     }
 
     // The trim strip takes the body and leaves the band. It is worth the
@@ -599,6 +630,7 @@ pub(super) mod tests {
             colour: theme::track_color(0),
             source: None,
             rate: 44_100.0,
+            chop: None,
         }
     }
 

@@ -12,6 +12,7 @@ mod automation;
 mod midi_fx;
 mod section;
 mod clip_view;
+mod chop_view;
 mod file_picker;
 mod input;
 mod loop_editor;
@@ -25,6 +26,7 @@ mod whats_new;
 pub use automation::*;
 pub use midi_fx::*;
 pub use section::*;
+pub use chop_view::*;
 pub use clip_view::*;
 pub use file_picker::*;
 pub use input::*;
@@ -185,6 +187,10 @@ pub struct NavState {
     /// the banner, the mode line and the pad strip all have to say that it
     /// is on, and they are handed the navigation state and nothing else.
     pub sampler_source: Option<Box<crate::sampler::capture::SourceMode>>,
+    /// The chop screen, while a chop is being set up over a sampler's pads.
+    /// A mode like source mode, and here for the same reason: the screen,
+    /// the mode line and the hint bar all read it from the navigation state.
+    pub sampler_chop: Option<Box<ChopScreen>>,
     /// The lifted loop section, waiting for `p`.
     pub section_clip: Option<SectionClipboard>,
     /// What the master limiter is taking off, ready to draw.
@@ -276,6 +282,7 @@ impl NavState {
             split_warned_for: None,
             practice: crate::practice::Room::default(),
             sampler_source: None,
+            sampler_chop: None,
             section_clip: None,
             limiter_gr: std::sync::Arc::new(phosphor_core::fx::GrMeter::new()),
             sample_rate: 48_000,

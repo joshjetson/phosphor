@@ -139,6 +139,13 @@ impl App {
     /// thing they recorded ten minutes ago would otherwise have to walk out
     /// of the folder the picker opened on to find it.
     pub(crate) fn open_sample_picker(&mut self) {
+        self.open_sample_picker_for(PickerPurpose::LoadSample);
+    }
+
+    /// The samples folder, listed for `purpose` — a sound for a pad, or a
+    /// recording to chop. One folder remembered for both, because they are
+    /// the same files.
+    pub(crate) fn open_sample_picker_for(&mut self, purpose: PickerPurpose) {
         let takes = self
             .session_path
             .as_deref()
@@ -147,7 +154,7 @@ impl App {
             .browse_samples
             .clone()
             .unwrap_or_else(phosphor_app::paths::sample_browse_dir);
-        self.nav.file_picker.show(PickerPurpose::LoadSample, dir, takes);
+        self.nav.file_picker.show(purpose, dir, takes);
     }
 
     /// One key, in the picker.
@@ -200,6 +207,7 @@ impl App {
                         self.nav.input_modal.open_save_typed(&name, &folder);
                     }
                     PickerPurpose::LoadSample => self.open_sample_typed_prompt(),
+                    PickerPurpose::ChopSample => self.open_chop_typed_prompt(),
                 }
             }
             // The way down a list that is being filtered, for hands that do
@@ -263,6 +271,7 @@ impl App {
         match purpose {
             PickerPurpose::OpenSession => self.do_load(&path),
             PickerPurpose::LoadSample => self.do_load_sample(&path),
+            PickerPurpose::ChopSample => self.do_chop_file(&path),
             // Answered at the top of this function: a file row in the save
             // picker is a name to take, not a file to open.
             PickerPurpose::SaveSession => {}

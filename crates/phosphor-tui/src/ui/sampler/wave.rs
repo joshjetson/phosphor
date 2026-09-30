@@ -135,7 +135,7 @@ pub(super) fn with_peaks<T>(
 
 /// The column a frame falls in. `frames` is never zero here — a layer with
 /// no frames has no region and never reaches either view.
-fn column_of(frame: u64, frames: u64, width: usize) -> usize {
+pub(super) fn column_of(frame: u64, frames: u64, width: usize) -> usize {
     ((frame.min(frames) * width as u64) / frames.max(1)) as usize
     // The exclusive end lands one past the last column; the caller clamps.
 }
@@ -147,29 +147,27 @@ fn column_of(frame: u64, frames: u64, width: usize) -> usize {
 /// centre row is always drawn: a silent passage is a line through the middle
 /// rather than a gap, which is the difference between "quiet here" and "the
 /// strip stopped drawing".
+///
+/// `paint` says what colour each column is. The waveform is the same picture
+/// whatever it is lighting — one region in the trim strip and the panel, a
+/// slice among many in the chop screen — so the picture is drawn here once
+/// and the lighting is the caller's. [`region_paint`] is the one-region rule.
 pub(super) fn wave_rows(
     peaks: &Peaks,
     rows: usize,
-    region: (u64, u64),
-    frames: u64,
-    lit: Style,
-    cut: Style,
+    paint: impl Fn(usize) -> Style,
 ) -> Vec<Line<'static>> {
     let width = peaks.columns.len();
     let centre = rows / 2;
     let half = (rows as f32 / 2.0).max(1.0);
     let scale = 1.0 / peaks.peak.max(QUIET_FLOOR);
-    let start_col = column_of(region.0, frames, width);
-    // The end is exclusive; the column holding the last playing frame is the
-    // last lit one.
-    let end_col = column_of(region.1.saturating_sub(1), frames, width);
 
     (0..rows)
         .map(|row| {
             let spans = (0..width)
                 .map(|column| {
                     let (low, high) = peaks.columns[column];
-                    let style = if column >= start_col && column <= end_col { lit } else { cut };
+                    let style = paint(column);
                     let reach = if row < centre {
                         (high * scale).max(0.0) * half - (centre - row) as f32
                     } else if row > centre {
@@ -193,6 +191,22 @@ pub(super) fn wave_rows(
             Line::from(spans)
         })
         .collect()
+}
+
+/// One region lit and the rest cut: what the trim strip and the panel's
+/// picture both show.
+pub(super) fn region_paint(
+    region: (u64, u64),
+    frames: u64,
+    width: usize,
+    lit: Style,
+    cut: Style,
+) -> impl Fn(usize) -> Style {
+    let start = column_of(region.0, frames, width);
+    // The end is exclusive; the column holding the last playing frame is the
+    // last lit one.
+    let end = column_of(region.1.saturating_sub(1), frames, width);
+    move |column| if column >= start && column <= end { lit } else { cut }
 }
 
 /// The ruler under the waveform, carrying the two markers.
@@ -263,7 +277,7 @@ pub(super) fn mini_lines(map: &Map, width: usize) -> Option<Vec<Line<'static>>> 
 
     let frames = pcm.frames();
     let mut rows = with_peaks(pcm, picture, |peaks| {
-        wave_rows(peaks, MINI_ROWS - 1, region, frames, lit, cut)
+        wave_rows(peaks, MINI_ROWS - 1, region_paint(region, frames, peaks.columns.len(), lit, cut))
     });
     rows.push(marker_row(region, frames, picture, lit, cut, mark));
 

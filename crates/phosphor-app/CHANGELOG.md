@@ -5,6 +5,10 @@ new" card the first time you run a version you have not seen. Each section is a
 `## X.Y.Z — Title` header, a blank line, and a short prose summary — the same
 words as the release notes, without the install line, which the app supplies.
 
+## 0.3.88 — Chop a recording across the keys
+
+On the sampler, `c` chops the sound on a pad across the keyboard, one slice per key from C1 up, and `C` does the same for any recording in your samples folder. Cut where the hits are — listening to everything, or only the kicks, the snares or the hats, so a break can be cut from kick to kick — or on a beat grid, or into even slices; turn the sensitivity, keep only the strongest few to fill one octave, grab any cut and move it by ear. The keyboard shows in amber where the slices will land and in red any key already holding a sound, which a chop never overwrites; `c` lands it as one undo step, and every slice shares one copy of the recording, saved as one file.
+
 ## 0.3.87 — One file, one copy, however many pads play it
 
 A session now decodes each sample file once when it opens, however many pads or zones use it, and every one of them shares that single copy — just as they did before the save. Until now each pad decoded its own, so a kit using one recording in many places reopened holding that many copies of it: harmless for a drum kit, but a long break spread across the keyboard would have come back at dozens of times its size and taken as long again to load. Different spellings of the same file count as the same file, a missing file is reported for every pad that wanted it, and the memory line reads true after a reload.

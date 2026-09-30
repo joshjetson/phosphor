@@ -159,7 +159,7 @@ list to dismiss it. To turn the check off entirely, set
 | Instrument | Type | Voices | Sounds | Description |
 |-----------|------|--------|--------|-------------|
 | **Sampler** | Sample playback | 64 | yours | 88 pads, one per piano key, eight sounds stacked on each with their own tune, trim, reverse and mute; per-pad trigger, poly, choke group, round robin, pitch, ADSR, level, pan, root and keytracking; a trim strip with a zero-crossing snap and a key that
-hugs the sound; **keys mode**, where stretches of keys become chromatic zones playing one sound from a root; and resampling — record any instrument in the box onto a pad, free or cut to whole bars |
+hugs the sound; **keys mode**, where stretches of keys become chromatic zones playing one sound from a root; and resampling — record any instrument in the box onto a pad, free or cut to whole bars; and **chop** — cut a recording across the keys at its hits (kicks, snares or hats), on a beat grid, or into even slices |
 
 64 is the number of voices allowed to sound at once, across the whole
 instrument rather than per pad; the pool behind it holds 80, so a voice that
@@ -632,6 +632,45 @@ bar says in words. A whole nudge run — however long you hold the key — is on
 press of `u`. A sound whose file has gone missing is refused rather than
 opened onto an empty pane.
 
+### Chop — cut a recording across the keys — `c`
+
+Put a break — or any recording — on a pad and press `c`. The chop screen
+opens: the recording across the pane, a mark at every cut, and a short list
+of settings. Nothing on your kit changes until you press `c` again.
+
+- **mode** — *transient* cuts where the hits are. *grid* cuts a loop of so
+  many **bars** every bar, half, beat, 1/8 or 1/16. *equal* cuts it into so
+  many even **slices**.
+- **listen** (transient) — *everything*, *low · kicks*, *mid · snares* or
+  *high · hats*. Pick *kicks* and each slice runs from one kick to the next.
+- **sensitivity** — turn it up to catch quieter hits, down for only the big
+  ones.
+- **fit** — keep only the strongest few. Fit 12 is one octave of bigger
+  slices.
+- **from** — the first key. Slices go up from there, one per key. It starts
+  on C1, or on the first free keys above it.
+- **feel** — *break*: one-shots that cut each other off, like one drummer.
+  *melodic*: keys ring while held and can overlap.
+
+`j`/`k` pick a row, `h`/`l` change it (`H`/`L` in bigger steps). The keyboard
+shows where the chop will land: **amber** keys are free, **red** keys already
+hold a sound. A chop never overwrites a sound — move `from`, or clear the key.
+
+On the **cuts** row, `h`/`l` step through the slices and play each one.
+`Enter` grabs the cut under the cursor: `h`/`l` move it, `H`/`L` move the
+slice's end, `j`/`k` change how far one press goes. `a` adds a cut, `d`
+removes one, `p` plays the slice again. Cuts you add or move stay where you
+put them when you change the settings.
+
+`c` lands it, and one `u` takes the whole chop back. `Esc` leaves with
+nothing changed.
+
+`C` chops a file you have not loaded yet: it opens your samples folder
+(`/` types a path) and chops the one you pick, without putting it on a pad
+first. Every slice shares one copy of the recording, so a long break across
+the whole keyboard costs no extra memory, saves as one file, and each slice
+is an ordinary sound you can trim with `t`.
+
 ### The picture under the controls
 
 The pad panel draws the sound under the cursor in three rows, under the
@@ -873,6 +912,8 @@ channels is dropped), up to ten minutes a file.
 | `1`–`8` | Jump to that sound, and play it |
 | `a` | Load a WAV onto this pad — a list of `samples/`; `/` types a path instead |
 | `t` | Trim the sound under the cursor |
+| `c` | Chop the sound under the cursor across the keys |
+| `C` | Pick a recording from `samples/` and chop it |
 | `i` | Record this pad from an instrument |
 | `n` | Normalize the sound, or put it back to unity |
 | `m` | Mute the sound, keeping its seat on the pad |
@@ -911,6 +952,26 @@ has no word for, plus the brace.
 
 The strip owns every key while it is open, including `Tab` — the same bargain
 a held knob strikes, and for the same reason. `Esc` is the way out.
+
+### Keys in the chop screen
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Pick a row |
+| `h` / `l` | Change the row — on **cuts**, step through the slices and hear each one |
+| `H` / `L` | Change it in bigger steps (an octave for keys and counts) |
+| `Enter` | Grab the cut under the cursor |
+| `h` / `l` (grabbed) | Move the cut |
+| `H` / `L` (grabbed) | Move the slice's end |
+| `j` / `k` (grabbed) | How far one press moves: bar · beat · 1/16 · 10 ms · 1 ms · 1 sample |
+| `Esc` / `Enter` (grabbed) | Let go of the cut |
+| `a` / `d` | Add a cut / remove one |
+| `p` | Play the slice again |
+| `c` | Land the chop on the keys — one `u` takes it back |
+| `Esc` | Leave with nothing changed |
+
+Like the trim strip, the chop screen keeps every key until `Esc`, `Tab`
+included.
 
 ### Keys in source mode
 
@@ -1084,6 +1145,12 @@ panel exactly like the arpeggiator's: `Space+3`, `Tab` to `[trk fx]`,
 your controller plays that degree's whole chord, above it the keyboard
 plays normally. Press `e` in this panel for your own progressions (see
 Progressions).
+
+**Chop a recording** — On a sampler's pad map, `c` chops the sound on the
+pad under the caret, or `C` picks a file from `samples/` to chop. Pick how it
+cuts (`listen: low · kicks` cuts from kick to kick), `c` lands one slice per
+key from C1 up, `u` takes it back. A chop never overwrites a sound. Full
+section: [Chop](#chop--cut-a-recording-across-the-keys--c).
 
 **Clips (move, stretch, trim)** — Select the track, `h`/`l` along to its
 clips, and on a clip press `Enter` to lock it. Now `h`/`l` moves it,
@@ -1286,7 +1353,8 @@ on, so a take is reachable from any other pad in one `Enter`.
 map open and the keyboard drawn across it, eighty-eight pads, one per key.
 `h`/`l` walk the bed and `H`/`L` an octave — or play a key and the caret goes
 there. `a` opens a list of your samples folder and puts the WAV you choose on
-the pad under the caret (`/` types a path instead), `t` trims it, `i`
+the pad under the caret (`/` types a path instead), `t` trims it, `c`
+chops it across the keys, `i`
 records it off another instrument, `n` normalizes it, `d` removes it. `j`/`k`
 picks a control — trigger, polyphony, choke group, pitch, ADSR, level, pan,
 root, keytracking, then the selected sound's own six — `Enter` holds it,

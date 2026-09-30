@@ -77,6 +77,10 @@ pub enum PickerPurpose {
     /// `a` on the sampler: the answer is a sound for the pad under the
     /// caret.
     LoadSample,
+    /// `C` on the sampler: the answer is a recording to chop across the
+    /// keys. Same files, same folder as a sound for a pad — only what the
+    /// answer is for differs.
+    ChopSample,
     /// Space+S, and Ctrl+S on a session that has never been saved: the
     /// answer is a folder and a name to write into it.
     SaveSession,
@@ -88,7 +92,7 @@ impl PickerPurpose {
     pub const fn extension(self) -> &'static str {
         match self {
             Self::OpenSession | Self::SaveSession => crate::paths::SESSION_EXT,
-            Self::LoadSample => "wav",
+            Self::LoadSample | Self::ChopSample => "wav",
         }
     }
 
@@ -126,6 +130,7 @@ impl PickerPurpose {
         match self {
             Self::OpenSession => "open project",
             Self::LoadSample => "load sample",
+            Self::ChopSample => "chop a recording",
             Self::SaveSession => "save project",
         }
     }
@@ -136,7 +141,9 @@ impl PickerPurpose {
     pub const fn empty_words(self) -> &'static str {
         match self {
             Self::OpenSession => "no projects yet \u{00b7} ctrl+s saves your first one here",
-            Self::LoadSample => "drop .wav files in this folder, or press / to type a path",
+            Self::LoadSample | Self::ChopSample => {
+                "drop .wav files in this folder, or press / to type a path"
+            }
             // An empty folder is a perfectly good place to save into, so
             // this says that rather than reading as a dead end.
             Self::SaveSession => "nothing here yet \u{00b7} a name still saves into this folder",

@@ -37,6 +37,7 @@ mod session_io;
 mod clips;
 mod midi_fx_ops;
 mod practice_ops;
+mod sampler_chop;
 mod sampler_keys;
 mod sampler_ops;
 mod sampler_source;

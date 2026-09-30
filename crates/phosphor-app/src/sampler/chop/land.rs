@@ -80,6 +80,23 @@ fn config_for(note: u8, feel: Feel, choke: Option<u8>) -> PadConfig {
     }
 }
 
+/// The keys `count` slices from `first` cover, as a player reads them:
+/// `C1` for one, `C1–E1` for a run. The one spelling, for the header, the
+/// refusal and the landing's own words.
+pub fn span_label(first: usize, count: usize) -> String {
+    let label = |pad: usize| SamplerState::pad_label(pad.min(NUM_PADS - 1));
+    match count {
+        0 | 1 => label(first),
+        n => format!("{}\u{2013}{}", label(first), label(first + n - 1)),
+    }
+}
+
+/// Whether every key `count` slices from `first` would cover is on the bed
+/// and free.
+pub fn fits(state: &SamplerState, first: usize, count: usize) -> bool {
+    first + count <= NUM_PADS && !state.pads[first..first + count].iter().any(holds_sound)
+}
+
 /// Why `slices` cannot land from `first`, in the player's words — or
 /// `None` when they can.
 pub fn refusal(state: &SamplerState, slices: usize, first: usize) -> Option<String> {
@@ -92,14 +109,14 @@ pub fn refusal(state: &SamplerState, slices: usize, first: usize) -> Option<Stri
             "{slices} slices from {from} run past the top key \u{00b7} start lower, or fit them to fewer keys",
         ));
     }
-    let last = first + slices - 1;
-    let taken = state.pads[first..=last].iter().filter(|p| holds_sound(p)).count();
-    let holds = if taken == 1 { "holds a sound" } else { "hold sounds" };
-    (taken > 0).then(|| {
-        format!(
-            "{taken} of the {slices} keys {from}\u{2013}{} already {holds} \u{00b7} clear them, or land somewhere else",
-            SamplerState::pad_label(last),
-        )
+    let taken = state.pads[first..first + slices].iter().filter(|p| holds_sound(p)).count();
+    (taken > 0).then(|| match slices {
+        1 => format!("{from} already holds a sound \u{00b7} clear it, or land somewhere else"),
+        _ => format!(
+            "{taken} of the {slices} keys {} already {} \u{00b7} clear them, or land somewhere else",
+            span_label(first, slices),
+            if taken == 1 { "holds a sound" } else { "hold sounds" },
+        ),
     })
 }
 
@@ -205,6 +222,18 @@ mod tests {
         state.pads[c1()].config.level = 0.2;
         assert!(land(&mut state, &source(), &SLICES, c1(), Feel::Break).is_ok());
         assert_eq!(state.pads[c1()].config.level, 1.0);
+    }
+
+    #[test]
+    fn one_key_is_named_as_one_key() {
+        assert_eq!(span_label(c1(), 1), "C1");
+        assert_eq!(span_label(c1(), 3), "C1\u{2013}D1");
+        let mut state = SamplerState::new();
+        state.add_wav_layer(c1(), PathBuf::from("kick.wav"), source().pcm.unwrap()).unwrap();
+        let err = land(&mut state, &source(), &SLICES[..1], c1(), Feel::Break).unwrap_err();
+        assert!(err.starts_with("C1 already holds a sound \u{00b7} clear it"), "{err}");
+        assert!(!fits(&state, c1(), 1) && fits(&state, c1() + 1, 3));
+        assert!(!fits(&state, NUM_PADS - 2, 3), "a run off the top fits");
     }
 
     #[test]
