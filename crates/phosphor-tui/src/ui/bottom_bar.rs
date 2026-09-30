@@ -327,7 +327,7 @@ pub(super) fn render_bottom_bar(
             Pane::ClipView if nav.clip_view.clip_tab == ClipTab::Pads
                 && nav.clip_view.focus == ClipViewFocus::PianoRoll =>
                 vec![("hl","pad"),("jk","knob"),("[]","layer"),("i","source"),
-                     ("a","load"),("t","trim"),("c","chop"),("K","keys")],
+                     ("a","load"),("t","trim"),("c","chop"),("y/p","copy"),("K","keys")],
             // Note editing: proximity nav, selection, and the velocity ride.
             Pane::ClipView if nav.clip_view.piano_roll.edit_mode =>
                 vec![("hjkl","note"),("enter","sel"),(",.","vel"),("<>","vel\u{00b1}"),

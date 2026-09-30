@@ -10,6 +10,7 @@
 
 pub mod capture;
 pub mod chop;
+pub mod clipboard;
 pub mod knobs;
 pub mod phrase;
 pub mod render;

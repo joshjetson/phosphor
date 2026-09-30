@@ -47,6 +47,8 @@ mod test_chop;
 #[cfg(test)]
 mod test_sampler;
 #[cfg(test)]
+mod test_sampler_clipboard;
+#[cfg(test)]
 mod test_support;
 #[cfg(test)]
 mod test_session;

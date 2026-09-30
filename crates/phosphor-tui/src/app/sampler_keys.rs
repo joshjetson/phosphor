@@ -8,6 +8,7 @@
 //!            [ ] picks a layer · 1-8 jumps to one · m mutes · d removes
 //!            a loads a sound onto the pad · t trims it · n normalizes it
 //!            c chops it across the keys · C picks a recording to chop
+//!            y copies the pad · Y just the sound · p pastes, any key, any kit
 //!            i records the pad from an instrument · esc goes back
 //!            K switches the bed between pads and keys
 //!
@@ -182,16 +183,14 @@ impl App {
             KeyCode::Char('R') if self.sampler_mode() == MapMode::Keys => {
                 self.toggle_root_learn();
             }
-            // `r` and `p` outside source mode are keys with nowhere to go,
-            // and the thing a player pressing either wants is one key away.
+            // `r` outside source mode is a key with nowhere to go, and the
+            // thing a player pressing it wants is one key away.
             KeyCode::Char('r') => {
                 self.flash("i picks an instrument to record this pad from");
             }
-            KeyCode::Char('p') => {
-                self.flash(
-                    "audio or phrase is a source-mode choice \u{00b7} i picks an instrument first",
-                );
-            }
+            KeyCode::Char('y') => self.yank_sampler_pad(),
+            KeyCode::Char('Y') => self.yank_sampler_sound(),
+            KeyCode::Char('p') => self.paste_sampler(),
             KeyCode::Esc | KeyCode::Char('q') => self.nav.escape(),
             _ => {}
         }

@@ -3928,10 +3928,12 @@ mod tests {
     fn the_phrase_keys_refuse_in_words_where_they_do_not_apply() {
         let dir = scratch("phrase-refuse");
         let mut app = loaded_app(&dir);
-        // `p` outside source mode has nowhere to go, and says where it does.
+        // `p` outside source mode is paste; with nothing copied it says how
+        // to copy rather than doing nothing. Inside source mode it is still
+        // the audio-or-phrase switch, below.
         press(&mut app, KeyCode::Char('p'));
         let (message, _) = app.status_message.as_ref().unwrap();
-        assert!(message.contains("source-mode choice"), "`p` said: {message}");
+        assert!(message.contains("nothing copied"), "`p` said: {message}");
 
         press(&mut app, KeyCode::Char('i'));
         press(&mut app, KeyCode::Enter);

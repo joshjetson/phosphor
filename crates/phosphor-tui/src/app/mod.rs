@@ -38,6 +38,7 @@ mod clips;
 mod midi_fx_ops;
 mod practice_ops;
 mod sampler_chop;
+mod sampler_clipboard;
 mod sampler_keys;
 mod sampler_ops;
 mod sampler_source;
@@ -125,6 +126,9 @@ pub struct App {
     /// A whole pattern, yanked from the instrument row, waiting for `p` on
     /// any sequencer — this track's or another's.
     pub(crate) seq_pattern_clip: Option<Box<phosphor_core::pattern::PatternBlock>>,
+    /// A sampler pad or one sound off it, waiting for `p` on any key of any
+    /// sampler. See [`phosphor_app::sampler::clipboard`].
+    pub(crate) sampler_clip: Option<phosphor_app::sampler::clipboard::SamplerClip>,
     /// The UI's tap on MIDI input, for step record.
     ///
     /// The audio thread's ring has one consumer and this is not it: the
@@ -386,6 +390,7 @@ impl App {
             // over by the UI — and silence is how the mismatch went unnoticed.
             status_message: format_notice.map(|m| (m, std::time::Instant::now())),
             yanked_clips: Vec::new(),
+            sampler_clip: None,
             seq_step_clip: None,
             seq_pattern_clip: None,
             midi_ui_rx: enable_midi.then_some(midi_ui_rx),

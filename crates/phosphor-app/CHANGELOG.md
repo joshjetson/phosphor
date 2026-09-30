@@ -5,6 +5,10 @@ new" card the first time you run a version you have not seen. Each section is a
 `## X.Y.Z — Title` header, a blank line, and a short prose summary — the same
 words as the release notes, without the install line, which the app supplies.
 
+## 0.3.90 — Copy a pad to another key
+
+On the sampler, `y` copies the pad under the caret — every sound on it and every setting — and `p` on another key makes that key an exact copy, replacing what was there. `Y` copies just the one sound under the layer cursor, and `p` adds it to the key's own sounds instead. The copy works across keys and across sampler tracks, costs no extra memory because the copies share their audio, and every paste is one step of undo and redo; in keys mode the same keys copy a zone's sound.
+
 ## 0.3.89 — The chop plays itself back, and every key has one name
 
 The chop screen gains a clip row: set it to yes and landing a chop also writes a clip that plays the slices back in the recording's own timing, loud hits loud and quiet ones quiet, on the next free bar — play it and you hear the recording, move its notes and you have rearranged the break. One undo takes back the slices and the clip together, and if the break is not at the song's tempo the message says how many bars it runs. Every screen now names notes the same way, with middle C as C4: the sampler used to call it C3 while the piano roll, chord device and sequencer said C4, so the same key had two names. Sampler pads and zones read one octave higher than before, a chop starts on C2, and new recorded takes are named to match; older sessions open unchanged.

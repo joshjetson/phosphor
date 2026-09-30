@@ -678,6 +678,18 @@ first. Every slice shares one copy of the recording, so a long break across
 the whole keyboard costs no extra memory, saves as one file, and each slice
 is an ordinary sound you can trim with `t`.
 
+### Copy and paste — `y` / `p`
+
+`y` copies the pad under the caret — every sound on it and every setting.
+Move to another key and press `p`: that key becomes an exact copy,
+replacing whatever was on it. `Y` copies just the one sound under the layer
+cursor, and `p` adds it to the key's own sounds instead of replacing them.
+
+The copy keeps working across keys and across sampler tracks until you copy
+something else. It costs no extra memory — the copies share the same audio —
+and one `u` takes a paste back, `Ctrl+R` puts it back again. In keys mode
+the same keys copy and paste a zone's sound.
+
 ### The picture under the controls
 
 The pad panel draws the sound under the cursor in three rows, under the
@@ -921,6 +933,9 @@ channels is dropped), up to ten minutes a file.
 | `t` | Trim the sound under the cursor |
 | `c` | Chop the sound under the cursor across the keys |
 | `C` | Pick a recording from `samples/` and chop it |
+| `y` | Copy the pad — every sound and setting on it |
+| `Y` | Copy just the sound under the layer cursor |
+| `p` | Paste on the pad under the caret — a pad replaces it, a sound is added |
 | `i` | Record this pad from an instrument |
 | `n` | Normalize the sound, or put it back to unity |
 | `m` | Mute the sound, keeping its seat on the pad |
@@ -1168,6 +1183,11 @@ stretch back out and they return.
 **Copy a clip** — Lock the clip as above (or just stand on it), `y` yanks
 it, `p` pastes it after the current clip, `P` pastes onto *another* track
 at the same bars. Pastes refuse to overlap existing clips.
+
+**Copy a sampler pad** — On a sampler's pad map, `y` copies the pad under the
+caret with every sound and setting, `h`/`l` (or play a key) to another pad,
+`p` pastes — replacing what was there. `Y` copies one sound instead, and `p`
+adds it to the pad. Works across sampler tracks; `u` undoes a paste.
 
 **Copy an arrangement** — Select the track, `h`/`l` to its *label* cell,
 `y` yanks every clip on the track. Then select the destination track,
