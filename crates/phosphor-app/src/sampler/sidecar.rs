@@ -17,7 +17,8 @@
 //!   another disk — opens with its takes intact.
 //! * **Written once.** A take already sitting in the sidecar keeps its
 //!   file: saving a session with forty takes in it must not rewrite forty
-//!   WAVs every time. "Already there" is checked against the file the path
+//!   WAVs every time. And once per *recording*, not per layer: the slices
+//!   of a chopped take share one buffer and so share one file. "Already there" is checked against the file the path
 //!   names, so a *Save As* to a new name writes fresh copies into the new
 //!   sidecar rather than pointing at the old one.
 //! * **32-bit float.** The take was rendered in float and is going back
@@ -28,7 +29,9 @@
 //!   folder themselves is not ours to delete, and neither is anything
 //!   outside it. See [`prune_takes`].
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use phosphor_plugin::sample::SamplePcm;
 
@@ -67,12 +70,29 @@ pub fn write_takes(session: &Path, state: &mut SamplerState) -> Result<usize, St
     // reference into the old session's folder, which would break the
     // moment either one was deleted.
     let home = sidecar_dir(Path::new(session.file_name().unwrap_or_default()));
+    let already = |path: &Path| path.parent() == Some(home.as_path()) && base.join(path).exists();
+
+    // One file per recording, not per layer. A take chopped across thirty
+    // keys is thirty layers holding one buffer, and writing each of them
+    // out would put thirty copies on disk — and bring thirty back on the
+    // next open, since each would name a different file. The files already
+    // written are gathered first, so a new slice of a saved take is handed
+    // the file its siblings name instead of a fresh one.
+    let mut file_of: HashMap<*const SamplePcm, PathBuf> = HashMap::new();
+    for &addr in &takes {
+        if let Some(layer) = state.layer_at(addr) {
+            if let (Some(pcm), true) = (&layer.pcm, already(&layer.path)) {
+                file_of.entry(Arc::as_ptr(pcm)).or_insert_with(|| layer.path.clone());
+            }
+        }
+    }
+
     let mut written = 0usize;
     let mut created = false;
 
     for addr in takes {
         let Some(layer) = state.layer_at(addr) else { continue };
-        if layer.path.parent() == Some(home.as_path()) && base.join(&layer.path).exists() {
+        if already(&layer.path) {
             continue;
         }
         let Some(pcm) = layer.pcm.clone() else {
@@ -81,6 +101,13 @@ pub fn write_takes(session: &Path, state: &mut SamplerState) -> Result<usize, St
             // its path; there is nothing to write.
             continue;
         };
+        let key = Arc::as_ptr(&pcm);
+        if let Some(path) = file_of.get(&key).cloned() {
+            if let Some(layer) = state.layer_at_mut(addr) {
+                layer.path = path;
+            }
+            continue;
+        }
         if !created {
             std::fs::create_dir_all(&dir)
                 .map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -93,9 +120,11 @@ pub fn write_takes(session: &Path, state: &mut SamplerState) -> Result<usize, St
         write_wav(&dir.join(&file), &pcm)?;
         // Relative to the session, which is the whole point: the project
         // is a directory that can be moved.
+        let path = home.join(&file);
         if let Some(layer) = state.layer_at_mut(addr) {
-            layer.path = home.join(&file);
+            layer.path = path.clone();
         }
+        file_of.insert(key, path);
         written += 1;
     }
     Ok(written)
@@ -305,6 +334,41 @@ mod tests {
             state.pads[pad].layers[0].path,
             PathBuf::from("kit2.samples/C3-1.wav"),
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+/// A chopped take: one buffer on many layers is one file on disk, and a
+    /// slice added after the save joins the file its siblings name.
+    #[test]
+    fn slices_of_one_take_share_one_file() {
+        let dir = scratch("slices");
+        let session = dir.join("kit.phos");
+        let mut state = SamplerState::new();
+        let recorded = take(300);
+        for pad in 0..3 {
+            state.add_take_layer(pad, &recorded).unwrap();
+        }
+        assert_eq!(write_takes(&session, &mut state).unwrap(), 1, "each slice wrote its own copy");
+        let first = state.pads[0].layers[0].path.clone();
+        assert!((0..3).all(|p| state.pads[p].layers[0].path == first));
+        assert_eq!(std::fs::read_dir(sidecar_dir(&session)).unwrap().count(), 1);
+
+        // One more slice, cut after the save: no new file.
+        state.add_take_layer(3, &recorded).unwrap();
+        assert_eq!(write_takes(&session, &mut state).unwrap(), 0);
+        assert_eq!(state.pads[3].layers[0].path, first);
+
+        // A different recording is still its own file.
+        state.add_take_layer(4, &take(50)).unwrap();
+        assert_eq!(write_takes(&session, &mut state).unwrap(), 1);
+        assert_ne!(state.pads[4].layers[0].path, first);
+
+        // Save As: the whole set moves as one file too.
+        let other = dir.join("kit2.phos");
+        assert_eq!(write_takes(&other, &mut state).unwrap(), 2);
+        let moved = state.pads[0].layers[0].path.clone();
+        assert!(moved.starts_with("kit2.samples"));
+        assert!((0..4).all(|p| state.pads[p].layers[0].path == moved));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
