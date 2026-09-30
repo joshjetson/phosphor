@@ -102,6 +102,7 @@
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
 use crate::level::soft_saturate;
+use crate::filter::Svf;
 
 /// Fixed headroom trim on the voice sum, applied after the gain knob.
 ///
@@ -1302,51 +1303,6 @@ impl OnePole {
 
     fn tick_hp(&mut self, x: f64, cutoff: f64, sr: f64) -> f64 {
         x - self.tick_lp(x, cutoff, sr)
-    }
-}
-
-/// State-variable filter (SVF) for bandpass/lowpass/highpass.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Svf {
-    ic1eq: f64,
-    ic2eq: f64,
-}
-
-impl Svf {
-    fn new() -> Self {
-        Self { ic1eq: 0.0, ic2eq: 0.0 }
-    }
-
-    fn tick(&mut self, x: f64, cutoff: f64, q: f64, sr: f64) -> (f64, f64, f64) {
-        let g = (std::f64::consts::PI * cutoff / sr).tan();
-        let k = 1.0 / q;
-        let a1 = 1.0 / (1.0 + g * (g + k));
-        let a2 = g * a1;
-        let a3 = g * a2;
-
-        let v3 = x - self.ic2eq;
-        let v1 = a1 * self.ic1eq + a2 * v3;
-        let v2 = self.ic2eq + a2 * self.ic1eq + a3 * v3;
-
-        self.ic1eq = 2.0 * v1 - self.ic1eq;
-        self.ic2eq = 2.0 * v2 - self.ic2eq;
-
-        let lp = v2;
-        let bp = v1;
-        let hp = x - k * v1 - v2;
-        (lp, bp, hp)
-    }
-
-    fn bandpass(&mut self, x: f64, cutoff: f64, q: f64, sr: f64) -> f64 {
-        self.tick(x, cutoff, q, sr).1
-    }
-
-    fn lowpass(&mut self, x: f64, cutoff: f64, q: f64, sr: f64) -> f64 {
-        self.tick(x, cutoff, q, sr).0
-    }
-
-    fn highpass(&mut self, x: f64, cutoff: f64, q: f64, sr: f64) -> f64 {
-        self.tick(x, cutoff, q, sr).2
     }
 }
 

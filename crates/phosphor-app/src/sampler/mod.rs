@@ -9,6 +9,7 @@
 //! refcount decrements and the actual frees happen on this side.
 
 pub mod capture;
+pub mod chop;
 pub mod knobs;
 pub mod phrase;
 pub mod render;
