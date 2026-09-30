@@ -624,9 +624,9 @@ mod tests {
         assert!(text.contains("\u{25BC}"), "no caret over the pad:\n{text}");
         assert!(text.contains("1 filled"), "the filled list is empty:\n{text}");
         assert!(text.contains("kick"), "the sound is not named:\n{text}");
-        assert!(text.contains("pad C3"), "the panel does not say whose it is:\n{text}");
+        assert!(text.contains("pad C4"), "the panel does not say whose it is:\n{text}");
         assert!(text.contains("one-shot"), "the trigger mode is not shown:\n{text}");
-        assert!(text.contains("[PAD:C3]"), "the strip does not say which pad:\n{text}");
+        assert!(text.contains("[PAD:C4]"), "the strip does not say which pad:\n{text}");
         // The band is five rows of keys: the caret row plus the keyboard.
         assert!(text.contains("0.10s"), "the layer's length is not shown:\n{text}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -973,7 +973,7 @@ mod tests {
         assert!(text.contains("snap on"), "snap is not on by default:\n{text}");
         assert!(text.contains("0.000s \u{2192} 0.100s"), "no trim times:\n{text}");
         assert!(text.contains("-- TRIM --"), "the bar does not say which mode:\n{text}");
-        assert!(text.contains("[PAD:C3 trim]"), "the strip does not say either:\n{text}");
+        assert!(text.contains("[PAD:C4 trim]"), "the strip does not say either:\n{text}");
         assert!(text.contains('['), "no start marker on the screen:\n{text}");
         assert!(text.contains("esc back"), "no way out on the screen:\n{text}");
         // The keyboard band stays: a player trimming still has to be able to
@@ -1252,7 +1252,7 @@ mod tests {
         assert_eq!(previews(&app), vec![None], "esc left the loop playing");
 
         let text = screen(&app, 120, 40);
-        assert!(text.contains("pad C3"), "the panel did not come back:\n{text}");
+        assert!(text.contains("pad C4"), "the panel did not come back:\n{text}");
         assert!(text.contains("1 filled"), "the pad list did not come back:\n{text}");
         assert!(text.contains("kick"), "the layer list did not come back:\n{text}");
         assert!(text.contains("-- PADS --"), "the bar still says trim:\n{text}");
@@ -1701,7 +1701,7 @@ mod tests {
             }
             dropped_at = Some(height);
             // The two things that outrank it are still there.
-            assert!(text.contains("pad C3"), "the panel went first at {height}:\n{text}");
+            assert!(text.contains("pad C4"), "the panel went first at {height}:\n{text}");
             assert!(text.contains("trig"), "the controls went first at {height}:\n{text}");
             break;
         }
@@ -1840,7 +1840,7 @@ mod tests {
         let text = screen(&app, 120, 40);
         assert!(text.contains("-- SOURCE --"), "the bar does not say which mode:\n{text}");
         assert!(text.contains("source \u{00b7} Phosphor Synth"), "no banner:\n{text}");
-        assert!(text.contains("[PAD:C3 source]"), "the strip does not say either:\n{text}");
+        assert!(text.contains("[PAD:C4 source]"), "the strip does not say either:\n{text}");
 
         // A key played is a performance: the pad cursor stays put.
         play(&mut app, 72, 100, true, phosphor_midi::clock::now_micros());
@@ -1849,7 +1849,7 @@ mod tests {
         press(&mut app, KeyCode::Char('l'));
         assert_eq!(sampler_state(&app).cursor, pad, "`l` walked out of the mode's pad");
         let (message, _) = app.status_message.as_ref().unwrap();
-        assert!(message.contains("source mode is on pad C3"), "unhelpful: {message}");
+        assert!(message.contains("source mode is on pad C4"), "unhelpful: {message}");
         // ...and it names the road to the instrument's own panel, because a
         // player pressing keys looking for a way to change the sound is
         // exactly the player who has to be told where it is.
@@ -2117,10 +2117,10 @@ mod tests {
         };
         recording.do_save(&session.display().to_string());
 
-        let wav = dir.join("kit.samples").join("C3-1.wav");
+        let wav = dir.join("kit.samples").join("C4-1.wav");
         assert!(wav.exists(), "the take was not written beside the session");
         let json = std::fs::read_to_string(&session).unwrap();
-        assert!(json.contains("kit.samples/C3-1.wav"), "the path is not in the file:\n{json}");
+        assert!(json.contains("kit.samples/C4-1.wav"), "the path is not in the file:\n{json}");
         assert!(!json.contains(&dir.display().to_string()), "the session names this machine");
         assert!(json.contains("\"kind\": \"take\""), "the layer is not marked a take:\n{json}");
 
@@ -2168,7 +2168,7 @@ mod tests {
         perform(&mut app, 60);
         press(&mut app, KeyCode::Char('r'));
         app.do_save(&session.display().to_string());
-        let wav = dir.join("kit.samples").join("C3-1.wav");
+        let wav = dir.join("kit.samples").join("C4-1.wav");
         let stamp = std::fs::metadata(&wav).unwrap().len();
         app.do_save(&session.display().to_string());
         assert_eq!(std::fs::read_dir(dir.join("kit.samples")).unwrap().count(), 1);
@@ -2322,7 +2322,7 @@ mod tests {
 
         let text = screen(&app, 120, 40);
         assert!(text.contains("Phosphor Synth"), "the panel does not name it:\n{text}");
-        assert!(text.contains("source for pad C3"), "no word on whose panel it is:\n{text}");
+        assert!(text.contains("source for pad C4"), "no word on whose panel it is:\n{text}");
         assert!(text.contains("patch"), "the source's first control is missing:\n{text}");
         assert!(
             !text.contains("\u{00b7} 2 controls"),
@@ -2687,7 +2687,7 @@ mod tests {
 
         press(&mut app, KeyCode::Char('i'));
         let text = screen(&app, 120, 40);
-        assert!(text.contains("source for C3"), "the title does not name the pad:\n{text}");
+        assert!(text.contains("source for C4"), "the title does not name the pad:\n{text}");
         assert!(text.contains("now: dx7"), "the title does not name the source:\n{text}");
         assert!(text.contains("this pad's source"), "the row is not marked:\n{text}");
         assert_eq!(
@@ -2977,7 +2977,7 @@ mod tests {
         let dir = scratch("keys-toggle");
         let mut app = loaded_app(&dir);
         let text = screen(&app, 120, 40);
-        assert!(text.contains("[PAD:C3]"), "the strip does not name the pad:\n{text}");
+        assert!(text.contains("[PAD:C4]"), "the strip does not name the pad:\n{text}");
         assert!(text.contains("-- PADS --"), "{text}");
 
         press_shift(&mut app, 'K');
@@ -2991,8 +2991,8 @@ mod tests {
         press_shift(&mut app, 'K');
         assert_eq!(sampler_state(&app).mode, phosphor_app::sampler::MapMode::Pads);
         let text = screen(&app, 120, 40);
-        assert!(text.contains("[PAD:C3]"), "{text}");
-        assert!(text.contains("C3  kick"), "the pad map lost its kit:\n{text}");
+        assert!(text.contains("[PAD:C4]"), "{text}");
+        assert!(text.contains("C4  kick"), "the pad map lost its kit:\n{text}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3066,7 +3066,7 @@ mod tests {
         // And the screen says what was made.
         let text = screen(&app, 120, 40);
         assert!(text.contains("zones"), "the list is not the zone list:\n{text}");
-        assert!(text.contains("root C3"), "the list does not give the root:\n{text}");
+        assert!(text.contains("root C4"), "the list does not give the root:\n{text}");
         assert!(text.contains("\u{251C}"), "the rule is not under the band:\n{text}");
         assert!(text.contains("span"), "the span control is not on the panel:\n{text}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -3296,7 +3296,7 @@ mod tests {
     #[test]
     fn a_file_name_that_says_its_pitch_teaches_the_root() {
         let dir = scratch("keys-sniff");
-        let named = dir.join("Piano_A#1.wav");
+        let named = dir.join("Piano_A#2.wav");
         write_wav(&named, 441);
         let plain = dir.join("07_kick.wav");
         write_wav(&plain, 441);
@@ -3307,7 +3307,7 @@ mod tests {
         load_typed(&mut app, &named.display().to_string());
         assert_eq!(zone(&app).root(), 46, "the name did not teach the root");
         let (message, _) = app.status_message.as_ref().unwrap();
-        assert!(message.contains("root A#1"), "the flash did not say what it learned: {message}");
+        assert!(message.contains("root A#2"), "the flash did not say what it learned: {message}");
 
         load_typed(&mut app, &plain.display().to_string());
         assert_eq!(zone(&app).root(), 46, "a name with no note in it moved the root");
@@ -3905,7 +3905,7 @@ mod tests {
         press(&mut app, KeyCode::Char(']')); // onto the phrase row
         let (message, _) = app.status_message.as_ref().unwrap();
         assert!(message.contains("plays through the child"), "unhelpful: {message}");
-        assert!(message.contains("C3"), "the flash does not say which key: {message}");
+        assert!(message.contains("C4"), "the flash does not say which key: {message}");
         let started = app.drain_mixer_commands().into_iter().any(|c| {
             matches!(c, MixerCommand::SetSamplerPreview { preview: Some(_), .. })
         });

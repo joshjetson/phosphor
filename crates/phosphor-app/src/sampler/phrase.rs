@@ -295,7 +295,7 @@ impl PadState {
     /// performance can be played back at the speed it was played; zero when
     /// the caller does not know, which plays it as-is.
     ///
-    /// `title` is what a refusal calls this place — "pad C3", "zone C2-B3" —
+    /// `title` is what a refusal calls this place — "pad C4", "zone C3-B4" —
     /// the same courtesy [`PadState::add_wav`] pays.
     pub fn add_phrase(
         &mut self,

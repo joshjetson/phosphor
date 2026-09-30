@@ -5,6 +5,10 @@ new" card the first time you run a version you have not seen. Each section is a
 `## X.Y.Z — Title` header, a blank line, and a short prose summary — the same
 words as the release notes, without the install line, which the app supplies.
 
+## 0.3.89 — The chop plays itself back, and every key has one name
+
+The chop screen gains a clip row: set it to yes and landing a chop also writes a clip that plays the slices back in the recording's own timing, loud hits loud and quiet ones quiet, on the next free bar — play it and you hear the recording, move its notes and you have rearranged the break. One undo takes back the slices and the clip together, and if the break is not at the song's tempo the message says how many bars it runs. Every screen now names notes the same way, with middle C as C4: the sampler used to call it C3 while the piano roll, chord device and sequencer said C4, so the same key had two names. Sampler pads and zones read one octave higher than before, a chop starts on C2, and new recorded takes are named to match; older sessions open unchanged.
+
 ## 0.3.88 — Chop a recording across the keys
 
 On the sampler, `c` chops the sound on a pad across the keyboard, one slice per key from C1 up, and `C` does the same for any recording in your samples folder. Cut where the hits are — listening to everything, or only the kicks, the snares or the hats, so a break can be cut from kick to kick — or on a beat grid, or into even slices; turn the sensitivity, keep only the strongest few to fill one octave, grab any cut and move it by ear. The keyboard shows in amber where the slices will land and in red any key already holding a sound, which a chop never overwrites; `c` lands it as one undo step, and every slice shares one copy of the recording, saved as one file.

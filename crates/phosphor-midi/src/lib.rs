@@ -5,6 +5,7 @@
 
 pub mod clock;
 pub mod message;
+pub mod note;
 pub mod ports;
 pub mod ring;
 

@@ -111,10 +111,7 @@ impl MidiFxType {
             return label.to_string();
         }
         if self == Self::Chord && param == 4 {
-            let n = value.round() as i32;
-            let name = NOTE_NAMES[(n.rem_euclid(12)) as usize];
-            let octave = n / 12 - 1;
-            return format!("{name}{octave}");
+            return crate::format::note_name(value.round().clamp(0.0, 127.0) as u8);
         }
         let unit = self.params().get(param).map(|p| p.unit).unwrap_or("");
         format!("{value:.0}{unit}")

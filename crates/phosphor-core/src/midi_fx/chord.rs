@@ -44,9 +44,8 @@ pub const COLOR_LABELS: [&str; 4] = ["triad", "7th", "9th", "lush"];
 /// Panel names for the voicings.
 pub const VOICING_LABELS: [&str; 6] = ["close", "drop2", "rtless a", "rtless b", "quartal", "spread"];
 
-/// Note names for the root and split readouts.
-pub const NOTE_NAMES: [&str; 12] =
-    ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+/// Note names for the root and split readouts — the application's one table.
+pub use phosphor_midi::note::NOTE_NAMES;
 
 /// One chord of a factory progression: where its root sits relative to
 /// the song root, the voicing above that root in semitones, and — for the

@@ -31,6 +31,7 @@ pub enum ChopRow {
     Slices,
     From,
     Feel,
+    Clip,
 }
 
 const BANDS: [Band; 4] = [Band::Full, Band::Low, Band::Mid, Band::High];
@@ -50,9 +51,9 @@ const OCTAVE: i32 = 12;
 pub fn rows(mode: ChopMode) -> &'static [ChopRow] {
     use ChopRow::*;
     match mode {
-        ChopMode::Transient => &[Cuts, Mode, Listen, Sensitivity, Fit, From, Feel],
-        ChopMode::Grid => &[Cuts, Mode, Bars, Every, From, Feel],
-        ChopMode::Equal => &[Cuts, Mode, Slices, From, Feel],
+        ChopMode::Transient => &[Cuts, Mode, Listen, Sensitivity, Fit, From, Feel, Clip],
+        ChopMode::Grid => &[Cuts, Mode, Bars, Every, From, Feel, Clip],
+        ChopMode::Equal => &[Cuts, Mode, Slices, From, Feel, Clip],
     }
 }
 
@@ -105,6 +106,7 @@ impl ChopRow {
             Self::Slices => "slices",
             Self::From => "from",
             Self::Feel => "feel",
+            Self::Clip => "clip",
         }
     }
 
@@ -127,13 +129,18 @@ impl ChopRow {
             Self::Slices => plan.slices.to_string(),
             Self::From => SamplerState::pad_label(plan.first),
             Self::Feel => feel_label(plan.feel).into(),
+            Self::Clip => if plan.clip {
+                "yes \u{00b7} a clip replays the recording through the slices".into()
+            } else {
+                "no \u{00b7} l writes a clip that replays it".into()
+            },
         }
     }
 
     /// Whether changing this row moves the cuts, so the plan must propose
     /// them again. Where the slices land and how they behave does not.
     fn recuts(self) -> bool {
-        !matches!(self, Self::Cuts | Self::From | Self::Feel)
+        !matches!(self, Self::Cuts | Self::From | Self::Feel | Self::Clip)
     }
 }
 
@@ -145,6 +152,7 @@ impl ChopPlan {
     /// The cuts row is not a setting and is answered by the screen's keys.
     pub fn adjust(&mut self, row: ChopRow, delta: i32, stride: bool) -> bool {
         let before = (
+            self.clip,
             self.mode,
             self.band,
             self.sensitivity,
@@ -175,8 +183,10 @@ impl ChopPlan {
                 self.first = nudged(self.first as u32, delta * big, 0, NUM_PADS as u32 - 1) as usize;
             }
             ChopRow::Feel => self.feel = step(&FEELS, self.feel, delta),
+            ChopRow::Clip => self.clip = step(&[false, true], self.clip, delta),
         }
         let after = (
+            self.clip,
             self.mode,
             self.band,
             self.sensitivity,
@@ -228,6 +238,7 @@ mod tests {
             let r = rows(mode);
             assert_eq!(r[0], ChopRow::Cuts, "the cuts are always the first row");
             assert!(r.contains(&ChopRow::From) && r.contains(&ChopRow::Feel));
+            assert_eq!(r.last(), Some(&ChopRow::Clip), "the clip row is the last in every mode");
         }
     }
 
@@ -308,7 +319,7 @@ mod tests {
         plan.adjust(ChopRow::From, 1, true);
         plan.adjust(ChopRow::Feel, 1, false);
         assert_eq!(plan.cuts(), &held[..]);
-        assert_eq!(ChopRow::From.value(&plan), "C2");
+        assert_eq!(ChopRow::From.value(&plan), "C3");
     }
 
     #[test]

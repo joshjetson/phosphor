@@ -4,7 +4,7 @@
 //! # What is on the screen
 //!
 //! ```text
-//!  C3 · kick · 0.250s · unit 10ms · snap on · 0.010s → 0.240s
+//!  C4 · kick · 0.250s · unit 10ms · snap on · 0.010s → 0.240s
 //!        ▄▄                      ▄
 //!  ▄▄███████▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄████▄▄··················
 //!        ▀▀                      ▀
@@ -152,7 +152,7 @@ mod tests {
         let state = ramp_kit(44_100);
         let view = open(NudgeUnit::TenMs, true);
         let shown = text(&strip_lines(&map(&state, &view), 90, 14).unwrap());
-        assert!(shown.contains("C3"), "{shown}");
+        assert!(shown.contains("C4"), "{shown}");
         assert!(shown.contains("ramp"), "{shown}");
         assert!(shown.contains("unit 10ms"), "{shown}");
         assert!(shown.contains("snap on"), "{shown}");
@@ -306,7 +306,7 @@ mod tests {
     /// Silence is a line through the middle, not a wall and not a gap.
     #[test]
     fn a_silent_buffer_draws_a_centre_line() {
-        let state = kit(); // C3 holds a second of zeros
+        let state = kit(); // C4 holds a second of zeros
         let view = open(NudgeUnit::TenMs, true);
         let lines = strip_lines(&map(&state, &view), 40, 12).unwrap();
         let wave: Vec<String> = lines[1..lines.len() - 2]

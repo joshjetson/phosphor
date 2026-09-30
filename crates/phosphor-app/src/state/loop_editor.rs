@@ -12,8 +12,7 @@
 
 use phosphor_core::transport::Transport;
 
-/// One bar in ticks (4/4 time).
-const TICKS_PER_BAR: i64 = Transport::PPQ * 4;
+use crate::timeline::TICKS_PER_BAR;
 
 /// The smallest region the editor will make: one sixteenth.
 pub const MIN_LOOP_TICKS: i64 = Transport::PPQ / 4;

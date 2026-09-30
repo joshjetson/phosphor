@@ -27,6 +27,16 @@ pub(crate) fn press_shift(app: &mut App, ch: char) {
     }));
 }
 
+/// A key with control down: `Ctrl+R` redoes.
+pub(crate) fn press_ctrl(app: &mut App, ch: char) {
+    app.handle_event(Event::Key(KeyEvent {
+        code: KeyCode::Char(ch),
+        modifiers: KeyModifiers::CONTROL,
+        kind: KeyEventKind::Press,
+        state: KeyEventState::NONE,
+    }));
+}
+
 /// Type a line into whatever has the keys, a character at a time.
 pub(crate) fn type_line(app: &mut App, text: &str) {
     for ch in text.chars() {

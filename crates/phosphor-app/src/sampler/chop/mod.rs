@@ -31,6 +31,7 @@ pub mod land;
 pub mod markers;
 pub mod onset;
 pub mod plan;
+pub mod replay;
 
 #[cfg(test)]
 pub(crate) mod testkit;

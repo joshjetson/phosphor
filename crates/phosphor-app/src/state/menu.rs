@@ -362,7 +362,7 @@ impl InstrumentModal {
     /// What the title bar of the menu says it is for.
     ///
     /// Lowercase already, rather than lowercased by whatever draws it: a pad
-    /// is called `C3` and not `c3`, and a title that was flattened on the way
+    /// is called `C4` and not `c4`, and a title that was flattened on the way
     /// to the screen could not say both.
     pub fn title(&self) -> String {
         match self.target {
@@ -1589,7 +1589,7 @@ mod tests {
 
         // Remembered: the pad's name, the instrument, and the row marked.
         modal.open_for_pad(2, pad, Some(InstrumentType::DX7));
-        assert_eq!(modal.title(), "source for C3 \u{00b7} now: dx7");
+        assert_eq!(modal.title(), "source for C4 \u{00b7} now: dx7");
         assert_eq!(modal.selected(), InstrumentType::DX7, "the cursor is not on it");
         assert!(modal.is_remembered(InstrumentType::DX7));
         assert!(!modal.is_remembered(InstrumentType::Rhodes), "a second row was marked");
@@ -1631,11 +1631,11 @@ mod tests {
             })
             .max()
             .unwrap();
-        // A#-1 is the widest key name on the bed, and every title has to
-        // leave room for the two spaces a border title is padded with and
+        // A#0 is as wide as a key name on the bed gets, and every title has
+        // to leave room for the two spaces a border title is padded with and
         // the two corners either side of them.
         modal.open_for_pad(0, 1, Some(InstrumentType::Synth));
-        assert!(modal.title().contains("A#-1"), "{}", modal.title());
+        assert!(modal.title().contains("A#0"), "{}", modal.title());
         assert!(longest + 6 <= 80, "a {longest}-column title needs a box wider than the screen");
     }
 }

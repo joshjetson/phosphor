@@ -203,6 +203,11 @@ impl App {
                 let sampler = sampler.clone();
                 self.apply_sampler_slice(*track_idx, &sampler);
             }
+            StateSlice::SamplerAndClips { track_idx, sampler, clips } => {
+                let sampler = sampler.clone();
+                self.apply_sampler_slice(*track_idx, &sampler);
+                self.apply_clips_slice(*track_idx, clips);
+            }
             StateSlice::SeqChild { track_idx, instrument, params, content } => {
                 if let Some(track) = self.nav.tracks.get_mut(*track_idx) {
                     track.instrument_type = *instrument;

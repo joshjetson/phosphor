@@ -64,6 +64,11 @@ pub enum UndoScope {
     /// them. See [`StateSlice::Sampler`] for why the whole kit rather than
     /// the one pad being edited.
     Sampler { track_idx: usize },
+    /// A sampler's kit and its track's clips together — a chop that lands
+    /// its slices and writes the clip that replays them in the same breath,
+    /// and must come back the same way: one `u` for both, never a kit
+    /// without its clip or a clip playing keys that are empty.
+    SamplerAndClips { track_idx: usize },
     /// A sequencer track's child instrument, whole: which instrument sits
     /// in the plugin slot, its entire panel, and the sequencer content —
     /// because swapping a drum machine for a keyboard re-lays the lanes,
@@ -115,6 +120,11 @@ pub enum StateSlice {
     /// layer's buffer stays referenced by this step for as long as the step
     /// lives, so the audio thread's own drop can never be the last one.
     Sampler { track_idx: usize, sampler: Option<Box<crate::sampler::SamplerState>> },
+    SamplerAndClips {
+        track_idx: usize,
+        sampler: Option<Box<crate::sampler::SamplerState>>,
+        clips: Vec<Clip>,
+    },
     SeqChild {
         track_idx: usize,
         instrument: Option<InstrumentType>,
@@ -189,6 +199,11 @@ impl StateSlice {
                     .get(track_idx)
                     .and_then(|t| t.sampler.clone()),
             },
+            UndoScope::SamplerAndClips { track_idx } => Self::SamplerAndClips {
+                track_idx,
+                sampler: nav.tracks.get(track_idx).and_then(|t| t.sampler.clone()),
+                clips: nav.tracks.get(track_idx).map(|t| t.clips.clone()).unwrap_or_default(),
+            },
             UndoScope::SeqChild { track_idx } => {
                 let track = nav.tracks.get(track_idx);
                 Self::SeqChild {
@@ -228,6 +243,9 @@ impl StateSlice {
             Self::TrackMix { track_idx, .. } => UndoScope::TrackMix { track_idx: *track_idx },
             Self::Sequencer { track_idx, .. } => UndoScope::Sequencer { track_idx: *track_idx },
             Self::Sampler { track_idx, .. } => UndoScope::Sampler { track_idx: *track_idx },
+            Self::SamplerAndClips { track_idx, .. } => {
+                UndoScope::SamplerAndClips { track_idx: *track_idx }
+            }
             Self::SeqChild { track_idx, .. } => UndoScope::SeqChild { track_idx: *track_idx },
             Self::TrackName { track_idx, .. } => UndoScope::TrackName { track_idx: *track_idx },
             Self::Tempo { .. } => UndoScope::Tempo,
@@ -281,6 +299,10 @@ impl StateSlice {
                 Self::Sampler { track_idx: a, sampler: sa },
                 Self::Sampler { track_idx: b, sampler: sb },
             ) => a == b && sa == sb,
+            (
+                Self::SamplerAndClips { track_idx: a, sampler: sa, clips: ca },
+                Self::SamplerAndClips { track_idx: b, sampler: sb, clips: cb },
+            ) => a == b && sa == sb && ca == cb,
             (
                 Self::SeqChild { track_idx: a, instrument: ia, params: pa, content: ca },
                 Self::SeqChild { track_idx: b, instrument: ib, params: pb, content: cb },

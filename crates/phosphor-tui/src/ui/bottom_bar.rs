@@ -386,9 +386,4 @@ pub(super) fn grid_to_lines(grid: Vec<Vec<(char, Style)>>) -> Vec<Line<'static>>
     }).collect()
 }
 
-pub(super) fn midi_note_name(n: u8) -> String {
-    const N: [&str;12] = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-    format!("{}{}", N[n as usize%12], (n as i8/12)-1)
-}
-
 pub(super) fn is_black_key(n: u8) -> bool { matches!(n%12, 1|3|6|8|10) }

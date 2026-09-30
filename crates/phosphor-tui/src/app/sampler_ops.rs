@@ -312,7 +312,7 @@ impl App {
         // Not while a question is on the screen. The keys are the player
         // trying sounds under a prompt, a list or a confirm, and the answer
         // must act on the pad the question NAMED — "remove kick from pad
-        // C3?" answered yes after a stray key press used to remove the
+        // C4?" answered yes after a stray key press used to remove the
         // snare, because the cursor had moved under the modal. One list of
         // askers, on the navigation state, so a new one cannot be added
         // without this gate learning about it.

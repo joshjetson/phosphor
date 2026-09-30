@@ -81,7 +81,7 @@ fn config_for(note: u8, feel: Feel, choke: Option<u8>) -> PadConfig {
 }
 
 /// The keys `count` slices from `first` cover, as a player reads them:
-/// `C1` for one, `C1–E1` for a run. The one spelling, for the header, the
+/// `C2` for one, `C2–E2` for a run. The one spelling, for the header, the
 /// refusal and the landing's own words.
 pub fn span_label(first: usize, count: usize) -> String {
     let label = |pad: usize| SamplerState::pad_label(pad.min(NUM_PADS - 1));
@@ -177,9 +177,9 @@ mod tests {
 
     const SLICES: [(u64, u64); 3] = [(100, 900), (900, 4_000), (4_000, 10_000)];
 
-    /// MIDI 36 — C1 in the app's naming, which is Ableton's and Logic's —
-    /// where their slicers land slice one, and so where a player expects it.
-    fn c1() -> usize {
+    /// MIDI 36 — C2 here — where Ableton's and Logic's slicers land slice
+    /// one (their C1), and so where a player expects it.
+    fn c2() -> usize {
         SamplerState::pad_of_note(36).unwrap()
     }
 
@@ -187,10 +187,10 @@ mod tests {
     fn each_slice_lands_on_its_own_key_upward_sharing_one_buffer() {
         let mut state = SamplerState::new();
         let src = source();
-        let landing = land(&mut state, &src, &SLICES, c1(), Feel::Break).unwrap();
-        assert_eq!((landing.first, landing.count), (c1(), 3));
+        let landing = land(&mut state, &src, &SLICES, c2(), Feel::Break).unwrap();
+        assert_eq!((landing.first, landing.count), (c2(), 3));
         for (offset, &(start, end)) in SLICES.iter().enumerate() {
-            let pad = &state.pads[c1() + offset];
+            let pad = &state.pads[c2() + offset];
             assert_eq!(pad.layers.len(), 1);
             let layer = &pad.layers[0];
             assert_eq!((layer.start_frame, layer.end_frame), (start, end));
@@ -198,19 +198,19 @@ mod tests {
             assert_eq!(layer.path, src.path, "a slice forgot the file it came from");
             assert_eq!(layer.gain, 0.5, "a slice lost the source's gain");
             assert!(!layer.reverse, "a slice inherited the source's reverse");
-            assert_eq!(pad.config.root, SamplerState::note_of_pad(c1() + offset));
+            assert_eq!(pad.config.root, SamplerState::note_of_pad(c2() + offset));
         }
-        assert!(!holds_sound(&state.pads[c1() + 3]), "a fourth key was touched");
+        assert!(!holds_sound(&state.pads[c2() + 3]), "a fourth key was touched");
     }
 
     /// The owner's rule: a kit is never overwritten by a chop.
     #[test]
     fn a_key_with_a_sound_on_it_refuses_the_whole_landing() {
         let mut state = SamplerState::new();
-        state.add_wav_layer(c1() + 1, PathBuf::from("snare.wav"), source().pcm.unwrap()).unwrap();
+        state.add_wav_layer(c2() + 1, PathBuf::from("snare.wav"), source().pcm.unwrap()).unwrap();
         let before = state.clone();
-        let err = land(&mut state, &source(), &SLICES, c1(), Feel::Break).unwrap_err();
-        assert!(err.contains("1 of the 3 keys C1\u{2013}D1 already holds a sound"), "{err}");
+        let err = land(&mut state, &source(), &SLICES, c2(), Feel::Break).unwrap_err();
+        assert!(err.contains("1 of the 3 keys C2\u{2013}D2 already holds a sound"), "{err}");
         assert_eq!(state, before, "a refused landing changed the kit");
     }
 
@@ -219,20 +219,20 @@ mod tests {
     #[test]
     fn a_pad_with_only_settings_is_landed_on() {
         let mut state = SamplerState::new();
-        state.pads[c1()].config.level = 0.2;
-        assert!(land(&mut state, &source(), &SLICES, c1(), Feel::Break).is_ok());
-        assert_eq!(state.pads[c1()].config.level, 1.0);
+        state.pads[c2()].config.level = 0.2;
+        assert!(land(&mut state, &source(), &SLICES, c2(), Feel::Break).is_ok());
+        assert_eq!(state.pads[c2()].config.level, 1.0);
     }
 
     #[test]
     fn one_key_is_named_as_one_key() {
-        assert_eq!(span_label(c1(), 1), "C1");
-        assert_eq!(span_label(c1(), 3), "C1\u{2013}D1");
+        assert_eq!(span_label(c2(), 1), "C2");
+        assert_eq!(span_label(c2(), 3), "C2\u{2013}D2");
         let mut state = SamplerState::new();
-        state.add_wav_layer(c1(), PathBuf::from("kick.wav"), source().pcm.unwrap()).unwrap();
-        let err = land(&mut state, &source(), &SLICES[..1], c1(), Feel::Break).unwrap_err();
-        assert!(err.starts_with("C1 already holds a sound \u{00b7} clear it"), "{err}");
-        assert!(!fits(&state, c1(), 1) && fits(&state, c1() + 1, 3));
+        state.add_wav_layer(c2(), PathBuf::from("kick.wav"), source().pcm.unwrap()).unwrap();
+        let err = land(&mut state, &source(), &SLICES[..1], c2(), Feel::Break).unwrap_err();
+        assert!(err.starts_with("C2 already holds a sound \u{00b7} clear it"), "{err}");
+        assert!(!fits(&state, c2(), 1) && fits(&state, c2() + 1, 3));
         assert!(!fits(&state, NUM_PADS - 2, 3), "a run off the top fits");
     }
 
@@ -242,7 +242,7 @@ mod tests {
         let before = state.clone();
         let err = land(&mut state, &source(), &SLICES, NUM_PADS - 2, Feel::Break).unwrap_err();
         assert!(err.contains("past the top key"), "{err}");
-        let err = land(&mut state, &source(), &[], c1(), Feel::Break).unwrap_err();
+        let err = land(&mut state, &source(), &[], c2(), Feel::Break).unwrap_err();
         assert!(err.contains("no cuts"), "{err}");
         assert_eq!(state, before);
         // The last key on the bed is reachable exactly.
@@ -253,13 +253,13 @@ mod tests {
     fn a_break_takes_a_choke_group_nobody_else_uses() {
         let mut state = SamplerState::new();
         state.pads[0].config.choke = 1; // a hat pair already on the kit
-        let first = land(&mut state, &source(), &SLICES, c1(), Feel::Break).unwrap();
+        let first = land(&mut state, &source(), &SLICES, c2(), Feel::Break).unwrap();
         assert_eq!(first.choke, Some(2));
         assert!((0..3).all(|o| {
-            let config = state.pads[c1() + o].config;
+            let config = state.pads[c2() + o].config;
             config.choke == 2 && config.trig == TrigMode::OneShot && config.poly == 1
         }));
-        let second = land(&mut state, &source(), &SLICES, c1() + 12, Feel::Break).unwrap();
+        let second = land(&mut state, &source(), &SLICES, c2() + 12, Feel::Break).unwrap();
         assert_eq!(second.choke, Some(3), "two breaks would cut each other");
     }
 
@@ -269,9 +269,9 @@ mod tests {
         for g in 1..=CHOKE_MAX {
             state.pads[usize::from(g)].config.choke = g;
         }
-        let landing = land(&mut state, &source(), &SLICES, c1(), Feel::Break).unwrap();
+        let landing = land(&mut state, &source(), &SLICES, c2(), Feel::Break).unwrap();
         assert_eq!(landing.choke, None);
-        assert_eq!(state.pads[c1()].config.choke, 0);
+        assert_eq!(state.pads[c2()].config.choke, 0);
     }
 
     #[test]
@@ -280,15 +280,15 @@ mod tests {
         let mut zone_pad = PadState::empty(60);
         zone_pad.config.choke = 1;
         state.zones.push(Zone::new(50, 60, zone_pad));
-        assert_eq!(land(&mut state, &source(), &SLICES, c1(), Feel::Break).unwrap().choke, Some(2));
+        assert_eq!(land(&mut state, &source(), &SLICES, c2(), Feel::Break).unwrap().choke, Some(2));
     }
 
     #[test]
     fn a_melodic_chop_plays_while_held_and_chokes_nothing() {
         let mut state = SamplerState::new();
-        let landing = land(&mut state, &source(), &SLICES, c1(), Feel::Melodic).unwrap();
+        let landing = land(&mut state, &source(), &SLICES, c2(), Feel::Melodic).unwrap();
         assert_eq!(landing.choke, None);
-        let config = state.pads[c1()].config;
+        let config = state.pads[c2()].config;
         assert_eq!(config.trig, TrigMode::Gate);
         assert_eq!(config.choke, 0);
         assert_eq!(config.poly, MELODIC_POLY);
@@ -302,11 +302,11 @@ mod tests {
         let mut state = SamplerState::new();
         state.zones.push(Zone::new(60, 70, PadState::empty(80)));
         state.set_mode(MapMode::Keys);
-        let landing = land(&mut state, &source(), &SLICES, c1(), Feel::Break).unwrap();
+        let landing = land(&mut state, &source(), &SLICES, c2(), Feel::Break).unwrap();
         assert!(landing.switched_to_pads);
         assert_eq!(state.mode, MapMode::Pads);
         assert_eq!(state.zones.len(), 1, "a chop cost the player a zone");
-        let again = land(&mut state, &source(), &SLICES, c1() + 12, Feel::Break).unwrap();
+        let again = land(&mut state, &source(), &SLICES, c2() + 12, Feel::Break).unwrap();
         assert!(!again.switched_to_pads);
     }
 
@@ -325,7 +325,7 @@ mod tests {
     const RATE: f32 = 48_000.0;
     const BLOCK: usize = 512;
 
-    /// A break from a file, cut at its kicks and landed from C1 as `feel`,
+    /// A break from a file, cut at its kicks and landed from C2 as `feel`,
     /// with the engine holding exactly what the app would send it.
     fn chopped_break(feel: Feel) -> (phosphor_dsp::sampler::Sampler, Arc<SamplePcm>, Vec<(u64, u64)>) {
         let pcm = Arc::new(boom_bap(RATE).0);
@@ -335,7 +335,7 @@ mod tests {
         let slices = markers.slices();
         let mut state = SamplerState::new();
         let src = LayerState::from_wav(PathBuf::from("break.wav"), Arc::clone(&pcm));
-        let landing = land(&mut state, &src, &slices, c1(), feel).unwrap();
+        let landing = land(&mut state, &src, &slices, c2(), feel).unwrap();
 
         let mut engine = phosphor_dsp::sampler::Sampler::new();
         engine.init(f64::from(RATE), BLOCK);
@@ -358,7 +358,7 @@ mod tests {
                 .map(|&(f, key)| MidiEvent {
                     sample_offset: (f - at) as u32,
                     status: 0x90,
-                    data1: SamplerState::note_of_pad(c1() + key),
+                    data1: SamplerState::note_of_pad(c2() + key),
                     data2: 127,
                 })
                 .collect();
@@ -450,8 +450,8 @@ mod tests {
         let mut take = source();
         take.source = LayerSource::Take;
         take.path = PathBuf::new();
-        land(&mut state, &take, &SLICES, c1(), Feel::Break).unwrap();
-        assert!(state.pads[c1()].layers[0].source == LayerSource::Take);
+        land(&mut state, &take, &SLICES, c2(), Feel::Break).unwrap();
+        assert!(state.pads[c2()].layers[0].source == LayerSource::Take);
         assert_eq!(state.takes().count(), 3);
     }
 }

@@ -568,7 +568,7 @@ pub(super) mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    /// A kit with two sounds on C3, the second of which has lost its file.
+    /// A kit with two sounds on C4, the second of which has lost its file.
     /// One second of audio, so a length reads as `1.00s`.
     pub(in crate::ui::sampler) fn kit() -> SamplerState {
         let mut state = SamplerState::new();
@@ -585,7 +585,7 @@ pub(super) mod tests {
         state
     }
 
-    /// A kit whose C3 pad carries a ramp: every column of it is a different
+    /// A kit whose C4 pad carries a ramp: every column of it is a different
     /// height, so a picture that is not being drawn is obvious.
     pub(in crate::ui::sampler) fn ramp_kit(frames: usize) -> SamplerState {
         let mut state = SamplerState::new();
@@ -598,7 +598,7 @@ pub(super) mod tests {
         state
     }
 
-    /// The same kit in keys mode, with one zone over C2-B3 rooted at C3 —
+    /// The same kit in keys mode, with one zone over C3-B4 rooted at C4 —
     /// two octaves of a piano, which is what a zone is for.
     pub(in crate::ui::sampler) fn zoned() -> SamplerState {
         let mut state = kit();

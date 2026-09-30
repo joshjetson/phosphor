@@ -23,23 +23,11 @@
 
 use phosphor_core::pattern::{chord_notes, Chord, Mode, Voicing, MAX_CHORD_NOTES};
 
-/// Pitch-class names, sharp-spelled. Middle C is note 60 and is called C4,
-/// which is what the rest of the application already says.
-const NAMES: [&str; 12] = [
-    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-];
-
-/// The name of a pitch class, 0 = C.
-#[must_use]
-pub fn note_name(pitch_class: u8) -> &'static str {
-    NAMES[(pitch_class % 12) as usize]
-}
+/// The name of a pitch class, 0 = C — the application's one table.
+pub use phosphor_midi::note::pitch_class_name as note_name;
 
 /// The name of a MIDI note, with its octave: 60 is `C4`.
-#[must_use]
-pub fn note_label(note: u8) -> String {
-    format!("{}{}", note_name(note % 12), i16::from(note) / 12 - 1)
-}
+pub use phosphor_midi::note::note_name as note_label;
 
 /// What a chord type is called on screen.
 #[must_use]

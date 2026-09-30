@@ -195,10 +195,10 @@ pub fn prune_takes<'a>(
 
 /// Whether a file name is one [`free_name`] could have written.
 ///
-/// Matched from the front, not the back, because a key's own name can hold a
-/// dash: the bottom of the bed is `A-1`, so `A-1-1.wav` is take one on the
-/// lowest key and not take one-dash-one on a key called `A`. Every label the
-/// bed has is tried, which is eighty-eight string comparisons once per save.
+/// Matched from the front against every label the bed has, rather than
+/// parsed from the back: the key's name is the one part of the file name
+/// this module does not choose, so it is compared whole rather than guessed
+/// at. Eighty-eight string comparisons, once per save.
 fn is_take_name(name: &str) -> bool {
     let Some(stem) = name.strip_suffix(".wav") else { return false };
     (0..NUM_PADS).any(|pad| {
@@ -318,7 +318,7 @@ mod tests {
 
         assert_eq!(write_takes(&session, &mut state).unwrap(), 1);
         let stored = state.pads[pad].layers[0].path.clone();
-        assert_eq!(stored, PathBuf::from("kit.samples/C3-1.wav"));
+        assert_eq!(stored, PathBuf::from("kit.samples/C4-1.wav"));
         assert!(dir.join(&stored).exists(), "the sidecar wav was not written");
         assert!(!stored.is_absolute(), "the session would name a machine, not a project");
 
@@ -332,7 +332,7 @@ mod tests {
         assert_eq!(write_takes(&other, &mut state).unwrap(), 1);
         assert_eq!(
             state.pads[pad].layers[0].path,
-            PathBuf::from("kit2.samples/C3-1.wav"),
+            PathBuf::from("kit2.samples/C4-1.wav"),
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -394,7 +394,7 @@ mod tests {
     fn a_name_collision_takes_the_next_number() {
         let dir = scratch("collide");
         std::fs::create_dir_all(dir.join("kit.samples")).unwrap();
-        std::fs::write(dir.join("kit.samples/C3-1.wav"), b"not mine").unwrap();
+        std::fs::write(dir.join("kit.samples/C4-1.wav"), b"not mine").unwrap();
         let session = dir.join("kit.phos");
         let mut state = SamplerState::new();
         let pad = SamplerState::pad_of_note(60).unwrap();
@@ -402,7 +402,7 @@ mod tests {
         write_takes(&session, &mut state).unwrap();
         assert_eq!(
             state.pads[pad].layers[0].path,
-            PathBuf::from("kit.samples/C3-1-2.wav"),
+            PathBuf::from("kit.samples/C4-1-2.wav"),
             "the take overwrote a file that was already there",
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -413,12 +413,12 @@ mod tests {
         let dir = scratch("sharp");
         let session = dir.join("kit.phos");
         let mut state = SamplerState::new();
-        let pad = SamplerState::pad_of_note(61).unwrap(); // C#3
+        let pad = SamplerState::pad_of_note(61).unwrap(); // C#4
         state.add_take_layer(pad, &take(10)).unwrap();
         write_takes(&session, &mut state).unwrap();
         assert_eq!(
             state.pads[pad].layers[0].path,
-            PathBuf::from("kit.samples/Cs3-1.wav"),
+            PathBuf::from("kit.samples/Cs4-1.wav"),
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -499,21 +499,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Only the names this module writes are ours to delete — including the
-    /// bottom key of the bed, whose own name carries a dash.
+    /// Only the names this module writes are ours to delete — the bottom
+    /// key of the bed and the top included.
     #[test]
     fn a_take_name_is_recognised_and_nothing_else_is() {
-        for ours in ["C3-1.wav", "Cs3-2.wav", "C3-1-2.wav", "A-1-1.wav", "A-1-1-7.wav"] {
+        for ours in ["C4-1.wav", "Cs4-2.wav", "C4-1-2.wav", "A0-1.wav", "A0-1-7.wav", "C8-3.wav"] {
             assert!(is_take_name(ours), "{ours} is a name this module writes");
         }
         for theirs in [
             "kick.wav",
             "C3.wav",
-            "C3-.wav",
-            "C3-1",
-            "C3-x.wav",
+            "C4-.wav",
+            "C4-1",
+            "C4-x.wav",
             "H3-1.wav",
-            "C3-1-2-3.wav",
+            "C4-1-2-3.wav",
+            "G9-1.wav", // a MIDI note, but no key on the bed
             "my-loop.wav",
             "notes.txt",
             "",

@@ -207,14 +207,8 @@ impl NavState {
 
     pub fn open_clip_view(&mut self, track_idx: usize, clip_idx: usize) {
         self.clip_view_visible = true;
-        self.clip_view_target = Some((track_idx, clip_idx));
         self.clip_view.fx_cursor = 0;
-        // Frame the roll on the clip's notes, so it opens looking at the
-        // music rather than at whatever octave the view last sat on.
-        if let Some(clip) = self.tracks.get(track_idx).and_then(|t| t.clips.get(clip_idx)) {
-            let pitches: Vec<u8> = clip.notes.iter().map(|n| n.note).collect();
-            self.clip_view.piano_roll.frame_notes(pitches.into_iter());
-        }
+        self.target_clip(track_idx, clip_idx);
         tracing::debug!(
             "open_clip_view: track={} clip={} (notes={})",
             track_idx, clip_idx,
@@ -298,6 +292,20 @@ impl NavState {
             Some(RackSlot::Audio(cursor - midi))
         } else {
             None
+        }
+    }
+
+    /// Point the piano roll at a clip, framed on its notes.
+    ///
+    /// The one way to aim the roll. Framing is not optional: a clip written
+    /// by a feature — a bounce, a chop's replay — lands wherever its music
+    /// is, and a roll left on the octave it last sat on opens onto empty
+    /// rows and reads as a clip with nothing in it.
+    pub fn target_clip(&mut self, track_idx: usize, clip_idx: usize) {
+        self.clip_view_target = Some((track_idx, clip_idx));
+        if let Some(clip) = self.tracks.get(track_idx).and_then(|t| t.clips.get(clip_idx)) {
+            let pitches: Vec<u8> = clip.notes.iter().map(|n| n.note).collect();
+            self.clip_view.piano_roll.frame_notes(pitches.into_iter());
         }
     }
 

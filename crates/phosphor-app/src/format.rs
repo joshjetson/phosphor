@@ -50,17 +50,11 @@ pub fn ms_text(ms: f32) -> String {
     }
 }
 
-/// A note's name on a keyboard — `C3`, `A#1`. Octaves numbered so that MIDI
-/// 60 is C3, matching the chord device's split labelling and the sampler's
-/// pad names.
-#[must_use]
-pub fn note_name(note: u8) -> String {
-    const NAMES: [&str; 12] = [
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-    ];
-    let octave = i32::from(note) / 12 - 2;
-    format!("{}{}", NAMES[usize::from(note) % 12], octave)
-}
+/// A note's name on a keyboard — `C4`, `A#1`. Middle C (MIDI 60) is C4,
+/// everywhere in the application: this is [`phosphor_midi::note::note_name`],
+/// re-exported so the app's screens reach it where they reach every other
+/// formatter.
+pub use phosphor_midi::note::note_name;
 
 #[cfg(test)]
 mod tests {
@@ -96,9 +90,9 @@ mod tests {
 
     #[test]
     fn note_names_read_like_a_keyboard() {
-        assert_eq!(note_name(60), "C3");
-        assert_eq!(note_name(21), "A-1");
-        assert_eq!(note_name(108), "C7");
-        assert_eq!(note_name(127), "G8");
+        assert_eq!(note_name(60), "C4");
+        assert_eq!(note_name(21), "A0");
+        assert_eq!(note_name(108), "C8");
+        assert_eq!(note_name(127), "G9");
     }
 }

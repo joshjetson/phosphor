@@ -46,8 +46,9 @@ impl ChopMode {
     }
 }
 
-/// The key slice one lands on by default: MIDI 36, C1 here as in Ableton
-/// and Logic, whose slicers put it there.
+/// The key slice one lands on by default: MIDI 36 — C2 here, where middle C
+/// is C4 — the key Ableton's and Logic's slicers put it on, which they call
+/// C1 because their middle C is C3. The same key under the hand either way.
 pub const DEFAULT_FIRST_NOTE: u8 = 36;
 
 /// Equal slices a fresh plan offers.
@@ -78,6 +79,9 @@ pub struct ChopPlan {
     /// The pad slice one lands on.
     pub first: usize,
     pub feel: Feel,
+    /// Also write a clip that replays the recording through the slices.
+    /// See [`super::replay`].
+    pub clip: bool,
     markers: Markers,
     /// How many cuts detection proposed before a fit thinned them — what a
     /// fit is walked against.
@@ -116,6 +120,7 @@ impl ChopPlan {
             slices: DEFAULT_SLICES,
             first: SamplerState::pad_of_note(DEFAULT_FIRST_NOTE).unwrap_or(0),
             feel: Feel::default(),
+            clip: false,
             proposed: 0,
             selected: 0,
             curves: Default::default(),
@@ -226,14 +231,14 @@ impl ChopPlan {
         (count > 0).then(|| (self.first, (self.first + count - 1).min(NUM_PADS - 1)))
     }
 
-    /// The keys the slices will land on, in words: `C1`, or `C1–E1`.
+    /// The keys the slices will land on, in words: `C2`, or `C2–E2`.
     pub fn keys_label(&self) -> String {
         land::span_label(self.first, self.markers.len())
     }
 
-    /// Start the landing where it fits on `state`: C1 when those keys are
+    /// Start the landing where it fits on `state`: C2 when those keys are
     /// free, otherwise the first free run above it, otherwise the first
-    /// free run anywhere. Where nothing fits it stays at C1, and the screen
+    /// free run anywhere. Where nothing fits it stays at C2, and the screen
     /// says why before the player asks.
     ///
     /// Asked once, as the screen opens. The keys are the player's to move
@@ -274,12 +279,12 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_plan_cuts_at_the_big_hits_and_lands_from_c1() {
+    fn a_fresh_plan_cuts_at_the_big_hits_and_lands_from_c2() {
         let plan = plan();
         let (_, hits) = boom_bap(SR);
         let big = hits.iter().filter(|(_, d)| d.contains(&Drum::Kick) || d.contains(&Drum::Snare)).count();
         assert_eq!(plan.cuts().len(), big);
-        assert_eq!(SamplerState::pad_label(plan.first), "C1");
+        assert_eq!(SamplerState::pad_label(plan.first), "C2");
         assert_eq!(plan.keys(), Some((plan.first, plan.first + big - 1)));
     }
 
@@ -384,14 +389,14 @@ mod tests {
         assert_eq!(plan.selected, 0, "a fit left the cursor on a slice it removed");
     }
 
-    /// Chopping a slice that sits on C1 must not start on top of it.
+    /// Chopping a slice that sits on C2 must not start on top of it.
     #[test]
-    fn placing_starts_at_c1_and_steps_past_whatever_is_in_the_way() {
+    fn placing_starts_at_c2_and_steps_past_whatever_is_in_the_way() {
         let mut plan = plan();
         let count = plan.cuts().len();
         let mut state = SamplerState::new();
         plan.place(&state);
-        assert_eq!(SamplerState::pad_label(plan.first), "C1");
+        assert_eq!(SamplerState::pad_label(plan.first), "C2");
         state.add_wav_layer(plan.first + 1, PathBuf::from("x.wav"), Arc::clone(plan.pcm())).unwrap();
         plan.place(&state);
         assert_eq!(plan.first, SamplerState::pad_of_note(DEFAULT_FIRST_NOTE).unwrap() + 2);

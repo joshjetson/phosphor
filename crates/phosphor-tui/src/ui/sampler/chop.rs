@@ -4,8 +4,8 @@
 //! # What is on the screen
 //!
 //! ```text
-//!  chop · amen · 4.20s · transient · 9 slices → C1–G#1
-//!  c lands them on C1–G#1
+//!  chop · amen · 4.20s · transient · 9 slices → C2–G#2
+//!  c lands them on C2–G#2
 //!        ▄▄      ▄       ▄▄     ▄       ▄▄
 //!  ▄▄████████▄▄▄███▄▄▄▄▄█████▄▄███▄▄▄▄▄█████▄▄▄
 //!        ▀▀      ▀       ▀▀     ▀       ▀▀
@@ -229,8 +229,8 @@ mod tests {
         assert_eq!(chop.plan.cuts().len(), 4, "the clicks were not found");
         let shown = text(&draw(&SamplerState::new(), &chop, 100, 20));
         assert!(shown.contains("clicks"), "{shown}");
-        assert!(shown.contains("4 slices \u{2192} C1\u{2013}D#1"), "{shown}");
-        assert!(shown.contains("c lands them on C1\u{2013}D#1"), "{shown}");
+        assert!(shown.contains("4 slices \u{2192} C2\u{2013}D#2"), "{shown}");
+        assert!(shown.contains("c lands them on C2\u{2013}D#2"), "{shown}");
         assert!(shown.contains("esc cancels"), "no way out on the screen:\n{shown}");
     }
 
@@ -243,7 +243,7 @@ mod tests {
         state.add_wav_layer(chop.plan.first + 2, PathBuf::from("snare.wav"), pcm).unwrap();
         let lines = draw(&state, &chop, 120, 20);
         let shown = text(&lines);
-        assert!(shown.contains("1 of the 4 keys C1\u{2013}D#1 already holds a sound"), "{shown}");
+        assert!(shown.contains("1 of the 4 keys C2\u{2013}D#2 already holds a sound"), "{shown}");
         let refusal = &lines[1].spans[0];
         assert_eq!(refusal.style.fg, Some(theme::rec_active_val()), "the refusal is not red");
     }

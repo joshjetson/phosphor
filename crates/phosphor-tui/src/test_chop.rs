@@ -17,7 +17,7 @@ mod tests {
 
     use crate::app::App;
     use crate::state::*;
-    use crate::test_support::{press, press_shift, screen, type_line};
+    use crate::test_support::{press, press_ctrl, press_shift, screen, type_line};
 
     const RATE: u32 = 48_000;
 
@@ -63,7 +63,7 @@ mod tests {
         w.finalize().unwrap();
     }
 
-    /// A sampler track with the break on C3, and the command queue drained.
+    /// A sampler track with the break on C4, and the command queue drained.
     fn loaded(dir: &Path) -> App {
         let wav = dir.join("break.wav");
         write_break(&wav);
@@ -121,7 +121,7 @@ mod tests {
     }
 
     /// The whole feature in one walk: `c` on a loaded pad, `c` again, and
-    /// the four hits are on C1 to D#1 — one layer each, one buffer between
+    /// the four hits are on C2 to D#2 — one layer each, one buffer between
     /// them — and one `u` takes all four back.
     #[test]
     fn c_chops_the_pad_and_c_again_lands_it_from_c1() {
@@ -133,12 +133,12 @@ mod tests {
         assert_eq!(chop(&app).plan.cuts().len(), HITS.len(), "{}", flash(&app));
         let shown = screen(&app, 140, 44);
         assert!(shown.contains("-- CHOP --"), "the mode line does not say chop:\n{shown}");
-        assert!(shown.contains("c lands them on C1\u{2013}D#1"), "{shown}");
+        assert!(shown.contains("c lands them on C2\u{2013}D#2"), "{shown}");
         assert!(previews(&app.drain_mixer_commands()) >= 1, "opening the screen made no sound");
 
         press(&mut app, KeyCode::Char('c'));
         assert!(app.nav.sampler_chop.is_none(), "the screen stayed open after landing");
-        assert!(flash(&app).contains("4 slices on C1\u{2013}D#1"), "{}", flash(&app));
+        assert!(flash(&app).contains("4 slices on C2\u{2013}D#2"), "{}", flash(&app));
         let state = sampler(&app);
         for (i, &hit) in HITS.iter().enumerate() {
             let layer = &state.pads[pad_of(36) + i as u8 as usize].layers[0];
@@ -147,6 +147,7 @@ mod tests {
         }
         assert_eq!(state.cursor, pad_of(36), "the cursor did not follow the chop");
         assert!(state.pads[pad_of(40)].layers.is_empty(), "a fifth key was touched");
+        assert!(app.nav.tracks[app.nav.track_cursor].clips.is_empty(), "a clip was written unasked");
         let synced = app.drain_mixer_commands();
         assert!(!synced.is_empty(), "the engine was not told about the slices");
 
@@ -170,11 +171,11 @@ mod tests {
         let before = sampler(&app).clone();
 
         press(&mut app, KeyCode::Char('c'));
-        assert!(screen(&app, 140, 44).contains("c lands them on D1\u{2013}F1"), "it opened on the key in the way");
+        assert!(screen(&app, 140, 44).contains("c lands them on D2\u{2013}F2"), "it opened on the key in the way");
         to_row(&mut app, "from");
         press(&mut app, KeyCode::Char('h'));
         press(&mut app, KeyCode::Char('h'));
-        assert!(screen(&app, 140, 44).contains("1 of the 4 keys C1\u{2013}D#1 already holds a sound"));
+        assert!(screen(&app, 140, 44).contains("1 of the 4 keys C2\u{2013}D#2 already holds a sound"));
         press(&mut app, KeyCode::Char('c'));
         assert!(flash(&app).contains("already holds a sound"), "{}", flash(&app));
         assert_eq!(sampler(&app), &before, "a refused chop changed the kit");
@@ -182,9 +183,9 @@ mod tests {
 
         to_row(&mut app, "from");
         press_shift(&mut app, 'L');
-        assert_eq!(SamplerState::pad_label(chop(&app).plan.first), "C2");
+        assert_eq!(SamplerState::pad_label(chop(&app).plan.first), "C3");
         press(&mut app, KeyCode::Char('c'));
-        assert!(flash(&app).contains("on C2\u{2013}D#2"), "{}", flash(&app));
+        assert!(flash(&app).contains("on C3\u{2013}D#3"), "{}", flash(&app));
         assert_eq!(sampler(&app).pads[pad_of(48)].layers.len(), 1);
 
         // The refusal left nothing on the undo stack: one `u` takes the chop
@@ -194,6 +195,58 @@ mod tests {
         assert_eq!(sampler(&app).pads[pad_of(37)].layers.len(), 1);
         press(&mut app, KeyCode::Char('u'));
         assert!(sampler(&app).pads[pad_of(37)].layers.is_empty(), "a refused chop left an undo step");
+    }
+
+    /// The clip row: the chop lands with a clip that replays the recording,
+    /// one note per slice on its key at the hit's own time — and one `u`
+    /// takes back the slices and the clip together, one redo brings both.
+    #[test]
+    fn the_clip_row_writes_a_clip_that_replays_the_chop() {
+        let dir = scratch("replay");
+        let mut app = loaded(&dir);
+        let track = app.nav.track_cursor;
+        press(&mut app, KeyCode::Char('c'));
+        to_row(&mut app, "clip");
+        press(&mut app, KeyCode::Char('l'));
+        assert!(chop(&app).plan.clip);
+        let _ = app.drain_mixer_commands();
+        press(&mut app, KeyCode::Char('c'));
+
+        let clips = &app.nav.tracks[track].clips;
+        assert_eq!(clips.len(), 1, "no clip was written");
+        let clip = &clips[0];
+        assert_eq!(clip.start_tick, 0, "the clip is not on bar 1");
+        assert_eq!(clip.notes.len(), HITS.len());
+        // A quarter second apart is half a beat at 120 BPM.
+        let half_beat = phosphor_core::transport::Transport::PPQ / 2;
+        for (k, note) in clip.notes.iter().enumerate() {
+            assert_eq!(note.note, 36 + k as u8, "note {k} is on the wrong key");
+            assert!((note.start_tick - k as i64 * half_beat).abs() <= 2, "note {k} at {}", note.start_tick);
+            assert_eq!(note.velocity, 127, "equal hits replayed unequal");
+        }
+        let sent = app.drain_mixer_commands();
+        assert!(sent.iter().any(|c| matches!(c, MixerCommand::CreateClip { .. })), "the engine never heard of the clip");
+        assert!(sent.iter().any(|c| matches!(c, MixerCommand::UpdateClip { .. })));
+        let words = flash(&app);
+        assert!(words.contains("clip at bar 1"), "{words}");
+        // 1.4 s from the first hit to the end, at 120 BPM.
+        assert!(words.contains("the break runs 0.70 bars at 120 BPM"), "{words}");
+        assert_eq!(app.nav.clip_view_target, Some((track, 0)), "the roll was not pointed at the notes");
+        let roll = &app.nav.clip_view.piano_roll;
+        let top = roll.view_bottom_note.saturating_add(roll.view_height);
+        assert!(
+            (36..36 + HITS.len() as u8).all(|n| n >= roll.view_bottom_note && n < top),
+            "the roll opens on {}..{}, away from the notes",
+            roll.view_bottom_note,
+            top,
+        );
+
+        press(&mut app, KeyCode::Char('u'));
+        assert!(app.nav.tracks[track].clips.is_empty(), "undo left the clip");
+        assert!(sampler(&app).pads[pad_of(36)].layers.is_empty(), "undo left the slices");
+        press_ctrl(&mut app, 'r');
+        assert_eq!(app.nav.tracks[track].clips.len(), 1, "redo lost the clip");
+        assert_eq!(sampler(&app).pads[pad_of(36)].layers.len(), 1, "redo lost the slices");
     }
 
     /// `C` opens the picker for a recording to chop, and choosing one opens

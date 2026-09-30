@@ -131,14 +131,9 @@ impl MidiMessage {
         440.0 * 2.0f64.powf((note as f64 - 69.0) / 12.0)
     }
 
-    /// MIDI note number to name (e.g., 60 → "C4").
+    /// MIDI note number to name (e.g., 60 → "C4"). See [`crate::note`].
     pub fn note_to_name(note: u8) -> String {
-        const NAMES: [&str; 12] = [
-            "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-        ];
-        let octave = (note as i8 / 12) - 1;
-        let name = NAMES[note as usize % 12];
-        format!("{name}{octave}")
+        crate::note::note_name(note)
     }
 }
 

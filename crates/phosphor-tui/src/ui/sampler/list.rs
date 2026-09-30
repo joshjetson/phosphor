@@ -122,7 +122,7 @@ mod tests {
         let state = kit();
         let view = SamplerView::new();
         let list = text(&pad_list(&map(&state, &view), 38, 10));
-        assert!(list.contains("C3"), "{list}");
+        assert!(list.contains("C4"), "{list}");
         assert!(list.contains("2 layers"), "{list}");
         assert!(list.contains("one-shot"), "{list}");
         assert!(list.contains('!'), "a missing file is not marked:\n{list}");
@@ -175,7 +175,7 @@ mod tests {
         let shown = text(&pad_list(&map(&state, &view), 60, 10));
         let head = shown.lines().next().unwrap();
         assert!(head.contains("source"), "the mark is not explained:\n{shown}");
-        let row = shown.lines().find(|l| l.contains("C3")).expect("no C3 row");
+        let row = shown.lines().find(|l| l.contains("C4")).expect("no C4 row");
         assert!(row.contains(SOURCE_MARK), "the pad is not marked: {row}");
 
         // The legend goes before the memory line does. How much audio the
@@ -192,7 +192,7 @@ mod tests {
     /// gone is a repair.
     #[test]
     fn the_source_mark_goes_before_the_missing_warning() {
-        let mut state = kit(); // C3's second layer has lost its file
+        let mut state = kit(); // C4's second layer has lost its file
         state.pads[state.cursor].source = Some(phosphor_app::sampler::PadSource {
             instrument: phosphor_app::state::InstrumentType::DX7,
             params: vec![0.5; 4],
@@ -204,7 +204,7 @@ mod tests {
             for line in shown.lines() {
                 assert!(line.chars().count() <= width, "a {width}-column list overran: {line}");
             }
-            let Some(row) = shown.lines().find(|l| l.contains("C3")) else { continue };
+            let Some(row) = shown.lines().find(|l| l.contains("C4")) else { continue };
             if !row.contains(SOURCE_MARK) {
                 dropped = true;
                 continue;

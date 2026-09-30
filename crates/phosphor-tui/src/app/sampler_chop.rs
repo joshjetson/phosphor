@@ -180,7 +180,14 @@ impl App {
             return;
         }
         let plan = chop.plan.clone();
-        let before = self.nav.undo_checkpoint(UndoScope::Sampler { track_idx });
+        // With a replay clip the step holds the clips too: one `u` takes the
+        // slices and the notes that play them, never one without the other.
+        let scope = if plan.clip {
+            UndoScope::SamplerAndClips { track_idx }
+        } else {
+            UndoScope::Sampler { track_idx }
+        };
+        let before = self.nav.undo_checkpoint(scope);
         let Some(sampler) = self.nav.tracks[track_idx].sampler.as_mut() else { return };
         let landing = match plan.land(sampler) {
             Ok(landing) => landing,
@@ -198,6 +205,7 @@ impl App {
         } else {
             (landing.first..landing.first + landing.count).collect()
         };
+        let replayed = plan.clip.then(|| self.write_replay_clip(track_idx, &plan, landing.first)).flatten();
         self.nav.commit_undo(before, "chop");
         self.sync_sampler_pads(track_idx, pads);
         self.nav.sampler_chop = None;
@@ -212,12 +220,50 @@ impl App {
             None => String::new(),
         };
         let bed = if landing.switched_to_pads { " \u{00b7} the bed is on pads" } else { "" };
+        let clip = replayed.unwrap_or_default();
         self.flash(format!(
-            "chopped \u{00b7} {} slice{} on {}{choke}{bed} \u{00b7} u takes it back",
+            "chopped \u{00b7} {} slice{} on {}{choke}{bed}{clip} \u{00b7} u takes it back",
             landing.count,
             if landing.count == 1 { "" } else { "s" },
             phosphor_app::sampler::chop::land::span_label(landing.first, landing.count),
         ));
+    }
+
+    /// Put the clip that replays the chop on the track, and say where — the
+    /// words for the landing's flash. `None` when there was nothing to
+    /// replay, which a chop that has landed never is.
+    ///
+    /// The piano roll is pointed at it, so the notes are what a player sees
+    /// when they Tab over to move them — the bounce's courtesy.
+    fn write_replay_clip(&mut self, track_idx: usize, plan: &ChopPlan, first: usize) -> Option<String> {
+        let bpm = self.engine.transport.tempo_bpm();
+        let playhead = self.engine.transport.position_ticks();
+        let clips = &self.nav.tracks.get(track_idx)?.clips;
+        let replay = phosphor_app::sampler::chop::replay::replay(
+            plan.pcm(),
+            &plan.slices(),
+            first,
+            bpm,
+            playhead,
+            clips,
+        )?;
+        let clip_index = clips.len();
+        self.place_clip(track_idx, replay.clip());
+        self.nav.target_clip(track_idx, clip_index);
+        // A break at the song's tempo fills whole bars and loops on the bar
+        // line. One that does not still plays exactly as recorded — the
+        // slices are never stretched — and the player is owed the number
+        // that says why it will not line up.
+        let whole = (replay.bars_exact - replay.bars_exact.round()).abs() < 0.02;
+        Some(if whole {
+            format!(" \u{00b7} clip at bar {}", replay.bar())
+        } else {
+            format!(
+                " \u{00b7} clip at bar {} \u{00b7} the break runs {:.2} bars at {bpm:.0} BPM",
+                replay.bar(),
+                replay.bars_exact,
+            )
+        })
     }
 
     // ── Keys ──

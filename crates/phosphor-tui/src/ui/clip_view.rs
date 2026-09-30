@@ -371,7 +371,7 @@ const INST_CELL_W: usize = 26;
 /// The line over the panel: whose controls these are, and which page of them.
 ///
 /// In source mode it says *why* they are somebody else's — "source for pad
-/// C3" — because the alternative is a player finding a DX7's eighty-four
+/// C4" — because the alternative is a player finding a DX7's eighty-four
 /// controls on a track called `smplr` with nothing on the screen to explain
 /// it. The pad is named because the panel goes back to that pad when the
 /// mode ends.
@@ -596,7 +596,7 @@ pub(super) fn render_piano_roll(frame: &mut Frame, area: Rect, nav: &NavState, s
         let key_fg = if is_cur { theme::amber_bright_val() } else if note % 12 == 0 { theme::normal_val() } else { theme::dim_val() };
 
         let mut spans: Vec<Span> = Vec::new();
-        spans.push(Span::styled(format!("{:>5} ", midi_note_name(note)), Style::default().fg(key_fg).bg(key_bg)));
+        spans.push(Span::styled(format!("{:>5} ", phosphor_app::format::note_name(note)), Style::default().fg(key_fg).bg(key_bg)));
         spans.push(Span::styled("\u{2502}",
             if note % 12 == 0 { Style::default().fg(theme::grid_major()).bg(theme::bg_val()) }
             else { theme::border_style() }));

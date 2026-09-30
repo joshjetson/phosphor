@@ -88,6 +88,28 @@ pub struct Clip {
 }
 
 impl Clip {
+    /// A clip made of notes and nothing else — what a feature that writes
+    /// its own clip starts from. Numbered when it is placed on a track;
+    /// drawn as wide as its beats, never narrower than two cells.
+    #[must_use]
+    pub fn of_notes(
+        start_tick: i64,
+        length_ticks: i64,
+        notes: Vec<phosphor_core::clip::NoteSnapshot>,
+    ) -> Self {
+        let ppq = phosphor_core::transport::Transport::PPQ;
+        Self {
+            number: 0,
+            width: ((length_ticks + ppq - 1) / ppq).max(2) as u16,
+            has_content: !notes.is_empty(),
+            start_tick,
+            length_ticks,
+            notes,
+            hidden_notes: Vec::new(),
+            controls: Vec::new(),
+        }
+    }
+
     /// Everything the audio thread should play for this clip: the notes
     /// rebuilt from the roll's fractions, and the controllers as recorded,
     /// ordered so that offs lead, controllers set their state, and ons

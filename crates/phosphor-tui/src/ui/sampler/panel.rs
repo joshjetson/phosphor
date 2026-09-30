@@ -357,7 +357,7 @@ mod tests {
         let state = kit();
         let view = SamplerView::new();
         let panel = text(&panel_lines(&map(&state, &view), 57, 30));
-        assert!(panel.contains("pad C3"), "{panel}");
+        assert!(panel.contains("pad C4"), "{panel}");
         assert!(panel.contains("one-shot"), "{panel}");
         assert!(panel.contains("kick"), "{panel}");
         assert!(panel.contains("clap"), "{panel}");

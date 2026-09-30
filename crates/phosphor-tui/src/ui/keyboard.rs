@@ -237,7 +237,7 @@ mod tests {
     /// is the column [`column_of`] names, black keys included.
     #[test]
     fn a_key_is_where_the_column_says_it_is() {
-        // C3 is the 24th white key up from A0; C#3 shares its cell.
+        // C4 is the 24th white key up from A0; C#4 shares its cell.
         assert_eq!(column_of(21, 60), MARGIN + 23 * KEY_W);
         assert_eq!(column_of(21, 61), MARGIN + 23 * KEY_W + 1);
         // E and B have no black key above them, so the next white starts

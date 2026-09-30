@@ -290,7 +290,7 @@ impl App {
 
     /// Put one clip on a track, on both sides of the fence. No checks and
     /// no undo step — the caller has already done both.
-    fn place_clip(&mut self, track_idx: usize, mut clip: crate::state::Clip) {
+    pub(crate) fn place_clip(&mut self, track_idx: usize, mut clip: crate::state::Clip) {
         let Some(track) = self.nav.tracks.get_mut(track_idx) else { return };
         clip.number = track.clips.len() + 1;
         if let Some(mixer_id) = track.mixer_id {

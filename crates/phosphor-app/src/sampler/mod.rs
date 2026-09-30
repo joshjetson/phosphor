@@ -291,8 +291,8 @@ impl PadState {
 
     /// Stack one more sound, if the bed has room for it.
     ///
-    /// `title` is what the refusal calls this place — "pad C3", "zone
-    /// C2-B3" — because a pad and a zone are full in the same words and
+    /// `title` is what the refusal calls this place — "pad C4", "zone
+    /// C3-B4" — because a pad and a zone are full in the same words and
     /// named in different ones.
     fn push_layer(&mut self, layer: LayerState, title: &str) -> Result<usize, String> {
         if self.layers.len() >= MAX_LAYERS {
@@ -397,7 +397,7 @@ impl SamplerState {
     pub fn new() -> Self {
         Self {
             pads: (0..NUM_PADS).map(|i| PadState::empty(PAD_BASE_NOTE + i as u8)).collect(),
-            // C3 — the middle of the bed, where a hand falls.
+            // C4 — middle C, the middle of the bed, where a hand falls.
             cursor: (60 - PAD_BASE_NOTE) as usize,
             mode: MapMode::Pads,
             zones: Vec::new(),
@@ -438,7 +438,7 @@ impl SamplerState {
         PAD_BASE_NOTE + pad.min(NUM_PADS - 1) as u8
     }
 
-    /// The pad's name on a keyboard — "C3", "A#1".
+    /// The pad's name on a keyboard — "C4", "A#1".
     pub fn pad_label(pad: usize) -> String {
         crate::format::note_name(Self::note_of_pad(pad))
     }
@@ -560,7 +560,7 @@ impl SamplerState {
         }
     }
 
-    /// "pad C3" — what a flash and a refusal call a pad.
+    /// "pad C4" — what a flash and a refusal call a pad.
     pub fn pad_title(pad: usize) -> String {
         format!("pad {}", Self::pad_label(pad))
     }
@@ -727,9 +727,9 @@ mod tests {
 
     #[test]
     fn pad_labels_read_like_a_keyboard() {
-        assert_eq!(SamplerState::pad_label(0), "A-1"); // note 21, C3 = 60
-        assert_eq!(SamplerState::pad_label((60 - 21) as usize), "C3");
-        assert_eq!(SamplerState::pad_label(87), "C7"); // note 108
+        assert_eq!(SamplerState::pad_label(0), "A0"); // note 21, C4 = 60
+        assert_eq!(SamplerState::pad_label((60 - 21) as usize), "C4");
+        assert_eq!(SamplerState::pad_label(87), "C8"); // note 108
     }
 
     #[test]

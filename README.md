@@ -420,7 +420,7 @@ a root. Drum kit or piano, on the same bed.
 2. Play a key. The caret `▼` on the keyboard band moves to that pad — on an
    88-key controller that is the fastest pad selector there is. Without one,
    `h`/`l` walk the bed a key at a time and `H`/`L` an octave. The caret
-   starts at C3, under your hand.
+   starts at C4 — middle C — under your hand.
 3. Press `a`. A list of `<app dir>/samples/` opens: `j`/`k` to a sound and
    `Enter` puts it on the pad. Type letters to narrow the list, `h` walks up
    a folder and `Enter` on a folder walks into it. For a file that lives
@@ -482,8 +482,8 @@ stores both.
    `a loads a sound into it`.
 4. Press `a`, type the path, `Enter`. Because a zone always tracks the
    keyboard, a file name ending in a note teaches the zone its root as the
-   sound arrives — `Piano_C3.wav`, `kick_A#1.wav`, `Strings Eb2.wav` — and
-   the flash names the root it learned. A name that is not a note changes
+   sound arrives — `Piano_C4.wav`, `kick_A#1.wav`, `Strings Eb2.wav`, with
+   middle C as C4 — and the flash names the root it learned. A name that is not a note changes
    nothing: `07_Kick`, `TR808` and `C3loop` all leave the root alone, because
    a wrong root retunes every key in the zone.
 5. Play. Every key sounds that sample, transposed by its distance from the
@@ -648,9 +648,16 @@ of settings. Nothing on your kit changes until you press `c` again.
 - **fit** — keep only the strongest few. Fit 12 is one octave of bigger
   slices.
 - **from** — the first key. Slices go up from there, one per key. It starts
-  on C1, or on the first free keys above it.
+  on C2 (MIDI 36, where most slicers start), or on the first free keys
+  above it.
 - **feel** — *break*: one-shots that cut each other off, like one drummer.
   *melodic*: keys ring while held and can overlap.
+- **clip** — set it to *yes* and landing also writes a clip on the track
+  that plays the slices back in the recording's own timing, loud hits loud
+  and quiet hits quiet. Play it and you hear the recording; move its notes
+  in the piano roll and you have rearranged the break. It lands on the next
+  free bar, and if the recording is not at the song's tempo the message
+  says how many bars it runs.
 
 `j`/`k` pick a row, `h`/`l` change it (`H`/`L` in bigger steps). The keyboard
 shows where the chop will land: **amber** keys are free, **red** keys already
@@ -662,7 +669,7 @@ slice's end, `j`/`k` change how far one press goes. `a` adds a cut, `d`
 removes one, `p` plays the slice again. Cuts you add or move stay where you
 put them when you change the settings.
 
-`c` lands it, and one `u` takes the whole chop back. `Esc` leaves with
+`c` lands it, and one `u` takes the whole chop back — the clip too. `Esc` leaves with
 nothing changed.
 
 `C` chops a file you have not loaded yet: it opens your samples folder
@@ -798,7 +805,7 @@ begins. It stops itself at 64 bars.
   four places: the panel carries a `◎ source: DX7 · i records more` line, the
   filled-pad list marks the pad with `◎` and names the mark in its head
   wherever the column fits, leaving the mode ends with `i returns to DX7`, and the picker itself opens
-  titled `source for C3 · now: dx7` with `· this pad's source` beside the row
+  titled `source for C4 · now: dx7` with `· this pad's source` beside the row
   the cursor is already standing on. A memory nobody can see is a memory
   nobody uses.
 - A full pad refuses the arm before you play, not after. Finding out that a
@@ -817,7 +824,7 @@ begins. It stops itself at 64 bars.
 instrument with a real panel, and `Tab` is the road to it: from the pad map,
 one `Tab` puts you on `[inst]`, and while the mode is on that panel is the
 *source* instrument's rather than the sampler's two globals. It is headed
-`Phosphor Synth · source for pad C3` so you can see whose panel you are
+`Phosphor Synth · source for pad C4` so you can see whose panel you are
 standing in. `j`/`k` pick a control and `h`/`l` turn it — the same keys as
 any other track's panel, because it is the same panel — and you hear every
 turn as you make it, since that instrument *is* the track's plugin slot. The
@@ -1149,7 +1156,7 @@ Progressions).
 **Chop a recording** — On a sampler's pad map, `c` chops the sound on the
 pad under the caret, or `C` picks a file from `samples/` to chop. Pick how it
 cuts (`listen: low · kicks` cuts from kick to kick), `c` lands one slice per
-key from C1 up, `u` takes it back. A chop never overwrites a sound. Full
+key from C2 up, `u` takes it back. A chop never overwrites a sound. Full
 section: [Chop](#chop--cut-a-recording-across-the-keys--c).
 
 **Clips (move, stretch, trim)** — Select the track, `h`/`l` along to its
@@ -1344,7 +1351,7 @@ sampler back with its kit — saying `i returns to DX7` on the way out, because
 that is the moment the pad's memory of the instrument stops being on the
 screen anywhere else. It does not stay off it for long: the pad panel carries
 a `◎ source: DX7 · i records more` line from then on, the filled-pad list
-marks the pad with `◎`, and `i` reopens titled `source for C3 · now: dx7`
+marks the pad with `◎`, and `i` reopens titled `source for C4 · now: dx7`
 with the remembered row marked. A take becomes a file the next time you save
 — into `<session>.samples/`, which is the first row of the `a` list from then
 on, so a take is reachable from any other pad in one `Enter`.
@@ -1414,7 +1421,7 @@ the bed stops being one sound per key and becomes zones, a stretch of keys
 playing one sound transposed from a root. The bar reads `-- KEYS --`. `w`
 throws a zone across the whole bed, `o` across the octave the caret is in,
 and `a` then picks a sound for it out of the list — a file name ending in a note
-(`Piano_C3.wav`, `kick_A#1.wav`) sets the root on the way in, and `R` learns
+(`Piano_C4.wav`, `kick_A#1.wav`; middle C is C4) sets the root on the way in, and `R` learns
 it instead from the next key you play. `s` splits the zone at the caret, so a
 keyboard can be several samples wide; the left half keeps its root, the right
 is rooted at its own first key. To resize one, `Enter` on the `span` control

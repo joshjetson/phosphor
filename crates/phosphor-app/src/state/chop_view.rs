@@ -93,7 +93,7 @@ mod tests {
         s.move_row(-1);
         assert_eq!(s.current(), ChopRow::Cuts);
         s.move_row(100);
-        assert_eq!(s.current(), ChopRow::Feel);
+        assert_eq!(s.current(), ChopRow::Clip);
     }
 
     /// A transient chop has more rows than an equal one: the cursor on the
@@ -104,7 +104,7 @@ mod tests {
         s.move_row(100);
         s.plan.mode = ChopMode::Equal;
         s.plan.redetect();
-        assert_eq!(s.current(), ChopRow::Feel, "read past the end of the rows");
+        assert_eq!(s.current(), ChopRow::Clip, "read past the end of the rows");
         s.clamp();
         assert_eq!(s.row, s.rows().len() - 1);
     }

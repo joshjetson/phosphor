@@ -102,6 +102,6 @@ impl App {
 
         // The clip view follows the bounce, so the notes that were just made
         // are what the piano roll is looking at when the player Tabs to it.
-        self.nav.clip_view_target = Some((track_idx, clip_index));
+        self.nav.target_clip(track_idx, clip_index);
     }
 }

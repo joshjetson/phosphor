@@ -168,7 +168,7 @@ impl Zone {
         self.hi + 1 - self.lo
     }
 
-    /// The span as a player reads it — "C2-B3", or one key's name when it
+    /// The span as a player reads it — "C3-B4", or one key's name when it
     /// is one key wide.
     #[must_use]
     pub fn span_label(&self) -> String {
@@ -269,7 +269,7 @@ impl SamplerState {
         }
     }
 
-    /// The same with its noun in front — "pad C3", "zone C2-B3". What a
+    /// The same with its noun in front — "pad C4", "zone C3-B4". What a
     /// flash opens with, so that the word for the thing being edited always
     /// matches the mode the keys are in.
     #[must_use]
@@ -640,8 +640,8 @@ mod tests {
     /// ten-megabyte piano cost eighty-eight pointers.
     #[test]
     fn a_zone_stamps_every_key_with_the_same_buffers() {
-        let state = keys_state(vec![zone(48, 71, 60, 1)]); // C2-B3, rooted C3
-        assert_eq!(state.zones[0].span_label(), "C2-B3");
+        let state = keys_state(vec![zone(48, 71, 60, 1)]); // C3-B4, rooted C4
+        assert_eq!(state.zones[0].span_label(), "C3-B4");
         let original = state.zones[0].pad.layers[0].pcm.clone().unwrap();
         for note in [48u8, 60, 71] {
             let pad = SamplerState::pad_of_note(note).unwrap();
@@ -995,27 +995,27 @@ mod tests {
         state.cursor = SamplerState::pad_of_note(60).unwrap();
         state.add_wav_layer(state.cursor, PathBuf::from("kick.wav"), pcm()).unwrap();
         assert_eq!(state.edited().unwrap().layers.len(), 1);
-        assert_eq!(state.edit_label(), "C3");
+        assert_eq!(state.edit_label(), "C4");
         assert_eq!(state.edit_span(), Some((state.cursor, state.cursor)));
 
         state.mode = MapMode::Keys;
         assert!(state.edited().is_none(), "a bare key offered the hidden pad to edit");
-        assert_eq!(state.edit_label(), "C3", "a refusal has to name where the cursor is");
+        assert_eq!(state.edit_label(), "C4", "a refusal has to name where the cursor is");
         assert!(state.edit_span().is_none());
 
         state.zones.push(zone(48, 71, 48, 2));
         assert_eq!(state.edited().unwrap().layers.len(), 2);
-        assert_eq!(state.edit_label(), "C2-B3");
+        assert_eq!(state.edit_label(), "C3-B4");
         assert_eq!(
             state.edit_span(),
             Some((SamplerState::pad_of_note(48).unwrap(), SamplerState::pad_of_note(71).unwrap())),
         );
     }
 
-    /// A one-key zone reads as that key rather than as "C3-C3".
+    /// A one-key zone reads as that key rather than as "C4-C4".
     #[test]
     fn a_zone_one_key_wide_reads_as_the_key() {
-        assert_eq!(zone(60, 60, 60, 0).span_label(), "C3");
-        assert_eq!(zone(60, 72, 60, 0).span_label(), "C3-C4");
+        assert_eq!(zone(60, 60, 60, 0).span_label(), "C4");
+        assert_eq!(zone(60, 72, 60, 0).span_label(), "C4-C5");
     }
 }

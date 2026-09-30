@@ -321,7 +321,7 @@ impl NavState {
     /// One list rather than one per asker, because everything that has to
     /// stand still while a question is up has to agree about when that is.
     /// The sampler's pad cursor is the reason it exists: a played key moves
-    /// it, and "remove kick from pad C3?" answered yes after a stray note
+    /// it, and "remove kick from pad C4?" answered yes after a stray note
     /// used to remove the snare.
     #[must_use]
     pub fn question_is_up(&self) -> bool {

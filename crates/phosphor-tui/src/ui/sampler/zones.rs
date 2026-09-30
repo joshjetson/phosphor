@@ -7,7 +7,7 @@
 //!   ├──────┼───────────┤├────────────┤
 //!
 //!   zones · 2
-//!  ▸ C2-B3   piano       1  root C3  24 keys
+//!  ▸ C3-B4   piano       1  root C4  24 keys
 //!    C4-B4   strings     2  root C4  12 keys
 //! ```
 //!
@@ -190,7 +190,7 @@ mod tests {
         assert!(drawn.contains(RIGHT), "the brace has no right end:\n{drawn}");
         assert!(drawn.contains(ROOT), "the root is not ticked:\n{drawn}");
 
-        // The tick is over the key it names: C3, the zone's root.
+        // The tick is over the key it names: C4, the zone's root.
         let root_cell = drawn.chars().position(|c| c == ROOT).expect("no tick");
         assert_eq!(root_cell, column_of(LOW, 60), "the tick is on the wrong key");
 
@@ -218,9 +218,9 @@ mod tests {
         let view = SamplerView::new();
         let list = text(&zone_list(&map(&state, &view), 46, 10));
         assert!(list.contains("zones"), "{list}");
-        assert!(list.contains("C2-B3"), "{list}");
+        assert!(list.contains("C3-B4"), "{list}");
         assert!(list.contains("piano"), "{list}");
-        assert!(list.contains("root C3"), "{list}");
+        assert!(list.contains("root C4"), "{list}");
         assert!(list.contains("24 keys"), "{list}");
     }
 

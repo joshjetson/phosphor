@@ -435,7 +435,7 @@ impl App {
         // and while source mode has the track's plugin slot on loan).
         //
         // Source mode refuses every other key in words — "source mode is on
-        // pad C3 · r records · esc puts the sampler back" — because while it
+        // pad C4 · r records · esc puts the sampler back" — because while it
         // is on the sampler is out of the slot and nothing else on the screen
         // means what it says. The space menu is a door into saving, loading
         // and half the box, and it was the one key that walked straight past

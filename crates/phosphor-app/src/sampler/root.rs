@@ -22,11 +22,12 @@
 //! reading `-1` as an octave would retune a zone four octaves down.
 //!
 //! Octaves follow the house convention, which is
-//! [`crate::format::note_name`]'s: C3 is MIDI 60.
+//! [`crate::format::note_name`]'s: C4 is MIDI 60. A file is read the way the
+//! screen would write its key, so `piano_C4` lands on the key the pad map
+//! calls C4.
 
-/// The house's octave offset: MIDI 60 is C3, so the octave number is two
-/// below the one a straight division would give.
-const OCTAVE_BASE: i32 = 2;
+/// The house's octave offset — the one [`phosphor_midi::note`] names with.
+const OCTAVE_BASE: i32 = phosphor_midi::note::OCTAVE_OFFSET;
 
 /// Semitone of each letter above C.
 fn letter_semitone(letter: char) -> Option<i32> {
@@ -74,7 +75,8 @@ pub fn from_name(stem: &str) -> Option<u8> {
     let mut octave: i32 = digits.parse().ok()?;
 
     // A minus in front of them makes the octave negative — the only way
-    // `A-1`, the bottom key of the bed, can be spelled.
+    // `C-1`, the bottom of MIDI, can be spelled. No pad is that low, but a
+    // zone's root can be.
     if at > 0 && chars[at - 1] == '-' {
         at -= 1;
         octave = -octave;
@@ -134,12 +136,13 @@ mod tests {
     /// house never writes but every string library does.
     #[test]
     fn the_names_a_library_ships_are_read() {
-        assert_eq!(from_name("Piano_C3"), Some(60));
-        assert_eq!(from_name("kick_A#1"), Some(46));
-        assert_eq!(from_name("Strings Eb2"), Some(51));
-        assert_eq!(from_name("C3"), Some(60));
-        assert_eq!(from_name("bass-c3"), Some(60), "a lowercase letter is still a note");
-        assert_eq!(from_name("Cello.A-1"), Some(21), "the bottom key needs its minus");
+        assert_eq!(from_name("Piano_C4"), Some(60));
+        assert_eq!(from_name("kick_A#2"), Some(46));
+        assert_eq!(from_name("Strings Eb3"), Some(51));
+        assert_eq!(from_name("C4"), Some(60));
+        assert_eq!(from_name("bass-c4"), Some(60), "a lowercase letter is still a note");
+        assert_eq!(from_name("Cello.A0"), Some(21), "the bottom key");
+        assert_eq!(from_name("Sub.C-1"), Some(0), "the bottom of MIDI needs its minus");
     }
 
     /// The names that must change nothing. A wrong root retunes every key
@@ -170,11 +173,12 @@ mod tests {
     /// the MIDI range.
     #[test]
     fn a_flat_and_a_sharp_meet_in_the_middle() {
-        assert_eq!(from_name("pad_Db3"), from_name("pad_C#3"));
-        assert_eq!(from_name("pad_Db3"), Some(61));
+        assert_eq!(from_name("pad_Db4"), from_name("pad_C#4"));
+        assert_eq!(from_name("pad_Db4"), Some(61));
         // The bottom and the top of the range, right on the edge.
-        assert_eq!(from_name("C-2"), Some(0));
-        assert_eq!(from_name("G8"), Some(127));
-        assert_eq!(from_name("G#8"), None, "a note past 127 was invented");
+        assert_eq!(from_name("C-1"), Some(0));
+        assert_eq!(from_name("B-2"), None, "a note under 0 was invented");
+        assert_eq!(from_name("G9"), Some(127));
+        assert_eq!(from_name("G#9"), None, "a note past 127 was invented");
     }
 }
