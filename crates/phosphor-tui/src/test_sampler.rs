@@ -532,6 +532,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// One recording on many pads comes back as one recording. Before the
+    /// open decoded each file once, every pad naming it got its own copy —
+    /// a break chopped across the bed reopened at eighty-eight times its
+    /// size. Two spellings of the same file count as the same file.
+    #[test]
+    fn pads_sharing_a_file_share_one_buffer_after_a_reload() {
+        let dir = scratch("shared-reload");
+        let wav = dir.join("break.wav");
+        write_wav(&wav, 3_000);
+        let session = dir.join("kit.phos");
+        let notes = [36u8, 38, 42];
+        let spellings = [
+            wav.display().to_string(),
+            dir.join(".").join("break.wav").display().to_string(),
+            wav.display().to_string(),
+        ];
+
+        let mut saving = sampler_app();
+        for (note, spelling) in notes.iter().zip(&spellings) {
+            saving.sampler_follow_note(*note);
+            load_typed(&mut saving, spelling);
+        }
+        saving.do_save(&session.display().to_string());
+
+        let mut loading = app();
+        loading.do_load(&session.display().to_string());
+        let state = sampler_state(&loading);
+        let buffers: Vec<_> = notes
+            .iter()
+            .map(|&n| {
+                let pad = SamplerState::pad_of_note(n).unwrap();
+                std::sync::Arc::clone(state.pads[pad].layers[0].pcm.as_ref().expect("no audio"))
+            })
+            .collect();
+        assert!(
+            buffers.windows(2).all(|w| std::sync::Arc::ptr_eq(&w[0], &w[1])),
+            "the pads came back holding separate copies of one file",
+        );
+        assert_eq!(state.pcm_bytes(), buffers[0].data.len() * std::mem::size_of::<f32>());
+
+        // Gone from disk: every pad that named it is missing, and counted.
+        std::fs::remove_file(&wav).unwrap();
+        let mut after_move = app();
+        after_move.do_load(&session.display().to_string());
+        assert_eq!(sampler_state(&after_move).missing_layers(), notes.len());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // ── The pad map ──
 
     /// Making a sampler opens its pads, with the keyboard on them: all four

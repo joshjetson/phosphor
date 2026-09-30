@@ -7,7 +7,8 @@
 //! keep their first two — a surround stem loaded into a drum pad wants
 //! its front pair, not an error.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use phosphor_plugin::sample::SamplePcm;
@@ -76,6 +77,42 @@ pub fn load_wav(path: &Path) -> Result<Arc<SamplePcm>, String> {
         channels: keep as u16,
         sample_rate: spec.sample_rate as f32,
     }))
+}
+
+/// Decode each file once, however many layers name it.
+///
+/// A kit that chops one recording across the bed stores that recording's
+/// path on every chop, and a session open that decoded per layer brought a
+/// five-minute break back as eighty-eight copies of itself — gigabytes, and
+/// a load that sat on the UI thread for all of them. Through this, every
+/// layer naming the file shares the one buffer, the way it did before the
+/// save, and the memory line counts it once again.
+///
+/// Keyed on where the file really is rather than how it was spelled: `kick`,
+/// `./kick.wav` and an absolute path to the same file are one decode. A
+/// failure is remembered too, so a missing file is asked after once and
+/// every layer that wanted it hears the same sentence.
+///
+/// Scoped to one load and then dropped. Held longer it would pin audio the
+/// kit has let go of, and hand back a stale decode of a file edited on disk
+/// since.
+#[derive(Default)]
+pub struct WavCache {
+    decoded: HashMap<PathBuf, Result<Arc<SamplePcm>, String>>,
+}
+
+impl WavCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// [`load_wav`], answered from memory when this file was already asked for.
+    pub fn load(&mut self, path: &Path) -> Result<Arc<SamplePcm>, String> {
+        // A path that cannot be canonicalized does not exist yet, and its
+        // spelling is the only identity it has; the decode will say so.
+        let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.decoded.entry(key).or_insert_with(|| load_wav(path)).clone()
+    }
 }
 
 /// hound's errors in the player's language.
@@ -244,5 +281,60 @@ mod tests {
         let path = write_wav("empty.wav", spec, |_| {});
         let err = load_wav(&path).unwrap_err();
         assert!(err.contains("no audio"), "{err}");
+    }
+
+    fn mono_spec() -> hound::WavSpec {
+        hound::WavSpec {
+            channels: 1,
+            sample_rate: 44_100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        }
+    }
+
+    /// The chopped-break case: many layers, one file, one buffer.
+    #[test]
+    fn a_file_named_twice_is_decoded_once() {
+        let path = write_wav("cache-twice.wav", mono_spec(), |w| w.write_sample(100i16).unwrap());
+        let mut cache = WavCache::new();
+        let first = cache.load(&path).unwrap();
+        let second = cache.load(&path).unwrap();
+        assert!(Arc::ptr_eq(&first, &second), "the second layer decoded its own copy");
+    }
+
+    /// Two spellings of one file are one file — the bare name a kit stores
+    /// and the absolute path a picker hands back must not double the audio.
+    #[test]
+    fn two_spellings_of_one_file_share_the_decode() {
+        let path = write_wav("cache-spelling.wav", mono_spec(), |w| w.write_sample(1i16).unwrap());
+        let dir = path.parent().unwrap();
+        let dotted = dir.join(".").join("cache-spelling.wav");
+        let mut cache = WavCache::new();
+        let plain = cache.load(&path).unwrap();
+        let other = cache.load(&dotted).unwrap();
+        assert!(Arc::ptr_eq(&plain, &other), "a second spelling decoded a second copy");
+    }
+
+    #[test]
+    fn different_files_stay_different() {
+        let a = write_wav("cache-a.wav", mono_spec(), |w| w.write_sample(1i16).unwrap());
+        let b = write_wav("cache-b.wav", mono_spec(), |w| w.write_sample(2i16).unwrap());
+        let mut cache = WavCache::new();
+        let (a, b) = (cache.load(&a).unwrap(), cache.load(&b).unwrap());
+        assert!(!Arc::ptr_eq(&a, &b));
+        assert_ne!(a.data, b.data, "one file answered for another");
+    }
+
+    /// A missing file is the same sentence for every layer that wanted it,
+    /// and a file that fails does not poison one that works.
+    #[test]
+    fn a_missing_file_fails_the_same_way_every_time() {
+        let mut cache = WavCache::new();
+        let gone = tmp("cache-never-written.wav");
+        let first = cache.load(&gone).unwrap_err();
+        assert_eq!(cache.load(&gone).unwrap_err(), first);
+        assert!(first.contains("not found"), "{first}");
+        let here = write_wav("cache-here.wav", mono_spec(), |w| w.write_sample(3i16).unwrap());
+        assert!(cache.load(&here).is_ok());
     }
 }

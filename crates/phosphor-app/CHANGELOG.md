@@ -5,6 +5,10 @@ new" card the first time you run a version you have not seen. Each section is a
 `## X.Y.Z — Title` header, a blank line, and a short prose summary — the same
 words as the release notes, without the install line, which the app supplies.
 
+## 0.3.87 — One file, one copy, however many pads play it
+
+A session now decodes each sample file once when it opens, however many pads or zones use it, and every one of them shares that single copy — just as they did before the save. Until now each pad decoded its own, so a kit using one recording in many places reopened holding that many copies of it: harmless for a drum kit, but a long break spread across the keyboard would have come back at dozens of times its size and taken as long again to load. Different spellings of the same file count as the same file, a missing file is reported for every pad that wanted it, and the memory line reads true after a reload.
+
 ## 0.3.86 — The app tells you what changed, and when there's more
 
 Phosphor now keeps you current on its own. The first time you run a version you have not seen, a small card sums up what changed — read straight from a changelog that ships inside the binary, so it works offline and is always right for the version in front of you. And once a day, in the background, it quietly checks crates.io; when a newer build is out it shows one dismissible line telling you to run the install command to get it. The check is pure-Rust and never blocks startup, offline is silent, and `PHOSPHOR_NO_UPDATE_CHECK=1` turns it off entirely.

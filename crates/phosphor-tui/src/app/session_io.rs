@@ -356,6 +356,10 @@ impl App {
         let legacy_selectors = session.version < crate::session::FORMAT_VERSION;
         let mut clamped_selectors = 0usize;
         let mut missing_samples = 0usize;
+        // One decode per file for the whole open, shared across tracks: a
+        // break chopped over the bed, or used by two samplers, comes back as
+        // the one buffer it was saved as.
+        let mut wavs = phosphor_app::sampler::wav::WavCache::new();
         // The mixer id each saved track ended up with, in the file's own
         // order and with a hole where a track was skipped. Sidechain keys are
         // stored as a position in that list, so this is what turns them back
@@ -512,7 +516,7 @@ impl App {
                 let near = session_dir.clone();
                 let state = stored.into_state(|path| {
                     let resolved = phosphor_app::sampler::sidecar::find_layer_file(&near, path);
-                    match phosphor_app::sampler::wav::load_wav(&resolved) {
+                    match wavs.load(&resolved) {
                         Ok(pcm) => Some(pcm),
                         Err(message) => {
                             tracing::warn!("track '{}': sample not loaded — {message}", st.name);

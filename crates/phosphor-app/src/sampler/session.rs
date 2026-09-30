@@ -265,7 +265,7 @@ impl SessionPad {
     /// is clamped on the way in — through the same table the engine clamps
     /// with, so a hand-edited file cannot open with a control the knob
     /// cannot reach *or* with one the engine would quietly disagree about.
-    fn to_pad(&self, resolve: &impl Fn(&Path) -> Option<Arc<SamplePcm>>) -> PadState {
+    fn to_pad(&self, resolve: &mut impl FnMut(&Path) -> Option<Arc<SamplePcm>>) -> PadState {
         let config = clamp_config(PadConfig {
             trig: trig_from_key(&self.trig),
             poly: self.poly,
@@ -423,16 +423,20 @@ impl SessionSampler {
     /// Rebuild the state, decoding each layer's file through `resolve`.
     /// `None` from the resolver is a missing file: the layer keeps its
     /// seat with no PCM behind it.
+    ///
+    /// `FnMut` so the resolver can remember what it has decoded: layers
+    /// naming one file must come back sharing one buffer, as they were
+    /// saved — see [`super::wav::WavCache`].
     pub fn into_state(
         &self,
-        resolve: impl Fn(&Path) -> Option<Arc<SamplePcm>>,
+        mut resolve: impl FnMut(&Path) -> Option<Arc<SamplePcm>>,
     ) -> SamplerState {
         let mut state = SamplerState::new();
         state.mode = MapMode::from_key(&self.mode);
         state.child = self.child.as_ref().and_then(pad_source_of);
         for saved in &self.pads {
             let Some(idx) = SamplerState::pad_of_note(saved.note) else { continue };
-            state.pads[idx] = saved.to_pad(&resolve);
+            state.pads[idx] = saved.to_pad(&mut resolve);
         }
         // A zone whose edges are off the bed is skipped rather than
         // clamped onto a span the player never drew — the pad map's rule,
@@ -443,7 +447,7 @@ impl SessionSampler {
             else {
                 continue;
             };
-            state.zones.push(Zone::new(lo, hi, saved.pad.to_pad(&resolve)));
+            state.zones.push(Zone::new(lo, hi, saved.pad.to_pad(&mut resolve)));
         }
         state.sort_zones();
         state
