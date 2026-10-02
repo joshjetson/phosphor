@@ -31,6 +31,7 @@
 - [Features](#features)
 - [Sampler — a sound on every key](#sampler--a-sound-on-every-key)
 - [Fingers — the practice room](#fingers--the-practice-room)
+- [The Phosphor Deck — an optional controller](#the-phosphor-deck--an-optional-controller)
 - [Shortcuts, A to Z](#shortcuts-a-to-z)
 - [Controls](#controls)
 - [Themes](#themes)
@@ -1112,6 +1113,17 @@ After every rep the room reports:
 | `Esc` | Stop the drill; again to leave the room |
 
 ---
+
+## The Phosphor Deck — an optional controller
+
+The Phosphor Deck is a hardware controller being designed for Phosphor:
+knobs, faders, buttons and 16 pads in a case that clamps onto any MIDI
+keyboard. You never need one — everything it does, the keyboard does too.
+
+If you build one, plug it in and it just works: Phosphor recognises it by
+name, a line above the bottom bar says what is locked and what its eight
+knobs turn, and its pads play notes. Its firmware, and how to load it, is in
+[`firmware/`](firmware/README.md).
 
 ## Shortcuts, A to Z
 

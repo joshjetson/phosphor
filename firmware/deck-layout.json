@@ -1,0 +1,860 @@
+{
+  "channel": 16,
+  "controls": [
+    {
+      "cc": null,
+      "id": "Play",
+      "kind": "Button",
+      "label": "PLAY",
+      "light": 0,
+      "note": 0,
+      "zone": "Transport"
+    },
+    {
+      "cc": null,
+      "id": "Stop",
+      "kind": "Button",
+      "label": "STOP",
+      "light": null,
+      "note": 1,
+      "zone": "Transport"
+    },
+    {
+      "cc": null,
+      "id": "Rec",
+      "kind": "Button",
+      "label": "REC",
+      "light": 1,
+      "note": 2,
+      "zone": "Transport"
+    },
+    {
+      "cc": null,
+      "id": "Overdub",
+      "kind": "Button",
+      "label": "OVERDUB",
+      "light": 2,
+      "note": 3,
+      "zone": "Transport"
+    },
+    {
+      "cc": null,
+      "id": "Loop",
+      "kind": "Button",
+      "label": "LOOP",
+      "light": 3,
+      "note": 4,
+      "zone": "Transport"
+    },
+    {
+      "cc": null,
+      "id": "Click",
+      "kind": "Button",
+      "label": "CLICK",
+      "light": 4,
+      "note": 5,
+      "zone": "Transport"
+    },
+    {
+      "cc": null,
+      "id": "CountIn",
+      "kind": "Button",
+      "label": "COUNT IN",
+      "light": 5,
+      "note": 6,
+      "zone": "Transport"
+    },
+    {
+      "cc": null,
+      "id": "Tap",
+      "kind": "Button",
+      "label": "TAP",
+      "light": null,
+      "note": 7,
+      "zone": "Transport"
+    },
+    {
+      "cc": 16,
+      "id": "Function",
+      "kind": "Encoder",
+      "label": "FUNCTION",
+      "light": null,
+      "note": 8,
+      "zone": "Function"
+    },
+    {
+      "cc": null,
+      "id": "FnTempo",
+      "kind": "Button",
+      "label": "TEMPO",
+      "light": 6,
+      "note": 9,
+      "zone": "Function"
+    },
+    {
+      "cc": null,
+      "id": "FnSwing",
+      "kind": "Button",
+      "label": "SWING",
+      "light": 7,
+      "note": 10,
+      "zone": "Function"
+    },
+    {
+      "cc": null,
+      "id": "FnGrid",
+      "kind": "Button",
+      "label": "GRID",
+      "light": 8,
+      "note": 11,
+      "zone": "Function"
+    },
+    {
+      "cc": null,
+      "id": "FnMaster",
+      "kind": "Button",
+      "label": "MASTER",
+      "light": 9,
+      "note": 12,
+      "zone": "Function"
+    },
+    {
+      "cc": null,
+      "id": "FnLoop",
+      "kind": "Button",
+      "label": "LOOP",
+      "light": 10,
+      "note": 13,
+      "zone": "Function"
+    },
+    {
+      "cc": null,
+      "id": "FnLast",
+      "kind": "Button",
+      "label": "LAST",
+      "light": 11,
+      "note": 14,
+      "zone": "Function"
+    },
+    {
+      "cc": 17,
+      "id": "Navigate",
+      "kind": "Encoder",
+      "label": "NAVIGATE",
+      "light": null,
+      "note": 15,
+      "zone": "Navigate"
+    },
+    {
+      "cc": null,
+      "id": "Lock",
+      "kind": "Button",
+      "label": "LOCK",
+      "light": null,
+      "note": 16,
+      "zone": "Navigate"
+    },
+    {
+      "cc": null,
+      "id": "Back",
+      "kind": "Button",
+      "label": "BACK",
+      "light": null,
+      "note": 17,
+      "zone": "Navigate"
+    },
+    {
+      "cc": null,
+      "id": "Browse",
+      "kind": "Button",
+      "label": "BROWSE",
+      "light": null,
+      "note": 18,
+      "zone": "Navigate"
+    },
+    {
+      "cc": null,
+      "id": "Shift",
+      "kind": "Button",
+      "label": "SHIFT",
+      "light": null,
+      "note": 19,
+      "zone": "Navigate"
+    },
+    {
+      "cc": null,
+      "id": "Menu",
+      "kind": "Button",
+      "label": "MENU",
+      "light": null,
+      "note": 20,
+      "zone": "Navigate"
+    },
+    {
+      "cc": null,
+      "id": "Left",
+      "kind": "Button",
+      "label": "LEFT",
+      "light": null,
+      "note": 21,
+      "zone": "Navigate"
+    },
+    {
+      "cc": null,
+      "id": "Up",
+      "kind": "Button",
+      "label": "UP",
+      "light": null,
+      "note": 22,
+      "zone": "Navigate"
+    },
+    {
+      "cc": null,
+      "id": "Down",
+      "kind": "Button",
+      "label": "DOWN",
+      "light": null,
+      "note": 23,
+      "zone": "Navigate"
+    },
+    {
+      "cc": null,
+      "id": "Right",
+      "kind": "Button",
+      "label": "RIGHT",
+      "light": null,
+      "note": 24,
+      "zone": "Navigate"
+    },
+    {
+      "cc": null,
+      "id": "Part",
+      "kind": "Button",
+      "label": "PART",
+      "light": null,
+      "note": 25,
+      "zone": "Navigate"
+    },
+    {
+      "cc": null,
+      "id": "Undo",
+      "kind": "Button",
+      "label": "UNDO",
+      "light": null,
+      "note": 26,
+      "zone": "Edit"
+    },
+    {
+      "cc": null,
+      "id": "Redo",
+      "kind": "Button",
+      "label": "REDO",
+      "light": null,
+      "note": 27,
+      "zone": "Edit"
+    },
+    {
+      "cc": null,
+      "id": "Copy",
+      "kind": "Button",
+      "label": "COPY",
+      "light": null,
+      "note": 28,
+      "zone": "Edit"
+    },
+    {
+      "cc": null,
+      "id": "Paste",
+      "kind": "Button",
+      "label": "PASTE",
+      "light": null,
+      "note": 29,
+      "zone": "Edit"
+    },
+    {
+      "cc": null,
+      "id": "Delete",
+      "kind": "Button",
+      "label": "DELETE",
+      "light": null,
+      "note": 30,
+      "zone": "Edit"
+    },
+    {
+      "cc": null,
+      "id": "Duplicate",
+      "kind": "Button",
+      "label": "DUPLICATE",
+      "light": null,
+      "note": 31,
+      "zone": "Edit"
+    },
+    {
+      "cc": null,
+      "id": "Save",
+      "kind": "Button",
+      "label": "SAVE",
+      "light": null,
+      "note": 32,
+      "zone": "Edit"
+    },
+    {
+      "cc": null,
+      "id": "New",
+      "kind": "Button",
+      "label": "NEW",
+      "light": null,
+      "note": 33,
+      "zone": "Edit"
+    },
+    {
+      "cc": 18,
+      "id": "Knob(0)",
+      "kind": "Encoder",
+      "label": "KNOB 1",
+      "light": null,
+      "note": 34,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Action(0)",
+      "kind": "Button",
+      "label": "ACTION 1",
+      "light": null,
+      "note": 35,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "TrackButton(0)",
+      "kind": "Button",
+      "label": "T1",
+      "light": 12,
+      "note": 36,
+      "zone": "Columns"
+    },
+    {
+      "cc": 19,
+      "id": "Fader(0)",
+      "kind": "Fader",
+      "label": "FADER 1",
+      "light": null,
+      "note": null,
+      "zone": "Columns"
+    },
+    {
+      "cc": 20,
+      "id": "Knob(1)",
+      "kind": "Encoder",
+      "label": "KNOB 2",
+      "light": null,
+      "note": 37,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Action(1)",
+      "kind": "Button",
+      "label": "ACTION 2",
+      "light": null,
+      "note": 38,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "TrackButton(1)",
+      "kind": "Button",
+      "label": "T2",
+      "light": 13,
+      "note": 39,
+      "zone": "Columns"
+    },
+    {
+      "cc": 21,
+      "id": "Fader(1)",
+      "kind": "Fader",
+      "label": "FADER 2",
+      "light": null,
+      "note": null,
+      "zone": "Columns"
+    },
+    {
+      "cc": 22,
+      "id": "Knob(2)",
+      "kind": "Encoder",
+      "label": "KNOB 3",
+      "light": null,
+      "note": 40,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Action(2)",
+      "kind": "Button",
+      "label": "ACTION 3",
+      "light": null,
+      "note": 41,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "TrackButton(2)",
+      "kind": "Button",
+      "label": "T3",
+      "light": 14,
+      "note": 42,
+      "zone": "Columns"
+    },
+    {
+      "cc": 23,
+      "id": "Fader(2)",
+      "kind": "Fader",
+      "label": "FADER 3",
+      "light": null,
+      "note": null,
+      "zone": "Columns"
+    },
+    {
+      "cc": 24,
+      "id": "Knob(3)",
+      "kind": "Encoder",
+      "label": "KNOB 4",
+      "light": null,
+      "note": 43,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Action(3)",
+      "kind": "Button",
+      "label": "ACTION 4",
+      "light": null,
+      "note": 44,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "TrackButton(3)",
+      "kind": "Button",
+      "label": "T4",
+      "light": 15,
+      "note": 45,
+      "zone": "Columns"
+    },
+    {
+      "cc": 25,
+      "id": "Fader(3)",
+      "kind": "Fader",
+      "label": "FADER 4",
+      "light": null,
+      "note": null,
+      "zone": "Columns"
+    },
+    {
+      "cc": 26,
+      "id": "Knob(4)",
+      "kind": "Encoder",
+      "label": "KNOB 5",
+      "light": null,
+      "note": 46,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Action(4)",
+      "kind": "Button",
+      "label": "ACTION 5",
+      "light": null,
+      "note": 47,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "TrackButton(4)",
+      "kind": "Button",
+      "label": "T5",
+      "light": 16,
+      "note": 48,
+      "zone": "Columns"
+    },
+    {
+      "cc": 27,
+      "id": "Fader(4)",
+      "kind": "Fader",
+      "label": "FADER 5",
+      "light": null,
+      "note": null,
+      "zone": "Columns"
+    },
+    {
+      "cc": 28,
+      "id": "Knob(5)",
+      "kind": "Encoder",
+      "label": "KNOB 6",
+      "light": null,
+      "note": 49,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Action(5)",
+      "kind": "Button",
+      "label": "ACTION 6",
+      "light": null,
+      "note": 50,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "TrackButton(5)",
+      "kind": "Button",
+      "label": "T6",
+      "light": 17,
+      "note": 51,
+      "zone": "Columns"
+    },
+    {
+      "cc": 29,
+      "id": "Fader(5)",
+      "kind": "Fader",
+      "label": "FADER 6",
+      "light": null,
+      "note": null,
+      "zone": "Columns"
+    },
+    {
+      "cc": 30,
+      "id": "Knob(6)",
+      "kind": "Encoder",
+      "label": "KNOB 7",
+      "light": null,
+      "note": 52,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Action(6)",
+      "kind": "Button",
+      "label": "ACTION 7",
+      "light": null,
+      "note": 53,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "TrackButton(6)",
+      "kind": "Button",
+      "label": "T7",
+      "light": 18,
+      "note": 54,
+      "zone": "Columns"
+    },
+    {
+      "cc": 31,
+      "id": "Fader(6)",
+      "kind": "Fader",
+      "label": "FADER 7",
+      "light": null,
+      "note": null,
+      "zone": "Columns"
+    },
+    {
+      "cc": 32,
+      "id": "Knob(7)",
+      "kind": "Encoder",
+      "label": "KNOB 8",
+      "light": null,
+      "note": 55,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Action(7)",
+      "kind": "Button",
+      "label": "ACTION 8",
+      "light": null,
+      "note": 56,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "TrackButton(7)",
+      "kind": "Button",
+      "label": "T8",
+      "light": 19,
+      "note": 57,
+      "zone": "Columns"
+    },
+    {
+      "cc": 33,
+      "id": "Fader(7)",
+      "kind": "Fader",
+      "label": "FADER 8",
+      "light": null,
+      "note": null,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Pad(0)",
+      "kind": "Pad",
+      "label": "PAD 1",
+      "light": 20,
+      "note": 58,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Pad(1)",
+      "kind": "Pad",
+      "label": "PAD 2",
+      "light": 21,
+      "note": 59,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Pad(2)",
+      "kind": "Pad",
+      "label": "PAD 3",
+      "light": 22,
+      "note": 60,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Pad(3)",
+      "kind": "Pad",
+      "label": "PAD 4",
+      "light": 23,
+      "note": 61,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Pad(4)",
+      "kind": "Pad",
+      "label": "PAD 5",
+      "light": 24,
+      "note": 62,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Pad(5)",
+      "kind": "Pad",
+      "label": "PAD 6",
+      "light": 25,
+      "note": 63,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Pad(6)",
+      "kind": "Pad",
+      "label": "PAD 7",
+      "light": 26,
+      "note": 64,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Pad(7)",
+      "kind": "Pad",
+      "label": "PAD 8",
+      "light": 27,
+      "note": 65,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Pad(8)",
+      "kind": "Pad",
+      "label": "PAD 9",
+      "light": 28,
+      "note": 66,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Pad(9)",
+      "kind": "Pad",
+      "label": "PAD 10",
+      "light": 29,
+      "note": 67,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Pad(10)",
+      "kind": "Pad",
+      "label": "PAD 11",
+      "light": 30,
+      "note": 68,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Pad(11)",
+      "kind": "Pad",
+      "label": "PAD 12",
+      "light": 31,
+      "note": 69,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Pad(12)",
+      "kind": "Pad",
+      "label": "PAD 13",
+      "light": 32,
+      "note": 70,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Pad(13)",
+      "kind": "Pad",
+      "label": "PAD 14",
+      "light": 33,
+      "note": 71,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Pad(14)",
+      "kind": "Pad",
+      "label": "PAD 15",
+      "light": 34,
+      "note": 72,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "Pad(15)",
+      "kind": "Pad",
+      "label": "PAD 16",
+      "light": 35,
+      "note": 73,
+      "zone": "Columns"
+    },
+    {
+      "cc": null,
+      "id": "PagePrev",
+      "kind": "Button",
+      "label": "◀ PG",
+      "light": null,
+      "note": 74,
+      "zone": "Right"
+    },
+    {
+      "cc": null,
+      "id": "PageNext",
+      "kind": "Button",
+      "label": "PG ▶",
+      "light": null,
+      "note": 75,
+      "zone": "Right"
+    },
+    {
+      "cc": null,
+      "id": "MyPage",
+      "kind": "Button",
+      "label": "MY PAGE",
+      "light": null,
+      "note": 76,
+      "zone": "Right"
+    },
+    {
+      "cc": null,
+      "id": "ModeSelect",
+      "kind": "Button",
+      "label": "SELECT",
+      "light": 36,
+      "note": 77,
+      "zone": "Right"
+    },
+    {
+      "cc": null,
+      "id": "ModeMute",
+      "kind": "Button",
+      "label": "MUTE",
+      "light": 37,
+      "note": 78,
+      "zone": "Right"
+    },
+    {
+      "cc": null,
+      "id": "ModeSolo",
+      "kind": "Button",
+      "label": "SOLO",
+      "light": 38,
+      "note": 79,
+      "zone": "Right"
+    },
+    {
+      "cc": null,
+      "id": "ModeArm",
+      "kind": "Button",
+      "label": "ARM",
+      "light": 39,
+      "note": 80,
+      "zone": "Right"
+    },
+    {
+      "cc": null,
+      "id": "TrackBankPrev",
+      "kind": "Button",
+      "label": "◀ TRK",
+      "light": null,
+      "note": 81,
+      "zone": "Right"
+    },
+    {
+      "cc": null,
+      "id": "TrackBankNext",
+      "kind": "Button",
+      "label": "TRK ▶",
+      "light": null,
+      "note": 82,
+      "zone": "Right"
+    },
+    {
+      "cc": null,
+      "id": "PadsUp",
+      "kind": "Button",
+      "label": "PADS ▲",
+      "light": null,
+      "note": 83,
+      "zone": "Right"
+    },
+    {
+      "cc": null,
+      "id": "PadsDown",
+      "kind": "Button",
+      "label": "PADS ▼",
+      "light": null,
+      "note": 84,
+      "zone": "Right"
+    },
+    {
+      "cc": null,
+      "id": "StepsLow",
+      "kind": "Button",
+      "label": "1-16",
+      "light": 40,
+      "note": 85,
+      "zone": "Right"
+    },
+    {
+      "cc": null,
+      "id": "StepsHigh",
+      "kind": "Button",
+      "label": "17-32",
+      "light": 41,
+      "note": 86,
+      "zone": "Right"
+    }
+  ]
+}

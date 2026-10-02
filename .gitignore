@@ -7,3 +7,4 @@ phosphor_debug.log
 workflow.md
 sessions/*.phos
 sessions/*.phos.tmp
+/firmware/target

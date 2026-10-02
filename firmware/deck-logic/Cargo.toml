@@ -1,0 +1,10 @@
+[package]
+name = "deck-logic"
+version = "0.1.0"
+description = "What the Phosphor Deck's controls mean, without the hardware"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[build-dependencies]
+serde_json = "1"

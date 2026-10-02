@@ -1,0 +1,8 @@
+# Building from this folder builds for the Pico 2's processor. `cargo run`
+# loads the firmware onto a Pico 2 held in BOOTSEL mode, through picotool.
+[build]
+target = "thumbv8m.main-none-eabihf"
+
+[target.thumbv8m.main-none-eabihf]
+runner = "picotool load -u -v -x -t elf"
+rustflags = ["-C", "link-arg=--nmagic", "-C", "link-arg=-Tlink.x"]

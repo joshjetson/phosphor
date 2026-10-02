@@ -1,0 +1,20 @@
+# The Phosphor Deck's firmware. Its own workspace: `deck-logic` is plain Rust
+# that tests on any computer, `deck-pico` is the Pico 2 program around it.
+#
+#   cargo test                      tests the logic here, on this computer
+#   cd deck-pico && cargo build --release   builds the firmware for the Pico 2
+[workspace]
+members = ["deck-logic", "deck-pico"]
+default-members = ["deck-logic"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+publish = false
+
+[profile.release]
+opt-level = "s"
+debug = 2
+lto = true
+codegen-units = 1

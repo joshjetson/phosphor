@@ -128,3 +128,36 @@ jobs:
       # the count reaches zero the flag goes on and this becomes a gate.
       - name: Clippy
         run: cargo clippy --workspace --all-targets
+
+  # The Phosphor Deck's firmware: its logic tested here, and the Pico 2
+  # program built for the chip, so a change to the deck's control table that
+  # the firmware cannot follow fails before anyone flashes a board.
+  firmware:
+    name: firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust with the Pico 2 target
+        run: |
+          rustup toolchain install stable --profile minimal --target thumbv8m.main-none-eabihf
+          rustup default stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            firmware/target
+          key: firmware-${{ hashFiles('firmware/Cargo.lock') }}
+          restore-keys: firmware-
+
+      - name: Test the logic
+        working-directory: firmware
+        run: cargo test
+
+      - name: Build for the Pico 2
+        working-directory: firmware/deck-pico
+        run: cargo build --release

@@ -152,6 +152,8 @@ pub struct Control {
     pub note: Option<u8>,
     /// The controller an encoder turn or a fader sends.
     pub cc: Option<u8>,
+    /// Its place on the deck's LED chain, for the controls that light.
+    pub light: Option<u8>,
 }
 
 impl Control {
@@ -230,10 +232,16 @@ struct Table {
 fn table() -> &'static Table {
     static TABLE: OnceLock<Table> = OnceLock::new();
     TABLE.get_or_init(|| {
-        let (mut note, mut cc) = (0u8, FIRST_CC);
+        let (mut note, mut cc, mut light) = (0u8, FIRST_CC, 0u8);
         let mut controls = Vec::new();
         for (id, kind, zone) in self::controls() {
-            let mut control = Control { id, kind, zone, note: None, cc: None };
+            let mut control = Control { id, kind, zone, note: None, cc: None, light: None };
+            // The chain runs in panel order, so the board can be laid out
+            // with one data line snaking through the lit controls.
+            if lights(id) {
+                control.light = Some(light);
+                light += 1;
+            }
             // An encoder has both: its turn is a controller, its push a note.
             if matches!(kind, Kind::Button | Kind::Pad | Kind::Encoder) {
                 control.note = Some(note);
@@ -250,6 +258,19 @@ fn table() -> &'static Table {
         let by_id = controls.iter().enumerate().map(|(i, c)| (c.id, i)).collect();
         Table { controls, by_note, by_cc, by_id }
     })
+}
+
+/// Whether a control has a light under it: the toggles, the choices that
+/// stay chosen, and the pads.
+fn lights(id: ControlId) -> bool {
+    use ControlId::*;
+    matches!(
+        id,
+        Play | Rec | Overdub | Loop | Click | CountIn
+            | FnTempo | FnSwing | FnGrid | FnMaster | FnLoop | FnLast
+            | TrackButton(_) | Pad(_)
+            | ModeSelect | ModeMute | ModeSolo | ModeArm | StepsLow | StepsHigh
+    )
 }
 
 /// Every control on the deck, in panel order.
@@ -340,6 +361,7 @@ pub fn layout_json() -> String {
                 "zone": format!("{:?}", c.zone),
                 "note": c.note,
                 "cc": c.cc,
+                "light": c.light,
             })
         })
         .collect();
@@ -354,6 +376,26 @@ mod tests {
 
     fn parse(bytes: [u8; 3]) -> MidiMessageType {
         phosphor_midi::MidiMessage::from_bytes(&bytes).unwrap().message_type
+    }
+
+    /// The firmware builds its table from a copy of this one kept beside it.
+    /// Inside the repository the copy must match, or the deck would send
+    /// numbers the app reads as other controls.
+    #[test]
+    fn the_firmwares_copy_of_the_layout_is_current() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../firmware/deck-layout.json");
+        let Ok(copy) = std::fs::read_to_string(&path) else { return };
+        assert_eq!(
+            copy.trim_end(),
+            layout_json(),
+            "firmware/deck-layout.json is stale: run `phosphor --deck-layout > firmware/deck-layout.json`"
+        );
+    }
+
+    #[test]
+    fn the_light_chain_is_numbered_in_panel_order_without_gaps() {
+        let lights: Vec<u8> = deck().iter().filter_map(|c| c.light).collect();
+        assert_eq!(lights, (0..42).collect::<Vec<u8>>());
     }
 
     #[test]
