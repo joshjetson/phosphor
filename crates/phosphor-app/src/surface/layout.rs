@@ -385,6 +385,8 @@ mod tests {
     fn the_firmwares_copy_of_the_layout_is_current() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../firmware/deck-layout.json");
         let Ok(copy) = std::fs::read_to_string(&path) else { return };
+        // A Windows checkout turns the file's line endings into CRLF.
+        let copy = copy.replace("\r\n", "\n");
         assert_eq!(
             copy.trim_end(),
             layout_json(),
