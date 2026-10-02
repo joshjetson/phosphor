@@ -585,15 +585,7 @@ impl App {
                             "take mode: overdub · passes layer up"
                         });
                     }
-                    TransportElement::CountIn => {
-                        let bars = self.engine.transport.cycle_count_in();
-                        dbg::system(&format!("count-in bars={bars}"));
-                        self.flash(match bars {
-                            0 => "count-in: off".to_string(),
-                            1 => "count-in: 1 bar before recording".to_string(),
-                            n => format!("count-in: {n} bars before recording"),
-                        });
-                    }
+                    TransportElement::CountIn => self.cycle_count_in(),
                 }
             }
             KeyCode::Char('q') => { self.running = false; }

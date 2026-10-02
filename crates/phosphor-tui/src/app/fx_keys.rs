@@ -461,7 +461,7 @@ impl App {
     }
 
     /// The slot's parameters, if a panel is open on one.
-    fn fx_params(&self) -> Option<&[f32]> {
+    pub(crate) fn fx_params(&self) -> Option<&[f32]> {
         let slot = self.nav.clip_view.fx.slot?;
         let track = self.nav.current_track()?;
         Some(track.fx_chain.get(slot)?.params.as_slice())
@@ -505,7 +505,7 @@ impl App {
     /// walk the ISO sixth-octave centres so the readout is always a number an
     /// EQ says out loud, gains move in half a decibel, and the two counted
     /// controls step through their own lists.
-    fn adjust_fx_control(&mut self, delta: i32, coarse: bool) {
+    pub(crate) fn adjust_fx_control(&mut self, delta: i32, coarse: bool) {
         if !self.fx_control_is_live() {
             return;
         }
@@ -636,16 +636,20 @@ impl App {
         }
     }
 
-    /// The MIDI-effect panel: a knob list, the reverb panel's manners.
-    fn handle_midi_fx_panel_keys(&mut self, key: crossterm::event::KeyEvent) {
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        let count = self
-            .nav
+    /// How many knobs the open MIDI effect's panel has; zero with none open.
+    pub(crate) fn midi_fx_param_count(&self) -> usize {
+        self.nav
             .clip_view
             .fx
             .midi_slot
             .and_then(|slot| self.nav.current_track()?.midi_fx.get(slot).map(|i| i.fx_type))
-            .map_or(0, |t| t.params().len());
+            .map_or(0, |t| t.params().len())
+    }
+
+    /// The MIDI-effect panel: a knob list, the reverb panel's manners.
+    fn handle_midi_fx_panel_keys(&mut self, key: crossterm::event::KeyEvent) {
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let count = self.midi_fx_param_count();
         match key.code {
             KeyCode::Char('H') => self.adjust_midi_fx_control(-1, true),
             KeyCode::Char('L') => self.adjust_midi_fx_control(1, true),

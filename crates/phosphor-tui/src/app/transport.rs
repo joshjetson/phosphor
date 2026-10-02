@@ -121,6 +121,18 @@ impl App {
             .count()
     }
 
+    /// Count-in: off, one bar, two bars, round again — the transport row's
+    /// CountIn element and the deck's COUNT IN button, in the same words.
+    pub(crate) fn cycle_count_in(&mut self) {
+        let bars = self.engine.transport.cycle_count_in();
+        crate::debug_log::system(&format!("count-in bars={bars}"));
+        self.flash(match bars {
+            0 => "count-in: off".to_string(),
+            1 => "count-in: 1 bar before recording".to_string(),
+            n => format!("count-in: {n} bars before recording"),
+        });
+    }
+
     /// Move the tempo by whole BPM — the one door every tempo key goes
     /// through, so the change lands on the undo stack (one step per ride)
     /// and the [`NavState::tempo_bpm`] mirror moves in the same breath,

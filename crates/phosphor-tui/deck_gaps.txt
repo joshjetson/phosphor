@@ -3,184 +3,69 @@
 
 dispatch_event	Backspace	typing: needs the on-screen keyboard
 dispatch_event	Char('G')	scroll shortcut: the arrows reach the same place
-dispatch_event	Char('N')	confirm no: NEW sends n, which answers no; ENTER/BACK for yes/no would be clearer
-dispatch_event	Char('g')	scroll shortcut: the arrows reach the same place
+dispatch_event	Char('N')	alias of n: a question's NO action button sends n
 dispatch_event	Char('q')	alias of Esc: BACK does the same
-dispatch_event	Char('x')	loop section cut alias: DEL sends d, which does the same
 dispatch_event	Ctrl+Char('c')	quit: deliberately not on the deck
 dispatch_event	Delete	typing: needs the on-screen keyboard
 dispatch_event	End	scroll shortcut: the arrows reach the same place
 dispatch_event	Home	scroll shortcut: the arrows reach the same place
 dispatch_event	PageDown	scroll shortcut: the arrows reach the same place
 dispatch_event	PageUp	scroll shortcut: the arrows reach the same place
-handle_chop_keys	Char('a')	verb: no deck control sends this key here
-handle_chop_keys	Char('c')	verb: no deck control sends this key here
 handle_chop_keys	Char('q')	alias of Esc: BACK does the same
 handle_clip_view_keys	Char('0')	jump shortcut: the arrows reach the same place
-handle_clip_view_keys	Char('1')	jump shortcut: the arrows reach the same place
-handle_clip_view_keys	Char('2')	jump shortcut: the arrows reach the same place
-handle_clip_view_keys	Char('3')	jump shortcut: the arrows reach the same place
-handle_clip_view_keys	Char('4')	jump shortcut: the arrows reach the same place
 handle_clip_view_keys	Char('5')	jump shortcut: the arrows reach the same place
 handle_clip_view_keys	Char('6')	jump shortcut: the arrows reach the same place
 handle_clip_view_keys	Char('7')	jump shortcut: the arrows reach the same place
 handle_clip_view_keys	Char('8')	jump shortcut: the arrows reach the same place
 handle_clip_view_keys	Char('9')	jump shortcut: the arrows reach the same place
-handle_clip_view_keys	Char('A')	verb: no deck control sends this key here
-handle_clip_view_keys	Char('X')	verb: no deck control sends this key here
-handle_clip_view_keys	Char('[')	verb: no deck control sends this key here
-handle_clip_view_keys	Char(']')	verb: no deck control sends this key here
-handle_clip_view_keys	Char('a')	verb: no deck control sends this key here
-handle_clip_view_keys	Char('g')	verb: no deck control sends this key here
 handle_clip_view_keys	Char('q')	alias of Esc: BACK does the same
-handle_clip_view_keys	Char('r')	verb: no deck control sends this key here
-handle_clip_view_keys	Char('{')	verb: no deck control sends this key here
-handle_clip_view_keys	Char('}')	verb: no deck control sends this key here
-handle_comp_panel_keys	Char('b')	verb: no deck control sends this key here
-handle_comp_panel_keys	Char('m')	verb: no deck control sends this key here
 handle_comp_panel_keys	Char('q')	alias of Esc: BACK does the same
-handle_delay_panel_keys	Char('b')	verb: no deck control sends this key here
-handle_delay_panel_keys	Char('m')	verb: no deck control sends this key here
 handle_delay_panel_keys	Char('q')	alias of Esc: BACK does the same
-handle_edit_mode_keys	Char(',')	verb: no deck control sends this key here
-handle_edit_mode_keys	Char('.')	verb: no deck control sends this key here
-handle_edit_mode_keys	Char('<')	verb: no deck control sends this key here
-handle_edit_mode_keys	Char('>')	verb: no deck control sends this key here
-handle_edit_mode_keys	Char('e')	verb: no deck control sends this key here
-handle_edit_mode_keys	Char('m')	verb: no deck control sends this key here
 handle_file_picker_keys	Backspace	typing: needs the on-screen keyboard
-handle_file_picker_keys	Char('/')	typing: needs the on-screen keyboard
 handle_file_picker_keys	Ctrl+Char('n')	typing: needs the on-screen keyboard
 handle_file_picker_keys	Ctrl+Char('p')	typing: needs the on-screen keyboard
 handle_file_picker_keys	PageDown	scroll shortcut: the arrows reach the same place
 handle_file_picker_keys	PageUp	scroll shortcut: the arrows reach the same place
-handle_fx_chain_keys	Char('[')	verb: no deck control sends this key here
-handle_fx_chain_keys	Char(']')	verb: no deck control sends this key here
-handle_fx_chain_keys	Char('a')	verb: no deck control sends this key here
-handle_fx_chain_keys	Char('b')	verb: no deck control sends this key here
-handle_fx_chain_keys	Char('c')	verb: no deck control sends this key here
-handle_fx_chain_keys	Char('m')	verb: no deck control sends this key here
 handle_fx_chain_keys	Char('q')	alias of Esc: BACK does the same
-handle_fx_panel_keys	Char('1')	jump shortcut: the arrows reach the same place
-handle_fx_panel_keys	Char('2')	jump shortcut: the arrows reach the same place
-handle_fx_panel_keys	Char('3')	jump shortcut: the arrows reach the same place
-handle_fx_panel_keys	Char('4')	jump shortcut: the arrows reach the same place
 handle_fx_panel_keys	Char('5')	jump shortcut: the arrows reach the same place
 handle_fx_panel_keys	Char('6')	jump shortcut: the arrows reach the same place
 handle_fx_panel_keys	Char('7')	jump shortcut: the arrows reach the same place
 handle_fx_panel_keys	Char('8')	jump shortcut: the arrows reach the same place
-handle_fx_panel_keys	Char('b')	verb: no deck control sends this key here
-handle_fx_panel_keys	Char('m')	verb: no deck control sends this key here
 handle_fx_panel_keys	Char('q')	alias of Esc: BACK does the same
 handle_held_cut_keys	Char('q')	alias of Esc: BACK does the same
-handle_midi_fx_panel_keys	Char('1')	verb: arp feel presets 1-4 have no deck control
-handle_midi_fx_panel_keys	Char('2')	verb: arp feel presets 1-4 have no deck control
-handle_midi_fx_panel_keys	Char('3')	verb: arp feel presets 1-4 have no deck control
-handle_midi_fx_panel_keys	Char('4')	verb: arp feel presets 1-4 have no deck control
-handle_midi_fx_panel_keys	Char('b')	verb: no deck control sends this key here
-handle_midi_fx_panel_keys	Char('e')	verb: no deck control sends this key here
-handle_midi_fx_panel_keys	Char('m')	verb: no deck control sends this key here
 handle_midi_fx_panel_keys	Char('q')	alias of Esc: BACK does the same
-handle_practice_keys	Char(',')	verb: no deck control sends this key here
-handle_practice_keys	Char('.')	verb: no deck control sends this key here
-handle_practice_keys	Char('<')	verb: no deck control sends this key here
-handle_practice_keys	Char('>')	verb: no deck control sends this key here
-handle_practice_keys	Char('[')	verb: no deck control sends this key here
-handle_practice_keys	Char(']')	verb: no deck control sends this key here
-handle_practice_keys	Char('c')	verb: no deck control sends this key here
 handle_practice_keys	Char('q')	alias of Esc: BACK does the same
-handle_practice_keys	Char('w')	verb: no deck control sends this key here
-handle_prog_editor_keys	Char('[')	verb: no deck control sends this key here
-handle_prog_editor_keys	Char(']')	verb: no deck control sends this key here
-handle_prog_editor_keys	Char('a')	verb: no deck control sends this key here
 handle_prog_editor_keys	Char('q')	alias of Esc: BACK does the same
-handle_prog_editor_keys	Char('r')	verb: no deck control sends this key here
-handle_prog_editor_keys	Char('s')	verb: no deck control sends this key here
-handle_reverb_panel_keys	Char('b')	verb: no deck control sends this key here
-handle_reverb_panel_keys	Char('m')	verb: no deck control sends this key here
 handle_reverb_panel_keys	Char('q')	alias of Esc: BACK does the same
-handle_sampler_keys	Char('1')	jump shortcut: the arrows reach the same place
-handle_sampler_keys	Char('2')	jump shortcut: the arrows reach the same place
-handle_sampler_keys	Char('3')	jump shortcut: the arrows reach the same place
-handle_sampler_keys	Char('4')	jump shortcut: the arrows reach the same place
 handle_sampler_keys	Char('5')	jump shortcut: the arrows reach the same place
 handle_sampler_keys	Char('6')	jump shortcut: the arrows reach the same place
 handle_sampler_keys	Char('7')	jump shortcut: the arrows reach the same place
 handle_sampler_keys	Char('8')	jump shortcut: the arrows reach the same place
-handle_sampler_keys	Char('C')	verb: no deck control sends this key here
-handle_sampler_keys	Char('R')	verb: no deck control sends this key here
-handle_sampler_keys	Char('[')	verb: no deck control sends this key here
-handle_sampler_keys	Char(']')	verb: no deck control sends this key here
-handle_sampler_keys	Char('a')	verb: no deck control sends this key here
-handle_sampler_keys	Char('c')	verb: no deck control sends this key here
-handle_sampler_keys	Char('i')	verb: no deck control sends this key here
-handle_sampler_keys	Char('m')	verb: no deck control sends this key here
-handle_sampler_keys	Char('o')	verb: no deck control sends this key here
 handle_sampler_keys	Char('q')	alias of Esc: BACK does the same
-handle_sampler_keys	Char('r')	verb: no deck control sends this key here
-handle_sampler_keys	Char('s')	verb: no deck control sends this key here
-handle_sampler_keys	Char('t')	verb: no deck control sends this key here
-handle_sampler_keys	Char('w')	verb: no deck control sends this key here
 handle_sequencer_keys	Char('0')	jump shortcut: the arrows reach the same place
-handle_sequencer_keys	Char('1')	jump shortcut: the arrows reach the same place
-handle_sequencer_keys	Char('2')	jump shortcut: the arrows reach the same place
-handle_sequencer_keys	Char('3')	jump shortcut: the arrows reach the same place
-handle_sequencer_keys	Char('4')	jump shortcut: the arrows reach the same place
 handle_sequencer_keys	Char('5')	jump shortcut: the arrows reach the same place
 handle_sequencer_keys	Char('6')	jump shortcut: the arrows reach the same place
 handle_sequencer_keys	Char('7')	jump shortcut: the arrows reach the same place
 handle_sequencer_keys	Char('8')	jump shortcut: the arrows reach the same place
 handle_sequencer_keys	Char('9')	jump shortcut: the arrows reach the same place
 handle_sequencer_keys	Char('q')	alias of Esc: BACK does the same
-handle_source_keys	Char('i')	verb: no deck control sends this key here
 handle_source_keys	Char('q')	alias of Esc: BACK does the same
-handle_source_keys	Char('r')	verb: no deck control sends this key here
-handle_tape_panel_keys	Char('b')	verb: no deck control sends this key here
-handle_tape_panel_keys	Char('m')	verb: no deck control sends this key here
 handle_tape_panel_keys	Char('q')	alias of Esc: BACK does the same
 handle_tracks_keys	Char('0')	jump shortcut: the arrows reach the same place
-handle_tracks_keys	Char('1')	jump shortcut: the arrows reach the same place
-handle_tracks_keys	Char('2')	jump shortcut: the arrows reach the same place
-handle_tracks_keys	Char('3')	jump shortcut: the arrows reach the same place
-handle_tracks_keys	Char('4')	jump shortcut: the arrows reach the same place
 handle_tracks_keys	Char('5')	jump shortcut: the arrows reach the same place
 handle_tracks_keys	Char('6')	jump shortcut: the arrows reach the same place
 handle_tracks_keys	Char('7')	jump shortcut: the arrows reach the same place
 handle_tracks_keys	Char('8')	jump shortcut: the arrows reach the same place
 handle_tracks_keys	Char('9')	jump shortcut: the arrows reach the same place
 handle_tracks_keys	Char('q')	quit: deliberately not on the deck
-handle_tracks_keys	Ctrl+Char('h')	verb: clip left-edge trim needs a second modifier
-handle_tracks_keys	Ctrl+Char('l')	verb: clip left-edge trim needs a second modifier
-handle_tracks_keys	Ctrl+Left	verb: clip left-edge trim needs a second modifier
-handle_tracks_keys	Ctrl+Right	verb: clip left-edge trim needs a second modifier
+handle_tracks_keys	Ctrl+Left	alias of Ctrl+h: a held clip's TRIM ◀ action sends that
+handle_tracks_keys	Ctrl+Right	alias of Ctrl+l: a held clip's TRIM ▶ action sends that
 handle_transport_keys	Char('q')	alias of Esc: BACK does the same
 handle_trim_keys	Char('q')	alias of Esc: BACK does the same
-handle_trim_keys	Char('r')	verb: no deck control sends this key here
-handle_trim_keys	Char('t')	verb: no deck control sends this key here
-handle_trim_keys	Char('w')	verb: no deck control sends this key here
-handle_trim_keys	Char('z')	verb: no deck control sends this key here
 sequencer_enter_key	Char('0')	jump shortcut: the arrows reach the same place
-sequencer_enter_key	Char('1')	jump shortcut: the arrows reach the same place
-sequencer_enter_key	Char('2')	jump shortcut: the arrows reach the same place
-sequencer_enter_key	Char('3')	jump shortcut: the arrows reach the same place
-sequencer_enter_key	Char('4')	jump shortcut: the arrows reach the same place
 sequencer_enter_key	Char('5')	jump shortcut: the arrows reach the same place
 sequencer_enter_key	Char('6')	jump shortcut: the arrows reach the same place
 sequencer_enter_key	Char('7')	jump shortcut: the arrows reach the same place
 sequencer_enter_key	Char('8')	jump shortcut: the arrows reach the same place
 sequencer_enter_key	Char('9')	jump shortcut: the arrows reach the same place
 sequencer_enter_key	Char('q')	alias of Esc: BACK does the same
-sequencer_view_key	Char('.')	verb: no deck control sends this key here
-sequencer_view_key	Char('C')	verb: no deck control sends this key here
-sequencer_view_key	Char('X')	verb: no deck control sends this key here
-sequencer_view_key	Char('[')	verb: no deck control sends this key here
-sequencer_view_key	Char(']')	verb: no deck control sends this key here
-sequencer_view_key	Char('_')	verb: no deck control sends this key here
-sequencer_view_key	Char('a')	verb: no deck control sends this key here
-sequencer_view_key	Char('b')	verb: no deck control sends this key here
-sequencer_view_key	Char('c')	verb: no deck control sends this key here
-sequencer_view_key	Char('m')	verb: no deck control sends this key here
-sequencer_view_key	Char('r')	verb: no deck control sends this key here
-sequencer_view_key	Char('s')	verb: no deck control sends this key here
-sequencer_view_key	Char('t')	verb: no deck control sends this key here
-sequencer_view_key	Char('x')	verb: no deck control sends this key here

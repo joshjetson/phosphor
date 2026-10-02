@@ -3,35 +3,53 @@
 //! One message off the wire, decoded through the panel's own table
 //! ([`phosphor_app::surface::layout`]), bound to what it means
 //! ([`phosphor_app::surface::binding`]), and acted on here. The real deck and
-//! the simulator the tests drive both arrive at [`App::handle_deck_input`];
-//! nothing about the deck is decided anywhere else.
+//! the simulator the tests drive both arrive at [`App::handle_deck_input`].
 //!
-//! Keys go through [`App::handle_event`] — the deck's ENTER is the keyboard's
-//! Enter, through the same door, guarded by the same rules. The handful of
-//! controls that are not a key (a strip button, a fader, a step pad) call the
-//! same functions those keys call, and then the same after-input checks.
+//! The fixed controls are keys, through [`App::handle_event`] — the deck's
+//! LOCK is the keyboard's Enter, guarded by the same rules. The controls that
+//! follow the screen read it ([`phosphor_app::surface::screen`]) and act
+//! through the functions the keys reach: the column knobs in `deck_bank`, the
+//! track buttons and faders in `deck_tracks`, the function knob and its
+//! neighbours in `deck_function`. Nothing here changes what a key does, so
+//! Phosphor without a deck is exactly the Phosphor it was.
 
 use super::*;
 
 use phosphor_app::sequencer::ops::SeqOp;
-use phosphor_core::project::TrackKind;
-use phosphor_app::surface::binding::{bind, nav_letter, Chord, Intent, Key, Nav, PadMode, StripVerb};
-use phosphor_app::surface::fader::{steps_between, Pickup};
-use phosphor_app::surface::layout::{self, control, ControlId, DeckInput, MASTER_FADER, STRIPS};
+use phosphor_app::surface::actions::{actions, Act};
+use phosphor_app::surface::binding::{bind, nav_letter, Chord, FnTarget, Intent, Key, Nav, TrackMode};
+use phosphor_app::surface::fader::Pickup;
+use phosphor_app::surface::layout::{self, control, ControlId, DeckInput, COLUMNS};
+use phosphor_app::surface::screen::{screen, Axis, Screen};
 
-/// What the deck itself is holding: the modifier, the pad mode, and each
-/// fader's grip on its track.
-#[derive(Debug, Clone, Default)]
+/// What the deck is holding: the modifier, the knob page, the function
+/// knob's target, the track buttons' mode and bank, the pads' octave, and
+/// each fader's grip on its track.
+#[derive(Debug, Default)]
 pub(crate) struct DeckState {
     pub(crate) shift: bool,
-    pub(crate) pad_mode: PadMode,
+    /// The column knobs' page, on `page_screen`. A new screen starts at
+    /// page one.
+    pub(crate) page: usize,
+    pub(crate) page_screen: Option<Screen>,
+    pub(crate) function: FnTarget,
+    /// The last column knob turned, for LAST: the screen it was on and the
+    /// control it turned.
+    pub(crate) last_knob: Option<(Screen, super::deck_bank::Ctl)>,
+    pub(crate) track_mode: TrackMode,
+    /// Which eight tracks the faders and track buttons hold.
+    pub(crate) track_bank: usize,
+    /// Octaves the pads are moved from their home.
+    pub(crate) pad_octave: i8,
     /// Steps 1-16 (`0`) or 17-32 (`1`).
-    pub(crate) step_page: u8,
-    pickups: [Pickup; MASTER_FADER as usize + 1],
-    /// Which track each fader last held, and the level it left it at. A
-    /// fader whose track has changed, or whose level was set by something
-    /// else, has to catch it again.
-    held: [Option<(usize, Option<i32>)>; MASTER_FADER as usize + 1],
+    pub(crate) step_half: u8,
+    pub(crate) pickups: [Pickup; COLUMNS as usize],
+    /// Which track each fader last held and the level it left it at.
+    pub(crate) held: [Option<(usize, Option<i32>)>; COLUMNS as usize],
+    /// Recent TAP presses.
+    pub(crate) taps: Vec<std::time::Instant>,
+    /// A deck has spoken: from now on its line is drawn.
+    pub(crate) seen: bool,
 }
 
 impl App {
@@ -49,75 +67,70 @@ impl App {
 
     /// One gesture on the deck.
     pub(crate) fn handle_deck_input(&mut self, input: DeckInput) {
-        let (id, press) = match input {
-            DeckInput::Press(id) | DeckInput::Hit(id, _) => (id, true),
-            DeckInput::Release(id) => (id, false),
-            DeckInput::Turn(id, detents) => return self.turn_deck(id, detents),
-            DeckInput::Move(id, position) => return self.move_deck_fader(id, position),
-        };
-        let intent = bind(id, self.deck.shift);
-        if intent == Intent::Shift {
-            self.deck.shift = press;
-            return;
+        self.deck.seen = true;
+        match input {
+            DeckInput::Turn(id, detents) => self.turn_deck(id, detents),
+            DeckInput::Move(ControlId::Fader(n), position) => self.move_deck_fader(n, position),
+            DeckInput::Move(..) => {}
+            DeckInput::Press(id) | DeckInput::Hit(id, _) => {
+                let intent = bind(id, self.deck.shift);
+                if intent == Intent::Shift {
+                    self.deck.shift = true;
+                } else {
+                    self.run_intent(id, intent);
+                }
+            }
+            DeckInput::Release(id) => {
+                if bind(id, false) == Intent::Shift {
+                    self.deck.shift = false;
+                }
+            }
         }
-        // Everything else acts on the way down; the way up is a key let go,
-        // which no handler listens for.
-        if press {
-            self.run_intent(id, intent);
-        }
+        self.after_input();
     }
 
     fn turn_deck(&mut self, id: ControlId, detents: i8) {
-        match bind(id, self.deck.shift) {
-            Intent::Turn { up, down } => {
-                let chord = if detents >= 0 { up } else { down };
-                for _ in 0..detents.unsigned_abs() {
-                    self.press_chord(chord);
-                }
-            }
-            intent => self.run_intent(id, intent),
+        match id {
+            ControlId::Navigate => self.navigate(detents),
+            ControlId::Function => self.turn_function(detents),
+            ControlId::Knob(n) => self.turn_knob(n, detents),
+            _ => {}
         }
     }
 
     fn run_intent(&mut self, id: ControlId, intent: Intent) {
         match intent {
             Intent::Key(chord) => self.press_chord(chord),
-            Intent::Nav { dir, stride } => self.press_nav(dir, stride),
             Intent::Menu(letter) => self.press_menu(letter),
-            Intent::Turn { .. } => {
-                // An encoder's push. VALUE's push is ENTER, the rest are
-                // waiting on the label strip.
-                if id == ControlId::Value {
-                    self.press_chord(Chord::key(Key::Enter));
-                } else {
-                    self.flash(format!("{}: push does nothing yet", control(id).label()));
-                }
+            Intent::Nav { dir, stride } => self.press_nav(dir, stride),
+            Intent::Shift | Intent::Navigate | Intent::Function | Intent::Volume(_) => {}
+            Intent::FunctionTarget(target) => self.point_function(target),
+            Intent::LoopRecord => self.toggle_loop_record(),
+            Intent::CountIn => self.cycle_count_in(),
+            Intent::Tap => self.tap_tempo(std::time::Instant::now()),
+            Intent::Browse => self.deck_browse(),
+            Intent::NextPart => self.next_part(),
+            Intent::Delete => self.deck_delete(),
+            Intent::Duplicate => self.deck_duplicate(),
+            Intent::Knob(n) => self.show_knob(n),
+            Intent::Action(n) => self.deck_action(n),
+            Intent::TrackButton(n) => self.track_button(n),
+            Intent::Pad(n) => self.deck_pad(n),
+            Intent::Page(delta) => self.deck_page(delta),
+            Intent::TrackMode(mode) => {
+                self.deck.track_mode = mode;
+                self.flash(format!("track buttons: {}", format!("{mode:?}").to_lowercase()));
             }
-            Intent::Strip(verb, n) => self.strip(verb, n),
-            Intent::LoopRecord => {
-                self.toggle_loop_record();
-                self.after_input();
+            Intent::TrackBank(delta) => self.deck_track_bank(delta),
+            Intent::PadOctave(delta) => {
+                self.deck.pad_octave = (self.deck.pad_octave + delta).clamp(-3, 4);
+                let base = self.pad_base();
+                self.flash(format!("pads from {}", phosphor_app::format::note_name(base)));
             }
-            Intent::Step(n) => self.deck_step(n),
-            Intent::Lane(n) => {
-                self.deck_seq(SeqOp::SelectLane(n), &format!("lane {}", n + 1));
+            Intent::StepHalf(half) => {
+                self.deck.step_half = half;
+                self.flash(if half == 0 { "pads: steps 1-16" } else { "pads: steps 17-32" });
             }
-            Intent::Slot(n) => {
-                let name = (b'A' + n) as char;
-                self.deck_seq(SeqOp::QueueSlot(n), &format!("pattern {name} queued"));
-            }
-            Intent::Accent => {
-                self.deck_seq(SeqOp::ToggleAccent, "accent");
-            }
-            Intent::PadMode(mode) => {
-                self.deck.pad_mode = mode;
-                self.flash(format!("pads: {}", format!("{mode:?}").to_lowercase()));
-            }
-            Intent::StepPage(page) => {
-                self.deck.step_page = page;
-                self.flash(if page == 0 { "pads: steps 1-16" } else { "pads: steps 17-32" });
-            }
-            Intent::Volume(_) | Intent::Shift => {}
             Intent::Unbuilt(words) => {
                 self.flash(format!("{}: not built yet \u{00b7} {words}", control(id).label()));
             }
@@ -130,10 +143,34 @@ impl App {
         self.reconcile_sampler_preview();
         self.reconcile_sampler_source();
         self.reconcile_sampler_learn();
+        self.refresh_deck();
+    }
+
+    /// Bring the deck's view of the screen up to date: the pads' road for
+    /// the callback, and — once a deck has spoken — its line on screen.
+    fn refresh_deck(&mut self) {
+        let now = screen(&self.nav);
+        if self.deck.page_screen != Some(now) {
+            self.deck.page_screen = Some(now);
+            self.deck.page = 0;
+        }
+        let plays_notes = now != Screen::Steps;
+        let base = self.pad_base();
+        self.deck_pads.set(plays_notes, base);
+        if self.deck.seen {
+            self.nav.deck_strip = Some(self.deck_line());
+        }
+    }
+
+    /// The note the bottom-left pad plays: C2 on a sampler, where a chop
+    /// starts, C3 elsewhere, moved by PADS ▲ ▼.
+    pub(crate) fn pad_base(&self) -> u8 {
+        let home: i32 = if self.nav.current_track().is_some_and(|t| t.sampler.is_some()) { 36 } else { 48 };
+        (home + 12 * i32::from(self.deck.pad_octave)).clamp(0, 112) as u8
     }
 
     /// A key, through the keyboard's own door.
-    fn press_chord(&mut self, chord: Chord) {
+    pub(crate) fn press_chord(&mut self, chord: Chord) {
         let (code, mut modifiers) = match chord.key {
             Key::Char(c) => (
                 KeyCode::Char(c),
@@ -147,6 +184,10 @@ impl App {
         if chord.ctrl {
             modifiers |= KeyModifiers::CONTROL;
         }
+        self.press_code(code, modifiers);
+    }
+
+    fn press_code(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         self.handle_event(crossterm::event::Event::Key(crossterm::event::KeyEvent {
             code,
             modifiers,
@@ -161,7 +202,7 @@ impl App {
         self.nav.input_modal.open || (self.nav.file_picker.open && !self.nav.file_picker.list_owns_letters())
     }
 
-    fn press_nav(&mut self, dir: Nav, stride: bool) {
+    pub(crate) fn press_nav(&mut self, dir: Nav, stride: bool) {
         if self.typing() {
             let code = match dir {
                 Nav::Up => KeyCode::Up,
@@ -169,13 +210,7 @@ impl App {
                 Nav::Left => KeyCode::Left,
                 Nav::Right => KeyCode::Right,
             };
-            let modifiers = if stride { KeyModifiers::SHIFT } else { KeyModifiers::NONE };
-            self.handle_event(crossterm::event::Event::Key(crossterm::event::KeyEvent {
-                code,
-                modifiers,
-                kind: crossterm::event::KeyEventKind::Press,
-                state: crossterm::event::KeyEventState::NONE,
-            }));
+            self.press_code(code, if stride { KeyModifiers::SHIFT } else { KeyModifiers::NONE });
         } else {
             self.press_chord(Chord::ch(nav_letter(dir, stride)));
         }
@@ -184,7 +219,7 @@ impl App {
     /// Space, then a letter: the menu's own road. When the menu will not
     /// open — source mode turns it away — the letter is not sent, because
     /// without the menu it would land on whatever is under it.
-    fn press_menu(&mut self, letter: char) {
+    pub(crate) fn press_menu(&mut self, letter: char) {
         self.nav.space_menu.open = false;
         self.press_chord(Chord::ch(' '));
         if self.nav.space_menu.open {
@@ -192,91 +227,40 @@ impl App {
         }
     }
 
-    /// The track strip `n` stands for: the `n`th row of the app's window, or
-    /// the master for `n == STRIPS`.
-    fn strip_track(&self, n: u8) -> Option<usize> {
-        if n >= STRIPS {
-            return self.nav.tracks.iter().position(|t| t.kind == TrackKind::Master);
-        }
-        let idx = self.nav.track_scroll + usize::from(n);
-        (idx < self.nav.tracks.len()).then_some(idx)
-    }
-
-    fn strip(&mut self, verb: StripVerb, n: u8) {
-        let Some(idx) = self.strip_track(n) else {
-            self.flash(format!("no track in row {}", n + 1));
-            return;
+    /// NAVIGATE: down the screen's list, or along its row. SHIFT strides.
+    fn navigate(&mut self, detents: i8) {
+        let axis = screen(&self.nav).axis();
+        let dir = match (axis, detents >= 0) {
+            (Axis::List, true) => Nav::Down,
+            (Axis::List, false) => Nav::Up,
+            (Axis::Row, true) => Nav::Right,
+            (Axis::Row, false) => Nav::Left,
         };
-        match verb {
-            StripVerb::Select => {
-                self.nav.focus_pane(Pane::Tracks);
-                self.nav.track_cursor = idx;
-                self.nav.track_selected = true;
-                self.nav.track_element = crate::state::TrackElement::Label;
-                self.nav.show_current_track_controls();
-            }
-            // The same toggles `m`, `s` and `r` make, on this strip's track
-            // rather than the cursor's — a strip button is a strip button.
-            other => {
-                let saved = self.nav.track_cursor;
-                self.nav.track_cursor = idx;
-                match other {
-                    StripVerb::Mute => self.nav.toggle_mute(),
-                    StripVerb::Solo => self.nav.toggle_solo(),
-                    _ => self.nav.toggle_arm(),
-                }
-                self.nav.track_cursor = saved;
-            }
+        for _ in 0..detents.unsigned_abs() {
+            self.press_nav(dir, self.deck.shift);
         }
-        self.after_input();
     }
 
-    fn move_deck_fader(&mut self, id: ControlId, position: u8) {
-        let ControlId::Fader(n) = id else { return };
-        let Some(idx) = self.strip_track(n) else { return };
-        let slot = usize::from(n);
-        let current = self.nav.tracks[idx].volume_db().map(|db| db.round() as i32);
-        // Someone else moved the level, or the row now holds another track:
-        // the fader has to catch it again.
-        if self.deck.held[slot].is_some_and(|(track, level)| track != idx || level != current) {
-            self.deck.pickups[slot].release();
+    /// The action button under column `n`.
+    fn deck_action(&mut self, n: u8) {
+        let now = screen(&self.nav);
+        match actions(now, self.deck.shift).get(usize::from(n)) {
+            Some((_, Act::Key(chord))) => self.press_chord(*chord),
+            Some((_, Act::Menu(letter))) => self.press_menu(*letter),
+            None => self.flash(format!("{}: no action here", now.label())),
         }
-        let Some(target) = self.deck.pickups[slot].moved(position, current) else {
-            self.deck.held[slot] = Some((idx, current));
+    }
+
+    /// A pad that reached the app as itself: a step, on a step grid. In every
+    /// other place the pads are notes, and the callback has already turned
+    /// them into one before they got here.
+    fn deck_pad(&mut self, n: u8) {
+        if screen(&self.nav) != Screen::Steps {
             return;
-        };
-        let steps = steps_between(current, target);
-        if steps != 0 {
-            let saved = self.nav.track_cursor;
-            self.nav.track_cursor = idx;
-            self.nav.adjust_volume(steps);
-            self.nav.track_cursor = saved;
         }
-        let now = self.nav.tracks[idx].volume_db().map(|db| db.round() as i32);
-        self.deck.held[slot] = Some((idx, now));
-        self.after_input();
-    }
-
-    /// A pad in STEP mode: that step of the selected lane, on the selected
-    /// track's sequencer.
-    fn deck_step(&mut self, n: u8) {
-        let step = self.deck.step_page * 16 + n;
-        if self.deck_seq(SeqOp::SelectStep(step), "") {
-            self.deck_seq(SeqOp::ToggleStep, &format!("step {}", step + 1));
-        }
-    }
-
-    /// One sequencer op on the selected track, when it has a sequencer.
-    fn deck_seq(&mut self, op: SeqOp, words: &str) -> bool {
-        if self.nav.current_track().and_then(|t| t.sequencer.as_ref()).is_none() {
-            self.flash("the pads' STEP mode plays the selected track's sequencer \u{00b7} this track has none");
-            return false;
-        }
-        self.sequencer_op(op);
-        if !words.is_empty() {
-            self.flash(words);
-        }
-        self.after_input();
-        true
+        let step = self.deck.step_half * 16 + n;
+        self.sequencer_op(SeqOp::SelectStep(step));
+        self.sequencer_op(SeqOp::ToggleStep);
+        self.flash(format!("step {}", step + 1));
     }
 }

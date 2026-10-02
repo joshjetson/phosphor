@@ -14,6 +14,8 @@ use crate::theme;
 
 mod bottom_bar;
 use bottom_bar::*;
+mod deck_strip;
+use deck_strip::*;
 mod clip_view;
 use clip_view::*;
 mod overlays;
@@ -76,11 +78,19 @@ pub fn render(
     if nav.practice.open {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(8), Constraint::Length(1)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(8),
+                Constraint::Length(u16::from(nav.deck_strip.is_some())),
+                Constraint::Length(1),
+            ])
             .split(area);
         render_top_bar(frame, chunks[0], nav, transport);
         practice::render_practice(frame, chunks[1], nav);
-        render_bottom_bar(frame, chunks[2], nav, status);
+        if let Some(text) = nav.deck_strip.as_deref() {
+            render_deck_strip(frame, chunks[2], text);
+        }
+        render_bottom_bar(frame, chunks[3], nav, status);
         return;
     }
 
@@ -100,6 +110,7 @@ pub fn render(
         constraints.push(Constraint::Min(0));
     }
 
+    constraints.push(Constraint::Length(u16::from(nav.deck_strip.is_some()))); // the deck's line
     constraints.push(Constraint::Length(1)); // bottom bar
 
     let chunks = Layout::default()
@@ -118,6 +129,10 @@ pub fn render(
     } else {
         ci += 1;
     }
+    if let Some(text) = nav.deck_strip.as_deref() {
+        render_deck_strip(frame, chunks[ci], text);
+    }
+    ci += 1;
     render_bottom_bar(frame, chunks[ci], nav, status);
 
     // Overlays. The what's-new card is checked first: it is shown at startup,

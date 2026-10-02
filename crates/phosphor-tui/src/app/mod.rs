@@ -36,6 +36,9 @@ mod presets;
 mod session_io;
 mod clips;
 mod deck;
+mod deck_bank;
+mod deck_function;
+mod deck_tracks;
 mod midi_fx_ops;
 mod practice_ops;
 mod sampler_chop;
@@ -133,6 +136,9 @@ pub struct App {
     /// What the Phosphor Deck is holding — its SHIFT, its pad mode, its
     /// faders' grip. See `deck`.
     pub(crate) deck: deck::DeckState,
+    /// What the deck's pads are right now, for the MIDI callback: notes
+    /// from a base, or steps. See [`phosphor_app::surface::pads`].
+    pub(crate) deck_pads: Arc<phosphor_app::surface::pads::PadRoute>,
     /// The UI's tap on MIDI input, for step record.
     ///
     /// The audio thread's ring has one consumer and this is not it: the
@@ -306,9 +312,10 @@ impl App {
 
         // Start MIDI input FIRST so the controller can finish its init burst
         let (midi_ui_tx, midi_ui_rx) = crossbeam_channel::unbounded();
+        let deck_pads = Arc::new(phosphor_app::surface::pads::PadRoute::default());
         let midi_connection = if enable_midi {
             let status = midi_status.clone();
-            start_midi_input(status, midi_tx, midi_ui_tx)
+            start_midi_input(status, midi_tx, midi_ui_tx, Arc::clone(&deck_pads))
         } else {
             drop(midi_tx);
             drop(midi_ui_tx);
@@ -396,6 +403,7 @@ impl App {
             yanked_clips: Vec::new(),
             sampler_clip: None,
             deck: deck::DeckState::default(),
+            deck_pads,
             seq_step_clip: None,
             seq_pattern_clip: None,
             midi_ui_rx: enable_midi.then_some(midi_ui_rx),
@@ -742,6 +750,7 @@ fn start_midi_input(
     status: Arc<MidiStatus>,
     mut midi_tx: phosphor_midi::ring::MidiRingSender,
     ui_tx: crossbeam_channel::Sender<phosphor_midi::MidiMessage>,
+    pads: Arc<phosphor_app::surface::pads::PadRoute>,
 ) -> Option<midir::MidiInputConnection<()>> {
     let midi_in = match midir::MidiInput::new("phosphor") {
         Ok(m) => m,
@@ -773,13 +782,15 @@ fn start_midi_input(
                 }
                 status_clone.message_count.fetch_add(1, Ordering::Relaxed);
                 // A deck button is a command, not a note: it goes to the UI
-                // only, or pressing PLAY would also play an instrument.
-                if !phosphor_app::surface::layout::is_deck(msg.message_type) {
-                    midi_tx.push(msg);
+                // only, or pressing PLAY would also play an instrument. A
+                // deck pad becomes a note here when the pads are notes.
+                let routed = phosphor_app::surface::pads::route(msg, &pads);
+                if let Some(note) = routed.engine {
+                    midi_tx.push(note);
                 }
                 // The UI's copy, for step record. A send that fails means
                 // nothing is listening, which is not a reason to stop playing.
-                let _ = ui_tx.send(msg);
+                let _ = ui_tx.send(routed.app);
             }
         },
         (),

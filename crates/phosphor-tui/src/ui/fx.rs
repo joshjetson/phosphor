@@ -624,7 +624,7 @@ fn render_eq(frame: &mut Frame, area: Rect, nav: &NavState, slot: &FxInstance, i
 }
 
 /// The control names, in the EQ's own order.
-const CONTROL_NAMES: [&str; FxView::CONTROLS] = ["type", "freq", "gain", "q", "slope", "on"];
+pub(crate) const CONTROL_NAMES: [&str; FxView::CONTROLS] = ["type", "freq", "gain", "q", "slope", "on"];
 
 /// The style one cell of the strip takes.
 fn cell_style(selected: bool, locked: bool, live: bool, focused: bool) -> Style {

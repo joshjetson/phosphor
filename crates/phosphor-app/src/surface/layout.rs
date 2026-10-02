@@ -39,66 +39,73 @@ pub const DECK_CHANNEL: u8 = 15;
 /// mod wheel and breath controllers a keyboard might send.
 const FIRST_CC: u8 = 16;
 
-/// Track strips on the deck, master excluded — one per track row the app
-/// shows at once (`MAX_VISIBLE_TRACKS`).
-pub const STRIPS: u8 = 5;
+/// Columns on the deck: one knob, one action button, one track button, one
+/// fader and two pads each.
+pub const COLUMNS: u8 = 8;
 
-/// The master strip's fader index.
-pub const MASTER_FADER: u8 = STRIPS;
+/// Pads: two rows of eight, one pair under each column.
+pub const PADS: u8 = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ControlId {
-    // Transport
+    // Transport — fixed
     Play,
     Stop,
     Rec,
-    LoopRec,
+    Overdub,
     Loop,
     Click,
-    Count,
-    Panic,
-    Tempo,
+    CountIn,
+    Tap,
+    // The function knob and what it can be — fixed
+    Function,
+    FnTempo,
+    FnSwing,
+    FnGrid,
+    FnMaster,
+    FnLoop,
+    FnLast,
     // Navigate
-    PaneTransport,
-    PaneTracks,
-    PaneClip,
-    Value,
+    Navigate,
+    Lock,
+    Back,
+    Browse,
+    Shift,
+    Menu,
+    Left,
     Up,
     Down,
-    Left,
     Right,
-    Shift,
-    Back,
-    Tab,
-    Menu,
-    Enter,
-    Save,
-    // The encoder bank
-    Bank(u8),
-    PagePrev,
-    PageNext,
-    // Edit
+    Part,
+    // Edit — fixed
     Undo,
     Redo,
     Copy,
     Paste,
     Delete,
+    Duplicate,
+    Save,
     New,
-    // Strips: `Track(n)` selects visible track `n`; `Fader(5)` is master.
-    Track(u8),
-    Master,
-    Mute(u8),
-    Solo(u8),
-    Arm(u8),
+    // The eight columns
+    Knob(u8),
+    Action(u8),
+    TrackButton(u8),
     Fader(u8),
-    // Pads
     Pad(u8),
-    Lane(u8),
-    ModeStep,
-    ModePads,
-    ModeNote,
-    Accent,
-    StepPage(u8),
+    // The right-hand column
+    PagePrev,
+    PageNext,
+    MyPage,
+    ModeSelect,
+    ModeMute,
+    ModeSolo,
+    ModeArm,
+    TrackBankPrev,
+    TrackBankNext,
+    PadsUp,
+    PadsDown,
+    StepsLow,
+    StepsHigh,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,15 +119,15 @@ pub enum Kind {
     Pad,
 }
 
-/// Where a control sits on the panel — the drawing's zones.
+/// Where a control sits on the panel — the drawing's sections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Zone {
     Transport,
+    Function,
     Navigate,
-    Bank,
     Edit,
-    Strips,
-    Pads,
+    Columns,
+    Right,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,21 +142,35 @@ pub struct Control {
 }
 
 impl Control {
-    /// What the panel's silkscreen says.
+    /// What the panel's printed label says.
     pub fn label(&self) -> String {
         use ControlId::*;
         match self.id {
-            Bank(n) => format!("ENC {}", n + 1),
-            Track(n) => format!("TRK {}", n + 1),
-            Mute(n) => format!("M {}", n + 1),
-            Solo(n) => format!("S {}", n + 1),
-            Arm(n) => format!("R {}", n + 1),
-            Fader(n) if n == MASTER_FADER => "FADER MSTR".into(),
+            Knob(n) => format!("KNOB {}", n + 1),
+            Action(n) => format!("ACTION {}", n + 1),
+            TrackButton(n) => format!("T{}", n + 1),
             Fader(n) => format!("FADER {}", n + 1),
             Pad(n) => format!("PAD {}", n + 1),
-            Lane(n) => format!("LANE {}", n + 1),
-            StepPage(0) => "1-16".into(),
-            StepPage(_) => "17-32".into(),
+            FnTempo => "TEMPO".into(),
+            FnSwing => "SWING".into(),
+            FnGrid => "GRID".into(),
+            FnMaster => "MASTER".into(),
+            FnLoop => "LOOP".into(),
+            FnLast => "LAST".into(),
+            CountIn => "COUNT IN".into(),
+            PagePrev => "◀ PG".into(),
+            PageNext => "PG ▶".into(),
+            MyPage => "MY PAGE".into(),
+            ModeSelect => "SELECT".into(),
+            ModeMute => "MUTE".into(),
+            ModeSolo => "SOLO".into(),
+            ModeArm => "ARM".into(),
+            TrackBankPrev => "◀ TRK".into(),
+            TrackBankNext => "TRK ▶".into(),
+            PadsUp => "PADS ▲".into(),
+            PadsDown => "PADS ▼".into(),
+            StepsLow => "1-16".into(),
+            StepsHigh => "17-32".into(),
             other => format!("{other:?}").to_uppercase(),
         }
     }
@@ -160,44 +181,29 @@ impl Control {
 fn controls() -> Vec<(ControlId, Kind, Zone)> {
     use ControlId::*;
     use Kind::{Button, Encoder};
-    let mut out = vec![
-        (Play, Button, Zone::Transport),
-        (Stop, Button, Zone::Transport),
-        (Rec, Button, Zone::Transport),
-        (LoopRec, Button, Zone::Transport),
-        (Loop, Button, Zone::Transport),
-        (Click, Button, Zone::Transport),
-        (Count, Button, Zone::Transport),
-        (Panic, Button, Zone::Transport),
-        (Tempo, Encoder, Zone::Transport),
-        (PaneTransport, Button, Zone::Navigate),
-        (PaneTracks, Button, Zone::Navigate),
-        (PaneClip, Button, Zone::Navigate),
-        (Value, Encoder, Zone::Navigate),
-        (Up, Button, Zone::Navigate),
-        (Down, Button, Zone::Navigate),
-        (Left, Button, Zone::Navigate),
-        (Right, Button, Zone::Navigate),
-        (Shift, Button, Zone::Navigate),
-        (Back, Button, Zone::Navigate),
-        (Tab, Button, Zone::Navigate),
-        (Menu, Button, Zone::Navigate),
-        (Enter, Button, Zone::Navigate),
-        (Save, Button, Zone::Navigate),
-    ];
-    out.extend((0..8).map(|n| (Bank(n), Encoder, Zone::Bank)));
-    out.extend([(PagePrev, Button, Zone::Bank), (PageNext, Button, Zone::Bank)]);
-    out.extend([Undo, Redo, Copy, Paste, Delete, New].map(|id| (id, Button, Zone::Edit)));
-    for n in 0..STRIPS {
-        out.extend([(Track(n), Button, Zone::Strips), (Mute(n), Button, Zone::Strips)]);
-        out.extend([(Solo(n), Button, Zone::Strips), (Arm(n), Button, Zone::Strips)]);
+    let mut out: Vec<(ControlId, Kind, Zone)> = Vec::new();
+    out.extend([Play, Stop, Rec, Overdub, Loop, Click, CountIn, Tap].map(|id| (id, Button, Zone::Transport)));
+    out.push((Function, Encoder, Zone::Function));
+    out.extend([FnTempo, FnSwing, FnGrid, FnMaster, FnLoop, FnLast].map(|id| (id, Button, Zone::Function)));
+    out.push((Navigate, Encoder, Zone::Navigate));
+    out.extend(
+        [Lock, Back, Browse, Shift, Menu, Left, Up, Down, Right, Part].map(|id| (id, Button, Zone::Navigate)),
+    );
+    out.extend([Undo, Redo, Copy, Paste, Delete, Duplicate, Save, New].map(|id| (id, Button, Zone::Edit)));
+    for n in 0..COLUMNS {
+        out.push((Knob(n), Encoder, Zone::Columns));
+        out.push((Action(n), Button, Zone::Columns));
+        out.push((TrackButton(n), Button, Zone::Columns));
+        out.push((Fader(n), Kind::Fader, Zone::Columns));
     }
-    out.push((Master, Button, Zone::Strips));
-    out.extend((0..=MASTER_FADER).map(|n| (Fader(n), Kind::Fader, Zone::Strips)));
-    out.extend((0..16).map(|n| (Pad(n), Kind::Pad, Zone::Pads)));
-    out.extend((0..8).map(|n| (Lane(n), Button, Zone::Pads)));
-    out.extend([ModeStep, ModePads, ModeNote, Accent].map(|id| (id, Button, Zone::Pads)));
-    out.extend([(StepPage(0), Button, Zone::Pads), (StepPage(1), Button, Zone::Pads)]);
+    out.extend((0..PADS).map(|n| (Pad(n), Kind::Pad, Zone::Columns)));
+    out.extend(
+        [
+            PagePrev, PageNext, MyPage, ModeSelect, ModeMute, ModeSolo, ModeArm, TrackBankPrev, TrackBankNext,
+            PadsUp, PadsDown, StepsLow, StepsHigh,
+        ]
+        .map(|id| (id, Button, Zone::Right)),
+    );
     out
 }
 
@@ -351,9 +357,9 @@ mod tests {
     #[test]
     fn the_panel_matches_the_drawing() {
         let count = |kind| deck().iter().filter(|c| c.kind == kind).count();
-        assert_eq!(count(Kind::Pad), 16);
-        assert_eq!(count(Kind::Fader), 6, "five tracks and master");
-        assert_eq!(count(Kind::Encoder), 10, "eight in the bank, VALUE and TEMPO");
+        assert_eq!(count(Kind::Pad), 16, "two rows of eight");
+        assert_eq!(count(Kind::Fader), 8, "one per column");
+        assert_eq!(count(Kind::Encoder), 10, "eight column knobs, NAVIGATE and FUNCTION");
     }
 
     /// The simulator and the app read the same table: whatever goes in comes

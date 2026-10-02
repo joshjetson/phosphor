@@ -3,18 +3,21 @@
 //! It does what the hardware does and nothing more: every gesture becomes the
 //! three bytes the panel's table says that control sends
 //! ([`phosphor_app::surface::layout::encode`]), parsed as the MIDI layer
-//! parses a real message, and handed to the app through the same tap a real
-//! deck's messages arrive on. A journey written against this is a journey a
+//! parses a real message, routed as the MIDI callback routes it
+//! ([`phosphor_app::surface::pads::route`]), and handed to the app through
+//! the same tap a real deck's messages arrive on. A journey written against this is a journey a
 //! player can make with the hardware — no key a test types reaches the app
 //! by any other road.
 
-use phosphor_app::surface::layout::{ControlId, DeckInput, MASTER_FADER};
+use phosphor_app::surface::layout::{ControlId, DeckInput, COLUMNS};
 use phosphor_core::EngineConfig;
 
 use crate::app::App;
 
 pub(crate) struct DeckSim {
     pub(crate) app: App,
+    /// What reached the instrument: the notes the pads became.
+    pub(crate) played: Vec<phosphor_midi::MidiMessageType>,
 }
 
 impl DeckSim {
@@ -26,13 +29,17 @@ impl DeckSim {
         app.browse_sessions = Some(scratch.join("sessions"));
         let _ = std::fs::create_dir_all(scratch.join("samples"));
         let _ = std::fs::create_dir_all(scratch.join("sessions"));
-        Self { app }
+        Self { app, played: Vec::new() }
     }
 
     fn send(&mut self, input: DeckInput) {
         let bytes = phosphor_app::surface::layout::encode(input);
         let message = phosphor_midi::MidiMessage::from_bytes(&bytes).expect("three bytes parse");
-        self.app.handle_tap_event(message.message_type, None);
+        let routed = phosphor_app::surface::pads::route(message, &self.app.deck_pads);
+        if let Some(note) = routed.engine {
+            self.played.push(note.message_type);
+        }
+        self.app.handle_tap_event(routed.app.message_type, None);
     }
 
     /// Press and let go.
@@ -68,10 +75,10 @@ impl DeckSim {
         self
     }
 
-    /// Slide fader `n` (5 is master) from where it is to `to`, through every
-    /// position between, as a hand does.
+    /// Slide fader `n` from where it is to `to`, through every position
+    /// between, as a hand does.
     pub(crate) fn slide(&mut self, n: u8, from: u8, to: u8) -> &mut Self {
-        assert!(n <= MASTER_FADER);
+        assert!(n < COLUMNS);
         let id = ControlId::Fader(n);
         if from <= to {
             for p in from..=to {
@@ -85,7 +92,8 @@ impl DeckSim {
         self
     }
 
-    /// Strike pad `n` (STEP mode) at `velocity`.
+    /// Strike pad `n` at `velocity`: a step on a step grid, a note
+    /// everywhere else.
     pub(crate) fn hit(&mut self, n: u8, velocity: u8) -> &mut Self {
         self.send(DeckInput::Hit(ControlId::Pad(n), velocity));
         self.send(DeckInput::Release(ControlId::Pad(n)));
@@ -93,7 +101,7 @@ impl DeckSim {
     }
 
     /// A note from the keyboard the deck is clamped to, on channel 1 — the
-    /// performance road, which the pads in PADS and NOTE modes also take.
+    /// performance road, which the pads also take when they are notes.
     pub(crate) fn play(&mut self, note: u8, velocity: u8) -> &mut Self {
         use phosphor_midi::MidiMessageType::{NoteOff, NoteOn};
         self.app.handle_tap_event(NoteOn { channel: 0, note, velocity }, None);
@@ -104,5 +112,17 @@ impl DeckSim {
     /// What the status line says right now.
     pub(crate) fn flash(&self) -> String {
         self.app.status_message.as_ref().map(|(m, _)| m.clone()).unwrap_or_default()
+    }
+}
+
+impl DeckSim {
+    /// The deck's line on screen.
+    pub(crate) fn strip(&self) -> String {
+        self.app.nav.deck_strip.clone().unwrap_or_default()
+    }
+
+    /// Which screen has the keys.
+    pub(crate) fn screen(&self) -> phosphor_app::surface::screen::Screen {
+        phosphor_app::surface::screen::screen(&self.app.nav)
     }
 }

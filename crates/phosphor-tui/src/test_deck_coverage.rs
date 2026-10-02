@@ -6,9 +6,10 @@
 //! audited the day it is added, with nobody remembering to. Each key a
 //! handler matches must be one of:
 //!
-//! * a key the deck sends (its bindings, read from the panel's own table),
-//! * a key a deck control stands in for with the same action (the strip's
-//!   M/S/R for `m`/`s`/`r` on the track list), or
+//! * a key the deck sends: its fixed bindings, read from the panel's own
+//!   table, and every screen's action buttons, read from theirs,
+//! * a key a deck control stands in for with the same action (the track
+//!   buttons in MUTE, SOLO and ARM mode for `m`/`s`/`r`), or
 //! * a gap, listed with its reason in `deck_gaps.txt`.
 //!
 //! The list is a ratchet in both directions: a new gap fails until it is
@@ -20,8 +21,10 @@
 mod tests {
     use std::collections::{BTreeSet, HashSet};
 
-    use phosphor_app::surface::binding::{bind, nav_letter, Intent, Key, Nav};
+    use phosphor_app::surface::actions::{actions, Act};
+    use phosphor_app::surface::binding::{bind, nav_letter, Chord, Intent, Key};
     use phosphor_app::surface::layout::deck;
+    use phosphor_app::surface::screen::Screen;
 
     /// One key as a handler matches it: the `KeyCode` spelling, and whether
     /// Ctrl is required.
@@ -47,38 +50,56 @@ mod tests {
         let mut add = |key: String, ctrl: bool| {
             out.insert(Handled { key, ctrl });
         };
+        let mut chord = |c: Chord| add(spell(c.key), c.ctrl);
+        // A menu item is Space and then its letter, and the letter only ever
+        // reaches the menu — which is a table, not a handler's match arm —
+        // so it makes none of the handlers' keys reachable.
+        let menu = |_: char, chord: &mut dyn FnMut(Chord)| chord(Chord::ch(' '));
         for c in deck() {
             for shift in [false, true] {
                 match bind(c.id, shift) {
-                    Intent::Key(chord) => add(spell(chord.key), chord.ctrl),
-                    Intent::Turn { up, down } => {
-                        add(spell(up.key), up.ctrl);
-                        add(spell(down.key), down.ctrl);
-                    }
-                    Intent::Nav { dir, stride } => {
-                        add(format!("Char('{}')", nav_letter(dir, stride)), false);
-                        // In a field being typed into the arrows are sent as
-                        // arrows; see the deck module.
-                        add(format!("{dir:?}"), false);
-                    }
+                    Intent::Key(c) => chord(c),
+                    Intent::Menu(letter) => menu(letter, &mut chord),
+                    Intent::Nav { dir, stride } => chord(Chord::ch(nav_letter(dir, stride))),
                     _ => {}
                 }
             }
         }
-        // VALUE's push is Enter.
-        add("Enter".into(), false);
-        let _ = Nav::Up;
+        for screen in Screen::ALL {
+            for shift in [false, true] {
+                for (_, act) in actions(screen, shift) {
+                    match *act {
+                        Act::Key(c) => chord(c),
+                        Act::Menu(letter) => menu(letter, &mut chord),
+                    }
+                }
+            }
+        }
+        // The keys the deck's own code presses: PART is Tab, the function
+        // knob's tempo is `+`/`-`, BROWSE and DELETE are the screen's
+        // loading and removing keys. See the `deck_*` modules.
+        for c in [Chord::key(Key::Tab), Chord::ch('+'), Chord::ch('-'), Chord::ch('a'), Chord::ch('d'), Chord::ch('D')] {
+            chord(c);
+        }
+        for letter in ['w', 'o', 'd'] {
+            menu(letter, &mut chord);
+        }
+        // In a field being typed into the arrows are sent as arrows; see
+        // the deck module.
+        for arrow in ["Up", "Down", "Left", "Right"] {
+            add(arrow.into(), false);
+        }
         out
     }
 
     /// Keys a deck control stands in for with the same action, where the
     /// key itself is never sent: `(handler, key, the control)`.
     const STANDS_IN: &[(&str, &str, &str)] = &[
-        ("handle_tracks_keys", "Char('m')", "M 1-5"),
-        ("handle_tracks_keys", "Char('s')", "S 1-5"),
-        ("handle_tracks_keys", "Char('r')", "R 1-5"),
-        ("handle_tracks_keys", "Char('R')", "LOOP REC"),
-        ("dispatch_event", "Char('=')", "TEMPO (the deck sends +)"),
+        ("handle_tracks_keys", "Char('m')", "track buttons in MUTE mode"),
+        ("handle_tracks_keys", "Char('s')", "track buttons in SOLO mode"),
+        ("handle_tracks_keys", "Char('r')", "track buttons in ARM mode"),
+        ("handle_tracks_keys", "Char('R')", "OVERDUB"),
+        ("dispatch_event", "Char('=')", "the function knob's TEMPO (the deck sends +)"),
     ];
 
     /// A key the handlers match, with where.
@@ -96,8 +117,8 @@ mod tests {
         paths.sort();
         for path in paths {
             let name = path.file_name().unwrap().to_string_lossy().to_string();
-            // The deck module sends keys; it handles none.
-            if !name.ends_with(".rs") || name == "deck.rs" {
+            // The deck modules send keys; they handle none.
+            if !name.ends_with(".rs") || name.starts_with("deck") {
                 continue;
             }
             let source = std::fs::read_to_string(&path).unwrap();

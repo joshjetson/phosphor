@@ -1,12 +1,12 @@
 //! What each deck control means to the app.
 //!
-//! Almost everything is a key the app already understands: the deck is a
-//! keyboard laid out for music, so pressing its ENTER is pressing Enter, and
-//! every rule a key obeys — a held control taking every key, a modal
-//! swallowing typing, the undo step a key records — applies to the deck by
-//! construction. The few controls that are not a key name what they are
-//! instead ([`Intent`]), and the ones the app has no answer for yet say so in
-//! words ([`Intent::Unbuilt`]), which is what the coverage audit counts.
+//! The fixed controls are keys the app already understands — the deck's
+//! UNDO is `u`, its LOCK is Enter — so every rule a key obeys applies to
+//! them by construction. The controls that follow the screen (NAVIGATE, the
+//! eight column knobs and the buttons under them, the pads) name what they
+//! are instead, and the app decides what they do from what is on screen
+//! ([`super::screen`]). A control with nothing behind it yet says so in
+//! words ([`Intent::Unbuilt`]).
 
 use super::layout::ControlId;
 
@@ -41,9 +41,7 @@ impl Chord {
     }
 }
 
-/// The arrow pad. Resolved to keys by the app, because the right key depends
-/// on where the cursor is: `h`/`j`/`k`/`l` everywhere the house grammar runs,
-/// the arrow keys in a field being typed into, where a letter would type.
+/// The arrow pad.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Nav {
     Up,
@@ -52,64 +50,86 @@ pub enum Nav {
     Right,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StripVerb {
+/// What the FUNCTION knob is turning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum FnTarget {
+    #[default]
+    Tempo,
+    Swing,
+    Grid,
+    Master,
+    Loop,
+    /// Whichever column knob was turned last.
+    Last,
+}
+
+/// What the eight track buttons do, whichever mode button is lit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TrackMode {
+    #[default]
     Select,
     Mute,
     Solo,
     Arm,
 }
 
-/// What the pads do when struck.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum PadMode {
-    /// Each pad is a step of the selected sequencer lane.
-    #[default]
-    Step,
-    /// The pads play sampler pads, from the deck's own notes on channel 1.
-    Pads,
-    /// The pads play notes, the same way.
-    Note,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Intent {
     /// Press this key.
     Key(Chord),
-    /// One of the arrows, with SHIFT already folded in when `stride` is set.
-    Nav { dir: Nav, stride: bool },
-    /// What pressing Space and then this letter does — the Space menu's own
-    /// road, so its refusals (source mode turning it away, say) hold.
+    /// What Space and then this letter does — the menu's own road, so its
+    /// refusals hold.
     Menu(char),
     /// The modifier, held.
     Shift,
-    /// An encoder: this chord per detent clockwise, that one per detent back.
-    Turn { up: Chord, down: Chord },
-    /// A strip button for visible track `n`; `n == STRIPS` is the master.
-    Strip(StripVerb, u8),
+    /// One of the arrows, SHIFT folded in as the stride.
+    Nav { dir: Nav, stride: bool },
+    /// The NAVIGATE knob: walk what the screen lists.
+    Navigate,
+    /// The FUNCTION knob: turn whatever function is selected.
+    Function,
+    /// Point the FUNCTION knob at something.
+    FunctionTarget(FnTarget),
+    /// Loop-record on the selected track.
+    LoopRecord,
+    /// Count-in: off, one bar, two bars.
+    CountIn,
+    /// Tap tempo.
+    Tap,
+    /// The list this screen loads from: presets, samples, sessions.
+    Browse,
+    /// The next part of the selected track.
+    NextPart,
+    /// Remove the thing under the cursor, asking where the app asks.
+    Delete,
+    /// Make a copy of the thing under the cursor, beside it.
+    Duplicate,
+    /// Column knob `n`: turned it adjusts, pushed it shows its name.
+    Knob(u8),
+    /// The action button under column `n`.
+    Action(u8),
+    /// Track button `n`, doing what the lit mode says.
+    TrackButton(u8),
     /// Fader `n`, set by where it sits.
     Volume(u8),
-    /// Loop-record on the selected track — the tracks pane's `R`, from
-    /// anywhere.
-    LoopRecord,
-    /// Step `n` of the current page, on the selected lane.
-    Step(u8),
-    /// Select lane `n`.
-    Lane(u8),
-    /// Queue pattern slot `n`.
-    Slot(u8),
-    PadMode(PadMode),
-    /// Show steps 1-16 (`0`) or 17-32 (`1`).
-    StepPage(u8),
-    /// Accent the step under the cursor.
-    Accent,
-    /// A control the app has nothing behind yet — the words say what is
-    /// missing. Counted by the coverage audit, and flashed when pressed so a
-    /// player is never left wondering whether the button is broken.
+    /// Pad `n`: a step, a sampler pad or a note, by what is on screen.
+    Pad(u8),
+    /// Page the column knobs: −1 back, +1 on.
+    Page(i8),
+    TrackMode(TrackMode),
+    /// Move the faders and track buttons by eight tracks.
+    TrackBank(i8),
+    /// Move the pads up or down an octave.
+    PadOctave(i8),
+    /// Show steps 1-16 (`0`) or 17-32 (`1`) on the pads.
+    StepHalf(u8),
+    /// Nothing behind it yet — the words say what is missing.
     Unbuilt(&'static str),
 }
 
-/// What `id` does when pressed (or turned, or moved), with SHIFT held or not.
+/// What `id` does when pressed, with SHIFT held or not. The three kinds of
+/// knob answer here for their pushes; their turns are
+/// [`Intent::Navigate`], [`Intent::Function`] and [`Intent::Knob`].
 pub fn bind(id: ControlId, shift: bool) -> Intent {
     use ControlId as C;
     use Intent as I;
@@ -119,50 +139,55 @@ pub fn bind(id: ControlId, shift: bool) -> Intent {
         C::Play => I::Menu('p'),
         C::Stop => I::Menu('0'),
         C::Rec => I::Menu('r'),
-        C::LoopRec => I::LoopRecord,
+        C::Overdub => I::LoopRecord,
         C::Loop => I::Menu('l'),
         C::Click => I::Menu('m'),
-        C::Count => I::Unbuilt("count-in has no key of its own; it lives in the transport pane"),
-        C::Panic => I::Menu('!'),
-        C::Tempo => I::Turn { up: ch('+'), down: ch('-') },
-        C::PaneTransport => I::Menu('1'),
-        C::PaneTracks => I::Menu('2'),
-        C::PaneClip => I::Menu('3'),
-        C::Value if shift => I::Turn { up: ch('L'), down: ch('H') },
-        C::Value => I::Turn { up: ch('l'), down: ch('h') },
+        C::CountIn => I::CountIn,
+        C::Tap => I::Tap,
+        C::Function => I::Function,
+        C::FnTempo => I::FunctionTarget(FnTarget::Tempo),
+        C::FnSwing => I::FunctionTarget(FnTarget::Swing),
+        C::FnGrid => I::FunctionTarget(FnTarget::Grid),
+        C::FnMaster => I::FunctionTarget(FnTarget::Master),
+        C::FnLoop => I::FunctionTarget(FnTarget::Loop),
+        C::FnLast => I::FunctionTarget(FnTarget::Last),
+        C::Navigate | C::Lock => I::Key(Chord::key(Key::Enter)),
+        C::Back => I::Key(Chord::key(Key::Esc)),
+        C::Browse => I::Browse,
+        C::Shift => I::Shift,
+        C::Menu => I::Key(ch(' ')),
+        C::Left => nav(Nav::Left),
         C::Up => nav(Nav::Up),
         C::Down => nav(Nav::Down),
-        C::Left => nav(Nav::Left),
         C::Right => nav(Nav::Right),
-        C::Shift => I::Shift,
-        C::Back => I::Key(Chord::key(Key::Esc)),
-        C::Tab if shift => I::Key(Chord::key(Key::BackTab)),
-        C::Tab => I::Key(Chord::key(Key::Tab)),
-        C::Menu => I::Key(ch(' ')),
-        C::Enter => I::Key(Chord::key(Key::Enter)),
-        C::Save => I::Key(Chord::ctrl('s')),
-        C::Bank(_) => I::Unbuilt("the eight encoders need the on-screen label strip"),
-        C::PagePrev | C::PageNext => I::Unbuilt("encoder pages need the on-screen label strip"),
+        C::Part if shift => I::Key(Chord::key(Key::BackTab)),
+        C::Part => I::NextPart,
         C::Undo => I::Key(ch('u')),
         C::Redo => I::Key(Chord::ctrl('r')),
         C::Copy => I::Key(ch(if shift { 'Y' } else { 'y' })),
         C::Paste => I::Key(ch(if shift { 'P' } else { 'p' })),
-        C::Delete => I::Key(ch(if shift { 'D' } else { 'd' })),
+        C::Delete => I::Delete,
+        C::Duplicate => I::Duplicate,
+        C::Save => I::Key(Chord::ctrl('s')),
         C::New => I::Key(ch('n')),
-        C::Track(n) => I::Strip(StripVerb::Select, n),
-        C::Master => I::Strip(StripVerb::Select, super::layout::STRIPS),
-        C::Mute(n) => I::Strip(StripVerb::Mute, n),
-        C::Solo(n) => I::Strip(StripVerb::Solo, n),
-        C::Arm(n) => I::Strip(StripVerb::Arm, n),
+        C::Knob(n) => I::Knob(n),
+        C::Action(n) => I::Action(n),
+        C::TrackButton(n) => I::TrackButton(n),
         C::Fader(n) => I::Volume(n),
-        C::Pad(n) => I::Step(n),
-        C::Lane(n) if shift => I::Slot(n),
-        C::Lane(n) => I::Lane(n),
-        C::ModeStep => I::PadMode(PadMode::Step),
-        C::ModePads => I::PadMode(PadMode::Pads),
-        C::ModeNote => I::PadMode(PadMode::Note),
-        C::Accent => I::Accent,
-        C::StepPage(n) => I::StepPage(n),
+        C::Pad(n) => I::Pad(n),
+        C::PagePrev => I::Page(-1),
+        C::PageNext => I::Page(1),
+        C::MyPage => I::Unbuilt("a favourites page needs saving with each instrument's presets"),
+        C::ModeSelect => I::TrackMode(TrackMode::Select),
+        C::ModeMute => I::TrackMode(TrackMode::Mute),
+        C::ModeSolo => I::TrackMode(TrackMode::Solo),
+        C::ModeArm => I::TrackMode(TrackMode::Arm),
+        C::TrackBankPrev => I::TrackBank(-1),
+        C::TrackBankNext => I::TrackBank(1),
+        C::PadsUp => I::PadOctave(1),
+        C::PadsDown => I::PadOctave(-1),
+        C::StepsLow => I::StepHalf(0),
+        C::StepsHigh => I::StepHalf(1),
     }
 }
 
@@ -183,8 +208,8 @@ mod tests {
     use super::*;
     use crate::surface::layout::deck;
 
-    /// Every control on the panel means something — a key, a named action,
-    /// or the words for what it is still waiting on. None is silent.
+    /// Every control on the panel means something — a key, a named job, or
+    /// the words for what it is still waiting on.
     #[test]
     fn every_control_is_bound_with_and_without_shift() {
         for c in deck() {
@@ -203,10 +228,10 @@ mod tests {
     }
 
     #[test]
-    fn shift_turns_copy_into_copy_one_sound_and_lanes_into_patterns() {
+    fn lock_and_back_are_enter_and_esc() {
+        assert_eq!(bind(ControlId::Lock, false), Intent::Key(Chord::key(Key::Enter)));
+        assert_eq!(bind(ControlId::Navigate, false), Intent::Key(Chord::key(Key::Enter)), "NAVIGATE's push is LOCK");
+        assert_eq!(bind(ControlId::Back, false), Intent::Key(Chord::key(Key::Esc)));
         assert_eq!(bind(ControlId::Copy, true), Intent::Key(Chord::ch('Y')));
-        assert_eq!(bind(ControlId::Lane(2), true), Intent::Slot(2));
-        assert_eq!(bind(ControlId::Lane(2), false), Intent::Lane(2));
-        assert_eq!(bind(ControlId::Tab, true), Intent::Key(Chord::key(Key::BackTab)));
     }
 }

@@ -191,6 +191,10 @@ pub struct NavState {
     /// A mode like source mode, and here for the same reason: the screen,
     /// the mode line and the hint bar all read it from the navigation state.
     pub sampler_chop: Option<Box<ChopScreen>>,
+    /// The Phosphor Deck's line: what is locked and what its eight knobs
+    /// are. `None` until a deck has been used, so a keyboard-only screen
+    /// never changes.
+    pub deck_strip: Option<String>,
     /// The lifted loop section, waiting for `p`.
     pub section_clip: Option<SectionClipboard>,
     /// What the master limiter is taking off, ready to draw.
@@ -283,6 +287,7 @@ impl NavState {
             practice: crate::practice::Room::default(),
             sampler_source: None,
             sampler_chop: None,
+            deck_strip: None,
             section_clip: None,
             limiter_gr: std::sync::Arc::new(phosphor_core::fx::GrMeter::new()),
             sample_rate: 48_000,

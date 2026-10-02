@@ -198,7 +198,7 @@ impl App {
     }
 
     /// Turn the knob under the cursor.
-    fn sequencer_adjust(&mut self, delta: i8, coarse: bool) {
+    pub(crate) fn sequencer_adjust(&mut self, delta: i8, coarse: bool) {
         let view_band = self.nav.clip_view.sequencer.band;
         let cursor = self.nav.clip_view.sequencer.knob;
         let Some(state) = self.nav.current_track().and_then(|t| t.sequencer.as_deref()) else {

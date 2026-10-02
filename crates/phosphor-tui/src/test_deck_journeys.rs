@@ -1,18 +1,21 @@
 //! Journeys through Phosphor on the deck alone.
 //!
 //! Every gesture here goes through [`crate::deck_sim::DeckSim`] — the bytes
-//! the hardware sends, through the tap the hardware's messages arrive on. No
-//! test in this file types a key. Where a journey needs something the deck
-//! cannot do yet (load a file onto a pad, say — `a` is a listed gap), the
-//! setup does it through the app and says so, and the rest of the journey is
-//! still the deck's.
+//! the hardware sends, routed as the MIDI callback routes them, through the
+//! tap the hardware's messages arrive on. No test in this file types a key.
+//! Where a journey needs something the deck cannot do (a file to load onto a
+//! pad), the setup does it through the app and says so, and the rest of the
+//! journey is still the deck's.
 
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::time::{Duration, Instant};
 
     use phosphor_app::state::{InstrumentType, Pane, SPACE_ACTIONS};
     use phosphor_app::surface::layout::ControlId as C;
+    use phosphor_app::surface::screen::Screen;
+    use phosphor_midi::MidiMessageType;
 
     use crate::deck_sim::DeckSim;
 
@@ -27,13 +30,13 @@ mod tests {
         DeckSim::new(&scratch(tag))
     }
 
-    /// MENU, down the list to `label`, ENTER — the Space menu by arrows.
+    /// MENU, NAVIGATE down the list to `label`, LOCK.
     fn menu(d: &mut DeckSim, label: &str) {
         let row = SPACE_ACTIONS.iter().position(|(_, l, _)| *l == label).unwrap_or_else(|| panic!("no menu row {label}"));
         d.press(C::Menu);
         assert!(d.app.nav.space_menu.open, "MENU did not open the menu");
-        d.tap(C::Down, row);
-        d.press(C::Enter);
+        d.turn(C::Navigate, row as i8);
+        d.press(C::Lock);
     }
 
     /// A new track of `instrument`, from the menu and the instrument list.
@@ -42,10 +45,27 @@ mod tests {
         menu(d, "add instr");
         assert!(d.app.nav.instrument_modal.open, "add instr did not open the instrument list");
         let row = InstrumentType::ALL.iter().position(|i| *i == instrument).unwrap();
-        d.tap(C::Down, row);
-        d.press(C::Enter);
+        d.turn(C::Navigate, row as i8);
+        d.press(C::Lock);
         assert_eq!(d.app.nav.tracks.len(), before + 1, "no {instrument:?} track was made");
         d.app.nav.track_cursor
+    }
+
+    /// PART until `screen` has the keys.
+    fn part_to(d: &mut DeckSim, screen: Screen) {
+        for _ in 0..8 {
+            if d.screen() == screen {
+                return;
+            }
+            d.press(C::Part);
+        }
+        panic!("PART never reached {screen:?}; on {:?}", d.screen());
+    }
+
+    /// The column a track's controls are under, with the bank at the start.
+    fn column(idx: usize) -> u8 {
+        assert!(idx < 8, "track {idx} is not in the first bank");
+        idx as u8
     }
 
     #[test]
@@ -60,33 +80,33 @@ mod tests {
         let click = d.app.engine.transport.is_metronome_on();
         d.press(C::Click);
         assert_ne!(d.app.engine.transport.is_metronome_on(), click, "CLICK did not toggle the metronome");
-        let bpm = d.app.engine.transport.tempo_bpm();
-        d.turn(C::Tempo, 3).turn(C::Tempo, -1);
-        assert_eq!(d.app.engine.transport.tempo_bpm(), bpm + 2.0, "TEMPO is not one BPM a click");
         let rec = d.app.engine.transport.is_recording();
         d.press(C::Rec);
         assert_ne!(d.app.engine.transport.is_recording(), rec, "REC did not arm");
         d.press(C::Rec);
-        d.press(C::Panic);
         assert!(!d.app.nav.space_menu.open, "a transport button left the menu open");
     }
 
+    /// The function knob turns the tempo until another job is picked, and
+    /// TAP sets it from the beat.
     #[test]
-    fn the_pane_buttons_jump_and_tab_and_back_walk() {
-        let mut d = deck("panes");
-        d.press(C::PaneTracks);
-        assert_eq!(d.app.nav.focused_pane, Pane::Tracks);
-        d.press(C::PaneClip);
-        assert_eq!(d.app.nav.focused_pane, Pane::ClipView);
-        d.press(C::PaneTransport);
-        assert_eq!(d.app.nav.focused_pane, Pane::Transport);
-        d.press(C::Tab);
-        assert_ne!(d.app.nav.focused_pane, Pane::Transport, "TAB did not move on");
-        d.shift(C::Tab);
-        assert_eq!(d.app.nav.focused_pane, Pane::Transport, "SHIFT+TAB did not come back");
+    fn the_function_knob_turns_the_tempo_and_tap_sets_it() {
+        let mut d = deck("tempo");
+        let bpm = d.app.engine.transport.tempo_bpm();
+        d.press(C::FnTempo).turn(C::Function, 3).turn(C::Function, -1);
+        assert_eq!(d.app.engine.transport.tempo_bpm(), bpm + 2.0, "TEMPO is not one BPM a click");
+        // Taps half a second apart are 120.
+        let t0 = Instant::now();
+        for i in 0..4 {
+            d.app.tap_tempo(t0 + Duration::from_millis(500 * i));
+        }
+        assert_eq!(d.app.engine.transport.tempo_bpm(), 120.0, "four taps at 2 Hz are not 120");
+        // A bounce is not a beat.
+        d.app.tap_tempo(t0 + Duration::from_millis(1_550));
+        assert_eq!(d.app.engine.transport.tempo_bpm(), 120.0, "a bounce moved the tempo");
     }
 
-    /// Every kind of track, made from the deck: the menu and the arrows.
+    /// Every kind of track, made from the deck: the menu and the knob.
     #[test]
     fn every_instrument_can_be_added_from_the_deck() {
         let mut d = deck("instruments");
@@ -102,27 +122,46 @@ mod tests {
         }
     }
 
+    /// NAVIGATE walks the track list, LOCK selects, BACK steps out.
     #[test]
-    fn strip_buttons_select_mute_solo_and_arm_their_own_rows() {
-        let mut d = deck("strips");
+    fn navigate_and_lock_walk_into_a_track_and_back_out() {
+        let mut d = deck("lock");
         add_track(&mut d, InstrumentType::Synth);
         add_track(&mut d, InstrumentType::Rhodes);
-        let scroll = d.app.nav.track_scroll;
-        d.press(C::Track(1));
-        assert_eq!(d.app.nav.track_cursor, scroll + 1, "TRK 2 did not select row 2");
-        assert_eq!(d.app.nav.focused_pane, Pane::Tracks);
-        d.press(C::Mute(0));
-        assert!(d.app.nav.tracks[scroll].muted, "M 1 did not mute row 1");
-        assert_eq!(d.app.nav.track_cursor, scroll + 1, "M 1 moved the selection");
-        // A new track can arrive armed; each button flips what is there.
-        let (soloed, armed) = (d.app.nav.tracks[scroll].soloed, d.app.nav.tracks[scroll].armed);
-        d.press(C::Solo(0)).press(C::Arm(0));
-        assert_ne!(d.app.nav.tracks[scroll].soloed, soloed, "S 1 did not toggle solo");
-        assert_ne!(d.app.nav.tracks[scroll].armed, armed, "R 1 did not toggle arm");
+        d.tap(C::Back, 4);
+        d.press(C::ModeSelect).press(C::TrackButton(0)).press(C::Back);
+        assert_eq!(d.screen(), Screen::Tracks, "BACK did not let go of the track");
+        let at = d.app.nav.track_cursor;
+        d.turn(C::Navigate, 1);
+        assert_eq!(d.app.nav.track_cursor, at + 1, "NAVIGATE did not walk down the list");
+        d.press(C::Lock);
+        assert_eq!(d.screen(), Screen::Track, "LOCK did not select the track");
+        d.press(C::Back);
+        assert_eq!(d.screen(), Screen::Tracks);
+    }
+
+    #[test]
+    fn track_buttons_select_mute_solo_and_arm_their_own_columns() {
+        let mut d = deck("columns");
+        let a = add_track(&mut d, InstrumentType::Synth);
+        let b = add_track(&mut d, InstrumentType::Rhodes);
+        d.press(C::TrackButton(column(b)));
+        assert_eq!(d.app.nav.track_cursor, b, "the track button did not select its track");
+        assert_eq!(d.screen(), Screen::Track);
+        d.press(C::ModeMute).press(C::TrackButton(column(a)));
+        assert!(d.app.nav.tracks[a].muted, "MUTE mode did not mute");
+        assert_eq!(d.app.nav.track_cursor, b, "muting moved the selection");
         d.press(C::Undo);
-        assert!(!d.app.nav.tracks[scroll].muted, "UNDO did not take the mute back");
+        assert!(!d.app.nav.tracks[a].muted, "UNDO did not take the mute back");
         d.press(C::Redo);
-        assert!(d.app.nav.tracks[scroll].muted, "REDO did not put it back");
+        assert!(d.app.nav.tracks[a].muted, "REDO did not put it back");
+        // Solo and arm are listening state, off the undo stack like a
+        // selection; each press flips what is there.
+        let (soloed, armed) = (d.app.nav.tracks[a].soloed, d.app.nav.tracks[a].armed);
+        d.press(C::ModeSolo).press(C::TrackButton(column(a)));
+        d.press(C::ModeArm).press(C::TrackButton(column(a)));
+        assert_ne!(d.app.nav.tracks[a].soloed, soloed, "SOLO mode did not toggle solo");
+        assert_ne!(d.app.nav.tracks[a].armed, armed, "ARM mode did not toggle arm");
     }
 
     /// A fader moves nothing until it reaches the track's level, then rides
@@ -130,101 +169,106 @@ mod tests {
     #[test]
     fn a_fader_catches_the_level_and_one_undo_takes_the_ride_back() {
         let mut d = deck("fader");
-        add_track(&mut d, InstrumentType::Synth);
-        let row = d.app.nav.track_scroll;
-        let start = d.app.nav.tracks[row].volume;
-        d.slide(0, 0, 30);
-        assert_eq!(d.app.nav.tracks[row].volume, start, "the fader jumped the level before catching it");
-        d.slide(0, 30, 127);
-        let top = d.app.nav.tracks[row].volume;
-        assert!(top > start, "riding past the level did not take it up");
-        d.slide(0, 127, 1);
-        let bottom = d.app.nav.tracks[row].volume_db().unwrap();
+        let idx = add_track(&mut d, InstrumentType::Synth);
+        let n = column(idx);
+        let start = d.app.nav.tracks[idx].volume;
+        d.slide(n, 0, 30);
+        assert_eq!(d.app.nav.tracks[idx].volume, start, "the fader jumped the level before catching it");
+        d.slide(n, 30, 127);
+        assert!(d.app.nav.tracks[idx].volume > start, "riding past the level did not take it up");
+        d.slide(n, 127, 1);
+        let bottom = d.app.nav.tracks[idx].volume_db().unwrap();
         assert!((bottom + 40.0).abs() < 0.6, "the bottom of travel is {bottom} dB, not the floor");
-        d.slide(0, 1, 0);
-        assert_eq!(d.app.nav.tracks[row].volume_db(), None, "the very bottom is not silence");
+        d.slide(n, 1, 0);
+        assert_eq!(d.app.nav.tracks[idx].volume_db(), None, "the very bottom is not silence");
         d.press(C::Undo);
-        assert!((d.app.nav.tracks[row].volume - start).abs() < 0.03, "one UNDO did not take the ride back");
+        assert!((d.app.nav.tracks[idx].volume - start).abs() < 0.03, "one UNDO did not take the ride back");
     }
 
     #[test]
-    fn the_master_fader_rides_the_master() {
+    fn the_function_knob_rides_the_master() {
         let mut d = deck("master");
         let master = d.app.nav.tracks.iter().position(|t| t.kind == phosphor_core::project::TrackKind::Master).unwrap();
         let start = d.app.nav.tracks[master].volume;
-        d.slide(5, 0, 127);
-        assert!(d.app.nav.tracks[master].volume > start, "the master fader did not move the master");
+        d.press(C::FnMaster).turn(C::Function, -3);
+        assert!(d.app.nav.tracks[master].volume < start, "MASTER did not move the master");
     }
 
-    /// VALUE turns the control under the cursor, SHIFT for strides, and
-    /// the turn is undoable like a key press.
+    /// A locked instrument's controls are on the column knobs, eight at a
+    /// time; a turn is undoable like a key press; LAST turns it again.
     #[test]
-    fn value_turns_the_panel_control_under_the_cursor() {
-        let mut d = deck("value");
+    fn the_column_knobs_turn_the_locked_instruments_controls() {
+        let mut d = deck("knobs");
         let idx = add_track(&mut d, InstrumentType::Juno60);
-        d.press(C::PaneClip);
-        d.tap(C::Down, 3);
-        let cursor = d.app.nav.clip_view.synth_param_cursor;
-        let before = d.app.nav.tracks[idx].synth_params[cursor];
-        d.turn(C::Value, 4);
-        let after = d.app.nav.tracks[idx].synth_params[cursor];
-        assert!(after > before, "VALUE did not turn control {cursor}: {before} -> {after}");
-        d.turn(C::Value, -2);
-        assert!(d.app.nav.tracks[idx].synth_params[cursor] < after);
+        part_to(&mut d, Screen::Instrument);
+        assert!(d.strip().contains("Instrument"), "the deck's line does not say what is locked: {}", d.strip());
+        let before = d.app.nav.tracks[idx].synth_params[3];
+        d.turn(C::Knob(3), 4);
+        let after = d.app.nav.tracks[idx].synth_params[3];
+        assert_ne!(after, before, "knob 4 did not turn control 4");
         d.press(C::Undo);
-        assert!((d.app.nav.tracks[idx].synth_params[cursor] - before).abs() < 1e-6, "UNDO did not take the turn back");
+        assert!((d.app.nav.tracks[idx].synth_params[3] - before).abs() < 1e-6, "UNDO did not take the turn back");
+        // Page two is controls 9-16.
+        d.press(C::PageNext);
+        let before = d.app.nav.tracks[idx].synth_params[8];
+        d.turn(C::Knob(0), 3);
+        assert_ne!(d.app.nav.tracks[idx].synth_params[8], before, "page two's first knob is not control 9");
+        let mid = d.app.nav.tracks[idx].synth_params[8];
+        d.press(C::FnLast).turn(C::Function, 2);
+        assert_ne!(d.app.nav.tracks[idx].synth_params[8], mid, "LAST did not turn the last knob");
     }
 
-    /// The pads in STEP mode write a beat on the selected lane; LANE picks
-    /// another; SHIFT+LANE queues a pattern; UNDO takes a step back.
+    /// On a step grid the pads are steps; everywhere else they are notes.
     #[test]
-    fn step_pads_write_a_beat() {
+    fn pads_write_steps_on_a_grid() {
         let mut d = deck("steps");
         let idx = add_track(&mut d, InstrumentType::Sequencer);
-        d.press(C::PaneClip);
+        part_to(&mut d, Screen::Steps);
         for pad in [0, 4, 8, 12] {
             d.hit(pad, 100);
         }
-        let lane = |d: &DeckSim, lane: usize| -> Vec<usize> {
+        let lane = |d: &DeckSim| -> Vec<usize> {
             let state = d.app.nav.tracks[idx].sequencer.as_ref().unwrap();
-            state.pattern().lanes[lane].steps.iter().enumerate().filter(|(_, s)| s.on).map(|(i, _)| i).collect()
+            let lane = state.pattern().lanes.iter().find(|l| l.steps.iter().any(|s| s.on));
+            lane.map(|l| l.steps.iter().enumerate().filter(|(_, s)| s.on).map(|(i, _)| i).collect()).unwrap_or_default()
         };
-        assert_eq!(lane(&d, 0), [0, 4, 8, 12], "four on the floor did not land");
+        assert_eq!(lane(&d), [0, 4, 8, 12], "four on the floor did not land");
+        assert!(d.played.is_empty(), "a step pad also played a note");
         d.hit(4, 100);
-        assert_eq!(lane(&d, 0), [0, 8, 12], "a second hit did not take the step off");
-        d.press(C::Lane(1)).hit(2, 100);
-        assert_eq!(lane(&d, 1), [2], "LANE 2 did not move the pads to lane 2");
-        d.press(C::Accent);
-        assert!(d.app.nav.tracks[idx].sequencer.as_ref().unwrap().pattern().lanes[1].steps[2].accent);
+        assert_eq!(lane(&d), [0, 8, 12], "a second hit did not take the step off");
         d.press(C::Undo);
-        assert!(!d.app.nav.tracks[idx].sequencer.as_ref().unwrap().pattern().lanes[1].steps[2].accent, "UNDO kept the accent");
-        d.shift(C::Lane(1));
-        assert_eq!(d.app.nav.tracks[idx].sequencer.as_ref().unwrap().queued_slot(), Some(1), "SHIFT+LANE 2 did not queue pattern B");
+        assert_eq!(lane(&d), [0, 4, 8, 12], "UNDO did not put the step back");
     }
 
     #[test]
-    fn step_pads_on_a_track_without_a_sequencer_say_so() {
-        let mut d = deck("nosteps");
+    fn pads_play_notes_from_c3_and_move_by_octaves() {
+        let mut d = deck("notes");
         add_track(&mut d, InstrumentType::Synth);
-        d.hit(0, 100);
-        assert!(d.flash().contains("has none"), "{}", d.flash());
+        d.hit(8, 100);
+        assert!(
+            matches!(d.played.first(), Some(MidiMessageType::NoteOn { note: 48, velocity: 100, .. })),
+            "the bottom-left pad did not play C3: {:?}",
+            d.played
+        );
+        d.press(C::PadsUp);
+        d.played.clear();
+        d.hit(8, 100);
+        assert!(matches!(d.played.first(), Some(MidiMessageType::NoteOn { note: 60, .. })), "{:?}", d.played);
     }
 
     /// COPY, walk two keys, PASTE: a pad copied from the deck. Loading the
-    /// first sound is setup — `a` is a listed gap.
+    /// first sound is setup — there is no file on the deck to load.
     #[test]
     fn a_sampler_pad_copies_from_the_deck() {
-        let dir = scratch("copy");
-        let mut d = DeckSim::new(&dir);
+        let mut d = deck("copy");
         let idx = add_track(&mut d, InstrumentType::Sampler);
-        d.press(C::PaneClip);
-        // Setup outside the deck: a sound on the pad under the caret.
+        part_to(&mut d, Screen::Pads);
         let pcm = std::sync::Arc::new(phosphor_plugin::sample::SamplePcm { data: vec![0.3; 4_410], channels: 1, sample_rate: 44_100.0 });
         let kit = d.app.nav.tracks[idx].sampler.as_mut().unwrap();
         let from = kit.cursor;
         kit.add_wav_layer(from, PathBuf::from("kick.wav"), pcm).unwrap();
 
-        d.press(C::Copy).tap(C::Right, 2).press(C::Paste);
+        d.press(C::Copy).turn(C::Navigate, 2).press(C::Paste);
         let kit = d.app.nav.tracks[idx].sampler.as_ref().unwrap();
         assert_eq!(kit.pads[from + 2], kit.pads[from], "PASTE did not copy the pad two keys along");
         d.press(C::Undo);
@@ -233,22 +277,41 @@ mod tests {
         assert_eq!(d.app.nav.tracks[idx].sampler.as_ref().unwrap().pads[from + 2].layers.len(), 1, "REDO lost it");
     }
 
-    /// A question the app asks can be answered from the deck: BACK is no,
-    /// and COPY — which sends `y` — is yes. (ENTER is not; see the gap list.)
+    /// The action buttons are the screen's own verbs: on the pad map, a pad
+    /// knob turned and then MUTE.
+    #[test]
+    fn the_action_buttons_follow_the_screen() {
+        let mut d = deck("actions");
+        let idx = add_track(&mut d, InstrumentType::Sampler);
+        part_to(&mut d, Screen::Pads);
+        let pcm = std::sync::Arc::new(phosphor_plugin::sample::SamplePcm { data: vec![0.3; 4_410], channels: 1, sample_rate: 44_100.0 });
+        let kit = d.app.nav.tracks[idx].sampler.as_mut().unwrap();
+        let pad = kit.cursor;
+        kit.add_wav_layer(pad, PathBuf::from("snare.wav"), pcm).unwrap();
+        let muted = |d: &DeckSim| d.app.nav.tracks[idx].sampler.as_ref().unwrap().pads[pad].layers[0].mute;
+        let slot = phosphor_app::surface::actions::actions(Screen::Pads, false)
+            .iter()
+            .position(|(label, _)| *label == "MUTE")
+            .unwrap();
+        d.press(C::Action(slot as u8));
+        assert!(muted(&d), "the MUTE action did not mute the sound");
+        d.press(C::Undo);
+        assert!(!muted(&d), "UNDO did not take the mute back");
+    }
+
+    /// A question the app asks is answered by the action buttons: YES, NO.
     #[test]
     fn a_question_is_answered_from_the_deck() {
         let mut d = deck("confirm");
-        add_track(&mut d, InstrumentType::Synth);
+        let idx = add_track(&mut d, InstrumentType::Synth);
         let count = d.app.nav.tracks.len();
-        d.press(C::Track(0));
-        menu(&mut d, "delete");
-        assert!(d.app.nav.confirm_modal.open, "delete did not ask");
-        d.press(C::Back);
+        d.press(C::TrackButton(column(idx))).press(C::Delete);
+        assert!(d.app.nav.confirm_modal.open, "DELETE did not ask");
+        d.press(C::Action(1));
         assert!(!d.app.nav.confirm_modal.open);
-        assert_eq!(d.app.nav.tracks.len(), count, "BACK deleted the track anyway");
-        menu(&mut d, "delete");
-        d.press(C::Copy);
-        assert_eq!(d.app.nav.tracks.len(), count - 1, "COPY did not answer yes");
+        assert_eq!(d.app.nav.tracks.len(), count, "NO deleted the track anyway");
+        d.press(C::Delete).press(C::Action(0));
+        assert_eq!(d.app.nav.tracks.len(), count - 1, "YES did not delete");
         d.press(C::Undo);
         assert_eq!(d.app.nav.tracks.len(), count, "UNDO did not bring the track back");
     }
@@ -275,26 +338,17 @@ mod tests {
         assert!(d.app.nav.preset_modal.open, "presets did not open");
         d.press(C::Back);
         assert!(!d.app.nav.preset_modal.open);
-        menu(&mut d, "quantize");
-        d.tap(C::Back, 2);
         menu(&mut d, "help");
         assert!(d.app.nav.space_menu.open, "help did not open");
         d.tap(C::Back, 2);
         assert!(!d.app.nav.space_menu.open);
     }
 
-    /// The controls the app has nothing behind yet say so in words.
     #[test]
     fn unbuilt_controls_say_what_they_are_waiting_for() {
         let mut d = deck("unbuilt");
-        d.turn(C::Bank(0), 1);
-        assert!(d.flash().contains("ENC 1: not built yet"), "{}", d.flash());
-        d.press(C::Count);
-        assert!(d.flash().contains("COUNT: not built yet"), "{}", d.flash());
-        d.press(C::PageNext);
+        d.press(C::MyPage);
         assert!(d.flash().contains("not built yet"), "{}", d.flash());
-        d.press(C::Tempo);
-        assert!(d.flash().contains("push does nothing yet"), "{}", d.flash());
     }
 
     /// The keyboard the deck is clamped to still plays through: its notes are
@@ -303,20 +357,29 @@ mod tests {
     fn the_keyboard_still_plays_through_the_deck() {
         let mut d = deck("keyboard");
         let idx = add_track(&mut d, InstrumentType::Sampler);
-        d.press(C::PaneClip);
+        part_to(&mut d, Screen::Pads);
         d.play(72, 100);
         let kit = d.app.nav.tracks[idx].sampler.as_ref().unwrap();
         assert_eq!(phosphor_app::sampler::SamplerState::note_of_pad(kit.cursor), 72, "a keyboard note was taken for the deck");
     }
 
-    /// SHIFT is a held modifier, not a latch: let go and the next press is
-    /// plain again.
+    /// SHIFT is a held modifier, not a latch.
     #[test]
     fn shift_lets_go_when_it_is_let_go() {
         let mut d = deck("shift");
-        d.shift(C::Tab);
+        d.shift(C::Copy);
         assert!(!d.app.deck.shift, "SHIFT stuck down");
-        d.press(C::PaneTransport).press(C::Tab);
-        assert_ne!(d.app.nav.focused_pane, Pane::Transport);
+    }
+
+    /// Without a deck the screen is the screen it always was: the deck's line
+    /// arrives with the deck's first message.
+    #[test]
+    fn the_deck_line_appears_only_once_a_deck_is_used() {
+        let mut d = deck("line");
+        crate::test_support::press(&mut d.app, crossterm::event::KeyCode::Char('j'));
+        assert!(d.app.nav.deck_strip.is_none(), "a keyboard-only session drew the deck's line");
+        d.press(C::FnTempo);
+        assert!(d.strip().starts_with("DECK"), "{}", d.strip());
+        assert_eq!(d.app.nav.focused_pane, Pane::Tracks, "FN TEMPO moved the focus");
     }
 }
