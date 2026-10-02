@@ -112,6 +112,7 @@ name = "phosphor"
 path = "src/main.rs"
 
 [dependencies]
+phosphor-app.workspace = true
 phosphor-core.workspace = true
 phosphor-tui.workspace = true
 phosphor-gui.workspace = true

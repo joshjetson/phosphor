@@ -45,6 +45,11 @@ impl App {
     /// are decided here, and a test that reached past them would be
     /// checking a route nobody uses.
     pub(crate) fn handle_tap_event(&mut self, event: MidiMessageType, stamp: Option<u64>) {
+        // The Phosphor Deck's own controls ride the same wire on their own
+        // channel; they are the deck's, never a performance.
+        if self.handle_deck_message(event) {
+            return;
+        }
         // The practice room hears everything while it is running: the
         // judge needs the arrival stamp, and a drilled note should not
         // also step-record.

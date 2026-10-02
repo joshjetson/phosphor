@@ -3225,6 +3225,7 @@ version = "0.3.90"
 dependencies = [
  "anyhow",
  "clap",
+ "phosphor-app",
  "phosphor-core",
  "phosphor-gui",
  "phosphor-tui",

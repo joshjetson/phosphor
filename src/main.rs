@@ -30,10 +30,20 @@ struct Cli {
     /// Disable MIDI input
     #[arg(long)]
     no_midi: bool,
+
+    /// Print the Phosphor Deck's control layout as JSON — every control and
+    /// the MIDI message it sends — for building the deck's firmware, then exit.
+    #[arg(long)]
+    deck_layout: bool,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if cli.deck_layout {
+        println!("{}", phosphor_app::surface::layout::layout_json());
+        return Ok(());
+    }
 
     // A request, not a configuration: both halves are optional and both are
     // usually empty. What the engine runs at is settled against the device,

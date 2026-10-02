@@ -13,18 +13,17 @@ impl App {
     /// return somebody adds next year.
     pub(crate) fn handle_event(&mut self, event: Event) {
         self.dispatch_event(event);
+        // The checks after every input — keys here, the deck's own controls
+        // in `deck` — live in one place: see `App::after_input`.
+        //
         // A sampler audition is a sound the engine holds until it is told to
         // stop, and most of the ways out of the pad map are keys that know
-        // nothing about it.
-        self.reconcile_sampler_preview();
-        // Source mode borrows a track's plugin slot, and the keys that can
-        // take that track away — delete, undo, a session load — know
-        // nothing about the borrow.
-        self.reconcile_sampler_source();
-        // Root-learn is armed at one zone, and an arming left standing
-        // would take the next note played anywhere in the box and retune
-        // that zone with it.
-        self.reconcile_sampler_learn();
+        // nothing about it. Source mode borrows a track's plugin slot, and
+        // the keys that can take that track away — delete, undo, a session
+        // load — know nothing about the borrow. Root-learn is armed at one
+        // zone, and an arming left standing would take the next note played
+        // anywhere in the box and retune that zone with it.
+        self.after_input();
     }
 
     fn dispatch_event(&mut self, event: Event) {

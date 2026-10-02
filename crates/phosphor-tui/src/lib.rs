@@ -45,6 +45,12 @@ mod test_recording;
 #[cfg(test)]
 mod test_chop;
 #[cfg(test)]
+mod deck_sim;
+#[cfg(test)]
+mod test_deck_coverage;
+#[cfg(test)]
+mod test_deck_journeys;
+#[cfg(test)]
 mod test_sampler;
 #[cfg(test)]
 mod test_sampler_clipboard;

@@ -35,6 +35,7 @@ mod piano_roll;
 mod presets;
 mod session_io;
 mod clips;
+mod deck;
 mod midi_fx_ops;
 mod practice_ops;
 mod sampler_chop;
@@ -129,6 +130,9 @@ pub struct App {
     /// A sampler pad or one sound off it, waiting for `p` on any key of any
     /// sampler. See [`phosphor_app::sampler::clipboard`].
     pub(crate) sampler_clip: Option<phosphor_app::sampler::clipboard::SamplerClip>,
+    /// What the Phosphor Deck is holding — its SHIFT, its pad mode, its
+    /// faders' grip. See `deck`.
+    pub(crate) deck: deck::DeckState,
     /// The UI's tap on MIDI input, for step record.
     ///
     /// The audio thread's ring has one consumer and this is not it: the
@@ -391,6 +395,7 @@ impl App {
             status_message: format_notice.map(|m| (m, std::time::Instant::now())),
             yanked_clips: Vec::new(),
             sampler_clip: None,
+            deck: deck::DeckState::default(),
             seq_step_clip: None,
             seq_pattern_clip: None,
             midi_ui_rx: enable_midi.then_some(midi_ui_rx),
@@ -767,7 +772,11 @@ fn start_midi_input(
                     status_clone.last_note.store(note, Ordering::Relaxed);
                 }
                 status_clone.message_count.fetch_add(1, Ordering::Relaxed);
-                midi_tx.push(msg);
+                // A deck button is a command, not a note: it goes to the UI
+                // only, or pressing PLAY would also play an instrument.
+                if !phosphor_app::surface::layout::is_deck(msg.message_type) {
+                    midi_tx.push(msg);
+                }
                 // The UI's copy, for step record. A send that fails means
                 // nothing is listening, which is not a reason to stop playing.
                 let _ = ui_tx.send(msg);
