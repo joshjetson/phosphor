@@ -41,6 +41,19 @@ const FIRST_CC: u8 = 16;
 
 /// Columns on the deck: one knob, one action button, one track button, one
 /// fader and two pads each.
+/// The name the deck's USB MIDI port carries. Messages are the deck's only
+/// when they arrive on a port with this in its name; the same bytes from any
+/// other device are a performance, so a keyboard set to channel 16 still
+/// plays.
+pub const PORT_NAME: &str = "Phosphor Deck";
+
+/// Whether a MIDI port is a deck. The operating system decorates the name —
+/// ALSA as `Phosphor Deck:Phosphor Deck MIDI 1 20:0`, Windows with a number —
+/// so the test is containment.
+pub fn is_deck_port(name: &str) -> bool {
+    name.contains(PORT_NAME)
+}
+
 pub const COLUMNS: u8 = 8;
 
 /// Pads: two rows of eight, one pair under each column.

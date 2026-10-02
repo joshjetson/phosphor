@@ -5,6 +5,10 @@ new" card the first time you run a version you have not seen. Each section is a
 `## X.Y.Z — Title` header, a blank line, and a short prose summary — the same
 words as the release notes, without the install line, which the app supplies.
 
+## 0.3.91 — Every MIDI device at once, plugged in whenever
+
+Phosphor now listens to every MIDI keyboard and controller you have plugged in, all at once, instead of only the first one it found when it started. Devices can come and go while it runs: plug one in and within a couple of seconds the bottom bar says it is connected and it plays; pull it out and the bar says so, with nothing to restart. A keyboard set to MIDI channel 16 also plays normally now — before, its notes could be mistaken for presses on the Phosphor Deck controller, which is now recognised by its own port name rather than its channel.
+
 ## 0.3.90 — Copy a pad to another key
 
 On the sampler, `y` copies the pad under the caret — every sound on it and every setting — and `p` on another key makes that key an exact copy, replacing what was there. `Y` copies just the one sound under the layer cursor, and `p` adds it to the key's own sounds instead. The copy works across keys and across sampler tracks, costs no extra memory because the copies share their audio, and every paste is one step of undo and redo; in keys mode the same keys copy a zone's sound.

@@ -47,7 +47,7 @@
 
 Phosphor is a digital audio workstation that runs entirely in your terminal. It pairs a themeable TUI with a real-time audio engine, giving you a DAW you can use over SSH, in a tiling window manager, or anywhere a terminal lives.
 
-Each instrument track gets its own synthesizer instance with independent parameters. MIDI controllers are detected automatically on startup. The audio engine runs on a dedicated real-time thread with lock-free communication — no mutexes in the audio path, ever.
+Each instrument track gets its own synthesizer instance with independent parameters. Every MIDI device you plug in is used at once, including ones plugged in while it runs. The audio engine runs on a dedicated real-time thread with lock-free communication — no mutexes in the audio path, ever.
 
 ---
 
@@ -121,6 +121,14 @@ cargo run --release -- --no-midi
 6. Press `Tab` to reach `[inst]`, the instrument's full panel, laid out in
    columns with room for all of it; `Tab` again for the piano roll
 7. Press `Space` then `v` to change the color theme
+
+### Plugging in MIDI gear
+
+Plug in as many MIDI keyboards and controllers as you like — Phosphor
+listens to all of them at once. You can plug one in or pull it out while
+Phosphor is running: within a couple of seconds the bottom bar says
+`MIDI: <name> connected` (or `unplugged`), and it just works. Nothing to set
+up, no restart.
 
 ### Staying up to date
 
@@ -357,7 +365,7 @@ program with `program`.
 - Theme choice persists across sessions (`<app dir>/config.json`)
 
 **MIDI**
-- Auto-detection of MIDI controllers on startup
+- Every connected MIDI device at once, and devices plugged in or pulled out while it runs
 - Lock-free SPSC ring buffer for MIDI-to-audio routing
 - Sample-accurate MIDI event processing
 - Note-on/off, CC, pitch bend support

@@ -28,13 +28,20 @@ impl App {
     /// Take everything the MIDI tap has seen since the last frame.
     pub(crate) fn poll_step_record(&mut self) {
         let Some(rx) = self.midi_ui_rx.as_ref() else { return };
-        let mut events: Vec<(MidiMessageType, Option<u64>)> = Vec::new();
-        while let Ok(message) = rx.try_recv() {
-            events.push((message.message_type, message.received_micros));
+        let taps: Vec<phosphor_app::surface::pads::Tap> = rx.try_iter().collect();
+        for tap in taps {
+            self.handle_tap(tap);
         }
-        for (event, stamp) in events {
-            self.handle_tap_event(event, stamp);
+    }
+
+    /// One message off the wire: a deck control, or a performance.
+    pub(crate) fn handle_tap(&mut self, tap: phosphor_app::surface::pads::Tap) {
+        // The Phosphor Deck's controls come from its own port and are the
+        // deck's, never a performance.
+        if tap.deck && self.handle_deck_message(tap.message.message_type) {
+            return;
         }
+        self.handle_tap_event(tap.message.message_type, tap.message.received_micros);
     }
 
     /// One message from the tap, routed.
@@ -45,11 +52,6 @@ impl App {
     /// are decided here, and a test that reached past them would be
     /// checking a route nobody uses.
     pub(crate) fn handle_tap_event(&mut self, event: MidiMessageType, stamp: Option<u64>) {
-        // The Phosphor Deck's own controls ride the same wire on their own
-        // channel; they are the deck's, never a performance.
-        if self.handle_deck_message(event) {
-            return;
-        }
         // The practice room hears everything while it is running: the
         // judge needs the arrival stamp, and a drilled note should not
         // also step-record.

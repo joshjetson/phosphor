@@ -3,6 +3,7 @@
 pub mod actions;
 mod app;
 pub mod debug_log;
+mod midi_in;
 pub mod session;
 mod splash;
 pub mod state;

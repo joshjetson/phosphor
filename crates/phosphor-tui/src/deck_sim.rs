@@ -35,11 +35,11 @@ impl DeckSim {
     fn send(&mut self, input: DeckInput) {
         let bytes = phosphor_app::surface::layout::encode(input);
         let message = phosphor_midi::MidiMessage::from_bytes(&bytes).expect("three bytes parse");
-        let routed = phosphor_app::surface::pads::route(message, &self.app.deck_pads);
+        let routed = phosphor_app::surface::pads::route(message, true, &self.app.deck_pads);
         if let Some(note) = routed.engine {
             self.played.push(note.message_type);
         }
-        self.app.handle_tap_event(routed.app.message_type, None);
+        self.app.handle_tap(routed.app);
     }
 
     /// Press and let go.

@@ -82,7 +82,8 @@ pub struct App {
     pub(crate) running: bool,
     _audio_backend: Option<CpalBackend>,
     _midi_status: Arc<MidiStatus>,
-    _midi_connection: Option<midir::MidiInputConnection<()>>,
+    /// Every MIDI input, opened as it appears. `None` when MIDI is off.
+    midi_inputs: Option<crate::midi_in::MidiInputs>,
     next_track_id: usize,
     clip_rx: crossbeam_channel::Receiver<ClipSnapshot>,
     /// Last saved/loaded file path for Ctrl+S quick save.
@@ -144,7 +145,7 @@ pub struct App {
     /// The audio thread's ring has one consumer and this is not it: the
     /// `midir` callback fills both. `None` when MIDI is off, which is every
     /// test — those call the step-record entry points directly.
-    pub(crate) midi_ui_rx: Option<crossbeam_channel::Receiver<phosphor_midi::MidiMessage>>,
+    pub(crate) midi_ui_rx: Option<crossbeam_channel::Receiver<phosphor_app::surface::pads::Tap>>,
     /// The mixer track currently auditioning a sampler layer, and how.
     ///
     /// The engine holds a preview until it is told to stop, so something on
@@ -313,9 +314,13 @@ impl App {
         // Start MIDI input FIRST so the controller can finish its init burst
         let (midi_ui_tx, midi_ui_rx) = crossbeam_channel::unbounded();
         let deck_pads = Arc::new(phosphor_app::surface::pads::PadRoute::default());
-        let midi_connection = if enable_midi {
-            let status = midi_status.clone();
-            start_midi_input(status, midi_tx, midi_ui_tx, Arc::clone(&deck_pads))
+        let midi_inputs = if enable_midi {
+            Some(crate::midi_in::MidiInputs::start(
+                midi_tx,
+                midi_ui_tx,
+                Arc::clone(&deck_pads),
+                midi_status.clone(),
+            ))
         } else {
             drop(midi_tx);
             drop(midi_ui_tx);
@@ -323,7 +328,7 @@ impl App {
         };
 
         // Brief pause to let MIDI controller finish sending init data
-        if midi_connection.is_some() {
+        if midi_inputs.as_ref().is_some_and(|m| m.any()) {
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
 
@@ -388,7 +393,7 @@ impl App {
             running: true,
             _audio_backend: backend,
             _midi_status: midi_status,
-            _midi_connection: midi_connection,
+            midi_inputs,
             next_track_id: 0,
             clip_rx,
             session_path: None,
@@ -633,6 +638,9 @@ impl App {
             // What was played since the last frame, for a sequencer that is
             // armed. Drained whether or not anything is armed, so the channel
             // cannot grow while a controller is idling.
+            if let Some(words) = self.midi_inputs.as_mut().and_then(|m| m.poll()) {
+                self.flash(format!("MIDI: {words}"));
+            }
             self.poll_step_record();
             self.poll_audio_overruns();
             self.poll_update_notice();
@@ -742,68 +750,6 @@ impl App {
             }
         }
         Ok(())
-    }
-}
-
-/// Start MIDI input on the first available port.
-fn start_midi_input(
-    status: Arc<MidiStatus>,
-    mut midi_tx: phosphor_midi::ring::MidiRingSender,
-    ui_tx: crossbeam_channel::Sender<phosphor_midi::MidiMessage>,
-    pads: Arc<phosphor_app::surface::pads::PadRoute>,
-) -> Option<midir::MidiInputConnection<()>> {
-    let midi_in = match midir::MidiInput::new("phosphor") {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::warn!("Failed to init MIDI: {e}");
-            return None;
-        }
-    };
-
-    let ports = midi_in.ports();
-    if ports.is_empty() {
-        tracing::info!("No MIDI input ports found");
-        return None;
-    }
-
-    let port = &ports[0];
-    let port_name = midi_in.port_name(port).unwrap_or_else(|_| "unknown".into());
-    tracing::info!("Connecting to MIDI port: {port_name}");
-
-    let status_clone = status.clone();
-    match midi_in.connect(
-        port,
-        "phosphor-in",
-        move |_timestamp, data, _| {
-            if let Some(mut msg) = phosphor_midi::MidiMessage::from_bytes(data) {
-                msg.received_micros = Some(phosphor_midi::clock::now_micros());
-                if let phosphor_midi::MidiMessageType::NoteOn { note, .. } = msg.message_type {
-                    status_clone.last_note.store(note, Ordering::Relaxed);
-                }
-                status_clone.message_count.fetch_add(1, Ordering::Relaxed);
-                // A deck button is a command, not a note: it goes to the UI
-                // only, or pressing PLAY would also play an instrument. A
-                // deck pad becomes a note here when the pads are notes.
-                let routed = phosphor_app::surface::pads::route(msg, &pads);
-                if let Some(note) = routed.engine {
-                    midi_tx.push(note);
-                }
-                // The UI's copy, for step record. A send that fails means
-                // nothing is listening, which is not a reason to stop playing.
-                let _ = ui_tx.send(routed.app);
-            }
-        },
-        (),
-    ) {
-        Ok(conn) => {
-            status.connected.store(true, Ordering::Relaxed);
-            tracing::info!("MIDI connected: {port_name}");
-            Some(conn)
-        }
-        Err(e) => {
-            tracing::warn!("Failed to connect MIDI: {e}");
-            None
-        }
     }
 }
 
