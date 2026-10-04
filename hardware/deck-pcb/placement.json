@@ -1,0 +1,54 @@
+{
+ "footprints": 281,
+ "top": 102,
+ "bottom": 179,
+ "nets": 186,
+ "lights_as_dots": [
+  "Play",
+  "Rec",
+  "Overdub",
+  "Loop",
+  "Click",
+  "CountIn",
+  "FnTempo",
+  "FnSwing",
+  "FnGrid",
+  "FnMaster",
+  "FnLoop",
+  "FnLast"
+ ],
+ "moved_far": [
+  [
+   "U1",
+   16.5
+  ],
+  [
+   "U2",
+   12.5
+  ],
+  [
+   "RN4",
+   8.5
+  ],
+  [
+   "U4",
+   9.0
+  ],
+  [
+   "U5",
+   8.5
+  ],
+  [
+   "U15",
+   22.5
+  ],
+  [
+   "C77",
+   13.5
+  ],
+  [
+   "C79",
+   13.5
+  ]
+ ]
+}

@@ -1123,7 +1123,8 @@ keyboard. You never need one — everything it does, the keyboard does too.
 If you build one, plug it in and it just works: Phosphor recognises it by
 name, a line above the bottom bar says what is locked and what its eight
 knobs turn, and its pads play notes. Its firmware, and how to load it, is in
-[`firmware/`](firmware/README.md).
+[`firmware/`](firmware/README.md); its circuit board, ready to send to a board
+house, is in [`hardware/deck-pcb/`](hardware/deck-pcb/README.md).
 
 ## Shortcuts, A to Z
 

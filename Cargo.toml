@@ -109,6 +109,8 @@ description = "A terminal-native DAW with built-in synthesizers and MIDI support
 readme = "README.md"
 keywords = ["daw", "audio", "synthesizer", "midi", "tui"]
 categories = ["multimedia::audio", "command-line-utilities"]
+# The deck's circuit board is for building one, not for running Phosphor.
+exclude = ["hardware/"]
 
 [[bin]]
 name = "phosphor"

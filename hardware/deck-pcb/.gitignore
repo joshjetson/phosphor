@@ -1,0 +1,6 @@
+# Routing scratch files and KiCad's per-user state.
+deck.dsn
+deck.ses
+*.kicad_prl
+fp-info-cache
+*-backups/

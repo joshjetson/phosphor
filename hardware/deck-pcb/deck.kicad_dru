@@ -1,0 +1,10 @@
+(version 1)
+
+# The reverse-mount LEDs' pads come within 0.247 mm of the corners of the
+# hole they shine through, as KiCad's own SK6812MINI-E footprint draws them.
+# Everywhere else the board keeps 0.3 mm from its edges. Confirm with the
+# board house that internal cutouts at 0.25 mm are fine (they usually are).
+(rule "LED light holes"
+    (constraint edge_clearance (min 0.24mm))
+    (condition "A.memberOfFootprint('D*') || B.memberOfFootprint('D*')"))
+
