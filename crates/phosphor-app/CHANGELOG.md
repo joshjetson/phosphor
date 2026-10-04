@@ -5,6 +5,10 @@ new" card the first time you run a version you have not seen. Each section is a
 `## X.Y.Z — Title` header, a blank line, and a short prose summary — the same
 words as the release notes, without the install line, which the app supplies.
 
+## 0.3.93 — 0.3.92, building on current Rust
+
+0.3.92 would not build with the newest Rust compilers, which treat one pattern in the new multi-core engine as an error; installing it with an up-to-date toolchain failed. This release is the same engine with that pattern written out the way current Rust requires — nothing about how Phosphor sounds or behaves changes.
+
 ## 0.3.92 — Every core, and the sound stays exactly the same
 
 Phosphor now spreads its tracks over all of your computer's cores instead of doing everything on one, so a song with many instruments and effects has far more room before the audio drops out — a busy eleven-instrument song that used a fifth of one core now uses under a tenth, and its worst moments are three times calmer. Nothing about the sound changes: every sample is identical however many cores play it, and a test holds it to that. On Linux, Phosphor also asks for real-time scheduling so other programs cannot delay the audio, if your account is allowed it. `PHOSPHOR_AUDIO_THREADS=1` runs everything on one core, as before.

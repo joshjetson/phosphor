@@ -52,7 +52,9 @@ impl<'a> Strips<'a> {
         // are out (see the `Sync` impl).
         unsafe {
             let track = self.tracks.add(i);
-            (&(*addr_of!((*track).buf_l))[..self.frames], &(*addr_of!((*track).buf_r))[..self.frames])
+            let left: &Vec<f32> = &*addr_of!((*track).buf_l);
+            let right: &Vec<f32> = &*addr_of!((*track).buf_r);
+            (&left[..self.frames], &right[..self.frames])
         }
     }
 
@@ -70,8 +72,10 @@ impl<'a> Strips<'a> {
         let key = (*addr_of!((*track).key_from)).map(|source| self.tap(source));
         let (own_l, own_r) = self.tap(i);
         let chain = &mut *addr_of_mut!((*track).chain);
-        let work_l = &mut (*addr_of_mut!((*track).work_l))[..frames];
-        let work_r = &mut (*addr_of_mut!((*track).work_r))[..frames];
+        let work_l: &mut Vec<f32> = &mut *addr_of_mut!((*track).work_l);
+        let work_r: &mut Vec<f32> = &mut *addr_of_mut!((*track).work_r);
+        let work_l = &mut work_l[..frames];
+        let work_r = &mut work_r[..frames];
         let scratch = &mut *addr_of_mut!((*track).fx_scratch);
 
         // The inserts run on a copy so that `buf_l`/`buf_r` stay as the
