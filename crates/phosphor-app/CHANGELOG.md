@@ -5,6 +5,10 @@ new" card the first time you run a version you have not seen. Each section is a
 `## X.Y.Z — Title` header, a blank line, and a short prose summary — the same
 words as the release notes, without the install line, which the app supplies.
 
+## 0.3.92 — Every core, and the sound stays exactly the same
+
+Phosphor now spreads its tracks over all of your computer's cores instead of doing everything on one, so a song with many instruments and effects has far more room before the audio drops out — a busy eleven-instrument song that used a fifth of one core now uses under a tenth, and its worst moments are three times calmer. Nothing about the sound changes: every sample is identical however many cores play it, and a test holds it to that. On Linux, Phosphor also asks for real-time scheduling so other programs cannot delay the audio, if your account is allowed it. `PHOSPHOR_AUDIO_THREADS=1` runs everything on one core, as before.
+
 ## 0.3.91 — Every MIDI device at once, plugged in whenever
 
 Phosphor now listens to every MIDI keyboard and controller you have plugged in, all at once, instead of only the first one it found when it started. Devices can come and go while it runs: plug one in and within a couple of seconds the bottom bar says it is connected and it plays; pull it out and the bar says so, with nothing to restart. A keyboard set to MIDI channel 16 also plays normally now — before, its notes could be mistaken for presses on the Phosphor Deck controller, which is now recognised by its own port name rather than its channel.

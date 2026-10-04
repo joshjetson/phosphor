@@ -89,6 +89,15 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      # The tests above run the engine on every core, which is how it runs
+      # for everyone. Once more on one, so the path a single-core machine
+      # takes stays tested too.
+      - name: Test the engine on one core
+        if: runner.os == 'Linux'
+        env:
+          PHOSPHOR_AUDIO_THREADS: "1"
+        run: cargo test -p phosphor-core -p phosphor-app
+
   clippy:
     name: clippy
     runs-on: ubuntu-latest

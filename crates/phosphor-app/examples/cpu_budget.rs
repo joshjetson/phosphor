@@ -19,6 +19,7 @@
 
 use std::time::Instant;
 
+use phosphor_app::busy_song::BusySong;
 use phosphor_app::instrument::build_plugin;
 use phosphor_app::state::InstrumentType;
 use phosphor_dsp::fx::compressor::{Compressor, PARAM_RATIO, PARAM_THRESHOLD_DB};
@@ -194,4 +195,30 @@ fn main() {
     println!();
     row("typical song (6 tracks, 2 sends)", measure(&mut typical));
     row(&format!("heavy session ({} tracks)", session.len()), measure(&mut session));
+
+    // The whole engine — mixer, recording, sends, meters, master and all —
+    // playing the busy song, on one thread and then on every core.
+    println!();
+    let cores = phosphor_core::parallel::audio_threads();
+    for threads in [1, cores] {
+        row(&format!("busy song, whole engine, {threads} thread{}", if threads == 1 { "" } else { "s" }), measure_song(threads));
+    }
+}
+
+/// [`measure`], for the busy song through the real mixer. It plays at
+/// 128-frame blocks whatever `BLOCK` says.
+fn measure_song(threads: usize) -> (f64, f64, f64) {
+    let mut song = BusySong::new(|mixer| mixer.set_threads(threads));
+    let mut times = Vec::with_capacity(BLOCKS);
+    for n in 0..WARMUP + BLOCKS {
+        let start = Instant::now();
+        song.next_block();
+        let us = start.elapsed().as_secs_f64() * 1e6;
+        if n >= WARMUP {
+            times.push(us);
+        }
+    }
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mean = times.iter().sum::<f64>() / times.len() as f64;
+    (mean, times[(times.len() as f64 * 0.999) as usize - 1], *times.last().unwrap())
 }

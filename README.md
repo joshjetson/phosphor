@@ -2278,6 +2278,21 @@ it; if not, the device's own is adopted and the difference is reported on the
 status bar rather than left to be discovered by ear. `--no-audio` has no device
 to follow and runs at 44100 / 64.
 
+### Using every core
+
+Phosphor spreads its tracks over all your computer's cores, so a song with
+many instruments and effects plays without dropouts on a modest machine.
+It sounds exactly the same however many cores it uses. To run everything on
+one core — for comparison, or to rule it out when chasing a problem — set
+`PHOSPHOR_AUDIO_THREADS=1`.
+
+On Linux, Phosphor asks for real-time scheduling so other programs cannot
+delay the audio. The system only grants it if you have permission: add
+yourself to the `audio` group, or give that group a real-time limit (most
+audio-focused distributions already do). Without it Phosphor still runs, at
+normal priority, and says so once in the debug log. macOS and Windows need
+nothing.
+
 ### Debug Logging
 
 ```bash

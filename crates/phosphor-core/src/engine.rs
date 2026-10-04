@@ -126,6 +126,8 @@ pub struct EngineAudio {
     /// See [`EngineShared::overruns`]. `None` on the paths that never
     /// wired one (tests, the legacy engine).
     overruns: Option<Arc<std::sync::atomic::AtomicU32>>,
+    /// Whether this thread has asked to run as real-time audio yet.
+    promoted: bool,
 }
 
 impl EngineAudio {
@@ -150,6 +152,7 @@ impl EngineAudio {
             plugin_buf_r: vec![0.0; buf_size],
             mixer: None,
             overruns: None,
+            promoted: false,
         };
         s.synth.init(config.sample_rate as f64, buf_size);
         s
@@ -205,6 +208,7 @@ impl EngineAudio {
             plugin_buf_r: vec![0.0; buf_size],
             mixer: Some(mixer),
             overruns: None,
+            promoted: false,
         }
     }
 
@@ -230,6 +234,20 @@ impl EngineAudio {
     ///
     /// `output` is interleaved: [L0, R0, L1, R1, ...]
     pub fn process(&mut self, output: &mut [f32], transport: &Transport) {
+        // On Linux nothing else asks for the callback's thread to be
+        // scheduled as real-time audio, so it asks itself, once, on the
+        // first callback — the only place that is that thread. macOS and
+        // Windows already run the callback at real-time priority. See
+        // [`crate::realtime`].
+        if !self.promoted {
+            self.promoted = true;
+            #[cfg(target_os = "linux")]
+            crate::realtime::promote_current_thread(
+                (output.len() / usize::from(self.channels.max(1))) as u32,
+                self.sample_rate,
+            );
+        }
+
         // Check panic flag — kill all sound immediately
         if self.panic_flag.swap(false, Ordering::Relaxed) {
             self.synth.reset();

@@ -6,6 +6,8 @@ pub mod fx;
 pub mod metronome;
 pub mod midi_fx;
 pub mod mixer;
+pub mod parallel;
+pub mod realtime;
 pub mod pattern;
 pub mod project;
 pub mod transport;
@@ -29,15 +31,34 @@ use serde::{Deserialize, Serialize};
 pub(crate) mod alloc_count {
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::cell::Cell;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     thread_local! {
         static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
+        /// A counter this thread's allocations are also added to: a worker
+        /// pool's, so a test can see what its threads did.
+        static ALSO_INTO: Cell<*const AtomicU64> = const { Cell::new(std::ptr::null()) };
     }
 
     struct Counting;
 
     fn note_allocation() {
         let _ = ALLOCATIONS.try_with(|c| c.set(c.get() + 1));
+        let _ = ALSO_INTO.try_with(|into| {
+            let counter = into.get();
+            if !counter.is_null() {
+                // SAFETY: set by `count_into` from a counter its thread
+                // holds alive for as long as the thread runs.
+                unsafe { (*counter).fetch_add(1, Ordering::Relaxed) };
+            }
+        });
+    }
+
+    /// Add every allocation this thread makes to `counter` as well. The
+    /// counter must outlive the thread: a worker pool's own, held by the
+    /// worker.
+    pub(crate) fn count_into(counter: &AtomicU64) {
+        ALSO_INTO.with(|into| into.set(counter));
     }
 
     // SAFETY: every method forwards to the system allocator with the same

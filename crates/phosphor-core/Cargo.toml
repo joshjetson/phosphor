@@ -11,6 +11,7 @@ readme = "../../README.md"
 phosphor-midi.workspace = true
 phosphor-plugin.workspace = true
 cpal.workspace = true
+audio_thread_priority.workspace = true
 crossbeam-channel.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true

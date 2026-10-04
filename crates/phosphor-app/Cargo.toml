@@ -10,6 +10,7 @@ readme = "../../README.md"
 [dependencies]
 phosphor-core.workspace = true
 phosphor-midi.workspace = true
+crossbeam-channel.workspace = true
 phosphor-dsp.workspace = true
 phosphor-plugin.workspace = true
 serde.workspace = true
