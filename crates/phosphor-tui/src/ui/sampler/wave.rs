@@ -1,6 +1,6 @@
 //! One buffer as a picture, at two sizes.
 //!
-//! The reduction, the half-block drawing and the marker ruler are here
+//! The reduction, the drawing and the marker ruler are here
 //! because two views want them: the trim strip ([`super::strip`]), which
 //! takes the whole pane, and the compact picture under the pad panel
 //! ([`mini_lines`]), which takes three rows of it. They are the same
@@ -10,7 +10,8 @@
 //! # Why the peaks are cached
 //!
 //! One column is the loudest and quietest sample in its own slice of the
-//! file, so drawing either view reads the whole buffer once. For a drum hit
+//! file, and how loud that slice is on average, so drawing either view reads
+//! the whole buffer once. For a drum hit
 //! that is nothing; for a ten-minute stereo take it is fifty megabytes, and
 //! both views redraw on a timer. So the reduction is kept, keyed by the
 //! buffer it came from and the width it was taken at — and it survives every
@@ -34,8 +35,8 @@ pub(super) const QUIET_FLOOR: f32 = 1e-4;
 /// Rows the compact picture spends: two of waveform and the ruler under
 /// them.
 ///
-/// Two is enough to read an envelope against the zero line and no more than
-/// the pad panel can spare — the controls above it are what the keys are
+/// Two is enough to read an envelope — sixteen steps of height, drawn
+/// upward — and no more than the pad panel can spare — the controls above it are what the keys are
 /// typing into. The ruler is not optional: without the markers the picture
 /// says what the recording is and not what plays.
 pub(super) const MINI_ROWS: usize = 3;
@@ -45,7 +46,8 @@ pub(super) const MINI_ROWS: usize = 3;
 /// be most of the row.
 const MINI_MIN_PICTURE: usize = 12;
 
-/// One layer's waveform reduced to one pair of peaks per column.
+/// One layer's waveform reduced to one column of the screen per slice of the
+/// file: its peaks, and how loud it is on average.
 pub(super) struct Peaks {
     /// The buffer these came from, held rather than pointed at: an `Arc`
     /// cannot be freed and its address handed to a different recording while
@@ -54,6 +56,11 @@ pub(super) struct Peaks {
     width: usize,
     /// Quietest and loudest sample in each column's slice of the file.
     pub(super) columns: Vec<(f32, f32)>,
+    /// Each column's loudness: the root-mean-square of its slice. The peaks
+    /// say how far the waveform reaches; this says how much sound is there,
+    /// which is what tells a hit from the wash around it in loud material,
+    /// where nearly every column's peak touches the top.
+    pub(super) loudness: Vec<f32>,
     /// The loudest sample anywhere, which the drawing normalises by: a take
     /// recorded at −20 dBFS is still a waveform, and one drawn at a twentieth
     /// of the height is a flat line with a rumour in it.
@@ -86,6 +93,7 @@ impl Peaks {
         let frames = pcm.frames().max(1);
         let channels = usize::from(pcm.channels.max(1));
         let mut columns = Vec::with_capacity(width);
+        let mut loudness = Vec::with_capacity(width);
         let mut peak = QUIET_FLOOR;
         for column in 0..width {
             // Integer arithmetic on u64 so a long file cannot lose frames to
@@ -94,7 +102,11 @@ impl Peaks {
             let lo = (column as u64 * frames / width as u64) as usize;
             let hi = (((column as u64 + 1) * frames / width as u64) as usize).max(lo + 1);
             let mut span = (0.0f32, 0.0f32);
-            for frame in lo..hi.min(frames as usize) {
+            // In f64: a column of a long take is hundreds of thousands of
+            // squares, and an f32 running sum stops counting small ones.
+            let mut energy = 0.0f64;
+            let end = hi.min(frames as usize);
+            for frame in lo..end {
                 // The first channel: a stereo file's two sides look alike at
                 // this resolution, and summing them would draw a hole
                 // wherever they disagree.
@@ -102,10 +114,12 @@ impl Peaks {
                 span.0 = span.0.min(s);
                 span.1 = span.1.max(s);
                 peak = peak.max(s.abs());
+                energy += f64::from(s) * f64::from(s);
             }
             columns.push(span);
+            loudness.push((energy / end.saturating_sub(lo).max(1) as f64).sqrt() as f32);
         }
-        Self { pcm: Arc::clone(pcm), width, columns, peak }
+        Self { pcm: Arc::clone(pcm), width, columns, loudness, peak }
     }
 
     fn is_for(&self, pcm: &Arc<SamplePcm>, width: usize) -> bool {
@@ -140,13 +154,35 @@ pub(super) fn column_of(frame: u64, frames: u64, width: usize) -> usize {
     // The exclusive end lands one past the last column; the caller clamps.
 }
 
+/// Partial blocks, an eighth of a row each, from a sliver to a full cell.
+const EIGHTHS: [&str; 9] = [
+    " ", "\u{2581}", "\u{2582}", "\u{2583}", "\u{2584}", "\u{2585}", "\u{2586}", "\u{2587}",
+    "\u{2588}",
+];
+
+/// The peaks above the loudness: a light shade, so the two read apart in a
+/// terminal with no colour at all.
+const PEAK: &str = "\u{2592}";
+
 /// The waveform itself, `rows` tall.
 ///
-/// Half blocks either side of the centre line, so the picture has twice the
-/// vertical resolution a terminal row would otherwise give it, and the
-/// centre row is always drawn: a silent passage is a line through the middle
-/// rather than a gap, which is the difference between "quiet here" and "the
-/// strip stopped drawing".
+/// Drawn upward from a baseline, the way a level meter is, rather than
+/// mirrored about a centre line: a sound's two halves look alike at this
+/// size, so mirroring spends half the rows drawing the same thing twice.
+/// Upward, every row is detail, and the top of each column can be set to an
+/// eighth of a row instead of a half.
+///
+/// Two things are drawn in each column. The solid part is the column's
+/// loudness; the light shade above it reaches to the column's peak. In a
+/// drum hit the shade is a thin cap over a solid body; in a loud, finished
+/// mix — where nearly every peak touches the top, and a picture of peaks
+/// alone is one solid block — the loudness still rises on the hits and dips
+/// between them, which is the shape a player is looking for. Both are scaled
+/// by the loudest sample in the file, so a quiet recording fills the height
+/// and a quiet passage inside a loud one still looks quiet.
+///
+/// The bottom row is never empty: silence is a baseline, which is the
+/// difference between "quiet here" and "the picture stopped drawing".
 ///
 /// `paint` says what colour each column is. The waveform is the same picture
 /// whatever it is lighting — one region in the trim strip and the panel, a
@@ -158,34 +194,34 @@ pub(super) fn wave_rows(
     paint: impl Fn(usize) -> Style,
 ) -> Vec<Line<'static>> {
     let width = peaks.columns.len();
-    let centre = rows / 2;
-    let half = (rows as f32 / 2.0).max(1.0);
-    let scale = 1.0 / peaks.peak.max(QUIET_FLOOR);
+    let rows = rows.max(1);
+    let scale = rows as f32 / peaks.peak.max(QUIET_FLOOR);
 
     (0..rows)
         .map(|row| {
+            // This row covers heights `floor..floor + 1`, counted in rows
+            // from the baseline.
+            let floor = (rows - 1 - row) as f32;
             let spans = (0..width)
                 .map(|column| {
                     let (low, high) = peaks.columns[column];
-                    let style = paint(column);
-                    let reach = if row < centre {
-                        (high * scale).max(0.0) * half - (centre - row) as f32
-                    } else if row > centre {
-                        (-low * scale).max(0.0) * half - (row - centre) as f32
+                    let reach = low.abs().max(high.abs()) * scale;
+                    let body = peaks.loudness[column] * scale;
+                    let glyph = if body >= floor + 1.0 {
+                        EIGHTHS[8]
+                    } else if body > floor {
+                        // The top of the body, to the nearest eighth — and
+                        // never rounded away to nothing, so a body that
+                        // reaches into this row is seen to.
+                        EIGHTHS[(((body - floor) * 8.0).round() as usize).clamp(1, 8)]
+                    } else if reach > floor {
+                        PEAK
+                    } else if row == rows - 1 {
+                        EIGHTHS[1]
                     } else {
-                        // The centre row is the zero line and is always there.
-                        1.0
+                        EIGHTHS[0]
                     };
-                    let glyph = if reach >= 0.0 {
-                        "\u{2588}"
-                    } else if reach >= -0.5 {
-                        // The half nearest the centre line, so the shape
-                        // grows outward from it rather than floating.
-                        if row < centre { "\u{2584}" } else { "\u{2580}" }
-                    } else {
-                        " "
-                    };
-                    Span::styled(glyph, style)
+                    Span::styled(glyph, paint(column))
                 })
                 .collect::<Vec<_>>();
             Line::from(spans)

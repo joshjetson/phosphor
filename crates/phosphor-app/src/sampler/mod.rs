@@ -265,11 +265,23 @@ pub struct PadState {
 }
 
 impl PadState {
+    /// The settings a sound brought onto a fresh pad plays with.
+    ///
+    /// The engine's own neutral pad ([`PadConfig::for_key`]) with one
+    /// change: **mono**, so a sound that runs long is stopped by playing any
+    /// other key rather than having to be waited out. The one definition of
+    /// "fresh": what a pad is made with, and what a session leaves out of the
+    /// file because it is already this.
+    #[must_use]
+    pub fn fresh_config(note: u8) -> PadConfig {
+        PadConfig { trig: phosphor_plugin::sample::TrigMode::Mono, ..PadConfig::for_key(note) }
+    }
+
     /// A seat with nothing in it: what a fresh pad is, what a zone starts
     /// as, and what a key no zone covers plays.
     pub fn empty(note: u8) -> Self {
         Self {
-            config: PadConfig::for_key(note),
+            config: Self::fresh_config(note),
             layers: Vec::new(),
             phrases: Vec::new(),
             source: None,
@@ -613,7 +625,7 @@ impl SamplerState {
     /// would lose the setup for the take they were about to record.
     pub fn occupied_pads(&self) -> impl Iterator<Item = usize> + '_ {
         self.pads.iter().enumerate().filter_map(|(i, p)| {
-            let fresh = PadConfig::for_key(Self::note_of_pad(i));
+            let fresh = PadState::fresh_config(Self::note_of_pad(i));
             let touched = !p.layers.is_empty()
                 || !p.phrases.is_empty()
                 || p.config != fresh
@@ -724,6 +736,24 @@ mod tests {
         assert_eq!(SamplerState::note_of_pad(s.cursor), 60);
         assert_eq!(s.occupied_pads().count(), 0);
         assert_eq!(s.pcm_bytes(), 0);
+    }
+
+    /// A sound brought onto a fresh pad is mono, so a long one is stopped
+    /// by playing any other key — and the new default costs a session
+    /// nothing: empty pads are still left out of the file.
+    #[test]
+    fn a_fresh_pad_is_mono_and_an_empty_one_is_not_saved() {
+        use phosphor_plugin::sample::TrigMode;
+        let mut s = SamplerState::new();
+        assert!(s.pads.iter().all(|p| p.config.trig == TrigMode::Mono));
+        assert_eq!(s.occupied_pads().count(), 0, "empty pads would be written to every session");
+        s.add_wav_layer(10, PathBuf::from("long.wav"), pcm(441_000)).unwrap();
+        assert_eq!(s.pads[10].config.trig, TrigMode::Mono);
+        assert_eq!(s.occupied_pads().collect::<Vec<_>>(), [10]);
+        // A pad set to one-shot on purpose is not fresh, even with nothing
+        // on it, so the choice is kept.
+        s.pads[20].config.trig = TrigMode::OneShot;
+        assert_eq!(s.occupied_pads().collect::<Vec<_>>(), [10, 20]);
     }
 
     #[test]

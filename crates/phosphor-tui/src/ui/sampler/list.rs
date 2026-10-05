@@ -124,7 +124,7 @@ mod tests {
         let list = text(&pad_list(&map(&state, &view), 38, 10));
         assert!(list.contains("C4"), "{list}");
         assert!(list.contains("2 layers"), "{list}");
-        assert!(list.contains("one-shot"), "{list}");
+        assert!(list.contains("mono"), "{list}");
         assert!(list.contains('!'), "a missing file is not marked:\n{list}");
     }
 

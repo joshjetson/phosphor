@@ -37,7 +37,7 @@
 
 use std::borrow::Cow;
 
-use phosphor_plugin::sample::clamp_tune_st;
+use phosphor_plugin::sample::{clamp_tune_st, TrigMode};
 
 use super::{PadState, PhraseState, SamplerState, MAX_LAYERS, NUM_PADS};
 
@@ -484,7 +484,15 @@ impl SamplerState {
                 // The seed carries its own root with it: a pad nothing has
                 // taught is rooted at its own key, and one a take or a file
                 // name has taught keeps what it learned.
-                let seed = self.pads[self.cursor.min(top)].clone();
+                let mut seed = self.pads[self.cursor.min(top)].clone();
+                // Mono is one note at a time across the whole sampler, which
+                // across a keyboard means no chords. A zone made from a mono
+                // pad — the fresh default — starts as gate instead: each key
+                // sounds while held and stops when let go. A pad set to
+                // one-shot or gate on purpose keeps its trigger.
+                if seed.config.trig == TrigMode::Mono {
+                    seed.config.trig = TrigMode::Gate;
+                }
                 self.zones.push(Zone::new(lo, hi, seed));
                 self.sort_zones();
                 (lo, hi)
@@ -613,6 +621,26 @@ mod tests {
 
     fn pcm() -> Arc<SamplePcm> {
         Arc::new(SamplePcm { data: vec![0.25; 64], channels: 1, sample_rate: 44_100.0 })
+    }
+
+    /// A zone made from a fresh pad stops when its key is let go: mono
+    /// across a keyboard would be one note at a time, no chords. A pad set to
+    /// one-shot on purpose keeps it.
+    #[test]
+    fn a_zone_from_a_mono_pad_is_gate_and_a_chosen_trigger_is_kept() {
+        use phosphor_plugin::sample::TrigMode;
+        let mut state = SamplerState::new();
+        state.mode = MapMode::Keys;
+        state.cursor = SamplerState::pad_of_note(60).unwrap();
+        state.zone_span(0, 10);
+        assert_eq!(state.zones[0].pad.config.trig, TrigMode::Gate);
+
+        let mut state = SamplerState::new();
+        state.mode = MapMode::Keys;
+        state.cursor = SamplerState::pad_of_note(60).unwrap();
+        state.pads[state.cursor].config.trig = TrigMode::OneShot;
+        state.zone_span(0, 10);
+        assert_eq!(state.zones[0].pad.config.trig, TrigMode::OneShot);
     }
 
     /// A zone over `lo..=hi` carrying `count` layers off one buffer.

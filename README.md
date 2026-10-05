@@ -573,9 +573,17 @@ keys mode the same list belongs to the zone, with `span` at the top of it and
 | `keytrk` | *(pads mode only)* on, the pad transposes the sound by its own distance from `root` — set `root` to the note the sample actually is and the pad plays it in tune on whatever key it sits on; off, the sound plays untransposed |
 
 The `trig` knob steps one-shot → gate → mono and stops at each end. A
-fresh pad is one-shot, poly 1, no choke, no cycle, no pitch offset, attack
-0, decay 400 ms, sustain 100%, release 60 ms, unity, centred, rooted on its
-own key with keytracking off.
+fresh pad is **mono**, so any sound you bring in — a file, a chop, a
+recording — stops the moment you play another key: a long sample never has
+to be waited out. Set `trig` to one-shot for a pad that should ring on under
+the next one (a kick under the hats), or gate for one that stops when you let
+go. The rest of a fresh pad: poly 1, no choke, no cycle, no pitch offset,
+attack 0, decay 400 ms, sustain 100%, release 60 ms, unity, centred, rooted on
+its own key with keytracking off.
+
+In keys mode, a zone made from a fresh pad is **gate** instead: each key
+sounds while held and stops when you let go, so chords still work. A zone made
+from a pad you set to one-shot or gate keeps it.
 
 ### The sounds on a pad
 
@@ -659,8 +667,8 @@ of settings. Nothing on your kit changes until you press `c` again.
 - **from** — the first key. Slices go up from there, one per key. It starts
   on C2 (MIDI 36, where most slicers start), or on the first free keys
   above it.
-- **feel** — *break*: one-shots that cut each other off, like one drummer.
-  *melodic*: keys ring while held and can overlap.
+- **feel** — *break*: mono — each slice stops the moment any other key plays,
+  like one drummer. *melodic*: keys ring while held and can overlap.
 - **clip** — set it to *yes* and landing also writes a clip on the track
   that plays the slices back in the recording's own timing, loud hits loud
   and quiet hits quiet. Play it and you hear the recording; move its notes
@@ -708,6 +716,12 @@ margin when the layer plays backwards. It is the trim strip's own waveform
 seen from further away — the same reduction, cached once — so a glance tells
 you whether a pad is holding a hit or a hit with a second of silence in front
 of it, without leaving the knobs.
+
+Every waveform — here, in the trim strip and on the chop screen — is drawn
+upward from a baseline. The solid part is how loud the sound is at each
+point; the light shade above it reaches to its peaks. So even a loud, finished
+mix shows its shape: the hits rise, the gaps between them dip, and a long
+note's swell and fade are plain to see.
 
 It is a look and nothing else. No key on the pad map addresses it, `t` is
 still the editor, and a phrase row or a layer whose file has gone shows its

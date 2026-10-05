@@ -5,6 +5,10 @@ new" card the first time you run a version you have not seen. Each section is a
 `## X.Y.Z — Title` header, a blank line, and a short prose summary — the same
 words as the release notes, without the install line, which the app supplies.
 
+## 0.3.94 — Sounds stop when you play the next key, and waveforms you can read
+
+A sound brought onto a sampler pad — loaded, chopped or recorded — is now mono by default, so a long sample stops the moment you play any other key instead of having to be waited out; set a pad to one-shot when it should ring on under the next. A chop's break slices are mono too, while its melodic feel still lets held keys ring together, and in keys mode a zone made from a fresh pad stops when you let go of the key so chords still work. Sessions you already saved keep exactly the trigger modes they had. Every waveform — under the pad panel, in the trim strip and on the chop screen — is now drawn upward with each moment's loudness solid inside its peaks, so a loud finished mix shows its hits and gaps instead of one solid block, and a long note's swell and fade are plain to see. A panel row with a long heading, such as a keys-mode zone's, no longer runs one cell past the edge of the screen.
+
 ## 0.3.93 — 0.3.92, building on current Rust
 
 0.3.92 would not build with the newest Rust compilers, which treat one pattern in the new multi-core engine as an error; installing it with an up-to-date toolchain failed. This release is the same engine with that pattern written out the way current Rust requires — nothing about how Phosphor sounds or behaves changes.

@@ -548,6 +548,21 @@ mod tests {
         assert!(!saved.into_state(|_| None).pads[39].config.cycle);
     }
 
+    /// A session saved before mono was the default opens exactly as it was
+    /// saved: a pad it stored as one-shot stays one-shot. Only the pads it
+    /// did not store — empty ones — come back fresh.
+    #[test]
+    fn an_older_sessions_triggers_are_kept() {
+        let old = r#"{"pads":[{"note":60,"trig":"one-shot","poly":1,"choke":0,
+            "pitch_st":0,"pitch_cents":0,"attack_ms":0.0,"decay_ms":400.0,"sustain":1.0,
+            "release_ms":60.0,"level":1.0,"pan":0.0,"root":60,"keytrack":false}]}"#;
+        let saved: SessionSampler = serde_json::from_str(old).unwrap();
+        let state = saved.into_state(|_| None);
+        let c4 = SamplerState::pad_of_note(60).unwrap();
+        assert_eq!(state.pads[c4].config.trig, TrigMode::OneShot, "a saved one-shot came back as something else");
+        assert_eq!(state.pads[c4 + 1].config.trig, PadState::fresh_config(61).trig);
+    }
+
     #[test]
     fn a_missing_file_keeps_its_pad_and_its_settings() {
         let mut state = SamplerState::new();

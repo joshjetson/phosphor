@@ -136,9 +136,12 @@ impl Panel {
         let mut rows: Vec<Line> = Vec::new();
         let mut cursor_row = 0;
         let indent = self.indent.max(1);
-        let mut spans: Vec<Span> =
-            vec![Span::styled(format!("{:>w$} ", title, w = indent - 1), heading)];
-        let mut used = indent;
+        let head = format!("{:>w$} ", title, w = indent - 1);
+        // The heading is padded to the indent but not cut to it: a title
+        // longer than the indent ("zone C3-B4") is as wide as it is, and the
+        // row has to be counted from where it really ends.
+        let mut used = head.chars().count();
+        let mut spans: Vec<Span> = vec![Span::styled(head, heading)];
 
         for (index, knob) in knobs.iter().enumerate() {
             if used + knob.width() > self.width && used > indent {
@@ -224,6 +227,27 @@ mod tests {
     /// A wrapped panel never lays a row wider than the width it was given,
     /// however narrow that is — including narrower than one knob, where the
     /// only honest answer is one knob per row.
+    /// A title wider than the indent pushes the first row's knobs right; the
+    /// row is counted from where the title really ends, so it still never
+    /// runs past the edge. ("zone C3-B4" over a keys-mode zone did, by one
+    /// cell, at the width where the last knob landed on the boundary.)
+    #[test]
+    fn a_long_title_never_pushes_a_row_past_the_edge() {
+        let knobs: Vec<Knob> = (0..12).map(|i| Knob::new("trig", "mono", i as f64 / 11.0)).collect();
+        for width in 20..240usize {
+            let mut panel = panel(width);
+            panel.indent = 6;
+            let (rows, _) = panel.rows("zone C3-B4", &knobs);
+            for row in &rows {
+                let cells: usize = row.spans.iter().map(|s| s.content.chars().count()).sum();
+                // A lone knob wider than the pane is the only overflow there
+                // is room to forgive, exactly as for any other row.
+                let one = panel.indent + knobs[0].width();
+                assert!(cells <= width.max(one), "a {cells}-cell row in {width} columns");
+            }
+        }
+    }
+
     #[test]
     fn rows_never_run_past_the_right_edge() {
         let knobs: Vec<Knob> = (0..6).map(|_| Knob::new("release", "1.50 s", 0.4)).collect();

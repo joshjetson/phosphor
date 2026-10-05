@@ -160,7 +160,8 @@ mod tests {
         assert_eq!(pasted.row, 1, "the cursor would not stand on what arrived");
         let names: Vec<_> = state.pads[d4].layers.iter().map(|l| l.name.as_str()).collect();
         assert_eq!(names, ["snare", "click"]);
-        assert_eq!(state.pads[d4].config.trig, TrigMode::OneShot, "a sound brought its pad's settings");
+        // The source pad is gate; the target keeps the fresh pad's trigger.
+        assert_eq!(state.pads[d4].config.trig, PadState::fresh_config(62).trig, "a sound brought its pad's settings");
     }
 
     #[test]

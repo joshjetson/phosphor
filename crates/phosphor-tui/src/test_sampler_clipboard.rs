@@ -129,7 +129,11 @@ mod tests {
         let names: Vec<_> = kit(&app).pads[pad(62)].layers.iter().map(|l| l.name.clone()).collect();
         assert_eq!(names, ["snare", "click"]);
         assert_eq!(app.nav.clip_view.sampler.layer, 1, "the cursor is not on what arrived");
-        assert_eq!(kit(&app).pads[pad(62)].config.trig, TrigMode::OneShot, "a sound brought its pad's settings");
+        assert_eq!(
+            kit(&app).pads[pad(62)].config.trig,
+            phosphor_app::sampler::PadState::fresh_config(62).trig,
+            "a sound brought its pad's settings",
+        );
         press(&mut app, KeyCode::Char('u'));
         assert_eq!(kit(&app).pads[pad(62)].layers.len(), 1, "u did not take just the pasted sound");
     }

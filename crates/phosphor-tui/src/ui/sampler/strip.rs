@@ -5,9 +5,9 @@
 //!
 //! ```text
 //!  C4 · kick · 0.250s · unit 10ms · snap on · 0.010s → 0.240s
-//!        ▄▄                      ▄
-//!  ▄▄███████▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄████▄▄··················
-//!        ▀▀                      ▀
+//!        ▒▒                      ▒
+//!       ▒▆▇▒                    ▒▅▒
+//!  ▁▁▂▃▅████▆▄▃▂▂▁▁▁▁▁▁▁▁▁▁▁▁▁▃▅███▃▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
 //!  ·····[························]···················
 //!  h/l start · H/L end · w hug · j/k unit · z snap · r rev · t loop · esc back
 //! ```
@@ -24,7 +24,7 @@
 //! at. Everything else is one row each, and on a pane too short for all of
 //! them the waveform is what shrinks.
 //!
-//! The picture itself — the reduction, its cache, the half blocks and the
+//! The picture itself — the reduction, its cache, the drawing and the
 //! ruler — is [`super::wave`]'s, because the pad panel draws the same
 //! waveform three rows tall and two decimators would be two pictures of one
 //! sound.
@@ -303,9 +303,9 @@ mod tests {
         assert!(tall > 3, "a −40 dB recording drew {tall} rows of waveform:\n{shown}");
     }
 
-    /// Silence is a line through the middle, not a wall and not a gap.
+    /// Silence is a baseline, not a wall and not a gap.
     #[test]
-    fn a_silent_buffer_draws_a_centre_line() {
+    fn a_silent_buffer_draws_a_baseline() {
         let state = kit(); // C4 holds a second of zeros
         let view = open(NudgeUnit::TenMs, true);
         let lines = strip_lines(&map(&state, &view), 40, 12).unwrap();
@@ -313,8 +313,10 @@ mod tests {
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
             .collect();
-        let full = wave.iter().filter(|r| r.contains('\u{2588}')).count();
-        assert_eq!(full, 1, "silence drew {full} rows:\n{}", wave.join("\n"));
+        let drawn: Vec<&String> = wave.iter().filter(|r| r.trim() != "").collect();
+        assert_eq!(drawn.len(), 1, "silence drew {} rows:\n{}", drawn.len(), wave.join("\n"));
+        assert!(drawn[0].chars().all(|c| c == '\u{2581}'), "the one row is not a baseline: {:?}", drawn[0]);
+        assert_eq!(drawn[0], wave.last().unwrap(), "the baseline is not at the bottom");
     }
 
     /// A layer with no audio behind it has no strip. The keys refuse to open

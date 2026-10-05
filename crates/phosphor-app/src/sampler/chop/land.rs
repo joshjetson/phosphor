@@ -70,7 +70,10 @@ fn free_choke(state: &SamplerState) -> Option<u8> {
 fn config_for(note: u8, feel: Feel, choke: Option<u8>) -> PadConfig {
     let base = PadConfig::for_key(note);
     match feel {
-        Feel::Break => PadConfig { trig: TrigMode::OneShot, choke: choke.unwrap_or(0), ..base },
+        // Mono: a slice stops when any other key plays, the rest of the
+        // chop's included. The choke group stays, so slices still cut each
+        // other the way they always did if a pad is later set to one-shot.
+        Feel::Break => PadConfig { trig: TrigMode::Mono, choke: choke.unwrap_or(0), ..base },
         Feel::Melodic => PadConfig {
             trig: TrigMode::Gate,
             poly: MELODIC_POLY,
@@ -257,7 +260,7 @@ mod tests {
         assert_eq!(first.choke, Some(2));
         assert!((0..3).all(|o| {
             let config = state.pads[c2() + o].config;
-            config.choke == 2 && config.trig == TrigMode::OneShot && config.poly == 1
+            config.choke == 2 && config.trig == TrigMode::Mono && config.poly == 1
         }));
         let second = land(&mut state, &source(), &SLICES, c2() + 12, Feel::Break).unwrap();
         assert_eq!(second.choke, Some(3), "two breaks would cut each other");

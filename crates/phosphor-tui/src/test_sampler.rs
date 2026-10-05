@@ -625,7 +625,7 @@ mod tests {
         assert!(text.contains("1 filled"), "the filled list is empty:\n{text}");
         assert!(text.contains("kick"), "the sound is not named:\n{text}");
         assert!(text.contains("pad C4"), "the panel does not say whose it is:\n{text}");
-        assert!(text.contains("one-shot"), "the trigger mode is not shown:\n{text}");
+        assert!(text.contains("mono"), "the trigger mode is not shown:\n{text}");
         assert!(text.contains("[PAD:C4]"), "the strip does not say which pad:\n{text}");
         // The band is five rows of keys: the caret row plus the keyboard.
         assert!(text.contains("0.10s"), "the layer's length is not shown:\n{text}");
@@ -1645,7 +1645,8 @@ mod tests {
         let Some(picture) = text.lines().find(|l| l.contains("wave ")) else {
             panic!("no picture under the panel:\n{text}");
         };
-        assert!(picture.contains('\u{2588}'), "the picture drew nothing: {picture}");
+        let drawn = picture.chars().any(|c| ('\u{2581}'..='\u{2588}').contains(&c) || c == '\u{2592}');
+        assert!(drawn, "the picture drew nothing: {picture}");
         // The ruler under it carries both markers.
         let ruler = text
             .lines()
@@ -3399,7 +3400,9 @@ mod tests {
         let mut saving = keys_app(&dir);
         press(&mut saving, KeyCode::Char('j')); // trig
         press(&mut saving, KeyCode::Enter);
-        press(&mut saving, KeyCode::Char('l')); // gate
+        // A zone made from a fresh pad starts as gate; one step left is
+        // one-shot, a setting that has to survive the round trip.
+        press(&mut saving, KeyCode::Char('h'));
         press(&mut saving, KeyCode::Esc);
 
         let session = dir.join("zoned.phos");
@@ -3417,7 +3420,7 @@ mod tests {
         assert_eq!(state.zones.len(), 1);
         assert_eq!(state.zones[0].keys(), phosphor_app::sampler::NUM_PADS);
         assert_eq!(state.zones[0].root(), 60);
-        assert_eq!(state.zones[0].pad.config.trig, phosphor_plugin::sample::TrigMode::Gate);
+        assert_eq!(state.zones[0].pad.config.trig, phosphor_plugin::sample::TrigMode::OneShot);
         assert!(state.zones[0].pad.layers[0].pcm.is_some(), "the zone's wav did not reload");
         // The pad map rode along under it.
         assert_eq!(state.pads[state.cursor].layers.len(), 1, "the pads were lost on the way");
