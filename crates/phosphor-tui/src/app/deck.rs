@@ -143,6 +143,7 @@ impl App {
         self.reconcile_sampler_preview();
         self.reconcile_sampler_source();
         self.reconcile_sampler_learn();
+        self.nav.follow_focus();
         self.refresh_deck();
     }
 

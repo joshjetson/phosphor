@@ -1305,14 +1305,22 @@ to ten minutes. See [Sampler](#sampler--a-sound-on-every-key).
 
 **Loop** — `Space+L` from anywhere focuses the loop brace; `Enter` toggles
 looping on/off. `h`/`l` move the start marker, `H`/`L` the end, and `g`
-cycles the marker grid — bar → beat → 1/8 → 1/16 — so the brace can close
-down to a single sixteenth. `j`/`k` slide the whole brace along the song;
-`J`/`K` leap it by its own length. Then the scissors: `y` lifts everything
-between the markers on every track, `x` cuts it (one `u` restores every
-track at once), `p` stamps the lifted section at the brace — replacing
-what's under the stamp, then leapfrogging forward so `p p p` lays copies
-back to back — and `P` layers it over what's there instead. `Esc` leaves
-the brace focused where you put it.
+cycles the marker grid — bar → beat → 1/8 → 1/16 → 1/32 — so the brace can
+close down to a single thirty-second. `j`/`k` slide the whole brace along the
+song; `J`/`K` leap it by its own length. Then the scissors: `y` lifts
+everything between the markers on every track, `x` cuts it (one `u` restores
+every track at once), `p` stamps the lifted section at the brace — replacing
+what's under the stamp, then leapfrogging forward so `p p p` lays copies back
+to back — and `P` layers it over what's there instead. `Esc` leaves the brace
+focused where you put it.
+
+*Any size, quickly.* Type a number before a key to do it that many times:
+`8L` stretches the end eight steps, `4p` stamps four copies in a row (one `u`
+takes all four back). `c` wraps the brace around a clip on the track you are
+on — the one the brace is in, or the next one — whatever its length, and `a`
+wraps it around the whole song. While the editor is open the brace shows as a
+band down every track, exactly as wide as it is, so a thirty-second is as
+visible as thirty-two bars; `z` zooms the lanes to fit it.
 
 **Metronome** — `Space+M` toggles the click while playing. The practice
 room's click is its own (see Fingers).
@@ -1785,6 +1793,14 @@ step), `_` ties the previous step. `r` again to disarm.
 | `r` | Toggle record arm |
 | `R` | Toggle loop record |
 | `1-9` | Jump to clip by number |
+| `z` / `Z` | Zoom the lanes in / out (1 to 128 bars across) |
+| `[` / `]` | Scroll the lanes back / forward by half a screen |
+
+The lanes are a window on the song. They follow what you are doing — the
+clip under the cursor, the loop brace, the playhead while playing — so
+nothing past bar sixteen is ever out of reach. Each clip shows a small
+picture of its notes: low notes low, high notes high, so a bass line, a
+chord part and a drum pattern look different before you open them.
 
 ### Volume Fader (navigate to `vol` with `h/l`, then `Enter` to lock)
 
@@ -2002,6 +2018,15 @@ Strength runs from 25% to 100%. At 100% notes land exactly on the grid; below th
 |-----|--------|
 | `h` / `l` | Move loop start left/right |
 | `H` / `L` | Move loop end left/right |
+| `j` / `k` | Slide the whole brace a grid step |
+| `J` / `K` | Leap the brace by its own length |
+| `g` | Marker grid: bar, beat, 1/8, 1/16, 1/32 |
+| `c` | Brace a clip on this track |
+| `a` | Brace the whole song |
+| `y` / `x` | Lift / cut what is between the markers, on every track |
+| `p` / `P` | Stamp (replace) / layer the lifted section at the brace |
+| `2`–`9`… | Type a number first to repeat the next key: `8L`, `4p` |
+| `z` | Zoom the lanes to fit the brace |
 | `Enter` | Enable/disable loop |
 | `Esc` | Exit loop editor |
 

@@ -71,6 +71,16 @@ fn color_rgb(c: Color) -> (u8, u8, u8) {
 
 /// Render one splash frame. `progress` = 0.0..1.0 for loading, 1.0 for hold.
 /// `step` = animation frame counter. `stage` = status text to show.
+/// Draw `widget` into the part of `rect` that is on screen. The splash lays
+/// itself out at fixed sizes, and a small (or not yet sized) terminal must
+/// clip it rather than crash.
+fn put(frame: &mut ratatui::Frame, widget: impl ratatui::widgets::Widget, rect: Rect) {
+    let rect = rect.intersection(frame.area());
+    if !rect.is_empty() {
+        frame.render_widget(widget, rect);
+    }
+}
+
 fn render_frame(
     frame: &mut ratatui::Frame,
     word_lines: &[String],
@@ -84,7 +94,7 @@ fn render_frame(
     let shimmer = (step as f64 * 0.3).sin() * 0.5 + 0.5;
 
     // Background
-    frame.render_widget(
+    put(frame,
         ratatui::widgets::Block::default().style(Style::default().bg(BG)),
         area,
     );
@@ -112,7 +122,7 @@ fn render_frame(
         }
         let line_w = total_chars as u16;
         let x = cx.saturating_sub(line_w / 2);
-        frame.render_widget(
+        put(frame,
             Paragraph::new(Line::from(spans)),
             Rect::new(x, y, line_w.min(area.width.saturating_sub(x)), 1),
         );
@@ -124,7 +134,7 @@ fn render_frame(
         let tag_color = lerp_color(TAG, Color::Rgb(120, 130, 160), shimmer * 0.4);
         let tag_w = TAGLINE.len() as u16;
         let tag_x = cx.saturating_sub(tag_w / 2);
-        frame.render_widget(
+        put(frame,
             Paragraph::new(Span::styled(TAGLINE,
                 Style::default().fg(tag_color).bg(BG).add_modifier(Modifier::ITALIC))),
             Rect::new(tag_x, tag_y, tag_w.min(area.width.saturating_sub(tag_x)), 1),
@@ -150,7 +160,7 @@ fn render_frame(
             }
         }
         bar_spans.push(Span::styled("]", Style::default().fg(bracket_color).bg(BG)));
-        frame.render_widget(
+        put(frame,
             Paragraph::new(Line::from(bar_spans)),
             Rect::new(bar_x, bar_y, bar_w + 2, 1),
         );
@@ -163,7 +173,7 @@ fn render_frame(
         let text_w = text.len() as u16;
         let stage_x = cx.saturating_sub(text_w / 2);
         let stage_color = lerp_color(AQUA_DIM, VIOLET_DIM, shimmer);
-        frame.render_widget(
+        put(frame,
             Paragraph::new(Span::styled(text, Style::default().fg(stage_color).bg(BG))),
             Rect::new(stage_x, stage_y, text_w.min(area.width.saturating_sub(stage_x)), 1),
         );
@@ -173,7 +183,7 @@ fn render_frame(
     let ver = format!("v{}", env!("CARGO_PKG_VERSION"));
     let ver_x = area.width.saturating_sub(ver.len() as u16 + 1);
     let ver_y = area.height.saturating_sub(1);
-    frame.render_widget(
+    put(frame,
         Paragraph::new(Span::styled(&ver, Style::default().fg(VER).bg(BG))),
         Rect::new(ver_x, ver_y, ver.len() as u16, 1),
     );

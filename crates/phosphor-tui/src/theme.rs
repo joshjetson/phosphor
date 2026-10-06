@@ -516,6 +516,12 @@ pub fn solo_focused_bg() -> Color { lighten(palette().bg, 10) }
 pub fn playhead_fg() -> Color { Color::Rgb(255, 200, 50) }
 pub fn playhead_bg() -> Color { blend(palette().bg, Color::Rgb(255, 200, 50), 20) }
 
+/// A clip's fill: the track's colour laid over the background at `pct`.
+pub fn clip_tint(tc: Color, pct: u16) -> Color { blend(palette().bg, tc, pct) }
+
+/// The loop brace's band down the lanes while it is being edited.
+pub fn loop_band() -> Color { blend(palette().bg, Color::Rgb(70, 170, 180), 16) }
+
 /// Helper: lighten a color by adding a flat amount to each channel.
 fn lighten(c: Color, amt: u8) -> Color {
     Color::Rgb(

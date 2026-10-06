@@ -201,15 +201,16 @@ pub(super) fn render_bottom_bar(
     let keys: Vec<(&str, &str)> = if nav.loop_editor.active {
         let toggle = if nav.loop_editor.enabled { "off" } else { "on" };
         vec![
-            ("hl","start"),("H/L","end"),("jk","slide"),("g","grid"),
-            ("y","lift"),("x","cut"),("p/P","stamp/layer"),("enter", toggle),("esc","done"),
+            ("hl","start"),("H/L","end"),("jk","slide"),("g","grid"),("c","clip"),("a","all"),
+            ("y","lift"),("x","cut"),("p/P","stamp/layer"),("2-9","times"),("z","fit"),
+            ("enter", toggle),("esc","done"),
         ]
     } else {
         match nav.focused_pane {
             Pane::Transport if nav.transport_ui.editing => vec![("hl","adjust"),("enter","done"),("esc","done")],
             Pane::Transport => vec![("hl","nav"),("enter","sel"),("+/-","bpm"),("tab","pane")],
             Pane::Tracks if nav.track_selected => vec![("hl","clip"),("m","mute"),("s","solo"),("r","arm"),("R","rec"),("esc","back")],
-            Pane::Tracks => vec![("jk","track"),("enter","sel"),("m","mute"),("s","solo"),("r","arm"),("R","rec")],
+            Pane::Tracks => vec![("jk","track"),("enter","sel"),("m","mute"),("s","solo"),("r","arm"),("R","rec"),("z/Z","zoom"),("[]","scroll")],
             // The effect chain, and the panel behind a slot.
             Pane::ClipView if nav.clip_view.focus == ClipViewFocus::FxPanel
                 && nav.clip_view.fx_panel_tab == FxPanelTab::TrackFx =>

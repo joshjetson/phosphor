@@ -16,6 +16,7 @@ mod chop_view;
 mod file_picker;
 mod input;
 mod loop_editor;
+mod timeline_view;
 mod menu;
 mod sampler_view;
 mod track;
@@ -31,6 +32,7 @@ pub use clip_view::*;
 pub use file_picker::*;
 pub use input::*;
 pub use loop_editor::*;
+pub use timeline_view::*;
 pub use menu::*;
 pub use sampler_view::*;
 pub use track::*;
@@ -124,6 +126,8 @@ pub struct NavState {
     pub fx_menu: FxMenu,
     pub instrument_modal: InstrumentModal,
     pub loop_editor: LoopEditor,
+    /// The stretch of the song the track lanes show.
+    pub timeline: TimelineView,
     pub transport_ui: TransportUiState,
     pub tracks: Vec<TrackState>,
     /// Text input modal (for save/open file paths).
@@ -267,6 +271,7 @@ impl NavState {
             fx_menu: FxMenu::new(),
             instrument_modal: InstrumentModal::new(),
             loop_editor: LoopEditor::new(),
+            timeline: TimelineView::default(),
             transport_ui: TransportUiState::new(),
             tracks,
             input_modal: InputModal::new(),

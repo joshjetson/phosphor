@@ -4,18 +4,24 @@
 //! brace a song-form tool and nothing else; a player who wants to chop a
 //! quarter of a bar and run it needs the markers to move on a finer grid.
 //! The grid is a setting the editor carries (`g` cycles it): bar, beat,
-//! eighth, sixteenth. Whatever the grid, the region can never shrink
-//! below one sixteenth — below that a "loop" is a buzz.
+//! eighth, sixteenth, thirty-second. Whatever the grid, the region can never
+//! shrink below one thirty-second — the smallest thing worth lifting, a flam
+//! or a ghost before a snare.
 //!
 //! When active, h/l move the left (start) marker and shift+h/l (or H/L)
-//! move the right (end) marker, by one grid step.
+//! move the right (end) marker, by one grid step. Digits typed first are a
+//! count: `8L` moves the end eight steps, `3p` stamps three copies.
 
 use phosphor_core::transport::Transport;
 
 use crate::timeline::TICKS_PER_BAR;
 
-/// The smallest region the editor will make: one sixteenth.
-pub const MIN_LOOP_TICKS: i64 = Transport::PPQ / 4;
+/// The smallest region the editor will make: one thirty-second.
+pub const MIN_LOOP_TICKS: i64 = Transport::PPQ / 8;
+
+/// The largest count a typed number can be. A count is a few steps or a few
+/// copies; a run of digits past this is a slip, not an intention.
+pub const MAX_COUNT: u32 = 999;
 
 /// The grid the markers move on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,10 +30,17 @@ pub enum LoopStep {
     Beat,
     Eighth,
     Sixteenth,
+    ThirtySecond,
 }
 
 impl LoopStep {
-    pub const ALL: [LoopStep; 4] = [LoopStep::Bar, LoopStep::Beat, LoopStep::Eighth, LoopStep::Sixteenth];
+    pub const ALL: [LoopStep; 5] = [
+        LoopStep::Bar,
+        LoopStep::Beat,
+        LoopStep::Eighth,
+        LoopStep::Sixteenth,
+        LoopStep::ThirtySecond,
+    ];
 
     #[must_use]
     pub fn ticks(self) -> i64 {
@@ -36,6 +49,7 @@ impl LoopStep {
             Self::Beat => Transport::PPQ,
             Self::Eighth => Transport::PPQ / 2,
             Self::Sixteenth => Transport::PPQ / 4,
+            Self::ThirtySecond => Transport::PPQ / 8,
         }
     }
 
@@ -46,6 +60,7 @@ impl LoopStep {
             Self::Beat => "beat",
             Self::Eighth => "1/8",
             Self::Sixteenth => "1/16",
+            Self::ThirtySecond => "1/32",
         }
     }
 
@@ -55,7 +70,8 @@ impl LoopStep {
             Self::Bar => Self::Beat,
             Self::Beat => Self::Eighth,
             Self::Eighth => Self::Sixteenth,
-            Self::Sixteenth => Self::Bar,
+            Self::Sixteenth => Self::ThirtySecond,
+            Self::ThirtySecond => Self::Bar,
         }
     }
 }
@@ -72,6 +88,9 @@ pub struct LoopEditor {
     pub end: i64,
     /// The grid the markers move on.
     pub step: LoopStep,
+    /// Digits typed since the last action: how many times the next one
+    /// happens. `None` is once.
+    pub count: Option<u32>,
 }
 
 impl Default for LoopEditor {
@@ -86,6 +105,7 @@ impl LoopEditor {
             start: 0,
             end: 4 * TICKS_PER_BAR,
             step: LoopStep::Bar,
+            count: None,
         }
     }
 
@@ -97,6 +117,23 @@ impl LoopEditor {
     /// Unfocus the editor (release controls).
     pub fn unfocus(&mut self) {
         self.active = false;
+        self.count = None;
+    }
+
+    /// A digit typed in the editor: part of the count for the next action.
+    /// A leading zero is not a count (there is no "do it zero times").
+    pub fn push_digit(&mut self, digit: u32) {
+        let so_far = self.count.unwrap_or(0);
+        if so_far == 0 && digit == 0 {
+            return;
+        }
+        self.count = Some((so_far * 10 + digit).min(MAX_COUNT));
+    }
+
+    /// The count for the action being taken, spent: the next one starts
+    /// from once again.
+    pub fn take_count(&mut self) -> u32 {
+        self.count.take().unwrap_or(1).max(1)
     }
 
     /// Toggle the loop on/off. Called when user presses Enter on the loop.
@@ -135,7 +172,7 @@ impl LoopEditor {
     }
 
     /// Move the left (start) marker right; it never closes the region
-    /// below one sixteenth.
+    /// below one thirty-second.
     pub fn move_start_right(&mut self) {
         let target = if self.start % self.step.ticks() == 0 {
             self.start + self.step.ticks()
@@ -203,21 +240,29 @@ impl LoopEditor {
     }
 
     /// A musical position: "3" on a bar line, "3.2" on a beat, "3.2.4"
-    /// on a sixteenth. Bars, beats and sixteenths all read 1-based, the
-    /// way a musician counts them.
+    /// on a sixteenth, "3.2.4+" on the thirty-second after it. Bars, beats
+    /// and sixteenths all read 1-based, the way a musician counts them.
     fn position(tick: i64) -> String {
         let bar = tick / TICKS_PER_BAR + 1;
         let in_bar = tick % TICKS_PER_BAR;
         let beat = in_bar / Transport::PPQ + 1;
         let in_beat = in_bar % Transport::PPQ;
         let sixteenth = in_beat / (Transport::PPQ / 4) + 1;
+        let half = if in_beat % (Transport::PPQ / 4) == 0 { "" } else { "+" };
         if in_bar == 0 {
             format!("{bar}")
         } else if in_beat == 0 {
             format!("{bar}.{beat}")
         } else {
-            format!("{bar}.{beat}.{sixteenth}")
+            format!("{bar}.{beat}.{sixteenth}{half}")
         }
+    }
+
+    /// How long the region is, in the biggest unit that says it exactly:
+    /// "4 bars", "3 beats", "1/16". What a lifted section will be.
+    #[must_use]
+    pub fn length_words(&self) -> String {
+        length_words(self.len_ticks())
     }
 
     /// Display string: "1-4" for whole bars (inclusive, as before), a
@@ -232,6 +277,28 @@ impl LoopEditor {
             format!("{}-{}", Self::position(self.start), Self::position(self.end))
         }
     }
+}
+
+/// A length in the biggest unit that says it exactly: "4 bars", "3 beats",
+/// "1 eighth", "5 sixteenths". Anything finer than a thirty-second is not a
+/// length the editor makes, and reads in thirty-seconds rounded up.
+#[must_use]
+pub fn length_words(ticks: i64) -> String {
+    let units: [(i64, &str, &str); 5] = [
+        (TICKS_PER_BAR, "bar", "bars"),
+        (Transport::PPQ, "beat", "beats"),
+        (Transport::PPQ / 2, "eighth", "eighths"),
+        (Transport::PPQ / 4, "sixteenth", "sixteenths"),
+        (Transport::PPQ / 8, "thirty-second", "thirty-seconds"),
+    ];
+    for (size, one, many) in units {
+        if ticks > 0 && ticks % size == 0 {
+            let n = ticks / size;
+            return format!("{n} {}", if n == 1 { one } else { many });
+        }
+    }
+    let n = (ticks.max(1) + Transport::PPQ / 8 - 1) / (Transport::PPQ / 8);
+    format!("{n} thirty-seconds")
 }
 
 #[cfg(test)]
@@ -256,11 +323,11 @@ mod tests {
     }
 
     /// The brace shrinks below a bar on the finer grids, down to a
-    /// sixteenth and no further — a smaller loop is a buzz, not a loop.
+    /// thirty-second and no further.
     #[test]
-    fn the_brace_shrinks_to_a_sixteenth_and_stops() {
+    fn the_brace_shrinks_to_a_thirty_second_and_stops() {
         let mut le = LoopEditor::new();
-        le.step = LoopStep::Sixteenth;
+        le.step = LoopStep::ThirtySecond;
         // Close the region from four bars to the floor.
         for _ in 0..1000 {
             le.move_end_left();
@@ -297,8 +364,41 @@ mod tests {
         assert_eq!(le.display(), "1.2-1.3");
         le.set_region(Transport::PPQ / 4, Transport::PPQ / 2);
         assert_eq!(le.display(), "1.1.2-1.1.3");
-        le.set_region(0, MIN_LOOP_TICKS);
+        le.set_region(0, Transport::PPQ / 4);
         assert_eq!(le.display(), "1-1.1.2");
+        le.set_region(0, MIN_LOOP_TICKS);
+        assert_eq!(le.display(), "1-1.1.1+");
+    }
+
+    #[test]
+    fn a_length_reads_in_the_biggest_unit_that_fits() {
+        assert_eq!(length_words(4 * TICKS_PER_BAR), "4 bars");
+        assert_eq!(length_words(TICKS_PER_BAR), "1 bar");
+        assert_eq!(length_words(6 * Transport::PPQ), "6 beats");
+        assert_eq!(length_words(Transport::PPQ / 2), "1 eighth");
+        assert_eq!(length_words(3 * Transport::PPQ / 4), "3 sixteenths");
+        assert_eq!(length_words(MIN_LOOP_TICKS), "1 thirty-second");
+    }
+
+    /// Typed digits make a count for the next action, and the action spends
+    /// it: a count must never leak into the key after.
+    #[test]
+    fn a_count_is_typed_then_spent() {
+        let mut le = LoopEditor::new();
+        assert_eq!(le.take_count(), 1);
+        le.push_digit(0);
+        assert_eq!(le.count, None, "a leading zero is not a count");
+        le.push_digit(1);
+        le.push_digit(2);
+        assert_eq!(le.take_count(), 12);
+        assert_eq!(le.take_count(), 1);
+        for _ in 0..6 {
+            le.push_digit(9);
+        }
+        assert_eq!(le.take_count(), MAX_COUNT);
+        le.push_digit(3);
+        le.unfocus();
+        assert_eq!(le.count, None, "leaving the editor forgets a half-typed count");
     }
 
     /// Cycling the grid never moves the markers.

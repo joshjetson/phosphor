@@ -23,6 +23,8 @@ use overlays::*;
 pub(crate) mod fx;
 mod keyboard;
 mod knobs;
+mod lanes;
+use lanes::*;
 mod practice;
 mod sampler;
 pub(crate) use fx::is_wide as fx_panel_is_wide;
@@ -37,8 +39,27 @@ use tracks::*;
 
 const HEADER_W: u16 = 12;
 const TRACK_H: u16 = 3;
-const VISIBLE_BARS: usize = 16;
 const FX_PANEL_W: u16 = 24;
+
+/// The smallest window the layout is drawn into. Smaller, and the screen
+/// asks for more room instead.
+const MIN_WIDTH: u16 = 60;
+const MIN_HEIGHT: u16 = 16;
+
+/// What a window too small to draw Phosphor in shows: a request for room,
+/// clipped to whatever there is.
+fn render_too_small(frame: &mut Frame, area: Rect) {
+    if area.is_empty() {
+        return;
+    }
+    frame.render_widget(Clear, area);
+    let text = format!("Make the window bigger: Phosphor needs {MIN_WIDTH}×{MIN_HEIGHT}");
+    let middle = Rect { y: area.y + area.height.saturating_sub(1) / 2, height: 1, ..area };
+    frame.render_widget(
+        Paragraph::new(text).style(theme::bg()).alignment(Alignment::Center),
+        middle,
+    );
+}
 
 /// Rendering context for a single track row. Bundles all the per-track
 /// state needed by render_header and render_clips so we don't pass 9 args.
@@ -69,6 +90,14 @@ pub fn render(
         "area={}x{} tracks={} clip_view={} pane={:?}",
         area.width, area.height, nav.tracks.len(), nav.clip_view_visible, nav.focused_pane,
     ));
+    // A terminal can report no size at all — some ptys do before they are
+    // given one — or be dragged down to a sliver. Below the smallest size the
+    // layout is built for, say so instead of drawing; the next frame with
+    // room draws everything again.
+    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
+        render_too_small(frame, area);
+        return;
+    }
     frame.render_widget(Clear, area);
     frame.render_widget(Block::default().style(theme::bg()), area);
 

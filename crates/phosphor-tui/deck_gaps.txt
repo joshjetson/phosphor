@@ -57,6 +57,7 @@ handle_tracks_keys	Char('6')	jump shortcut: the arrows reach the same place
 handle_tracks_keys	Char('7')	jump shortcut: the arrows reach the same place
 handle_tracks_keys	Char('8')	jump shortcut: the arrows reach the same place
 handle_tracks_keys	Char('9')	jump shortcut: the arrows reach the same place
+handle_tracks_keys	Char('Z')	zoom out: the lanes follow the cursor and the brace without it
 handle_tracks_keys	Char('q')	quit: deliberately not on the deck
 handle_tracks_keys	Ctrl+Left	alias of Ctrl+h: a held clip's TRIM ◀ action sends that
 handle_tracks_keys	Ctrl+Right	alias of Ctrl+l: a held clip's TRIM ▶ action sends that

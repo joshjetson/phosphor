@@ -70,9 +70,9 @@ mod tests {
 
         // Walk the brace to bar 5 and stamp twice.
         app.nav.loop_editor.set_region(4 * BAR, 5 * BAR);
-        app.paste_loop_section(true);
+        app.paste_loop_section(true, 1);
         assert_eq!(app.nav.loop_editor.start, 5 * BAR, "the brace did not leapfrog");
-        app.paste_loop_section(true);
+        app.paste_loop_section(true, 1);
         assert_eq!(app.nav.loop_editor.start, 6 * BAR);
 
         for (ti, want) in [(a, 2usize), (b, 1usize)] {
@@ -111,7 +111,7 @@ mod tests {
 
         app.nav.loop_editor.set_region(2 * BAR, 2 * BAR + BAR / 4);
         for _ in 0..4 {
-            app.paste_loop_section(true);
+            app.paste_loop_section(true, 1);
         }
         // Four stamps: 2·BAR, +1 beat, +2 beats, +3 beats.
         let mut found = 0;
@@ -145,7 +145,7 @@ mod tests {
         app.nav.loop_editor.set_region(10 * BAR, 11 * BAR);
         app.yank_loop_section();
         assert!(app.nav.section_clip.is_none(), "an empty yank filled the clipboard");
-        app.paste_loop_section(true);
+        app.paste_loop_section(true, 1);
         assert!(
             !app.nav.tracks.iter().any(|t| t.clips.iter().any(|c| c.start_tick == 10 * BAR)),
             "a paste with nothing lifted wrote something"
@@ -179,12 +179,12 @@ mod tests {
     fn the_brace_walks_and_leaps() {
         let (mut app, _a, _b) = two_track_app();
         app.nav.loop_editor.set_region(0, BAR);
-        app.slide_loop_brace(false, false);
+        app.slide_loop_brace(false, false, 1);
         assert_eq!(app.nav.loop_editor.start, 0, "the brace crossed bar zero");
-        app.slide_loop_brace(true, true);
+        app.slide_loop_brace(true, true, 1);
         assert_eq!(app.nav.loop_editor.start, BAR);
         assert_eq!(app.nav.loop_editor.end, 2 * BAR);
-        app.slide_loop_brace(true, false);
+        app.slide_loop_brace(true, false, 1);
         assert_eq!(app.nav.loop_editor.start, BAR + app.nav.loop_editor.step.ticks());
     }
 
@@ -215,7 +215,7 @@ mod tests {
         app.nav.loop_editor.set_region(0, BAR);
         app.yank_loop_section();
         app.nav.loop_editor.set_region(4 * BAR, 5 * BAR);
-        app.paste_loop_section(true);
+        app.paste_loop_section(true, 1);
 
         let has_72 = |app: &App| {
             app.nav.tracks[a]
@@ -245,7 +245,7 @@ mod tests {
         let (mut app, _a, _b) = two_track_app();
         app.nav.loop_editor.set_region(0, BAR);
         for _ in 0..5 {
-            app.slide_loop_brace(true, false);
+            app.slide_loop_brace(true, false, 1);
         }
         assert_ne!(app.nav.loop_editor.start, 0);
         app.perform_undo();
@@ -253,5 +253,94 @@ mod tests {
             app.nav.loop_editor.start, 0,
             "one undo should return the whole walk, not one step of it"
         );
+    }
+
+    /// The loop editor's keys, as a player types them: Space then `l` to
+    /// get in, then the editor's own keys.
+    fn in_the_loop_editor(app: &mut App) {
+        use crossterm::event::KeyCode;
+        crate::test_support::press(app, KeyCode::Char(' '));
+        crate::test_support::press(app, KeyCode::Char('l'));
+        assert!(app.nav.loop_editor.active, "Space l did not open the loop editor");
+    }
+
+    /// A typed count multiplies the next key: `8L` stretches the end by eight
+    /// grid steps in one press, and the count does not leak into the key
+    /// after it.
+    #[test]
+    fn a_typed_count_stretches_the_brace_in_one_go() {
+        use crate::test_support::{press, type_line};
+        use crossterm::event::KeyCode;
+        let (mut app, _a, _b) = two_track_app();
+        in_the_loop_editor(&mut app);
+        app.nav.loop_editor.set_region(0, BAR);
+        type_line(&mut app, "8L");
+        assert_eq!(app.nav.loop_editor.end, 9 * BAR, "8L should add eight bars");
+        press(&mut app, KeyCode::Char('L'));
+        assert_eq!(app.nav.loop_editor.end, 10 * BAR, "the count leaked into the next key");
+        // One undo takes back the whole eight, not one bar of it.
+        app.perform_undo();
+        app.perform_undo();
+        assert_eq!(app.nav.loop_editor.end, BAR);
+    }
+
+    /// `3p` lays three copies back to back as one undo step.
+    #[test]
+    fn three_p_stamps_three_copies_as_one_step() {
+        use crate::test_support::type_line;
+        let (mut app, a, _b) = two_track_app();
+        in_the_loop_editor(&mut app);
+        app.nav.loop_editor.set_region(0, BAR);
+        type_line(&mut app, "y");
+        app.nav.loop_editor.set_region(4 * BAR, 5 * BAR);
+        type_line(&mut app, "3p");
+        for stamp in [4 * BAR, 5 * BAR, 6 * BAR] {
+            assert!(
+                app.nav.tracks[a].clips.iter().any(|c| c.start_tick == stamp && c.notes.len() == 2),
+                "no copy at {stamp}"
+            );
+        }
+        assert_eq!(app.nav.loop_editor.start, 7 * BAR, "the brace should wait after the third copy");
+        app.perform_undo();
+        assert!(
+            !app.nav.tracks[a].clips.iter().any(|c| c.start_tick >= 4 * BAR),
+            "one undo should lift all three copies"
+        );
+    }
+
+    /// `c` wraps the brace round a clip on the cursor's track, whatever its
+    /// size; `a` round the whole song.
+    #[test]
+    fn c_and_a_brace_a_clip_and_the_song() {
+        use crate::test_support::type_line;
+        let (mut app, _a, b) = two_track_app();
+        give_clip(&mut app, b, 6 * BAR + BAR / 8, BAR / 8, vec![note(38, 0)]);
+        app.nav.track_cursor = b;
+        in_the_loop_editor(&mut app);
+        app.nav.loop_editor.set_region(5 * BAR, 6 * BAR);
+        type_line(&mut app, "c");
+        assert_eq!(
+            (app.nav.loop_editor.start, app.nav.loop_editor.end),
+            (6 * BAR + BAR / 8, 6 * BAR + BAR / 4),
+            "c should brace the next clip, a thirty-second-sized one included"
+        );
+        type_line(&mut app, "a");
+        assert_eq!((app.nav.loop_editor.start, app.nav.loop_editor.end), (0, 7 * BAR));
+    }
+
+    /// The lanes follow the brace: walked past the right edge, they scroll;
+    /// `z` zooms them to fit it.
+    #[test]
+    fn the_lanes_follow_and_fit_the_brace() {
+        use crate::test_support::type_line;
+        let (mut app, _a, _b) = two_track_app();
+        in_the_loop_editor(&mut app);
+        app.nav.loop_editor.set_region(0, BAR);
+        type_line(&mut app, "20J");
+        assert_eq!(app.nav.loop_editor.start, 20 * BAR);
+        assert!(app.nav.timeline.shows(20 * BAR, 21 * BAR), "the lanes lost the brace: {:?}", app.nav.timeline);
+        type_line(&mut app, "z");
+        assert_eq!(app.nav.timeline.bars, 1, "a one-bar brace fits one bar");
+        assert_eq!(app.nav.timeline.first_bar, 20);
     }
 }

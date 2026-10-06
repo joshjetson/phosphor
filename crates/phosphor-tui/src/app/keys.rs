@@ -285,69 +285,7 @@ impl App {
             && key.code != KeyCode::Tab
             && key.code != KeyCode::BackTab
         {
-            let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-            match key.code {
-                KeyCode::Esc => {
-                    dbg::user("loop editor: Esc → unfocus");
-                    self.nav.loop_editor.unfocus();
-                }
-                KeyCode::Enter => {
-                    self.nav.loop_editor.toggle_enabled();
-                    dbg::user(&format!("loop editor: Enter → enabled={}", self.nav.loop_editor.enabled));
-                    self.sync_loop_to_transport();
-                    self.log_transport_state();
-                }
-                KeyCode::Char('h') | KeyCode::Left => {
-                    if shift {
-                        dbg::user("loop editor: Shift+h → move end left");
-                        self.edit_loop_range(|l| l.move_end_left());
-                    } else {
-                        dbg::user("loop editor: h → move start left");
-                        self.edit_loop_range(|l| l.move_start_left());
-                    }
-                    dbg::system(&format!("loop range: {}", self.nav.loop_editor.display()));
-                }
-                KeyCode::Char('l') | KeyCode::Right => {
-                    if shift {
-                        dbg::user("loop editor: Shift+l → move end right");
-                        self.edit_loop_range(|l| l.move_end_right());
-                    } else {
-                        dbg::user("loop editor: l → move start right");
-                        self.edit_loop_range(|l| l.move_start_right());
-                    }
-                    dbg::system(&format!("loop range: {}", self.nav.loop_editor.display()));
-                }
-                KeyCode::Char('H') => {
-                    dbg::user("loop editor: H → move end left");
-                    self.edit_loop_range(|l| l.move_end_left());
-                    dbg::system(&format!("loop range: {}", self.nav.loop_editor.display()));
-                }
-                KeyCode::Char('L') => {
-                    dbg::user("loop editor: L → move end right");
-                    self.edit_loop_range(|l| l.move_end_right());
-                    dbg::system(&format!("loop range: {}", self.nav.loop_editor.display()));
-                }
-                // The brace is the cursor: j/k walk it along the song by
-                // one grid step, J/K leap it by its own length.
-                KeyCode::Char('j') | KeyCode::Down => self.slide_loop_brace(true, false),
-                KeyCode::Char('k') | KeyCode::Up => self.slide_loop_brace(false, false),
-                KeyCode::Char('J') => self.slide_loop_brace(true, true),
-                KeyCode::Char('K') => self.slide_loop_brace(false, true),
-                KeyCode::Char('y') => self.yank_loop_section(),
-                KeyCode::Char('x') | KeyCode::Char('d') => self.cut_loop_section(),
-                KeyCode::Char('p') => self.paste_loop_section(true),
-                KeyCode::Char('P') => self.paste_loop_section(false),
-                KeyCode::Char('g') => {
-                    self.nav.loop_editor.cycle_step();
-                    self.flash(format!(
-                        "loop grid: {} \u{00b7} markers move by it",
-                        self.nav.loop_editor.step.label()
-                    ));
-                }
-                _ => {
-                    dbg::user(&format!("loop editor: ignored key {:?}", key.code));
-                }
-            }
+            self.handle_loop_editor_key(key);
             return;
         }
 
@@ -755,6 +693,12 @@ impl App {
                     }
                 }
             }
+            // The lanes are a window on the song: z closer, Z further out,
+            // [ and ] along it by half a window.
+            KeyCode::Char('z') if !self.nav.fx_menu.open => self.zoom_lanes(true),
+            KeyCode::Char('Z') if !self.nav.fx_menu.open => self.zoom_lanes(false),
+            KeyCode::Char('[') if !self.nav.fx_menu.open => self.nav.timeline.scroll_halves(-1),
+            KeyCode::Char(']') if !self.nav.fx_menu.open => self.nav.timeline.scroll_halves(1),
             KeyCode::Char('h') | KeyCode::Left => self.nav.move_left(),
             KeyCode::Char('l') | KeyCode::Right => self.nav.move_right(),
             KeyCode::Enter if self.nav.fx_menu.open => {

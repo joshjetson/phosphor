@@ -419,6 +419,24 @@ mod tests {
         assert_eq!(app.nav.current_track().unwrap().clips.len(), 1);
         assert!(app.live_status().is_none(), "the message repeated on every note");
     }
+
+    /// A window of any size draws without crashing: none at all (some ptys
+    /// start that way), a sliver, and just under the smallest real layout,
+    /// which asks for more room instead.
+    #[test]
+    fn a_tiny_window_asks_for_room_instead_of_crashing() {
+        let mut app = panel_app(InstrumentType::Sampler);
+        for (w, h) in [(0, 0), (1, 1), (0, 40), (120, 0), (3, 2), (59, 40), (120, 15)] {
+            screen(&app, w, h);
+        }
+        assert!(screen(&app, 59, 20).contains("Make the window bigger"));
+        assert!(!screen(&app, 60, 16).contains("Make the window bigger"));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('f'));
+        for (w, h) in [(0, 0), (1, 1), (60, 16), (61, 17)] {
+            screen(&app, w, h);
+        }
+    }
 }
 
 /// The help browser: a list of topics that opens a reference card.

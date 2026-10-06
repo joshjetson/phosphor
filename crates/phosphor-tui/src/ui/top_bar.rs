@@ -222,38 +222,78 @@ pub(super) fn render_ruler(frame: &mut Frame, area: Rect, nav: &NavState, snap: 
     frame.render_widget(Paragraph::new(Span::styled("\u{2502}", theme::border_style())), cols[1]);
 
     let w = cols[2].width as usize;
-    let bw = if w > 0 { w / VISIBLE_BARS } else { return };
-    if bw == 0 { return; }
+    if w == 0 {
+        return;
+    }
+    let view = lane_view(nav, snap);
+    let bar_ticks = phosphor_app::timeline::TICKS_PER_BAR;
+    let mut cells: Vec<(char, Style)> = vec![(' ', theme::dim()); w];
 
-    let ph = snap.position_ticks as f64 / (Transport::PPQ * 4) as f64;
-    let bar_ticks = (Transport::PPQ * 4) as usize;
-    let loop_start = nav.loop_editor.start as usize / bar_ticks + 1;
-    // Exclusive, covering every bar the brace touches.
-    let loop_end = (nav.loop_editor.end as usize).div_ceil(bar_ticks) + 1;
-    let loop_focused = nav.loop_editor.active;
-    let loop_enabled = nav.loop_editor.enabled;
-
-    let spans: Vec<Span> = (0..VISIBLE_BARS).map(|b| {
-        let bar_num = b + 1; // 1-based
-        let is_ph = snap.playing && ph >= b as f64 && ph < (b + 1) as f64;
-        let in_loop = (loop_enabled || loop_focused) && bar_num >= loop_start && bar_num < loop_end;
-
-        let s = if is_ph {
-            theme::amber()
-        } else if loop_focused && bar_num == loop_start {
-            Style::default().fg(Color::Rgb(80, 180, 80)).bg(theme::bg_val()).add_modifier(Modifier::BOLD)
-        } else if loop_focused && bar_num == loop_end - 1 {
-            Style::default().fg(Color::Rgb(180, 80, 80)).bg(theme::bg_val()).add_modifier(Modifier::BOLD)
-        } else if in_loop {
-            Style::default().fg(Color::Rgb(50, 100, 110)).bg(theme::bg_val())
-        } else if b % 4 == 0 {
-            theme::normal()
+    // Bar numbers, as many as fit: every bar when there is room, every
+    // second or fourth (and so on) when the lanes are zoomed out, and the
+    // beats too when zoomed far enough in to aim at one.
+    let cells_per_bar = (w as i64 * bar_ticks / view.ticks()).max(1);
+    let widest = format!("{}", view.first_bar + view.bars).len() as i64 + 1;
+    let every = [1i64, 2, 4, 8, 16, 32, 64, 128]
+        .into_iter()
+        .find(|&n| n * cells_per_bar >= widest)
+        .unwrap_or(128);
+    let beat = Transport::PPQ;
+    let show_beats = cells_per_bar >= 16;
+    let mut tick = view.first_tick();
+    while tick < view.end_tick() {
+        let x = view.column(tick, w);
+        let bar = tick / bar_ticks;
+        let on_bar = tick % bar_ticks == 0;
+        let label = if on_bar && bar % every == 0 {
+            Some(((bar + 1).to_string(), if bar % 4 == 0 { theme::normal() } else { theme::dim() }))
+        } else if !on_bar && show_beats {
+            Some((format!("{}", (tick % bar_ticks) / beat + 1), theme::dim()))
         } else {
-            theme::dim()
+            None
         };
+        if let (Some((text, style)), true) = (label, (0..w as i64).contains(&x)) {
+            for (i, ch) in text.chars().enumerate() {
+                if let Some(cell) = cells.get_mut(x as usize + i) {
+                    *cell = (ch, cell.1.patch(style).bg(cell.1.bg.unwrap_or(theme::bg_val())));
+                }
+            }
+        }
+        tick += if show_beats { beat } else { bar_ticks };
+    }
 
-        Span::styled(format!("{:<w$}", bar_num, w = bw), s)
-    }).collect();
+    // The brace, exactly where it is: a band across the ruler with its two
+    // edges marked, a column wide at the least, so a thirty-second shows.
+    // Drawn over the numbers, which stay readable on it.
+    let loop_focused = nav.loop_editor.active;
+    if brace_shown(nav) {
+        let (start, end) = (nav.loop_editor.start, nav.loop_editor.end);
+        if let Some((a, b)) = span_columns(&view, start, end, w) {
+            for cell in &mut cells[a..b] {
+                let fg = if cell.0 == ' ' { Color::Rgb(50, 100, 110) } else { theme::normal_val() };
+                cell.1 = Style::default().fg(fg).bg(theme::loop_band());
+            }
+            if loop_focused {
+                let edge = |c: Color| Style::default().fg(c).bg(theme::loop_band()).add_modifier(Modifier::BOLD);
+                if view.column(start, w) >= 0 {
+                    cells[a] = ('\u{258F}', edge(Color::Rgb(80, 180, 80)));
+                }
+                if view.column(end, w) <= w as i64 {
+                    cells[b - 1] = ('\u{2595}', edge(Color::Rgb(180, 80, 80)));
+                }
+            }
+        }
+    }
+
+    if snap.playing {
+        let px = view.column(snap.position_ticks, w);
+        if (0..w as i64).contains(&px) {
+            let cell = &mut cells[px as usize];
+            *cell = (if cell.0 == ' ' { '\u{25BC}' } else { cell.0 }, theme::amber());
+        }
+    }
+
+    let spans: Vec<Span> = cells.into_iter().map(|(ch, st)| Span::styled(ch.to_string(), st)).collect();
     frame.render_widget(Paragraph::new(Line::from(spans)), cols[2]);
 }
 
