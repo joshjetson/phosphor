@@ -687,6 +687,15 @@ impl SamplerState {
             .flat_map(|state| state.layers.iter())
     }
 
+    /// The same walk, to write into — what turns a kit's paths from one
+    /// home into another when it is saved or opened.
+    pub fn all_layers_mut(&mut self) -> impl Iterator<Item = &mut LayerState> + '_ {
+        self.pads
+            .iter_mut()
+            .chain(self.zones.iter_mut().map(|z| &mut z.pad))
+            .flat_map(|state| state.layers.iter_mut())
+    }
+
     /// Layers whose file was not found on load.
     pub fn missing_layers(&self) -> usize {
         self.all_layers().filter(|l| l.pcm.is_none()).count()

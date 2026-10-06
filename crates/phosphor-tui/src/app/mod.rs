@@ -27,6 +27,7 @@ mod delete;
 mod edit_mode;
 mod file_picker;
 mod keys;
+mod kits;
 mod fx_keys;
 mod sequencer_bounce;
 pub(crate) mod sequencer_keys;
@@ -97,6 +98,19 @@ pub struct App {
     /// so the tests can point it at a scratch directory instead of the
     /// player's own presets.
     pub(crate) preset_dir: Option<std::path::PathBuf>,
+    /// Where the player's own drum kits are kept — `<app dir>/kits`. A field
+    /// for the reason `preset_dir` is one.
+    pub(crate) kits_dir: Option<std::path::PathBuf>,
+    /// The user kit each Drum Rack's engine was last handed, by mixer id —
+    /// what the reconcile pass compares a track's kit against. See `kits`.
+    pub(crate) kits_in_engine: std::collections::HashMap<usize, Arc<phosphor_app::kits::UserKit>>,
+    /// Kits the engine was told to stop playing, held a little longer. The
+    /// audio thread drops its copies of their sounds when it gets round to
+    /// the command, and that drop must never be the last one — a free on
+    /// the real-time thread. The sampler's undo steps play this part for
+    /// its pads; a kit replaced by saving a new version of it has nothing
+    /// else holding it.
+    pub(crate) retired_kits: Vec<Arc<phosphor_app::kits::UserKit>>,
     /// Where the file picker opens: the projects folder and the samples
     /// folder, or `None` for "ask `phosphor_app::paths`", which is where
     /// every running copy starts.
@@ -402,6 +416,12 @@ impl App {
             clip_rx,
             session_path: None,
             preset_dir: phosphor_app::preset::default_dir(),
+            // Not read under test: a suite run by someone with kits of their
+            // own would otherwise find them on every Drum Rack's kit knob.
+            // A test that wants a library points this at a scratch folder.
+            kits_dir: if cfg!(test) { None } else { phosphor_app::paths::kits_dir() },
+            kits_in_engine: std::collections::HashMap::new(),
+            retired_kits: Vec::new(),
             browse_sessions: None,
             browse_samples: None,
             pending_save: None,
@@ -436,6 +456,7 @@ impl App {
                 app.install_chain(index);
             }
         }
+        app.reload_kit_library();
         app
     }
 

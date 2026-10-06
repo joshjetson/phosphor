@@ -213,6 +213,11 @@ pub struct TrackState {
     /// PCM behind the layers is `Arc`-shared, so even a clone that walks
     /// in here copies handles, never audio.
     pub sampler: Option<Box<crate::sampler::SamplerState>>,
+    /// The player's own drum kit this Drum Rack is playing, when its kit
+    /// knob has been stepped past the machines. `None` plays the machine the
+    /// knob's own position names. Shared rather than copied: a kit is many
+    /// pads, and every undo step captures one of these.
+    pub kit: Option<std::sync::Arc<crate::kits::UserKit>>,
 }
 
 impl TrackState {
@@ -267,7 +272,29 @@ impl TrackState {
             synth_params: Vec::new(),
             sequencer: None,
             sampler: None,
+            kit: None,
         }
+    }
+
+    /// Whether this track can play one of the player's own drum kits: a
+    /// Drum Rack in its own slot. A sequencer's drum child is not one — its
+    /// kit knob belongs to the pattern's lanes, and its slot is the
+    /// sequencer's to fill.
+    pub fn takes_user_kits(&self) -> bool {
+        self.instrument_type == Some(super::InstrumentType::DrumRack) && self.sequencer.is_none()
+    }
+
+    /// The user kit this track's engine is playing, if it plays one.
+    pub fn user_kit(&self) -> Option<&std::sync::Arc<crate::kits::UserKit>> {
+        self.kit.as_ref().filter(|_| self.takes_user_kits())
+    }
+
+    /// The pads this track's engine plays: a sampler's own, or the user kit
+    /// a Drum Rack has on. The one question every sync to the engine asks,
+    /// so that a kit on a Drum Rack reaches the audio thread by the same
+    /// road a sampler's pads do.
+    pub fn engine_sampler(&self) -> Option<&crate::sampler::SamplerState> {
+        self.sampler.as_deref().or_else(|| self.user_kit().map(|k| &k.state))
     }
 
     /// Sync mute/solo/arm/volume to the audio thread handle (if wired up).

@@ -138,6 +138,12 @@ pub fn samples_dir() -> Option<PathBuf> {
     app_dir().map(|dir| dir.join("samples"))
 }
 
+/// Where the player's own drum kits live — `<app dir>/kits`, one file per
+/// kit and a samples folder beside each. See [`crate::kits`].
+pub fn kits_dir() -> Option<PathBuf> {
+    app_dir().map(|dir| dir.join("kits"))
+}
+
 /// Where to look for a sample the player named in the pad prompt.
 ///
 /// The same shape as [`find_session`], with the sampler's own homes: as

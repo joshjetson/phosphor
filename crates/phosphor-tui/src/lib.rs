@@ -29,6 +29,8 @@ mod test_fx_tape;
 #[cfg(test)]
 mod test_keys;
 #[cfg(test)]
+mod test_kits;
+#[cfg(test)]
 mod test_midi_fx;
 #[cfg(test)]
 mod test_practice;

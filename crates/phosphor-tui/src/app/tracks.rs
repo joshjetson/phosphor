@@ -387,6 +387,8 @@ impl App {
         let Some(track_id) = self.nav.tracks.get(track_index).and_then(|t| t.mixer_id) else {
             return;
         };
+        // A fresh plugin holds no user kit, whatever the old one held.
+        self.forget_engine_kit(track_id);
         let tx = &self.engine.shared.mixer_command_tx;
         let _ = tx.send(MixerCommand::SetInstrument {
             track_id,

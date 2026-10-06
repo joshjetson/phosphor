@@ -168,24 +168,53 @@ impl App {
     /// All three together, because they are one pad. A sync that shipped the
     /// layers and not the phrases would leave a performance playing on a key
     /// the player has just emptied.
+    ///
+    /// Every sync in this file reads [`TrackState::engine_sampler`] — a
+    /// sampler's own pads, or the user kit a Drum Rack is playing — so the
+    /// two reach the audio thread by the one road.
     pub(crate) fn sync_sampler_pad(&mut self, track_idx: usize, pad: usize) {
         let Some(track) = self.nav.tracks.get(track_idx) else { return };
-        let (Some(mixer_id), Some(sampler)) = (track.mixer_id, track.sampler.as_ref()) else {
+        let (Some(mixer_id), Some(sampler)) = (track.mixer_id, track.engine_sampler()) else {
             return;
         };
-        let Some(engine) = sampler.engine_pad(pad) else { return };
+        self.send_sampler_pads(mixer_id, sampler, &[pad]);
+    }
+
+    /// Hand the engine `pads` exactly as `state` has them, addressed to the
+    /// mixer track `mixer_id`: one pad on its own pair of commands, two or
+    /// more as one range — see [`App::sync_sampler_pads`] for why.
+    ///
+    /// The state is a parameter rather than read off a track because one
+    /// caller has none to read: a Drum Rack stepping off a user kit empties
+    /// the pads the kit was using, from an empty sampler.
+    pub(crate) fn send_sampler_pads(&self, mixer_id: usize, state: &SamplerState, pads: &[usize]) {
         let tx = &self.engine.shared.mixer_command_tx;
-        let _ = tx.send(MixerCommand::SetSamplerPad {
-            track_id: mixer_id,
-            pad: pad as u8,
-            config: engine.config,
-            layers: engine.layers,
-        });
-        let _ = tx.send(MixerCommand::SetSamplerPhrases {
-            track_id: mixer_id,
-            pad: pad as u8,
-            phrases: engine.phrases,
-        });
+        if let [pad] = *pads {
+            let Some(engine) = state.engine_pad(pad) else { return };
+            let _ = tx.send(MixerCommand::SetSamplerPad {
+                track_id: mixer_id,
+                pad: pad as u8,
+                config: engine.config,
+                layers: engine.layers,
+            });
+            let _ = tx.send(MixerCommand::SetSamplerPhrases {
+                track_id: mixer_id,
+                pad: pad as u8,
+                phrases: engine.phrases,
+            });
+            return;
+        }
+        if pads.is_empty() {
+            return;
+        }
+        let carried: Vec<(u8, PadConfig, Vec<PadLayer>, Vec<PadPhrase>)> = pads
+            .iter()
+            .filter_map(|&pad| {
+                let engine = state.engine_pad(pad)?;
+                Some((pad as u8, engine.config, engine.layers, engine.phrases))
+            })
+            .collect();
+        let _ = tx.send(MixerCommand::SetSamplerRange { track_id: mixer_id, pads: carried });
     }
 
     /// Ship the sampler's one child instrument, with its whole panel behind
@@ -197,16 +226,23 @@ impl App {
     /// is what an undo back past the first phrase means.
     pub(crate) fn sync_sampler_child(&mut self, track_idx: usize) {
         let Some(track) = self.nav.tracks.get(track_idx) else { return };
-        let (Some(track_id), Some(sampler)) = (track.mixer_id, track.sampler.as_ref()) else {
+        let (Some(track_id), Some(sampler)) = (track.mixer_id, track.engine_sampler()) else {
             return;
         };
-        let child = sampler.child.clone();
+        self.send_sampler_child(track_id, sampler.child.as_ref());
+    }
+
+    /// Hand the mixer track `track_id` this child and its panel, or take
+    /// its child away.
+    pub(crate) fn send_sampler_child(
+        &self,
+        track_id: usize,
+        child: Option<&phosphor_app::sampler::PadSource>,
+    ) {
         let tx = &self.engine.shared.mixer_command_tx;
         let _ = tx.send(MixerCommand::SetSamplerChild {
             track_id,
-            child: child
-                .as_ref()
-                .map(|c| phosphor_app::instrument::build_plugin(c.instrument)),
+            child: child.map(|c| phosphor_app::instrument::build_plugin(c.instrument)),
         });
         for (param_index, &value) in child.iter().flat_map(|c| c.params.iter()).enumerate() {
             let _ = tx.send(MixerCommand::SetSamplerChildParam { track_id, param_index, value });
@@ -258,28 +294,15 @@ impl App {
             pads.into_iter().filter(|pad| *pad < phosphor_app::sampler::NUM_PADS).collect();
         // One pad is the commonest edit in the sampler — every knob turn in
         // pads mode — and it has a door already. Two or more travel together.
-        if wanted.len() < 2 {
-            if let Some(&pad) = wanted.first() {
-                self.sync_sampler_pad(track_idx, pad);
-            }
+        if let [pad] = wanted[..] {
+            self.sync_sampler_pad(track_idx, pad);
             return;
         }
         let Some(track) = self.nav.tracks.get(track_idx) else { return };
-        let (Some(track_id), Some(sampler)) = (track.mixer_id, track.sampler.as_ref()) else {
+        let (Some(track_id), Some(sampler)) = (track.mixer_id, track.engine_sampler()) else {
             return;
         };
-        let carried: Vec<(u8, PadConfig, Vec<PadLayer>, Vec<PadPhrase>)> = wanted
-            .into_iter()
-            .filter_map(|pad| {
-                let engine = sampler.engine_pad(pad)?;
-                Some((pad as u8, engine.config, engine.layers, engine.phrases))
-            })
-            .collect();
-        let _ = self
-            .engine
-            .shared
-            .mixer_command_tx
-            .send(MixerCommand::SetSamplerRange { track_id, pads: carried });
+        self.send_sampler_pads(track_id, sampler, &wanted);
     }
 
     /// Replay everything the engine could be sounding to a fresh instance —
@@ -299,10 +322,13 @@ impl App {
             .nav
             .tracks
             .get(track_idx)
-            .and_then(|t| t.sampler.as_ref())
-            .map(|s| s.sounding_pads())
+            .and_then(|t| t.engine_sampler())
+            .map(SamplerState::sounding_pads)
             .unwrap_or_default();
         self.sync_sampler_pads(track_idx, pads);
+        // A Drum Rack's user kit has just been handed over whole, so the
+        // reconcile pass is told so rather than sending it again.
+        self.note_kit_in_engine(track_idx);
     }
 
     /// A note-on seen by the UI's MIDI tap: the pad cursor follows the

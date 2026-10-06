@@ -51,6 +51,7 @@ impl App {
                     names.len()
                 ));
                 self.nav.preset_modal.show(instrument, track_idx, names);
+                self.show_kit_section();
             }
             Err(e) => {
                 // The bank exists but does not parse. Open anyway so the
@@ -65,6 +66,8 @@ impl App {
                     .unwrap_or_default();
                 self.nav.preset_modal.show(instrument, track_idx, Vec::new());
                 self.nav.preset_modal.error = Some(format!("{file} is unreadable"));
+                // The kits are not in the broken bank, and stay reachable.
+                self.show_kit_section();
             }
         }
     }

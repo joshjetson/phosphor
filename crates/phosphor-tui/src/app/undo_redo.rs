@@ -186,11 +186,13 @@ impl App {
                 let chain = chain.clone();
                 self.apply_midi_fx_slice(*track_idx, &chain);
             }
-            StateSlice::SynthParams { track_idx, params } => {
+            StateSlice::SynthParams { track_idx, params, kit } => {
                 if let Some(track) = self.nav.tracks.get_mut(*track_idx) {
                     track.synth_params = params.clone();
+                    track.kit = kit.clone();
                 }
                 self.push_params_to_audio(*track_idx);
+                self.reconcile_user_kits();
             }
             StateSlice::Sequencer { track_idx, content } => {
                 if let Some(content) = content {
@@ -375,6 +377,9 @@ impl App {
             // that comes back from the undo stack comes back with its
             // sounds rather than with 88 empty pads.
             track.sampler = saved.sampler.clone();
+            // And a Drum Rack's own kit, for the same reason; the restore
+            // below hands it to the fresh engine.
+            track.kit = saved.kit.clone();
             track.sync_to_audio();
         }
         self.push_params_to_audio(final_idx);

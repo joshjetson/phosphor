@@ -216,7 +216,7 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                 let name_s = if is_cur { theme::amber_bright().add_modifier(Modifier::BOLD) } else { theme::normal() };
                 let dim_s = if is_cur { theme::amber() } else { theme::dim() };
 
-                if let Some(label) = params::discrete_label(instrument, values, i) {
+                if let Some(label) = params::selector_label(nav, instrument, values, i) {
                     lines.push(Line::from(vec![
                         Span::styled(format!(" {indicator} "), name_s),
                         Span::styled(format!("{name:<8}"), name_s),
@@ -231,6 +231,10 @@ pub(super) fn render_fx_panel(frame: &mut Frame, area: Rect, nav: &NavState) {
                         Span::styled(format!(" {}", params::value_text(instrument, values, i)), dim_s),
                     ]));
                 }
+            }
+
+            if params::user_kit_note(nav).is_some() {
+                lines.push(Line::from(Span::styled("  plays its own samples", theme::muted())));
             }
 
             // Controls hint
@@ -317,7 +321,8 @@ pub(super) fn render_inst_config(frame: &mut Frame, area: Rect, nav: &NavState) 
     // panel reads in the order the instrument lists it.
     let cell_w = INST_CELL_W.min(w);
     let columns = (w / cell_w).max(1);
-    let header_lines = 1 + usize::from(orphaned_sampler);
+    let kit_note = params::user_kit_note(nav);
+    let header_lines = 1 + usize::from(orphaned_sampler) + usize::from(kit_note.is_some());
     let rows = h.saturating_sub(header_lines).max(1);
     let per_page = columns * rows;
     let cursor = nav.clip_view.synth_param_cursor.min(count.saturating_sub(1));
@@ -333,6 +338,9 @@ pub(super) fn render_inst_config(frame: &mut Frame, area: Rect, nav: &NavState) 
             theme::muted(),
         )));
     }
+    if let Some(note) = kit_note {
+        lines.push(Line::from(Span::styled(note, theme::muted())));
+    }
 
     for row in 0..rows {
         let mut spans: Vec<Span> = Vec::new();
@@ -342,6 +350,7 @@ pub(super) fn render_inst_config(frame: &mut Frame, area: Rect, nav: &NavState) 
                 continue;
             }
             spans.extend(inst_cell(
+                nav,
                 instrument,
                 values,
                 index,
@@ -421,6 +430,7 @@ fn inst_header(
 /// One control: `▶ cutoff   ██████░░░░ 61%`, or a selector's word instead of
 /// the bar.
 fn inst_cell(
+    nav: &NavState,
     instrument: Option<InstrumentType>,
     values: &[f32],
     index: usize,
@@ -447,7 +457,7 @@ fn inst_cell(
         Span::styled(format!("{name:<NAME_W$} "), name_style),
     ];
 
-    if let Some(label) = params::discrete_label(instrument, values, index) {
+    if let Some(label) = params::selector_label(nav, instrument, values, index) {
         let text: String = label.chars().take(value_w).collect();
         spans.push(Span::styled(
             format!("{text:<value_w$}"),

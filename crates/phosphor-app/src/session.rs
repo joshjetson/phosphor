@@ -96,6 +96,12 @@ pub struct SessionTrack {
     /// the JSON. See [`crate::sampler::session`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampler: Option<crate::sampler::session::SessionSampler>,
+    /// The player's own drum kit a Drum Rack is playing, carried whole: the
+    /// session keeps its own copy, so a kit edited or deleted later leaves
+    /// this song as it was. Absent on every track not playing one, which is
+    /// every track in every session written before kits existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kit: Option<crate::kits::SessionKit>,
     /// This track's insert chain, in order. Each effect by name, so that a
     /// build which reorders its menu — or gains an effect between it and the
     /// one that wrote the file — still loads the right thing.
@@ -493,6 +499,7 @@ fn extract_session(nav: &NavState, transport: &Transport) -> SessionFile {
                 // sampler's own answer, because a bed in keys mode has a
                 // great deal to say with no pad occupied at all.
                 .filter(|s| !s.is_untouched()),
+            kit: track.user_kit().map(|kit| crate::kits::SessionKit::from_kit(kit)),
             fx: chain_to_session(&track.fx_chain),
             midi_fx: midi_fx_to_session(&track.midi_fx),
             pan: track.pan,
@@ -726,6 +733,7 @@ mod tests {
                     color_index: 2,
                     sequencer: None,
                     sampler: None,
+                    kit: None,
                     midi_fx: Vec::new(),
                     fx: vec![
                         SessionFx {
@@ -828,6 +836,7 @@ mod tests {
                 clips: Vec::new(),
                 sequencer: None,
                 sampler: None,
+                kit: None,
                 midi_fx: Vec::new(),
                 fx: Vec::new(),
                 pan: 0.0,
@@ -837,7 +846,7 @@ mod tests {
             }],
         };
         let json = serde_json::to_string_pretty(&session).unwrap();
-        for absent in ["\"fx\"", "\"pan\"", "\"send_a\"", "\"send_b\"", "\"key_track\"", "\"buses\"", "\"sampler\""] {
+        for absent in ["\"fx\"", "\"pan\"", "\"send_a\"", "\"send_b\"", "\"key_track\"", "\"buses\"", "\"sampler\"", "\"kit\""] {
             assert!(
                 !json.contains(absent),
                 "an unused {absent} was written into the file:\n{json}"
@@ -878,6 +887,7 @@ mod tests {
         assert_eq!(loaded.tracks[0].send_a, 0.0);
         assert_eq!(loaded.tracks[0].send_b, 0.0);
         assert_eq!(loaded.tracks[0].key_track, None);
+        assert!(loaded.tracks[0].kit.is_none(), "an old track came back playing a user kit");
     }
 
     /// Chains are stored by name, so a build whose menu has grown or been

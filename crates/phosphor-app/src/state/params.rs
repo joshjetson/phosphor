@@ -108,7 +108,57 @@ impl NavState {
         result
     }
 
+    /// The user drum kit the panel's kit knob is showing, when the panel is
+    /// a Drum Rack's own and it has stepped past the machines — what the
+    /// knob's label reads instead of a machine's name.
+    #[must_use]
+    pub fn panel_user_kit(&self) -> Option<&std::sync::Arc<crate::kits::UserKit>> {
+        if self.panel_source().is_some() {
+            return None;
+        }
+        self.tracks.get(self.track_cursor)?.user_kit()
+    }
+
+    /// A step of the kit knob on a Drum Rack's own panel: through the
+    /// machines and on into the player's kits.
+    ///
+    /// `None` when the cursor is not on that knob of that panel, so the
+    /// ordinary road takes it. The knob's own position changes only when a
+    /// machine is chosen — a user kit leaves it where it was, so the
+    /// selector's meaning, and every session that stored it, is untouched.
+    /// What the engine needs to hear about a user kit is the front end's
+    /// reconcile pass's business, not this one's: undo and session load
+    /// change the kit too, and one road for all of them is the road that
+    /// cannot be forgotten.
+    fn step_user_kit(&mut self, up: bool) -> Option<Option<(usize, usize, f32)>> {
+        use phosphor_dsp::drum_rack::{kit_knob, DrumKit, P_KIT};
+        if self.panel_source().is_some() || self.clip_view.synth_param_cursor != P_KIT {
+            return None;
+        }
+        let track = self.tracks.get(self.track_cursor)?;
+        if !track.takes_user_kits() {
+            return None;
+        }
+        let builtin = DrumKit::from_param(*track.synth_params.get(P_KIT)?).index();
+        let choice =
+            crate::kits::step(&self.kit_library, builtin, track.user_kit().map(|k| &**k), up);
+        let track = &mut self.tracks[self.track_cursor];
+        match choice {
+            Some(crate::kits::KitChoice::BuiltIn(index)) => {
+                track.synth_params[P_KIT] = kit_knob(index);
+                track.kit = None;
+            }
+            Some(crate::kits::KitChoice::User(kit)) => track.kit = Some(kit),
+            None => {}
+        }
+        let value = track.synth_params[P_KIT];
+        Some(track.mixer_id.map(|id| (id, P_KIT, value)))
+    }
+
     fn adjust_synth_param_inner(&mut self, delta: f32) -> Option<(usize, usize, f32)> {
+        if let Some(stepped) = self.step_user_kit(delta > 0.0) {
+            return stepped;
+        }
         let idx = self.clip_view.synth_param_cursor;
         let (instrument, params) = self.panel_mut()?;
         if idx >= params.len() {

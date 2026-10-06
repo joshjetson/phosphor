@@ -146,6 +146,10 @@ pub struct NavState {
     pub quantize_modal: QuantizeModal,
     /// User preset browser for the track under the cursor.
     pub preset_modal: PresetModal,
+    /// The player's own drum kits, in list order — what a Drum Rack's kit
+    /// knob steps into past the machines. Read from disk at startup and
+    /// again after a kit is saved or deleted; see [`crate::kits`].
+    pub kit_library: Vec<std::sync::Arc<crate::kits::UserKit>>,
     /// Whether the selected track element is "locked" for editing — Enter
     /// locks, Esc releases. While locked, h/l edits that element instead of
     /// navigating between elements, which is the same shape as the
@@ -280,6 +284,7 @@ impl NavState {
             undo_stack: undo::UndoStack::new(),
             quantize_modal: QuantizeModal::new(),
             preset_modal: PresetModal::new(),
+            kit_library: Vec::new(),
             element_locked: false,
             recording_grace: 0,
             take_count: 0,

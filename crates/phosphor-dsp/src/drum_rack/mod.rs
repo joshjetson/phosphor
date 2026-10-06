@@ -98,11 +98,24 @@
 //! part on the nearest voice is what the hardware leaves you. The 727 is the
 //! extreme case — it has no bass drum at all, so a kick is played on its low
 //! conga and answers that fader.
+//!
+//! # A kit of the player's own
+//!
+//! The rack also carries a [`Sampler`], silent and empty until the front end
+//! hands it pads: a drum kit the player built on a sampler track and saved.
+//! While any pad of it holds a sound, the rack plays the sampler instead of
+//! its machines — the kit knob's position stays where it was, so stepping
+//! back to a built-in kit is the front end emptying the pads again. The
+//! sampler is made with the rack, on the thread that builds it, because the
+//! audio thread never allocates; which pads are occupied is a bitset kept up
+//! by the same calls that fill them, so no block has to go looking.
 
+use phosphor_plugin::sample::{PadConfig, PadLayer, PadPhrase, PreviewLayer, NUM_PADS};
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
 use crate::level::soft_saturate;
 use crate::filter::Svf;
+use crate::sampler::Sampler;
 
 /// Fixed headroom trim on the voice sum, applied after the gain knob.
 ///
@@ -2331,7 +2344,19 @@ pub struct DrumRack {
     metal: MetalBank,
     pub kit: DrumKit,
     pub params: [f32; PARAM_COUNT],
+    /// The player's own kit, when one has been handed over. Boxed because a
+    /// sampler is a large thing to carry inline in a rack that usually never
+    /// uses it.
+    sampler: Box<Sampler>,
+    /// Which pads hold sampled layers, and which hold phrases — one bit per
+    /// pad. Two sets, because the two arrive by different calls and a pad
+    /// emptied of one is still occupied by the other.
+    sampled_layers: u128,
+    sampled_phrases: u128,
 }
+
+// The occupancy sets are one bit per pad.
+const _: () = assert!(NUM_PADS <= 128);
 
 impl DrumRack {
     #[must_use]
@@ -2342,6 +2367,41 @@ impl DrumRack {
             metal: MetalBank::new(),
             kit: DrumKit::Kit808,
             params: PARAM_DEFAULTS,
+            sampler: Box::new(Sampler::new()),
+            sampled_layers: 0,
+            sampled_phrases: 0,
+        }
+    }
+
+    /// Whether the rack is playing a kit of samples rather than a machine.
+    #[must_use]
+    pub fn plays_samples(&self) -> bool {
+        self.sampled_layers | self.sampled_phrases != 0
+    }
+
+    /// Record whether `pad` is occupied in one of the two sets, and settle
+    /// what changing between machine and samples leaves ringing.
+    ///
+    /// Whichever side stops being played is silenced rather than frozen: a
+    /// voice that is no longer ticked keeps its state, and would otherwise
+    /// resume its tail the next time that side is heard.
+    fn mark(&mut self, phrases: bool, pad: u8, occupied: bool) {
+        let Some(bit) = 1u128.checked_shl(u32::from(pad)) else { return };
+        let was = self.plays_samples();
+        let set = if phrases { &mut self.sampled_phrases } else { &mut self.sampled_layers };
+        if occupied {
+            *set |= bit;
+        } else {
+            *set &= !bit;
+        }
+        match (was, self.plays_samples()) {
+            (false, true) => {
+                for v in &mut self.voices {
+                    v.active = false;
+                }
+            }
+            (true, false) => self.sampler.reset(),
+            _ => {}
         }
     }
 
@@ -2384,18 +2444,34 @@ impl Plugin for DrumRack {
         }
     }
 
-    fn init(&mut self, sample_rate: f64, _max_buffer_size: usize) {
+    fn init(&mut self, sample_rate: f64, max_buffer_size: usize) {
         self.sample_rate = sample_rate;
         self.voices = (0..MAX_VOICES).map(|_| DrumVoice::new()).collect();
+        self.sampler.init(sample_rate, max_buffer_size);
     }
 
     fn process(
         &mut self,
-        _inputs: &[&[f32]],
+        inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
         midi_events: &[MidiEvent],
     ) {
         if outputs.is_empty() {
+            return;
+        }
+        // A kit of samples plays through the sampler whole. GAIN is the one
+        // control on the panel that still means something — it sits at unity
+        // at the top of its travel, so it is applied as a plain cut.
+        if self.plays_samples() {
+            self.sampler.process(inputs, outputs, midi_events);
+            let cut = self.params[P_GAIN];
+            if cut < 1.0 {
+                for ch in outputs.iter_mut() {
+                    for s in ch.iter_mut() {
+                        *s *= cut;
+                    }
+                }
+            }
             return;
         }
         let buf_len = outputs[0].len();
@@ -2489,6 +2565,35 @@ impl Plugin for DrumRack {
         for v in &mut self.voices {
             v.active = false;
         }
+        self.sampler.reset();
+    }
+
+    // ── The player's own kit ──
+    //
+    // Every hook is the sampler's, forwarded; the two that fill pads also
+    // keep the occupancy sets. Same real-time contract as the sampler's own,
+    // since that is the code that runs.
+
+    fn set_sampler_pad(&mut self, pad: u8, config: &PadConfig, layers: &[PadLayer]) {
+        self.sampler.set_sampler_pad(pad, config, layers);
+        self.mark(false, pad, !layers.is_empty());
+    }
+
+    fn set_sampler_phrases(&mut self, pad: u8, phrases: &[PadPhrase]) {
+        self.sampler.set_sampler_phrases(pad, phrases);
+        self.mark(true, pad, !phrases.is_empty());
+    }
+
+    fn set_sampler_preview(&mut self, preview: Option<&PreviewLayer>) {
+        self.sampler.set_sampler_preview(preview);
+    }
+
+    fn set_sampler_child(&mut self, child: Option<Box<dyn Plugin>>) {
+        self.sampler.set_sampler_child(child);
+    }
+
+    fn set_sampler_child_param(&mut self, index: usize, value: f32) {
+        self.sampler.set_sampler_child_param(index, value);
     }
 }
 
@@ -5133,5 +5238,129 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── A kit of the player's own ──
+
+    /// A 220 Hz sine, loud enough to tell from any machine's kick by level
+    /// and steady enough to tell from it by shape.
+    fn sine_layer(amp: f32) -> PadLayer {
+        let data = (0..44_100)
+            .map(|i| amp * (std::f32::consts::TAU * 220.0 * i as f32 / SR as f32).sin())
+            .collect();
+        PadLayer::from_pcm(std::sync::Arc::new(phosphor_plugin::sample::SamplePcm {
+            data,
+            channels: 1,
+            sample_rate: SR as f32,
+        }))
+    }
+
+    fn pad_of(note: u8) -> u8 {
+        note - phosphor_plugin::sample::PAD_BASE_NOTE
+    }
+
+    /// One block of `n` samples, left channel, with `events` at its start.
+    fn block(rack: &mut DrumRack, events: &[MidiEvent], n: usize) -> Vec<f32> {
+        let mut left = vec![0.0f32; n];
+        let mut right = vec![0.0f32; n];
+        let mut outs: [&mut [f32]; 2] = [&mut left, &mut right];
+        rack.process(&[], &mut outs, events);
+        left
+    }
+
+    /// Given a sampled pad, the rack plays that sample on that key and
+    /// nothing on a key the kit left empty — its machines are out of the
+    /// signal. Cleared, the machine on the knob plays again.
+    #[test]
+    fn a_sampled_pad_plays_its_sample_and_clearing_it_brings_the_machine_back() {
+        let mut rack = DrumRack::new();
+        rack.init(SR, 2048);
+        let machine = block(&mut rack, &[note_on(36, 127, 0)], 2048);
+        assert!(peak(&machine) > 0.05, "the 808 kick did not sound to begin with");
+        rack.reset();
+
+        let config = PadConfig::for_key(36);
+        rack.set_sampler_pad(pad_of(36), &config, &[sine_layer(0.5)]);
+        assert!(rack.plays_samples());
+        let sampled = block(&mut rack, &[note_on(36, 127, 0)], 2048);
+        assert!(peak(&sampled) > 0.1, "the sampled pad was silent");
+        // The sine's own zero crossings, not a kick's: the 220 Hz sample
+        // crosses zero about every hundred samples, and an 808 kick at the
+        // bottom of its sweep does not.
+        let crossings = sampled.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
+        assert!((7..=13).contains(&crossings), "this is not the sample: {crossings} cycles");
+
+        rack.reset();
+        let empty = block(&mut rack, &[note_on(38, 127, 0)], 2048);
+        assert!(peak(&empty) < 1e-6, "a key the kit left empty played the machine's snare");
+
+        rack.set_sampler_pad(pad_of(36), &config, &[]);
+        assert!(!rack.plays_samples());
+        let back = block(&mut rack, &[note_on(36, 127, 0)], 2048);
+        assert!(
+            (peak(&back) - peak(&machine)).abs() < 1e-4,
+            "the machine did not come back as it was",
+        );
+    }
+
+    /// A pad holding only a phrase occupies the kit too, and the two sets
+    /// clear independently.
+    #[test]
+    fn layers_and_phrases_occupy_the_kit_separately() {
+        let mut rack = DrumRack::new();
+        rack.init(SR, 256);
+        let phrase = PadPhrase {
+            events: std::sync::Arc::from(vec![phosphor_plugin::sample::PhraseEvent {
+                frame: 0,
+                status: 0x90,
+                data1: 60,
+                data2: 100,
+            }]),
+            frames: 100,
+            sample_rate: SR as f32,
+            gain: 1.0,
+            transpose_with_key: false,
+            mute: false,
+            vel_lo: 0,
+            vel_hi: 127,
+        };
+        rack.set_sampler_phrases(5, std::slice::from_ref(&phrase));
+        rack.set_sampler_pad(5, &PadConfig::for_key(26), &[sine_layer(0.1)]);
+        rack.set_sampler_pad(5, &PadConfig::for_key(26), &[]);
+        assert!(rack.plays_samples(), "the phrase was forgotten when the layers left");
+        rack.set_sampler_phrases(5, &[]);
+        assert!(!rack.plays_samples());
+        // A pad number off the end of the set is ignored, not a panic.
+        rack.set_sampler_pad(200, &PadConfig::for_key(60), &[sine_layer(0.1)]);
+        assert!(!rack.plays_samples());
+    }
+
+    /// The sampled road through the rack stays off the allocator, as the
+    /// machine road always has — playing, and the pad edits that switch
+    /// between the two.
+    #[test]
+    fn the_sampled_kit_never_reaches_the_allocator() {
+        use crate::synth::tests::allocations_during;
+        let mut rack = DrumRack::new();
+        rack.init(SR, 512);
+        let layers = [sine_layer(0.3), sine_layer(0.2)];
+        let config = PadConfig::for_key(36);
+        rack.set_sampler_pad(pad_of(36), &config, &layers);
+        let mut l = vec![0.0f32; 512];
+        let mut r = vec![0.0f32; 512];
+        let hits: Vec<MidiEvent> = (36..=51u8).map(|n| note_on(n, 127, 0)).collect();
+        let allocations = allocations_during(|| {
+            let mut outs: [&mut [f32]; 2] = [&mut l, &mut r];
+            rack.process(&[], &mut outs, &hits);
+            rack.set_sampler_pad(pad_of(38), &config, &layers);
+            rack.set_sampler_pad(pad_of(38), &config, &[]);
+            rack.set_sampler_pad(pad_of(36), &config, &[]);
+            let mut outs: [&mut [f32]; 2] = [&mut l, &mut r];
+            rack.process(&[], &mut outs, &hits);
+            rack.set_sampler_pad(pad_of(36), &config, &layers);
+            let mut outs: [&mut [f32]; 2] = [&mut l, &mut r];
+            rack.process(&[], &mut outs, &[]);
+        });
+        assert_eq!(allocations, 0, "the drum rack reached the allocator");
     }
 }

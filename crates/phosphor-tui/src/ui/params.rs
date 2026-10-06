@@ -63,6 +63,30 @@ pub(super) fn discrete_label(
     }
 }
 
+/// [`discrete_label`], with the one selector whose word is not the
+/// instrument's to give: a Drum Rack's kit knob stepped past the machines
+/// into one of the player's own kits reads as that kit's name.
+pub(super) fn selector_label(
+    nav: &NavState,
+    instrument: Option<InstrumentType>,
+    params: &[f32],
+    index: usize,
+) -> Option<String> {
+    if instrument == Some(InstrumentType::DrumRack) && index == phosphor_dsp::drum_rack::P_KIT {
+        if let Some(kit) = nav.panel_user_kit() {
+            return Some(kit.name.clone());
+        }
+    }
+    discrete_label(instrument, params, index).map(str::to_string)
+}
+
+/// The line a Drum Rack's panel carries while it plays one of the player's
+/// own kits: the knobs that shape the machines have nothing to shape.
+pub(super) fn user_kit_note(nav: &NavState) -> Option<String> {
+    nav.panel_user_kit()
+        .map(|kit| format!("  {} plays its own samples \u{00b7} only kit and gain apply", kit.name))
+}
+
 /// What a knob reads as: a time where the instrument says the control is one,
 /// and a percentage otherwise.
 ///

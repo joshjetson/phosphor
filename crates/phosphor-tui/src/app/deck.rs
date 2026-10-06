@@ -150,6 +150,9 @@ impl App {
         self.reconcile_sampler_preview();
         self.reconcile_sampler_source();
         self.reconcile_sampler_learn();
+        // A Drum Rack's kit changes by the knob, undo, a session opening and
+        // a kit saved over; the engine hears about all of them from here.
+        self.reconcile_user_kits();
         self.nav.follow_focus();
         self.refresh_deck();
     }

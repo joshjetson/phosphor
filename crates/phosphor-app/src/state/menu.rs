@@ -416,8 +416,26 @@ pub struct PresetModal {
     pub entries: Vec<String>,
     /// Why the bank could not be read, when it could not.
     pub error: Option<String>,
-    /// Name waiting on an overwrite confirmation.
+    /// Name waiting on an overwrite or delete confirmation — a preset's, or
+    /// a drum kit's when the question was about one.
     pub pending_name: String,
+    /// The drum kits section, when the browser is open on a sampler: the
+    /// player's own kits by name, in list order. `None` on every other
+    /// instrument, which has no pads to make a kit from.
+    pub kits: Option<Vec<String>>,
+}
+
+/// What a row of the preset browser is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresetRow {
+    /// "save the current panel".
+    Save,
+    /// A preset, by its place in the bank.
+    Preset(usize),
+    /// "save pads as a drum kit" — on a sampler only.
+    SaveKit,
+    /// A drum kit, by its place in the kits list.
+    Kit(usize),
 }
 
 impl Default for PresetModal {
@@ -437,6 +455,7 @@ impl PresetModal {
             entries: Vec::new(),
             error: None,
             pending_name: String::new(),
+            kits: None,
         }
     }
 
@@ -448,6 +467,7 @@ impl PresetModal {
         self.entries = entries;
         self.error = None;
         self.pending_name.clear();
+        self.kits = None;
     }
 
     pub fn close(&mut self) {
@@ -456,10 +476,57 @@ impl PresetModal {
         self.error = None;
         self.pending_name.clear();
         self.cursor = 0;
+        self.kits = None;
     }
 
-    /// Rows in the list: the save row plus one per preset.
-    pub fn item_count(&self) -> usize { self.entries.len() + 1 }
+    /// Rows in the list: the save row plus one per preset, then — on a
+    /// sampler — the kit save row plus one per kit.
+    pub fn item_count(&self) -> usize {
+        self.entries.len() + 1 + self.kits.as_ref().map_or(0, |k| k.len() + 1)
+    }
+
+    /// What row `index` is.
+    #[must_use]
+    pub fn row_at(&self, index: usize) -> PresetRow {
+        let presets = self.entries.len();
+        match index {
+            0 => PresetRow::Save,
+            i if i <= presets => PresetRow::Preset(i - 1),
+            i if i == presets + 1 => PresetRow::SaveKit,
+            i => PresetRow::Kit(i - presets - 2),
+        }
+    }
+
+    /// What the cursor is on.
+    #[must_use]
+    pub fn row(&self) -> PresetRow {
+        self.row_at(self.cursor)
+    }
+
+    /// The row a kit sits on, for putting the cursor back on it after a
+    /// save.
+    #[must_use]
+    pub fn kit_row(&self, name: &str) -> Option<usize> {
+        let at = self.kits.as_ref()?.iter().position(|k| k == name)?;
+        Some(self.entries.len() + 2 + at)
+    }
+
+    /// Name of the selected drum kit, or `None` when the cursor is not on
+    /// one.
+    pub fn selected_kit(&self) -> Option<&str> {
+        match self.row() {
+            PresetRow::Kit(i) => self.kits.as_ref()?.get(i).map(String::as_str),
+            _ => None,
+        }
+    }
+
+    /// Replace the kits list after a save or delete, keeping the cursor on
+    /// something that exists.
+    pub fn set_kits(&mut self, kits: Vec<String>) {
+        self.kits = Some(kits);
+        let max = self.item_count() - 1;
+        if self.cursor > max { self.cursor = max; }
+    }
 
     pub fn move_up(&mut self) {
         if self.cursor > 0 { self.cursor -= 1; }
@@ -534,6 +601,11 @@ pub enum ConfirmKind {
     DeleteSamplerZone,
     /// Saving over a preset name the bank already holds.
     OverwritePreset,
+    /// Saving a sampler's pads over a drum kit of the same name.
+    OverwriteKit,
+    /// Deleting one of the player's drum kits. A file operation, like a
+    /// preset's, so it cannot be undone — which is why it asks.
+    DeleteKit,
     /// Saving over a session file that is already in the folder. The picker
     /// stays up behind the question: `n` gives the name back to the player
     /// rather than the save back to the beginning.
@@ -576,6 +648,8 @@ pub enum InputModalKind {
     Open,
     /// Naming a user preset from the preset browser.
     PresetName,
+    /// Naming a drum kit made from a sampler's pads.
+    KitName,
     /// Renaming the track under the cursor.
     RenameTrack,
     /// Naming the progression in the progression editor.

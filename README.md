@@ -198,6 +198,9 @@ runs 1–8 and counts *hits*.
 | **funk** | The same physics, a different drummer — 22" ported kick with a felt strip, a cranked snare over twenty tight strands, gel on the toms, and a ride with a ping |
 | **studio** | Very dry and gated — a pillow in the kick that all but closes the two-head coupling, a muffling ring on the snare, taped toms, and a downward expander across every voice |
 
+Past `studio`, the `kit` knob goes on into drum kits you made yourself on a
+sampler — see [Your own drum kits](#your-own-drum-kits--spacew-on-a-sampler).
+
 ### Patch Highlights
 
 **DX7** (256 voices): every voice from the eight original factory cartridges —
@@ -939,6 +942,39 @@ file into `samples/` and reopen.
 WAV in, 16-, 24- or 32-bit integer or float, mono or stereo (anything past two
 channels is dropped), up to ten minutes a file.
 
+### Your own drum kits — `Space+W` on a sampler
+
+Pads you like can become a drum kit, and a drum kit can be played on any Drum
+Rack track, in this session or any later one, the same way you pick the 808.
+
+**Make one.** Put sounds on a sampler's pads. Press `Space+W`, go down to
+`[ save pads as a drum kit ]`, press `Enter` and type a name. The kit keeps
+its own copy of every sound, so it still works after the files you loaded
+are moved or deleted. A sampler with nothing on it has nothing to save, and
+says so.
+
+**Play one.** On a Drum Rack track, turn the `kit` knob past the last machine
+(`studio`). Your kits come next, in name order, and the knob shows the kit's
+name. Turn it back to get the machines again. While your kit is on, the panel
+says it plays its own samples: only `kit` and `gain` do anything, because the
+other knobs shape the machines. `u` undoes the change like any other knob.
+
+**Change one.** On a sampler, press `Space+W`, pick the kit in the
+`drum kit` rows and press `Enter`. Its pads land on the sampler (one `u`
+takes them back off). Edit them with all the usual sampler tools, then save
+it again under the **same name** and answer `y` to the overwrite question.
+Any Drum Rack in the open session playing that kit switches to the new
+version straight away.
+
+**Delete one.** In the same list, press `d` on the kit. It asks
+`Delete drum kit 'name'?  y/n` — `y` deletes it, anything else keeps it.
+Deleting cannot be undone, but nothing already made goes quiet: a Drum Rack
+playing it keeps playing it, and a saved song keeps its own copy of the kit
+in its `<session>.samples/` folder.
+
+Kits live in `<app dir>/kits/` — one `.json` file and one `.samples/` folder
+per kit.
+
 ### Keys on the pads
 
 | Key | Action |
@@ -1550,6 +1586,9 @@ session keeps both. Full section:
 | `Enter` on the top row | Name and save the current panel |
 | `Enter` on a preset | Load it into the track |
 | `d` | Delete the selected preset (`y`/`n`) |
+| `Enter` on `[ save pads as a drum kit ]` | On a sampler: name and save its pads as a drum kit |
+| `Enter` on a drum kit | On a sampler: open the kit on the pads to edit it |
+| `d` on a drum kit | Delete the kit (`y`/`n`) |
 | `Esc` | Close the browser |
 
 Every instrument has its own bank, including the drum rack — the 35 controls behind
@@ -2088,6 +2127,7 @@ Inside it:
 ```
 <app dir>/config.json                    theme preference
 <app dir>/presets/<instrument>.json      one user preset bank per instrument
+<app dir>/kits/<name>.json               your own drum kits, each with a <name>.samples/ folder of its sounds
 <app dir>/samples/                       the folder `a` lists on a sampler pad
 <app dir>/sessions/                      the one projects folder — `Space+S` saves into it, `Space+O` lists it
 <app dir>/progressions.json              your chord-progression library

@@ -105,7 +105,14 @@ pub enum StateSlice {
     Song {
         tracks: Vec<(usize, Vec<Clip>)>,
     },
-    SynthParams { track_idx: usize, params: Vec<f32> },
+    /// The panel, and the user drum kit a Drum Rack is playing: the kit
+    /// knob walks from the machines into the player's own kits, so one turn
+    /// of it can change either, and undoing it has to put back both.
+    SynthParams {
+        track_idx: usize,
+        params: Vec<f32>,
+        kit: Option<std::sync::Arc<crate::kits::UserKit>>,
+    },
     TrackMix { track_idx: usize, volume: f32, pan: f32, sends: [f32; 2], muted: bool },
     /// `None` when the track had no sequencer — captured for completeness,
     /// applied as a no-op, and never produced by the capture sites in
@@ -173,6 +180,7 @@ impl StateSlice {
             UndoScope::SynthParams { track_idx } => Self::SynthParams {
                 track_idx,
                 params: nav.tracks.get(track_idx).map(|t| t.synth_params.clone()).unwrap_or_default(),
+                kit: nav.tracks.get(track_idx).and_then(|t| t.kit.clone()),
             },
             UndoScope::TrackMix { track_idx } => {
                 let track = nav.tracks.get(track_idx);
@@ -279,10 +287,12 @@ impl StateSlice {
                 Self::ClipsAndMidiFx { track_idx: b, clips: lb, chain: cb },
             ) => a == b && la == lb && ca == cb,
             (Self::Song { tracks: a }, Self::Song { tracks: b }) => a == b,
+            // A kit by its identity: two captures of one kit are the same
+            // kit, and its pads are never walked to find that out.
             (
-                Self::SynthParams { track_idx: a, params: pa },
-                Self::SynthParams { track_idx: b, params: pb },
-            ) => a == b && pa == pb,
+                Self::SynthParams { track_idx: a, params: pa, kit: ka },
+                Self::SynthParams { track_idx: b, params: pb, kit: kb },
+            ) => a == b && pa == pb && ka.as_ref().map(|k| k.id) == kb.as_ref().map(|k| k.id),
             (
                 Self::TrackMix {
                     track_idx: a, volume: va, pan: pa, sends: sa, muted: ma,

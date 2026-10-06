@@ -374,6 +374,7 @@ pub(super) fn render_input_modal(frame: &mut Frame, nav: &NavState) {
         InputModalKind::SaveAs => " save project ",
         InputModalKind::Open => " open project ",
         InputModalKind::PresetName => " name preset ",
+        InputModalKind::KitName => " name drum kit ",
         InputModalKind::RenameTrack => " rename track ",
         InputModalKind::ProgressionName => " name progression ",
         InputModalKind::SamplePath => " load sample ",
@@ -391,7 +392,7 @@ pub(super) fn render_input_modal(frame: &mut Frame, nav: &NavState) {
     let prompt = match nav.input_modal.kind {
         InputModalKind::SaveAs => "name: ",
         InputModalKind::Open => "path: ",
-        InputModalKind::PresetName => "name: ",
+        InputModalKind::PresetName | InputModalKind::KitName => "name: ",
         InputModalKind::RenameTrack => "name: ",
         InputModalKind::ProgressionName => "name: ",
         InputModalKind::SamplePath | InputModalKind::ChopPath => "path: ",
@@ -619,8 +620,13 @@ pub(super) fn render_preset_modal(frame: &mut Frame, nav: &NavState) {
     // The save row plus one line per preset, then the hint line if there is
     // one, a blank, and the footer. Capped to the terminal, so a full bank
     // scrolls inside the modal rather than drawing off the bottom.
-    let hint = pm.error.is_some() || pm.entries.is_empty();
-    let content = pm.item_count() + usize::from(hint) + 2;
+    // On a sampler, one more footer line says what the kit rows do — they
+    // are the one place in this list where Enter does not load a preset. An
+    // empty bank is said beside its own save row there instead of under the
+    // list, where it would read as being about the kits.
+    let kit_footer = pm.kits.is_some();
+    let hint = pm.error.is_some() || (pm.entries.is_empty() && !kit_footer);
+    let content = pm.item_count() + usize::from(hint) + 2 + usize::from(kit_footer);
     // Never larger than the terminal: a modal taller than the buffer it is
     // drawn into is an index past the end of the buffer.
     let mh = (content.min(u16::MAX as usize) as u16 + 2).min(area.height.saturating_sub(2));
@@ -642,7 +648,7 @@ pub(super) fn render_preset_modal(frame: &mut Frame, nav: &NavState) {
 
     let inner = Rect::new(mx + 2, my + 1, mw.saturating_sub(4), mh.saturating_sub(2));
     // Reserve the blank line, the footer, and the hint line if it is showing.
-    let reserved = 2 + u16::from(hint);
+    let reserved = 2 + u16::from(hint) + u16::from(kit_footer);
     let list_rows = inner.height.saturating_sub(reserved).max(1) as usize;
 
     // Scroll the list so the cursor stays on screen in a long bank.
@@ -660,17 +666,28 @@ pub(super) fn render_preset_modal(frame: &mut Frame, nav: &NavState) {
     for row in first..pm.item_count() {
         if lines.len() >= list_rows { break; }
         let (style, indicator) = row_style(pm.cursor == row);
-        if row == PresetModal::SAVE_ROW {
-            lines.push(Line::from(vec![
-                Span::styled(indicator, style),
-                Span::styled("[ save current panel ]", style),
-            ]));
-        } else {
-            lines.push(Line::from(vec![
-                Span::styled(indicator, style),
-                Span::styled(pm.entries[row - 1].as_str(), style),
-            ]));
+        let mut spans = vec![Span::styled(indicator, style)];
+        match pm.row_at(row) {
+            PresetRow::Save => {
+                spans.push(Span::styled("[ save current panel ]", style));
+                if kit_footer && pm.entries.is_empty() && pm.error.is_none() {
+                    spans.push(Span::styled("  no presets yet", theme::dim()));
+                }
+            }
+            PresetRow::Preset(i) => spans.push(Span::styled(pm.entries[i].as_str(), style)),
+            PresetRow::SaveKit => {
+                spans.push(Span::styled("[ save pads as a drum kit ]", style));
+                if pm.kits.as_ref().is_some_and(Vec::is_empty) {
+                    spans.push(Span::styled("  no kits yet", theme::dim()));
+                }
+            }
+            PresetRow::Kit(i) => {
+                let name = pm.kits.as_ref().and_then(|k| k.get(i)).map_or("", String::as_str);
+                spans.push(Span::styled(name, style));
+                spans.push(Span::styled("  drum kit", theme::dim()));
+            }
         }
+        lines.push(Line::from(spans));
     }
 
     if let Some(err) = &pm.error {
@@ -678,7 +695,7 @@ pub(super) fn render_preset_modal(frame: &mut Frame, nav: &NavState) {
             err.as_str(),
             Style::default().fg(theme::rec_active_val()),
         )));
-    } else if pm.entries.is_empty() {
+    } else if hint {
         lines.push(Line::from(Span::styled(
             "  no saved presets yet",
             theme::dim(),
@@ -696,6 +713,13 @@ pub(super) fn render_preset_modal(frame: &mut Frame, nav: &NavState) {
         Span::styled("esc", theme::dim()),
         Span::styled(" close", theme::muted()),
     ]));
+    if kit_footer {
+        lines.push(Line::from(vec![
+            Span::styled("  drum kit: ", theme::muted()),
+            Span::styled("enter", theme::dim()),
+            Span::styled(" opens it on the pads", theme::muted()),
+        ]));
+    }
 
     frame.render_widget(Paragraph::new(lines), inner);
 }

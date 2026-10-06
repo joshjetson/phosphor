@@ -218,6 +218,7 @@ impl App {
                             }
                             InputModalKind::Open => self.do_load(&path),
                             InputModalKind::PresetName => self.request_preset_save(&path),
+                            InputModalKind::KitName => self.request_kit_save(&path),
                             InputModalKind::RenameTrack => self.do_rename_track(&path),
                             InputModalKind::ProgressionName => {
                                 let trimmed = path.trim().to_string();
@@ -261,6 +262,7 @@ impl App {
         // questions take the keys while they are up, and the browser is still
         // underneath when they close.
         if self.nav.preset_modal.open {
+            use crate::state::PresetRow;
             match key.code {
                 KeyCode::Esc => {
                     dbg::user("preset browser: close");
@@ -268,11 +270,21 @@ impl App {
                 }
                 KeyCode::Char('j') | KeyCode::Down => self.nav.preset_modal.move_down(),
                 KeyCode::Char('k') | KeyCode::Up => self.nav.preset_modal.move_up(),
-                KeyCode::Enter => match self.nav.preset_modal.selected_preset() {
-                    Some(index) => self.do_load_preset(index),
-                    None => self.request_preset_name(),
+                KeyCode::Enter => match self.nav.preset_modal.row() {
+                    PresetRow::Save => self.request_preset_name(),
+                    PresetRow::Preset(index) => self.do_load_preset(index),
+                    PresetRow::SaveKit => self.request_kit_name(),
+                    PresetRow::Kit(_) => {
+                        if let Some(name) = self.nav.preset_modal.selected_kit() {
+                            let name = name.to_string();
+                            self.do_load_kit_onto_sampler(&name);
+                        }
+                    }
                 },
-                KeyCode::Char('d') => self.request_preset_delete(),
+                KeyCode::Char('d') => match self.nav.preset_modal.row() {
+                    PresetRow::Kit(_) => self.request_kit_delete(),
+                    _ => self.request_preset_delete(),
+                },
                 _ => {}
             }
             return;

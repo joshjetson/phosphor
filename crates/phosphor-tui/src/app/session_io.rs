@@ -110,12 +110,26 @@ impl App {
     fn write_take_sidecars(&mut self, path: &std::path::Path) -> Result<usize, String> {
         let mut written = 0usize;
         for index in 0..self.nav.tracks.len() {
-            let Some(sampler) = self.nav.tracks[index].sampler.as_deref_mut() else { continue };
-            written += phosphor_app::sampler::sidecar::write_takes(path, sampler)?;
+            let track = &mut self.nav.tracks[index];
+            if let Some(sampler) = track.sampler.as_deref_mut() {
+                written += phosphor_app::sampler::sidecar::write_takes(path, sampler)?;
+            }
+            // A Drum Rack's user kit is copied in too: the song keeps its
+            // own sounds, so the kit can be edited or deleted later without
+            // reaching into it. Its sounds are takes for exactly this. The
+            // kit keeps its identity across the move — the engine is playing
+            // the same audio, and needs telling nothing.
+            if let Some(kit) = track.user_kit().cloned() {
+                let mut state = kit.state.clone();
+                written += phosphor_app::sampler::sidecar::write_takes(path, &mut state)?;
+                if state != kit.state {
+                    track.kit = Some(Arc::new(kit.moved(state)));
+                }
+            }
         }
         let swept = phosphor_app::sampler::sidecar::prune_takes(
             path,
-            self.nav.tracks.iter().filter_map(|t| t.sampler.as_deref()),
+            self.nav.tracks.iter().filter_map(|t| t.engine_sampler()),
         );
         if swept > 0 {
             crate::debug_log::log(
@@ -510,25 +524,36 @@ impl App {
             // keeps its layer with no PCM behind it — the pad stays, with
             // its settings, and the count reaches the status bar. Dropping
             // it would punish the player for moving a folder.
-            if let Some(stored) = &st.sampler {
-                // Beside the session first: that is where a recorded take
-                // lives, and where a project's own samples folder would be.
-                // Then the usual chain, so a bare name still finds the
-                // shared samples directory.
-                let near = session_dir.clone();
-                let state = stored.into_state(|path| {
-                    let resolved = phosphor_app::sampler::sidecar::find_layer_file(&near, path);
-                    match wavs.load(&resolved) {
-                        Ok(pcm) => Some(pcm),
-                        Err(message) => {
-                            tracing::warn!("track '{}': sample not loaded — {message}", st.name);
-                            None
-                        }
+            //
+            // Beside the session first: that is where a recorded take lives,
+            // and where a project's own samples folder would be. Then the
+            // usual chain, so a bare name still finds the shared samples
+            // directory. A Drum Rack's own kit is read by the same rule,
+            // because its sounds were copied into the same sidecar.
+            let mut decode = |path: &std::path::Path| {
+                let resolved = phosphor_app::sampler::sidecar::find_layer_file(&session_dir, path);
+                match wavs.load(&resolved) {
+                    Ok(pcm) => Some(pcm),
+                    Err(message) => {
+                        tracing::warn!("track '{}': sample not loaded — {message}", st.name);
+                        None
                     }
-                });
+                }
+            };
+            if let Some(stored) = &st.sampler {
+                let state = stored.into_state(&mut decode);
                 missing_samples += state.missing_layers();
                 if let Some(track) = self.nav.tracks.get_mut(track_idx) {
                     track.sampler = Some(Box::new(state));
+                }
+                self.restore_sampler_pads(track_idx);
+            }
+            if let Some(stored) = &st.kit {
+                let state = stored.sampler.into_state(&mut decode);
+                missing_samples += state.missing_layers();
+                let kit = phosphor_app::kits::UserKit::new(stored.name.clone(), state);
+                if let Some(track) = self.nav.tracks.get_mut(track_idx) {
+                    track.kit = Some(Arc::new(kit));
                 }
                 self.restore_sampler_pads(track_idx);
             }
