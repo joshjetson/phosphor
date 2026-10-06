@@ -19,7 +19,6 @@
 
 use std::time::Instant;
 
-use phosphor_app::busy_song::BusySong;
 use phosphor_app::instrument::build_plugin;
 use phosphor_app::state::InstrumentType;
 use phosphor_dsp::fx::compressor::{Compressor, PARAM_RATIO, PARAM_THRESHOLD_DB};
@@ -205,20 +204,10 @@ fn main() {
     }
 }
 
-/// [`measure`], for the busy song through the real mixer. It plays at
-/// 128-frame blocks whatever `BLOCK` says.
+/// [`measure`], for the busy song through the real mixer — the timing
+/// `phosphor --benchmark` reports. It plays at 128-frame blocks whatever
+/// `BLOCK` says.
 fn measure_song(threads: usize) -> (f64, f64, f64) {
-    let mut song = BusySong::new(|mixer| mixer.set_threads(threads));
-    let mut times = Vec::with_capacity(BLOCKS);
-    for n in 0..WARMUP + BLOCKS {
-        let start = Instant::now();
-        song.next_block();
-        let us = start.elapsed().as_secs_f64() * 1e6;
-        if n >= WARMUP {
-            times.push(us);
-        }
-    }
-    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let mean = times.iter().sum::<f64>() / times.len() as f64;
-    (mean, times[(times.len() as f64 * 0.999) as usize - 1], *times.last().unwrap())
+    let t = phosphor_app::benchmark::time_busy_song(threads, BLOCKS);
+    (t.mean, t.p999, t.worst)
 }

@@ -35,6 +35,12 @@ struct Cli {
     /// the MIDI message it sends — for building the deck's firmware, then exit.
     #[arg(long)]
     deck_layout: bool,
+
+    /// Time how fast this computer makes Phosphor's sound — a busy song
+    /// through the real engine, on one core and on all of them — say whether
+    /// it keeps up, then exit. Takes about half a minute.
+    #[arg(long)]
+    benchmark: bool,
 }
 
 fn main() -> Result<()> {
@@ -42,6 +48,11 @@ fn main() -> Result<()> {
 
     if cli.deck_layout {
         println!("{}", phosphor_app::surface::layout::layout_json());
+        return Ok(());
+    }
+
+    if cli.benchmark {
+        phosphor_app::benchmark::run(|line| println!("{line}"));
         return Ok(());
     }
 

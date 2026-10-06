@@ -145,6 +145,17 @@ updates it: `cargo install phosphor-studio --locked`. Press `Esc` at the track
 list to dismiss it. To turn the check off entirely, set
 `PHOSPHOR_NO_UPDATE_CHECK=1` in your environment.
 
+### Will my computer keep up? — `phosphor --benchmark`
+
+Run `phosphor --benchmark` on any computer — a laptop, a Raspberry Pi —
+before you rely on it for music. It plays a busy song (every instrument,
+effects, sends and a loop recording) through Phosphor's real sound engine
+for about half a minute, first on one core and then on all of them, and
+times every block of sound against the time it has. Then it says, in a
+sentence, whether that computer has plenty of room, keeps up, or will
+break up on a song that heavy. Close other busy programs first: anything
+else using the processor makes the result look worse than it is.
+
 ---
 
 ## Instruments
