@@ -3155,7 +3155,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phosphor-app"
-version = "0.3.96"
+version = "0.3.97"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -3172,7 +3172,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-core"
-version = "0.3.96"
+version = "0.3.97"
 dependencies = [
  "anyhow",
  "assert_no_alloc",
@@ -3191,7 +3191,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-dsp"
-version = "0.3.96"
+version = "0.3.97"
 dependencies = [
  "criterion",
  "dasp",
@@ -3204,7 +3204,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-gui"
-version = "0.3.96"
+version = "0.3.97"
 dependencies = [
  "anyhow",
  "eframe",
@@ -3216,7 +3216,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-midi"
-version = "0.3.96"
+version = "0.3.97"
 dependencies = [
  "anyhow",
  "midir",
@@ -3229,7 +3229,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-plugin"
-version = "0.3.96"
+version = "0.3.97"
 dependencies = [
  "proptest",
  "thiserror 2.0.18",
@@ -3237,7 +3237,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-studio"
-version = "0.3.96"
+version = "0.3.97"
 dependencies = [
  "anyhow",
  "clap",
@@ -3251,7 +3251,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-tui"
-version = "0.3.96"
+version = "0.3.97"
 dependencies = [
  "anyhow",
  "crossbeam-channel",

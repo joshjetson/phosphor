@@ -44,9 +44,12 @@ pub struct Timing {
 /// Play the busy song on `threads` cores for `blocks` blocks and time each.
 #[must_use]
 pub fn time_busy_song(threads: usize, blocks: usize) -> Timing {
-    // The audio callback runs at real-time priority when Phosphor plays,
-    // and its helpers do too; timed at normal priority, the blocks would
-    // measure the scheduler's patience rather than the engine.
+    // The calling thread stands in for the audio callback, so it is
+    // scheduled the way the callback is: on Linux the engine promotes its own
+    // callback to real-time, and so does this; on macOS and Windows the
+    // system's audio thread arrives already promoted, by rules of its own,
+    // and this stays as it is. The helpers promote themselves everywhere.
+    #[cfg(target_os = "linux")]
     promote_once();
     let mut song = BusySong::new(|mixer| mixer.set_threads(threads));
     let mut times = Vec::with_capacity(blocks);
@@ -79,6 +82,7 @@ pub fn time_busy_song(threads: usize, blocks: usize) -> Timing {
 }
 
 /// Ask for real-time scheduling for the calling thread, once per thread.
+#[cfg(target_os = "linux")]
 fn promote_once() {
     thread_local!(static PROMOTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
     PROMOTED.with(|done| {
@@ -92,17 +96,18 @@ fn promote_once() {
 #[must_use]
 pub fn verdict(all_cores: &Timing) -> &'static str {
     let budget = budget_us();
-    let worst = all_cores.p999.max(all_cores.worst * 0.8);
-    if worst < budget * 0.5 {
+    if all_cores.mean >= budget * 0.8 || all_cores.p999 >= budget {
+        // One late block in a thousand is a click every few seconds.
+        "Not in time: blocks of this song come out late, which you would hear as clicks or \
+         dropouts. Lighter songs may play, or a bigger audio buffer (--buffer-size 256) gives \
+         each block more time. Close other busy programs and run this again before deciding."
+    } else if all_cores.worst >= budget {
+        "Nearly: it keeps up, but its very slowest moment missed the deadline once. Expect a \
+         rare click on a song this busy; a bigger buffer (--buffer-size 256) removes it."
+    } else if all_cores.p999 < budget * 0.5 {
         "Plenty of room: this computer plays a song heavier than most with half its time to spare."
-    } else if worst < budget * 0.8 {
-        "It keeps up, with some room. Very heavy songs, or a smaller audio buffer, may get close."
-    } else if all_cores.mean < budget * 0.8 {
-        "On average it keeps up, but its slowest moments come close to the deadline: expect an \
-         occasional click on a song this busy. A bigger audio buffer (--buffer-size 256) gives it more time."
     } else {
-        "This computer cannot make this song's sound in time. Lighter songs may play; a song \
-         this busy will break up."
+        "It keeps up, with some room. Very heavy songs, or a smaller audio buffer, may get close."
     }
 }
 
@@ -159,8 +164,9 @@ mod tests {
         let t = |mean: f64, p999: f64, worst: f64| Timing { mean: b * mean, p999: b * p999, worst: b * worst };
         assert!(verdict(&t(0.1, 0.2, 0.3)).starts_with("Plenty"));
         assert!(verdict(&t(0.3, 0.6, 0.7)).starts_with("It keeps up"));
-        assert!(verdict(&t(0.5, 0.9, 1.2)).starts_with("On average"));
-        assert!(verdict(&t(0.9, 1.1, 1.5)).starts_with("This computer cannot"));
+        assert!(verdict(&t(0.3, 0.6, 1.2)).starts_with("Nearly"));
+        assert!(verdict(&t(0.4, 1.1, 1.5)).starts_with("Not in time"), "one late block in a thousand is clicks");
+        assert!(verdict(&t(0.9, 0.95, 0.99)).starts_with("Not in time"), "no headroom on average");
     }
 
     /// A short run, to prove the timing works end to end; the numbers

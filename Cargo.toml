@@ -14,7 +14,7 @@ exclude = ["firmware"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.96"
+version = "0.3.97"
 edition = "2021"
 license = "MIT"
 rust-version = "1.75"
@@ -78,13 +78,13 @@ proptest = "1"
 assert_no_alloc = "1.1"
 
 # Internal crates
-phosphor-app = { path = "crates/phosphor-app", version = "0.3.96" }
-phosphor-core = { path = "crates/phosphor-core", version = "0.3.96" }
-phosphor-dsp = { path = "crates/phosphor-dsp", version = "0.3.96" }
-phosphor-midi = { path = "crates/phosphor-midi", version = "0.3.96" }
-phosphor-plugin = { path = "crates/phosphor-plugin", version = "0.3.96" }
-phosphor-tui = { path = "crates/phosphor-tui", version = "0.3.96" }
-phosphor-gui = { path = "crates/phosphor-gui", version = "0.3.96" }
+phosphor-app = { path = "crates/phosphor-app", version = "0.3.97" }
+phosphor-core = { path = "crates/phosphor-core", version = "0.3.97" }
+phosphor-dsp = { path = "crates/phosphor-dsp", version = "0.3.97" }
+phosphor-midi = { path = "crates/phosphor-midi", version = "0.3.97" }
+phosphor-plugin = { path = "crates/phosphor-plugin", version = "0.3.97" }
+phosphor-tui = { path = "crates/phosphor-tui", version = "0.3.97" }
+phosphor-gui = { path = "crates/phosphor-gui", version = "0.3.97" }
 
 # Audio cannot run at debug speed. An unoptimized DSP path misses the
 # callback's deadline on a full session, and a missed deadline here does

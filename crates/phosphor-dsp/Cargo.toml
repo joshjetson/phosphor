@@ -22,7 +22,9 @@ serde_json.workspace = true
 # The engine's flush-to-zero guard, so the tests that let a tail fade can
 # check what the instruments hold when they are played the way the engine
 # plays them. Test-only: the engine depends on this crate, not the other way.
-phosphor-core.workspace = true
+# A path with no version, so publishing leaves it out: crates.io would refuse
+# a dev-dependency on a version of the engine that is published after this.
+phosphor-core = { path = "../phosphor-core" }
 
 [[bench]]
 name = "dsp_bench"
