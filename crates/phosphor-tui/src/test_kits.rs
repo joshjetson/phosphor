@@ -295,6 +295,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A Drum Rack preset names one of the machines: loading it over a kit
+    /// of the player's own plays that machine, and `u` brings the kit back.
+    #[test]
+    fn loading_a_preset_plays_its_machine_and_undo_brings_the_kit_back() {
+        let dir = scratch("preset");
+        two_kits(&dir);
+        let mut app = kit_app(&dir);
+        let idx = drum_track(&mut app);
+        let mixer_id = app.nav.tracks[idx].mixer_id.unwrap();
+        open_browser(&mut app);
+        browser_to(&mut app, PresetRow::Save);
+        press(&mut app, KeyCode::Enter);
+        type_line(&mut app, "machine");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Esc);
+
+        app.nav.tracks[idx].synth_params[P_KIT] = kit_knob(KIT_COUNT - 1);
+        turn(&mut app, true);
+        assert_eq!(kit_name(&app, idx).as_deref(), Some("alpha"));
+        let _ = app.drain_mixer_commands();
+
+        open_browser(&mut app);
+        browser_to(&mut app, PresetRow::Preset(0));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(kit_name(&app, idx), None, "the kit stayed on over the preset's machine");
+        assert_eq!(pads_sent(&app, mixer_id), [(pad_of(36), 0)], "the kit's kick was left in the engine");
+
+        app.perform_undo();
+        app.reconcile_user_kits();
+        assert_eq!(kit_name(&app, idx).as_deref(), Some("alpha"), "undo did not bring the kit back");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A sequencer's drum child keeps the eighteen machines: its slot is
     /// the sequencer's, and a kit on it would have nowhere to be heard.
     #[test]

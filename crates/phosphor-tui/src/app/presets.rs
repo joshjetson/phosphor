@@ -225,6 +225,10 @@ impl App {
         );
         if let Some(track) = self.nav.tracks.get_mut(track_idx) {
             track.synth_params.copy_from_slice(&loaded.params);
+            // A preset is a sound, and a Drum Rack's preset names one of its
+            // machines: loading it over a kit of the player's own plays the
+            // machine it names. The kit is a knob step (or an undo) away.
+            track.kit = None;
         }
         // A whole panel in one keypress is one step — and never folded into
         // a knob sweep beside it.
