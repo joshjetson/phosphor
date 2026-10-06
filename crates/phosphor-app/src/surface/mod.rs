@@ -11,6 +11,8 @@
 //! * [`actions`] — the eight action buttons' verbs on each screen.
 //! * [`pads`] — what a pad hit becomes on its way in: a note for the
 //!   instrument, or a step for the app.
+//! * [`lights`] — what the deck's forty-two lights show, from the app's
+//!   state.
 //!
 //! Nothing here touches the terminal or the engine. The app's side — taking
 //! a message off the wire and acting on it — lives in the TUI's `deck`
@@ -20,5 +22,6 @@ pub mod actions;
 pub mod binding;
 pub mod fader;
 pub mod layout;
+pub mod lights;
 pub mod pads;
 pub mod screen;

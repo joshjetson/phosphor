@@ -1140,6 +1140,15 @@ knobs turn, and its pads play notes. Its firmware, and how to load it, is in
 [`firmware/`](firmware/README.md); its circuit board, ready to send to a board
 house, is in [`hardware/deck-pcb/`](hardware/deck-pcb/README.md).
 
+**Its lights follow the screen.** Phosphor lights the deck's buttons to match
+what is on: PLAY while the song plays, REC, OVERDUB, LOOP, CLICK and
+COUNT-IN when they are on, the function target and track mode you picked,
+and the eight track buttons — in SELECT the track you are on, in MUTE, SOLO
+or ARM the tracks that are muted, soloed or armed, with a faint glow over
+every column that has a track under it. On the step grid the pads show the
+steps that are on (accents brightest) and where the pattern is playing; when
+the pads play notes they light under your fingers as you hit them.
+
 ## Shortcuts, A to Z
 
 Every shortcut, organized by what you're trying to do — Loop under L, Record

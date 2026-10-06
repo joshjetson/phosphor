@@ -68,6 +68,13 @@ impl App {
     /// One gesture on the deck.
     pub(crate) fn handle_deck_input(&mut self, input: DeckInput) {
         self.deck.seen = true;
+        // The deck lights some controls itself as they are pressed and let
+        // go; whatever it did, the next frame says what the light should be.
+        if let (DeckInput::Press(id) | DeckInput::Hit(id, _) | DeckInput::Release(id), Some(out)) =
+            (input, self.deck_out.as_mut())
+        {
+            out.forget(id);
+        }
         match input {
             DeckInput::Turn(id, detents) => self.turn_deck(id, detents),
             DeckInput::Move(ControlId::Fader(n), position) => self.move_deck_fader(n, position),

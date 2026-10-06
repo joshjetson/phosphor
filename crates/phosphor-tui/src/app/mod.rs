@@ -38,6 +38,7 @@ mod clips;
 mod deck;
 mod deck_bank;
 mod deck_function;
+mod deck_lights;
 mod deck_tracks;
 mod midi_fx_ops;
 mod practice_ops;
@@ -84,6 +85,8 @@ pub struct App {
     _midi_status: Arc<MidiStatus>,
     /// Every MIDI input, opened as it appears. `None` when MIDI is off.
     midi_inputs: Option<crate::midi_in::MidiInputs>,
+    /// The deck's lights, when there is MIDI at all. `None` when MIDI is off.
+    pub(crate) deck_out: Option<crate::deck_out::DeckOut>,
     next_track_id: usize,
     clip_rx: crossbeam_channel::Receiver<ClipSnapshot>,
     /// Last saved/loaded file path for Ctrl+S quick save.
@@ -394,6 +397,7 @@ impl App {
             _audio_backend: backend,
             _midi_status: midi_status,
             midi_inputs,
+            deck_out: enable_midi.then(crate::deck_out::DeckOut::start),
             next_track_id: 0,
             clip_rx,
             session_path: None,
@@ -641,6 +645,7 @@ impl App {
             if let Some(words) = self.midi_inputs.as_mut().and_then(|m| m.poll()) {
                 self.flash(format!("MIDI: {words}"));
             }
+            self.refresh_deck_lights();
             self.poll_step_record();
             self.poll_audio_overruns();
             self.poll_update_notice();

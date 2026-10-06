@@ -3,6 +3,7 @@
 pub mod actions;
 mod app;
 pub mod debug_log;
+mod deck_out;
 mod midi_in;
 pub mod session;
 mod splash;
