@@ -21,6 +21,7 @@
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
 use crate::level::soft_saturate;
+use crate::memo::Memo;
 
 const MAX_VOICES: usize = 6;
 const TWO_PI: f64 = std::f64::consts::TAU;
@@ -865,14 +866,20 @@ impl JunoDco {
 #[derive(Debug, Clone)]
 struct JunoFilter {
     s: [f64; 4],
+    /// The integrator gain for the cutoff last asked for. It holds still
+    /// whenever the cutoff does — through every sustained note — and so does
+    /// the `tan` behind it.
+    g: Memo<(u64, u64), f64>,
 }
 
 impl JunoFilter {
-    fn new() -> Self { Self { s: [0.0; 4] } }
+    fn new() -> Self { Self { s: [0.0; 4], g: Memo::new() } }
 
     fn process(&mut self, input: f64, cutoff_norm: f64, resonance: f64, sr: f64) -> f64 {
-        let freq = cutoff_hz(cutoff_norm).min(sr * 0.45);
-        let g = (std::f64::consts::PI * freq / sr).tan();
+        let g = self.g.get((cutoff_norm.to_bits(), sr.to_bits()), || {
+            let freq = cutoff_hz(cutoff_norm).min(sr * 0.45);
+            (std::f64::consts::PI * freq / sr).tan()
+        });
         let gg = g / (1.0 + g);
         let res = resonance.clamp(0.0, 1.0) * 4.0;
         let compensation = 1.0 + resonance * 0.5;
@@ -916,16 +923,22 @@ const HPF_CORNERS: [f64; 3] = [154.0, 339.0, 720.0];
 #[derive(Debug, Clone)]
 struct JunoHpf {
     state: f64,
+    /// `g` and `1 + g` for the switch position and rate last asked for: a
+    /// `tan` that only changes when the switch does.
+    coefficients: Memo<(u8, u64), (f64, f64)>,
 }
 
 impl JunoHpf {
-    fn new() -> Self { Self { state: 0.0 } }
+    fn new() -> Self { Self { state: 0.0, coefficients: Memo::new() } }
 
     fn process(&mut self, input: f64, position: u8, sr: f64) -> f64 {
         if position == 0 { return input; }
-        let freq = HPF_CORNERS[(position as usize - 1).min(2)];
-        let g = (std::f64::consts::PI * freq / sr).tan();
-        let v = (input - self.state) * g / (1.0 + g);
+        let (g, one_plus_g) = self.coefficients.get((position, sr.to_bits()), || {
+            let freq = HPF_CORNERS[(position as usize - 1).min(2)];
+            let g = (std::f64::consts::PI * freq / sr).tan();
+            (g, 1.0 + g)
+        });
+        let v = (input - self.state) * g / one_plus_g;
         let lp = v + self.state;
         self.state = lp + v;
         if self.state.abs() < 1e-18 { self.state = 0.0; }
@@ -1301,6 +1314,9 @@ struct JunoVoice {
     env: JunoEnvelope,
     gate: JunoGate,
     note: u8,
+    /// [`note_to_freq`] of `note` in the range last asked for: a `powf` a
+    /// note rather than a sample.
+    note_hz: Memo<(u8, u8), f64>,
     age: u64,
     sample_rate: f64,
 }
@@ -1314,6 +1330,7 @@ impl JunoVoice {
             env: JunoEnvelope::new(sr),
             gate: JunoGate::new(sr),
             note: 255,
+            note_hz: Memo::new(),
             age: 0,
             sample_rate: sr,
         }
@@ -1345,7 +1362,8 @@ impl JunoVoice {
         if !self.is_sounding() { return 0.0; }
 
         let sr = self.sample_rate;
-        let freq = note_to_freq(self.note, patch.range);
+        let (note, range) = (self.note, patch.range);
+        let freq = self.note_hz.get((note, range), || note_to_freq(note, range));
 
         // The three time sliders are live, so a note already sounding follows
         // them; the coefficients behind them are only recomputed when one moves.

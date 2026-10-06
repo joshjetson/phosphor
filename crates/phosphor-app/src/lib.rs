@@ -8,6 +8,7 @@ pub mod actions;
 pub mod benchmark;
 pub mod busy_song;
 pub mod discrete;
+pub mod factory;
 pub mod format;
 pub mod fx;
 pub mod instrument;

@@ -24,6 +24,7 @@
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
 use crate::level::soft_saturate;
+use crate::memo::Memo;
 
 const MAX_VOICES: usize = 8;
 const TWO_PI: f64 = std::f64::consts::TAU;
@@ -1602,17 +1603,23 @@ const RESONANCE_MAX: f64 = 4.0;
 #[derive(Debug, Clone)]
 struct Ir3109Filter {
     s: [f64; 4],
+    /// The integrator gain for the cutoff last asked for. It holds still
+    /// whenever the cutoff does — through every sustained note — and so does
+    /// the `tan` behind it.
+    g: Memo<(u64, u64), f64>,
 }
 
 impl Ir3109Filter {
     fn new() -> Self {
-        Self { s: [0.0; 4] }
+        Self { s: [0.0; 4], g: Memo::new() }
     }
 
     fn process(&mut self, input: f64, cutoff_norm: f64, resonance: f64,
                four_pole: bool, sr: f64) -> f64 {
-        let freq = cutoff_hz(cutoff_norm).min(sr * 0.45);
-        let g = (std::f64::consts::PI * freq / sr).tan();
+        let g = self.g.get((cutoff_norm.to_bits(), sr.to_bits()), || {
+            let freq = cutoff_hz(cutoff_norm).min(sr * 0.45);
+            (std::f64::consts::PI * freq / sr).tan()
+        });
         let gg = g / (1.0 + g);
         let res = resonance.clamp(0.0, 1.0) * RESONANCE_MAX;
         let compensation = 1.0 + resonance * 0.5;
@@ -1650,16 +1657,22 @@ impl Ir3109Filter {
 #[derive(Debug, Clone)]
 struct HpFilter {
     state: f64,
+    /// `g` and `1 + g` for the slider and rate they were last asked for: a
+    /// `powf` and a `tan` of a panel slider, which moves when a hand does.
+    coefficients: Memo<(u64, u64), (f64, f64)>,
 }
 
 impl HpFilter {
-    fn new() -> Self { Self { state: 0.0 } }
+    fn new() -> Self { Self { state: 0.0, coefficients: Memo::new() } }
 
     fn process(&mut self, input: f64, cutoff_norm: f64, sr: f64) -> f64 {
         if cutoff_norm < 0.001 { return input; } // the slider is fully down
-        let freq = hpf_hz(cutoff_norm).min(sr * 0.45);
-        let g = (std::f64::consts::PI * freq / sr).tan();
-        let v = (input - self.state) * g / (1.0 + g);
+        let (g, one_plus_g) = self.coefficients.get((cutoff_norm.to_bits(), sr.to_bits()), || {
+            let freq = hpf_hz(cutoff_norm).min(sr * 0.45);
+            let g = (std::f64::consts::PI * freq / sr).tan();
+            (g, 1.0 + g)
+        });
+        let v = (input - self.state) * g / one_plus_g;
         let lp = v + self.state;
         self.state = lp + v;
         if self.state.abs() < 1e-18 { self.state = 0.0; }

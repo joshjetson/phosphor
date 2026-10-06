@@ -992,6 +992,13 @@ impl Mixer {
     /// summing order, which keeps the mix bit-identical however the first
     /// half was run.
     pub fn process(&mut self, output: &mut [f32], midi_messages: &[MidiMessage], transport: &Transport) {
+        // Fading tails make subnormal numbers, and subnormal arithmetic can be
+        // many times slower than ordinary arithmetic: flush them to zero for
+        // the whole block, the same way the worker threads always do, so a
+        // track sounds the same whichever thread renders it. See
+        // `crate::denormal`.
+        let _no_denormals = crate::denormal::NoDenormals::new();
+
         // Bounded: whatever does not fit in this callback's budget is applied
         // by the next one, in order. See `drain_commands`.
         let _ = self.drain_commands();

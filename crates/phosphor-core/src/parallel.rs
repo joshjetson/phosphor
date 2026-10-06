@@ -246,6 +246,10 @@ impl Drop for Workers {
 fn worker(shared: &Shared) {
     #[cfg(test)]
     crate::alloc_count::count_into(&shared.allocations);
+    // This thread exists only to make audio, so it flushes subnormals for its
+    // whole life, matching the audio thread inside its blocks: a job must
+    // come out the same whichever thread runs it. See `crate::denormal`.
+    let _no_denormals = crate::denormal::NoDenormals::new();
     let mut seen = 0u32;
     loop {
         let mut spins = 0u32;
@@ -356,6 +360,36 @@ mod tests {
             });
         }
         assert!(seen.lock().unwrap().len() > 1, "every job ran on one thread");
+    }
+
+    /// The worker threads flush subnormals to zero, as the caller does
+    /// inside its guard: a job must compute the same thing whichever thread
+    /// claims it, or the mix would depend on which one was awake.
+    #[test]
+    fn every_thread_flushes_subnormals_like_the_caller() {
+        use crate::denormal::NoDenormals;
+        use std::hint::black_box;
+        if !NoDenormals::available() {
+            return;
+        }
+        let workers = Workers::new(4, None);
+        if workers.threads() < 2 {
+            return; // a machine that could not start a worker
+        }
+        let _caller = NoDenormals::new();
+        let seen = Mutex::new(std::collections::HashSet::new());
+        let kept = AtomicU32::new(0);
+        for _ in 0..200 {
+            workers.for_each(32, &|_| {
+                std::thread::sleep(std::time::Duration::from_micros(50));
+                if black_box(f32::MIN_POSITIVE) * black_box(0.5) != 0.0 {
+                    kept.fetch_add(1, Ordering::Relaxed);
+                }
+                seen.lock().unwrap().insert(std::thread::current().id());
+            });
+        }
+        assert!(seen.lock().unwrap().len() > 1, "every job ran on one thread");
+        assert_eq!(kept.load(Ordering::Relaxed), 0, "a job ran with subnormals switched on");
     }
 
     #[test]

@@ -90,6 +90,7 @@
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
 use crate::level::soft_saturate;
+use crate::memo::Memo;
 
 const PI: f64 = std::f64::consts::PI;
 const TAU: f64 = std::f64::consts::TAU;
@@ -1484,11 +1485,15 @@ fn voice_limit(x: f64) -> f64 {
 struct Svf {
     s1: f64,
     s2: f64,
+    /// The integrator gain for the cutoff last asked for. It holds still
+    /// whenever the cutoff does — through every sustained note — and so does
+    /// the `tan` behind it.
+    g: Memo<(u64, u64), f64>,
 }
 
 impl Svf {
     fn new() -> Self {
-        Self { s1: 0.0, s2: 0.0 }
+        Self { s1: 0.0, s2: 0.0, g: Memo::new() }
     }
 
     fn reset(&mut self) {
@@ -1508,7 +1513,7 @@ impl Svf {
         bandpass: bool,
         sr: f64,
     ) -> f64 {
-        let g = raw::tpt_g(cutoff, sr);
+        let g = self.g.get((cutoff.to_bits(), sr.to_bits()), || raw::tpt_g(cutoff, sr));
         let damp = 1.0 / q;
         let hp = (input - (damp + g) * self.s1 - self.s2) / (1.0 + damp * g + g * g);
         let v1 = g * hp;
@@ -2231,6 +2236,12 @@ struct FxUnit {
     crossover: [f64; 2],
     hold: [f64; 2],
     hold_phase: f64,
+    /// The one-pole coefficient the running effect last asked for. Each
+    /// effect asks for one, every sample, of a knob or a constant — an `exp`
+    /// whose answer only changes when the knob does.
+    one_pole: Memo<(u64, u64), f64>,
+    /// The high-pass effect's `Q`, a `powf` of its knob.
+    hp_q: Memo<u64, f64>,
 }
 
 impl FxUnit {
@@ -2255,7 +2266,15 @@ impl FxUnit {
             crossover: [0.0; 2],
             hold: [0.0; 2],
             hold_phase: 0.0,
+            one_pole: Memo::new(),
+            hp_q: Memo::new(),
         }
+    }
+
+    /// [`raw::one_pole`], remembered.
+    #[inline]
+    fn one_pole(&mut self, hz: f64, sr: f64) -> f64 {
+        self.one_pole.get((hz.to_bits(), sr.to_bits()), || raw::one_pole(hz, sr))
     }
 
     fn init(&mut self, sr: f64) {
@@ -2403,7 +2422,7 @@ impl FxUnit {
                 let mono = (left + right) * 0.5;
                 let back = set.time * sr * (1.0 + self.wander(rate, sr) * span);
                 let wet = Self::tap_cubic(&self.delay, self.write, back, 0);
-                let a = raw::one_pole(loss, sr);
+                let a = self.one_pole(loss, sr);
                 self.loop_lp[0] += a * (wet - self.loop_lp[0]);
                 let fed = tanh_approx(self.loop_lp[0] * drive) / drive;
                 self.delay[self.write * 2] = (mono + fed * set.misc) as f32;
@@ -2436,7 +2455,7 @@ impl FxUnit {
                 self.short_write = (self.short_write + 1) % frames;
                 // The misc knob is an LPF on the wet path: "Chorus ... FBACK/
                 // MISC = LPF Cutoff".
-                let a = raw::one_pole(set.misc, sr);
+                let a = self.one_pole(set.misc, sr);
                 self.loop_lp[0] += a * (wet_l - self.loop_lp[0]);
                 self.loop_lp[1] += a * (wet_r - self.loop_lp[1]);
                 (left + self.loop_lp[0] * set.mix, right + self.loop_lp[1] * set.mix)
@@ -2481,7 +2500,8 @@ impl FxUnit {
             }
             // ── High-pass filter ──
             fx::HPF => {
-                let q = Q_MIN * (Q_MAX / Q_MIN).powf(set.misc);
+                let misc = set.misc;
+                let q = self.hp_q.get(misc.to_bits(), || Q_MIN * (Q_MAX / Q_MIN).powf(misc));
                 let wet_l = self.hp[0].process(left, set.time, q, 1.0, false, sr);
                 let wet_r = self.hp[1].process(right, set.time, q, 1.0, false, sr);
                 (
@@ -2494,7 +2514,7 @@ impl FxUnit {
             // "Distortion: Gain, Output Level, Tone" — the depth knob is a
             // level rather than a blend, so this one is always fully wet.
             fx::DISTORT => {
-                let tone = raw::one_pole(set.misc, sr);
+                let tone = self.one_pole(set.misc, sr);
                 let mut out = [0.0f64; 2];
                 for (channel, input) in [left, right].into_iter().enumerate() {
                     let driven = tanh_approx(input * set.time);
@@ -2533,7 +2553,7 @@ impl FxUnit {
                 self.drum = (self.drum + drum_hz / sr).fract();
                 let mono = (left + right) * 0.5;
                 // The crossover: a one-pole split, so the two halves sum flat.
-                let a = raw::one_pole(ROTARY_CROSSOVER_HZ, sr);
+                let a = self.one_pole(ROTARY_CROSSOVER_HZ, sr);
                 self.crossover[0] += a * (mono - self.crossover[0]);
                 let low = self.crossover[0];
                 let high = mono - low;
@@ -3556,6 +3576,14 @@ struct Voice {
     noise: Noise,
     pink: Pink,
     filter: Svf,
+    /// [`resonance_q`] of the resonance this voice last asked for — a
+    /// `powf` that only moves when the knob or its modulation does.
+    filter_q: Memo<u64, f64>,
+    /// The filter's cutoff in hertz for the note last asked for: an `exp2`
+    /// that holds still through a sustained note.
+    cutoff_hz: Memo<u64, f64>,
+    /// The equal-power pan gains for the position last asked for.
+    pan_law: Memo<u64, (f64, f64)>,
     env1: Envelope,
     env2: Envelope,
     lfo2: Lfo,
@@ -3607,6 +3635,9 @@ impl Voice {
             noise: Noise::new(seed(0)),
             pink,
             filter: Svf::new(),
+            filter_q: Memo::new(),
+            cutoff_hz: Memo::new(),
+            pan_law: Memo::new(),
             env1: Envelope::new(sr),
             env2: Envelope::new(sr),
             lfo2: Lfo::new(seed(1)),
@@ -3910,8 +3941,12 @@ impl Voice {
             + p.filter_key * (self.glide[0] - 60.0)
             + (filter_env + t[tgt::CUTOFF]) * raw::CUTOFF_SEMITONES
             + s.vintage * s.vintage * VINTAGE_CUTOFF_SEMITONES * self.vintage.1;
-        let hz = raw::note_hz(cutoff_note).clamp(5.0, s.cutoff_ceiling_hz);
-        let q = resonance_q((p.resonance + t[tgt::RESONANCE]).clamp(0.0, 1.0));
+        let hz = self
+            .cutoff_hz
+            .get(cutoff_note.to_bits(), || raw::note_hz(cutoff_note))
+            .clamp(5.0, s.cutoff_ceiling_hz);
+        let resonance = (p.resonance + t[tgt::RESONANCE]).clamp(0.0, 1.0);
+        let q = self.filter_q.get(resonance.to_bits(), || resonance_q(resonance));
         let state = (p.state + t[tgt::STATE]).clamp(0.0, 1.0);
         let filtered = self.filter.process(pre, hz, q, state, p.bandpass, s.sr);
         self.filter_last = filtered;
@@ -3930,8 +3965,12 @@ impl Voice {
 
         // Equal power across the field, so that panning does not change how
         // loud the instrument is.
-        let angle = ((p.pan + t[tgt::PAN]).clamp(-1.0, 1.0) + 1.0) * (PI / 4.0);
-        (out * angle.cos(), out * angle.sin())
+        let pan = (p.pan + t[tgt::PAN]).clamp(-1.0, 1.0);
+        let (left, right) = self.pan_law.get(pan.to_bits(), || {
+            let angle = (pan + 1.0) * (PI / 4.0);
+            (angle.cos(), angle.sin())
+        });
+        (out * left, out * right)
     }
 }
 
@@ -4649,6 +4688,68 @@ pub(crate) mod tests {
 
     pub(crate) fn peak(x: &[f32]) -> f32 {
         x.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+    }
+
+    /// How many numbers the instrument is holding that are subnormal: the
+    /// effect's lines and filters, the DC blockers and every voice's filter
+    /// — everywhere a fading sound leaves something behind.
+    fn subnormals_held(s: &Teo5) -> usize {
+        let fx = &s.fx;
+        let f32s = fx.delay.iter().chain(&fx.short).filter(|x| x.is_subnormal()).count();
+        let mut f64s: Vec<f64> = Vec::new();
+        f64s.extend(fx.loop_lp);
+        f64s.extend(fx.allpass.iter().flatten());
+        f64s.extend(fx.feedback);
+        f64s.extend(fx.hp.iter().flat_map(|f| [f.s1, f.s2]));
+        f64s.extend(fx.crossover);
+        f64s.extend(fx.hold);
+        f64s.extend([s.dc_left.x1, s.dc_left.y1, s.dc_right.x1, s.dc_right.y1]);
+        f64s.extend(s.voices.iter().flat_map(|v| [v.filter.s1, v.filter.s2]));
+        f32s + f64s.iter().filter(|x| x.is_subnormal()).count()
+    }
+
+    /// A chord, held half a second, let go and left to fade for `seconds`.
+    /// Returns what came out after letting go.
+    fn fade(s: &mut Teo5, seconds: f64) -> Vec<f32> {
+        let chord = [48, 55, 60, 64];
+        let on: Vec<MidiEvent> = chord.iter().map(|&n| note_on(n, 100, 0)).collect();
+        let off: Vec<MidiEvent> = chord.iter().map(|&n| note_off(n, 0)).collect();
+        render(s, &on, (0.5 * SR) as usize / BLOCK);
+        render(s, &off, (seconds * SR) as usize / BLOCK)
+    }
+
+    /// A delay left to fade fills its line with subnormal numbers — and on
+    /// many CPUs every operation on one of those is many times slower than
+    /// an ordinary one, so the instrument costs more as its sound dies. The
+    /// engine plays with them flushed to zero; played that way, nothing the
+    /// instrument holds is ever subnormal.
+    ///
+    /// Program 99's delay, as plain code, leaves tens of thousands of
+    /// subnormals in its line after twelve seconds — the first half of the
+    /// test, which is what makes the second half mean anything. (The voice
+    /// filters are `f64` and do not get there: a subnormal `f64` is some
+    /// 5400 dB further down than a subnormal `f32`.)
+    #[test]
+    fn a_fading_delay_holds_no_subnormals_the_way_the_engine_plays_it() {
+        use phosphor_core::denormal::NoDenormals;
+        let mut plain = fresh(99);
+        let reference = fade(&mut plain, 12.0);
+        let held = subnormals_held(&plain);
+        assert!(held > 10_000, "the fade never went subnormal: {held}");
+        if !NoDenormals::available() {
+            return;
+        }
+        let mut flushed = fresh(99);
+        let out = {
+            let _engine = NoDenormals::new();
+            fade(&mut flushed, 12.0)
+        };
+        assert_eq!(subnormals_held(&flushed), 0);
+        assert!(!out.iter().any(|x| x.is_subnormal()));
+        // And the sound is the same sound: all flushing changed was already
+        // below the smallest normal number, some 760 dB down.
+        let worst = reference.iter().zip(&out).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        assert!(worst < 2.0 * f32::MIN_POSITIVE, "flushing moved the output by {worst}");
     }
 
     pub(crate) fn rms(x: &[f32]) -> f64 {

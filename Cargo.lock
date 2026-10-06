@@ -3195,6 +3195,7 @@ version = "0.3.96"
 dependencies = [
  "criterion",
  "dasp",
+ "phosphor-core",
  "phosphor-plugin",
  "proptest",
  "serde_json",

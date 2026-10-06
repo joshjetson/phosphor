@@ -1,6 +1,7 @@
 pub mod audio;
 pub mod clip;
 pub mod cpal_backend;
+pub mod denormal;
 pub mod engine;
 pub mod fx;
 pub mod metronome;

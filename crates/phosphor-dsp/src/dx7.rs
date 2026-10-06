@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
 use crate::level::soft_saturate;
+use crate::memo::Memo;
 
 const MAX_VOICES: usize = 16;
 const NUM_OPERATORS: usize = 6;
@@ -1901,6 +1902,10 @@ struct DxVoice {
     /// every voice that is simply playing. See [`DxVoice::fade_out`].
     stop_gain: f64,
     stop_step: f64,
+    /// The pitch multiplier for the bend last asked for. A pitch envelope
+    /// holding at a level other than its centre bends every sample by the
+    /// same amount, and the `exp2` of it does not need working out again.
+    bend_ratio: Memo<u64, f64>,
 }
 
 impl DxVoice {
@@ -1919,6 +1924,7 @@ impl DxVoice {
             amp_mod_used: [false; 4],
             stop_gain: 1.0,
             stop_step: 0.0,
+            bend_ratio: Memo::new(),
         }
     }
 
@@ -2096,7 +2102,8 @@ impl DxVoice {
         // what keeps an unmodulated patch bit-for-bit unchanged.
         let bend = self.pitch_env.tick()
             + self.pitch_mod_depth * lfo.delay * (lfo.value * 2.0 - 1.0);
-        let freq_ratio = if bend == 0.0 { 1.0 } else { f64::exp2(bend) };
+        let freq_ratio =
+            if bend == 0.0 { 1.0 } else { self.bend_ratio.get(bend.to_bits(), || f64::exp2(bend)) };
 
         // ── Amplitude modulation ──
         // The LFO only ever ducks an operator, never boosts it: the peak of the

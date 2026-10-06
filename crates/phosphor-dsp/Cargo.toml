@@ -19,6 +19,10 @@ proptest.workspace = true
 # decoder is checked against. Test-only: the fixture is compared as data rather
 # than transcribed into Rust, so the decoder cannot pass by agreeing with a typo.
 serde_json.workspace = true
+# The engine's flush-to-zero guard, so the tests that let a tail fade can
+# check what the instruments hold when they are played the way the engine
+# plays them. Test-only: the engine depends on this crate, not the other way.
+phosphor-core.workspace = true
 
 [[bench]]
 name = "dsp_bench"

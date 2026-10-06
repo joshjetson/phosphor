@@ -337,12 +337,10 @@ fn through_instrument(
     instrument: InstrumentType,
     params: &[f32],
 ) -> SamplePcm {
-    let mut plugin = crate::instrument::build_plugin(instrument);
-    plugin.init(f64::from(plan.sample_rate), BLOCK);
-    for (index, &value) in params.iter().enumerate() {
-        plugin.set_parameter(index, value);
-    }
-    plugin.reset();
+    let mut plugin = crate::factory::load(instrument, params, f64::from(plan.sample_rate), BLOCK);
+    // The live engine flushes subnormals to zero while it plays, so this
+    // render does too: a take rendered here is the sound that was heard.
+    let _no_denormals = phosphor_core::denormal::NoDenormals::new();
 
     let total = total as usize;
     let mut data = Vec::with_capacity(total * 2);

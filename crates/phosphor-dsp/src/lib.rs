@@ -10,6 +10,7 @@ pub mod fx;
 pub mod juno;
 pub mod jupiter;
 pub mod level;
+pub mod memo;
 pub mod odyssey;
 pub mod oscillator;
 pub mod phatty;

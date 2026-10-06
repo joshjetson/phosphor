@@ -253,6 +253,7 @@
 use std::f64::consts::TAU;
 
 use crate::level::soft_saturate;
+use crate::memo::Memo;
 
 // ---------------------------------------------------------------------------
 // The published constants
@@ -1331,6 +1332,10 @@ pub struct Reverb {
     fdn_ms: [(f64, f64); FDN_LINES],
     fdn_damp_z: [f64; FDN_LINES],
     fdn_hp_z: [f64; FDN_LINES],
+    /// Each line's decay gain, a `powf` of the decay knob, the size and the
+    /// line's length that only changes when one of those does. Keyed on all
+    /// of them, so no setter, snap or algorithm change can leave it stale.
+    fdn_gain: [Memo<[u64; 4], f64>; FDN_LINES],
     fdn_diffuser: Vec<Allpass>,
     fdn_diffuser_len: [f64; 4],
 
@@ -1403,6 +1408,7 @@ impl Reverb {
             fdn_ms: HALL_MS,
             fdn_damp_z: [0.0; FDN_LINES],
             fdn_hp_z: [0.0; FDN_LINES],
+            fdn_gain: [Memo::new(); FDN_LINES],
             fdn_diffuser: Vec::new(),
             fdn_diffuser_len: [0.0; 4],
             spring_low: Vec::new(),
@@ -2335,8 +2341,11 @@ impl Reverb {
             //
             // The gain is written against the *total* line — the allpass is
             // inside the loop, so its delay circulates too.
-            let samples = total_ms * 0.001 * fs * size_a;
-            let gain = (10.0f64).powf(-3.0 * samples / (rt60 * fs)) * FDN_NORM;
+            let key = [total_ms.to_bits(), size_a.to_bits(), rt60.to_bits(), fs.to_bits()];
+            let gain = self.fdn_gain[index].get(key, || {
+                let samples = total_ms * 0.001 * fs * size_a;
+                (10.0f64).powf(-3.0 * samples / (rt60 * fs)) * FDN_NORM
+            });
             let step = (length - self.fdn_damp_z[index]) * damp;
             let damped = step + self.fdn_damp_z[index];
             self.fdn_damp_z[index] = flush(damped + step);
@@ -2499,6 +2508,31 @@ pub(crate) mod tests {
             right.push(r);
         }
         (left, right)
+    }
+
+    /// The hall's per-line decay gains are remembered from one sample to the
+    /// next, keyed on the controls they come from. The trap that keying
+    /// avoids: `snap` and the program path move the controls without going
+    /// through anything that could clear a cache, so a cache cleared by the
+    /// setters would go on ringing at the old decay. A hall moved to a new
+    /// decay that way rings exactly as one that started there.
+    #[test]
+    fn a_remembered_decay_follows_every_way_the_decay_is_set() {
+        let hall = |decay: f32| {
+            let mut verb = wet_only(FS);
+            verb.set_param_natural_immediate(PARAM_ALGORITHM, Algorithm::Hall.index() as f32);
+            verb.set_param_natural_immediate(PARAM_DECAY_S, decay);
+            verb.snap();
+            verb
+        };
+        let mut started = hall(6.0);
+        let mut moved = hall(1.5);
+        // Sound through it at the old decay, so the old gains are the ones
+        // remembered when the knob moves.
+        impulse(&mut moved, 0.5);
+        moved.set_param_natural_immediate(PARAM_DECAY_S, 6.0);
+        moved.reset();
+        assert!(impulse(&mut started, 2.0) == impulse(&mut moved, 2.0), "the moved hall rings differently");
     }
 
     /// A quarter-second of a 220 Hz sine at −12 dBFS, then silence: `seconds`

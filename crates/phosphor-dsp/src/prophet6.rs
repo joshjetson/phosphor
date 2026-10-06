@@ -65,6 +65,7 @@
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
 use crate::level::soft_saturate;
+use crate::memo::Memo;
 
 const PI: f64 = std::f64::consts::PI;
 const TAU: f64 = std::f64::consts::TAU;
@@ -1335,16 +1336,20 @@ const LP_FEEDBACK_HEADROOM: f64 = 2.5;
 #[derive(Debug, Clone)]
 struct LowPass {
     s: [f64; 4],
+    /// The integrator gain for the cutoff last asked for. It holds still
+    /// whenever the cutoff does — through every sustained note — and so does
+    /// the `tan` behind it.
+    g: Memo<(u64, u64), f64>,
 }
 
 impl LowPass {
     fn new() -> Self {
-        Self { s: [0.0; 4] }
+        Self { s: [0.0; 4], g: Memo::new() }
     }
 
     #[inline]
     fn process(&mut self, input: f64, cutoff: f64, resonance: f64, sr: f64) -> f64 {
-        let g = raw::tpt_g(cutoff, sr);
+        let g = self.g.get((cutoff.to_bits(), sr.to_bits()), || raw::tpt_g(cutoff, sr));
         let gg = g / (1.0 + g);
         let k = resonance.clamp(0.0, 1.0) * LP_RES_MAX;
         // The compensated summing stage. `tanh` sits on the feedback only:
@@ -1403,18 +1408,27 @@ const HP_Q_MIN: f64 = 0.5;
 struct HighPass {
     s1: f64,
     s2: f64,
+    /// `1/Q` for the resonance knob it was last asked for: a `powf` of a
+    /// panel knob, which does not move between samples.
+    damping: Memo<u64, f64>,
+    /// The integrator gain for the cutoff last asked for. It holds still
+    /// whenever the cutoff does — through every sustained note — and so does
+    /// the `tan` behind it.
+    g: Memo<(u64, u64), f64>,
 }
 
 impl HighPass {
     fn new() -> Self {
-        Self { s1: 0.0, s2: 0.0 }
+        Self { s1: 0.0, s2: 0.0, damping: Memo::new(), g: Memo::new() }
     }
 
     #[inline]
     fn process(&mut self, input: f64, cutoff: f64, resonance: f64, sr: f64) -> f64 {
-        let g = raw::tpt_g(cutoff, sr);
-        let q = HP_Q_MIN * (HP_Q_MAX / HP_Q_MIN).powf(resonance.clamp(0.0, 1.0));
-        let damp = 1.0 / q;
+        let g = self.g.get((cutoff.to_bits(), sr.to_bits()), || raw::tpt_g(cutoff, sr));
+        let damp = self.damping.get(resonance.to_bits(), || {
+            let q = HP_Q_MIN * (HP_Q_MAX / HP_Q_MIN).powf(resonance.clamp(0.0, 1.0));
+            1.0 / q
+        });
         let hp = (input - (damp + g) * self.s1 - self.s2) / (1.0 + damp * g + g * g);
         let v1 = g * hp;
         let bp = v1 + self.s1;
@@ -1997,6 +2011,9 @@ struct FxSlot {
     wow_to: f64,
     wow_phase: f64,
     wow_noise: Noise,
+    /// The bucket-brigade loop's loss filter coefficient, an `exp` of the
+    /// sample rate.
+    loss: Memo<u64, f64>,
     chorus: Vec<f32>,
     chorus_write: usize,
     chorus_phase: f64,
@@ -2012,6 +2029,7 @@ impl FxSlot {
             wow_to: 0.0,
             wow_phase: 0.0,
             wow_noise: Noise::new(seed),
+            loss: Memo::new(),
             chorus: Vec::new(),
             chorus_write: 0,
             chorus_phase: 0.0,
@@ -2138,7 +2156,7 @@ impl FxSlot {
                     Self::tap(&self.delay, self.write, back, 1, 0)
                 };
                 let fed = if set.kind == fx::BBD {
-                    let a = raw::one_pole(BBD_LOSS_HZ, sr);
+                    let a = self.loss.get(sr.to_bits(), || raw::one_pole(BBD_LOSS_HZ, sr));
                     self.loop_lp += a * (delayed - self.loop_lp);
                     tanh_approx(self.loop_lp)
                 } else {
@@ -2564,6 +2582,13 @@ struct Voice {
     noise: Noise,
     lpf: LowPass,
     hpf: HighPass,
+    /// The equal-power pan gains for this voice's place at the spread the
+    /// panel last asked for: a `sin` and a `cos` of a knob.
+    pan_law: Memo<(usize, u64), (f64, f64)>,
+    /// The two filters' cutoffs in hertz, for the notes last asked for: an
+    /// `exp2` each that holds still through a sustained note.
+    hp_hz: Memo<u64, f64>,
+    lp_hz: Memo<u64, f64>,
     filter_env: Envelope,
     amp_env: Envelope,
     note: u8,
@@ -2597,6 +2622,9 @@ impl Voice {
             noise: Noise::new(seed(2)),
             lpf: LowPass::new(),
             hpf: HighPass::new(),
+            pan_law: Memo::new(),
+            hp_hz: Memo::new(),
+            lp_hz: Memo::new(),
             filter_env: Envelope::new(sr),
             amp_env: Envelope::new(sr),
             note: 60,
@@ -2803,10 +2831,16 @@ impl Voice {
 
         let mut signal = mix;
         if p.hp_note > 0.0 || p.hp_env != 0.0 {
-            let hz = raw::note_hz(hp_note).clamp(5.0, s.cutoff_ceiling_hz);
+            let hz = self
+                .hp_hz
+                .get(hp_note.to_bits(), || raw::note_hz(hp_note))
+                .clamp(5.0, s.cutoff_ceiling_hz);
             signal = self.hpf.process(signal, hz, p.hp_res, s.sr);
         }
-        let lp_hz = raw::note_hz(lp_note).clamp(5.0, s.cutoff_ceiling_hz);
+        let lp_hz = self
+            .lp_hz
+            .get(lp_note.to_bits(), || raw::note_hz(lp_note))
+            .clamp(5.0, s.cutoff_ceiling_hz);
         signal = voice_limit(self.lpf.process(signal, lp_hz, p.lp_res, s.sr));
 
         // ── Amplifier ──
@@ -2830,9 +2864,13 @@ impl Voice {
 
         // Equal power across the spread, so that widening the field does not
         // change how loud the instrument is.
-        let pan = VOICE_PAN[self.index] * p.pan_spread;
-        let angle = (pan + 1.0) * (PI / 4.0);
-        (out * angle.cos(), out * angle.sin())
+        let index = self.index;
+        let (left, right) = self.pan_law.get((index, p.pan_spread.to_bits()), || {
+            let pan = VOICE_PAN[index] * p.pan_spread;
+            let angle = (pan + 1.0) * (PI / 4.0);
+            (angle.cos(), angle.sin())
+        });
+        (out * left, out * right)
     }
 }
 
@@ -3403,6 +3441,67 @@ pub(crate) mod tests {
 
     pub(crate) fn peak(x: &[f32]) -> f32 {
         x.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+    }
+
+    /// How many numbers the instrument is holding that are subnormal: the
+    /// delay lines, the loop filters, the DC blockers and every voice's two
+    /// filters — everywhere a fading sound leaves something behind.
+    fn subnormals_held(s: &Prophet6) -> usize {
+        let f32s = [&s.fx_a.delay, &s.fx_a.chorus, &s.fx_b.delay, &s.fx_b.chorus]
+            .into_iter()
+            .flat_map(|line| line.iter())
+            .filter(|x| x.is_subnormal())
+            .count();
+        let mut f64s = vec![s.fx_a.loop_lp, s.fx_b.loop_lp];
+        f64s.extend([s.dc_left.x1, s.dc_left.y1, s.dc_right.x1, s.dc_right.y1]);
+        for v in &s.voices {
+            f64s.extend(v.lpf.s);
+            f64s.extend([v.hpf.s1, v.hpf.s2]);
+        }
+        f32s + f64s.iter().filter(|x| x.is_subnormal()).count()
+    }
+
+    /// A chord, held half a second, let go and left to fade for `seconds`.
+    /// Returns what came out after letting go.
+    fn fade(s: &mut Prophet6, seconds: f64) -> Vec<f32> {
+        let chord = [48, 55, 60, 64];
+        let on: Vec<MidiEvent> = chord.iter().map(|&n| note_on(n, 100, 0)).collect();
+        let off: Vec<MidiEvent> = chord.iter().map(|&n| note_off(n, 0)).collect();
+        render(s, &on, (0.5 * SR) as usize / BLOCK);
+        render(s, &off, (seconds * SR) as usize / BLOCK)
+    }
+
+    /// A delay left to fade fills its line with subnormal numbers — and on
+    /// many CPUs every operation on one of those is many times slower than
+    /// an ordinary one, so the instrument costs more as its sound dies. The
+    /// engine plays with them flushed to zero; played that way, nothing the
+    /// instrument holds is ever subnormal.
+    ///
+    /// Program 337 runs both effect slots as delays, and as plain code its
+    /// fade leaves tens of thousands of subnormals in the two lines — the
+    /// first half of the test, which is what makes the second half mean
+    /// anything.
+    #[test]
+    fn a_fading_delay_holds_no_subnormals_the_way_the_engine_plays_it() {
+        use phosphor_core::denormal::NoDenormals;
+        let mut plain = fresh(337);
+        let reference = fade(&mut plain, 12.0);
+        let held = subnormals_held(&plain);
+        assert!(held > 10_000, "the fade never went subnormal: {held}");
+        if !NoDenormals::available() {
+            return;
+        }
+        let mut flushed = fresh(337);
+        let out = {
+            let _engine = NoDenormals::new();
+            fade(&mut flushed, 12.0)
+        };
+        assert_eq!(subnormals_held(&flushed), 0);
+        assert!(!out.iter().any(|x| x.is_subnormal()));
+        // And the sound is the same sound: all flushing changed was already
+        // below the smallest normal number, some 760 dB down.
+        let worst = reference.iter().zip(&out).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        assert!(worst < 2.0 * f32::MIN_POSITIVE, "flushing moved the output by {worst}");
     }
 
     pub(crate) fn rms(x: &[f32]) -> f64 {

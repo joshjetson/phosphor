@@ -30,6 +30,7 @@
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
 use crate::level::soft_saturate;
+use crate::memo::Memo;
 
 const TWO_PI: f64 = std::f64::consts::TAU;
 
@@ -1305,6 +1306,10 @@ const SELF_OSC_KNEE: f64 = 0.9;
 struct Filter4023 {
     ic1: f64,
     ic2: f64,
+    /// The integrator gain for the cutoff last asked for. It holds still
+    /// whenever the cutoff does — through every sustained note — and so does
+    /// the `tan` behind it.
+    g: Memo<(u64, u64), f64>,
 }
 
 /// How hard the filter's own amplitude damps the loop once the resonance has
@@ -1315,11 +1320,13 @@ const OSC_LIMIT: f64 = 0.25;
 
 impl Filter4023 {
     fn new() -> Self {
-        Self { ic1: 0.0, ic2: 0.0 }
+        Self { ic1: 0.0, ic2: 0.0, g: Memo::new() }
     }
 
     fn process(&mut self, input: f64, cutoff_norm: f64, resonance: f64, sr: f64) -> f64 {
-        let g = (std::f64::consts::PI * cutoff_hz(cutoff_norm).min(sr * 0.49) / sr).tan();
+        let g = self.g.get((cutoff_norm.to_bits(), sr.to_bits()), || {
+            (std::f64::consts::PI * cutoff_hz(cutoff_norm).min(sr * 0.49) / sr).tan()
+        });
         let k = 2.0 * (1.0 - resonance.clamp(0.0, 1.0) / SELF_OSC_KNEE)
             + OSC_LIMIT * self.ic1 * self.ic1;
         let a1 = 1.0 / (1.0 + g * (g + k));
@@ -1365,15 +1372,21 @@ const LADDER_RES_MAX: f64 = 4.5;
 #[derive(Debug, Clone)]
 struct Filter4035 {
     s: [f64; 4],
+    /// The integrator gain for the cutoff last asked for. It holds still
+    /// whenever the cutoff does — through every sustained note — and so does
+    /// the `tan` behind it.
+    g: Memo<(u64, u64), f64>,
 }
 
 impl Filter4035 {
     fn new() -> Self {
-        Self { s: [0.0; 4] }
+        Self { s: [0.0; 4], g: Memo::new() }
     }
 
     fn process(&mut self, input: f64, cutoff_norm: f64, resonance: f64, sr: f64) -> f64 {
-        let g = (std::f64::consts::PI * cutoff_hz(cutoff_norm).min(sr * 0.49) / sr).tan();
+        let g = self.g.get((cutoff_norm.to_bits(), sr.to_bits()), || {
+            (std::f64::consts::PI * cutoff_hz(cutoff_norm).min(sr * 0.49) / sr).tan()
+        });
         let gg = g / (1.0 + g);
         let res = resonance.clamp(0.0, 1.0) * LADDER_RES_MAX;
         let mut x = tanh_approx(input - res * tanh_approx(self.s[3]));
@@ -1418,15 +1431,21 @@ const NORTON_COMPENSATION: f64 = 1.7;
 #[derive(Debug, Clone)]
 struct Filter4075 {
     s: [f64; 4],
+    /// The integrator gain for the cutoff last asked for. It holds still
+    /// whenever the cutoff does — through every sustained note — and so does
+    /// the `tan` behind it.
+    g: Memo<(u64, u64), f64>,
 }
 
 impl Filter4075 {
     fn new() -> Self {
-        Self { s: [0.0; 4] }
+        Self { s: [0.0; 4], g: Memo::new() }
     }
 
     fn process(&mut self, input: f64, cutoff_norm: f64, resonance: f64, sr: f64) -> f64 {
-        let g = (std::f64::consts::PI * cutoff_hz(cutoff_norm).min(sr * 0.49) / sr).tan();
+        let g = self.g.get((cutoff_norm.to_bits(), sr.to_bits()), || {
+            (std::f64::consts::PI * cutoff_hz(cutoff_norm).min(sr * 0.49) / sr).tan()
+        });
         let gg = g / (1.0 + g);
         let r = resonance.clamp(0.0, 1.0);
         let res = r * LADDER_RES_MAX;
@@ -1462,16 +1481,22 @@ impl Filter4075 {
 #[derive(Debug, Clone)]
 struct HpFilter {
     state: f64,
+    /// `g` and `1 + g` for the slider and rate last asked for: a `powf` and a
+    /// `tan` of a panel slider, which moves when a hand does.
+    coefficients: Memo<(u64, u64), (f64, f64)>,
 }
 
 impl HpFilter {
     fn new() -> Self {
-        Self { state: 0.0 }
+        Self { state: 0.0, coefficients: Memo::new() }
     }
 
     fn process(&mut self, input: f64, cutoff_norm: f64, sr: f64) -> f64 {
-        let g = (std::f64::consts::PI * hpf_hz(cutoff_norm).min(sr * 0.49) / sr).tan();
-        let v = (input - self.state) * g / (1.0 + g);
+        let (g, one_plus_g) = self.coefficients.get((cutoff_norm.to_bits(), sr.to_bits()), || {
+            let g = (std::f64::consts::PI * hpf_hz(cutoff_norm).min(sr * 0.49) / sr).tan();
+            (g, 1.0 + g)
+        });
+        let v = (input - self.state) * g / one_plus_g;
         let lp = v + self.state;
         self.state = lp + v;
         if self.state.abs() < 1e-18 { self.state = 0.0; }

@@ -234,6 +234,11 @@ impl EngineAudio {
     ///
     /// `output` is interleaved: [L0, R0, L1, R1, ...]
     pub fn process(&mut self, output: &mut [f32], transport: &Transport) {
+        // The whole callback in flush-to-zero, including the reset and the
+        // single-synth path that do not go through the mixer. See
+        // [`crate::denormal`].
+        let _no_denormals = crate::denormal::NoDenormals::new();
+
         // On Linux nothing else asks for the callback's thread to be
         // scheduled as real-time audio, so it asks itself, once, on the
         // first callback — the only place that is that thread. macOS and

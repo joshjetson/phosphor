@@ -2216,6 +2216,81 @@ fn a_steady_state_callback_does_not_allocate() {
     assert_eq!(mixer.workers.worker_allocations() - on_workers, 0, "a worker reached the allocator");
 }
 
+/// An instrument that checks, every block, whether it is being run with
+/// subnormal numbers flushed to zero.
+struct FlushProbe {
+    blocks: Arc<std::sync::atomic::AtomicUsize>,
+    kept: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Plugin for FlushProbe {
+    fn info(&self) -> phosphor_plugin::PluginInfo {
+        phosphor_plugin::PluginInfo {
+            name: "FlushProbe".into(),
+            version: "0".into(),
+            author: "test".into(),
+            category: phosphor_plugin::PluginCategory::Instrument,
+        }
+    }
+    fn init(&mut self, _sample_rate: f64, _max_buffer_size: usize) {}
+    fn process(&mut self, _inputs: &[&[f32]], outputs: &mut [&mut [f32]], _midi: &[MidiEvent]) {
+        use std::hint::black_box;
+        use std::sync::atomic::Ordering::Relaxed;
+        self.blocks.fetch_add(1, Relaxed);
+        if black_box(f32::MIN_POSITIVE) * black_box(0.5) != 0.0 {
+            self.kept.fetch_add(1, Relaxed);
+        }
+        for ch in outputs.iter_mut() {
+            ch.fill(0.0);
+        }
+    }
+    fn parameter_count(&self) -> usize { 0 }
+    fn parameter_info(&self, _index: usize) -> Option<phosphor_plugin::ParameterInfo> { None }
+    fn get_parameter(&self, _index: usize) -> f32 { 0.0 }
+    fn set_parameter(&mut self, _index: usize, _value: f32) {}
+    fn reset(&mut self) {}
+}
+
+/// Every instrument runs with subnormals flushed — on the audio thread and on
+/// every worker — and the thread that called the mixer gets its own mode back
+/// when the block is done. Fading tails make subnormals, and on many CPUs
+/// arithmetic on them is slow enough to make a dying note a CPU spike.
+#[test]
+fn every_track_renders_with_subnormals_flushed_and_the_caller_is_restored() {
+    use std::hint::black_box;
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+    if !crate::denormal::NoDenormals::available() {
+        return;
+    }
+    let (mut mixer, tx, _clip_rx, transport) = setup_mixer();
+    mixer.set_threads(4);
+    let blocks = Arc::new(AtomicUsize::new(0));
+    let kept = Arc::new(AtomicUsize::new(0));
+    for id in 0..8 {
+        let handle = Arc::new(TrackHandle::new(id, TrackKind::Instrument));
+        tx.send(MixerCommand::AddTrack { kind: TrackKind::Instrument, handle }).unwrap();
+        tx.send(MixerCommand::SetInstrument {
+            track_id: id,
+            instrument: Box::new(FlushProbe { blocks: blocks.clone(), kept: kept.clone() }),
+        })
+        .unwrap();
+    }
+    while !mixer.command_rx.is_empty() {
+        mixer.drain_commands();
+    }
+    transport.play();
+    let mut output = vec![0.0f32; 512];
+    for _ in 0..50 {
+        mixer.process(&mut output, &[], &transport);
+    }
+    assert_eq!(blocks.load(Relaxed), 8 * 50, "the probes did not all run");
+    assert_eq!(kept.load(Relaxed), 0, "an instrument ran with subnormals switched on");
+    assert!(
+        (black_box(f32::MIN_POSITIVE) * black_box(0.5)).is_subnormal(),
+        "the mixer left flushing switched on for its caller"
+    );
+}
+
 // ── The step sequencer ──
 
 use crate::pattern::{ChainEntry, Lane, PatternEvent, Rate, Step};

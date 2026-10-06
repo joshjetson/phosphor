@@ -64,6 +64,7 @@
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
 use crate::level::soft_saturate;
+use crate::memo::Memo;
 
 const PI: f64 = std::f64::consts::PI;
 
@@ -801,15 +802,21 @@ fn tanh_approx(x: f64) -> f64 {
 #[derive(Debug, Clone)]
 struct Ladder {
     s: [f64; 4],
+    /// The integrator gain for the cutoff last asked for. It holds still
+    /// whenever the cutoff does — through every sustained note — and so does
+    /// the `tan` behind it.
+    g: Memo<(u64, u64), f64>,
 }
 
 impl Ladder {
     fn new() -> Self {
-        Self { s: [0.0; 4] }
+        Self { s: [0.0; 4], g: Memo::new() }
     }
 
     fn process(&mut self, input: f64, cutoff: f64, resonance: f64, poles: usize, sr: f64) -> f64 {
-        let g = (PI * cutoff.clamp(5.0, sr * 0.49) / sr).tan();
+        let g = self.g.get((cutoff.to_bits(), sr.to_bits()), || {
+            (PI * cutoff.clamp(5.0, sr * 0.49) / sr).tan()
+        });
         let gg = g / (1.0 + g);
         let res = resonance.clamp(0.0, 1.0) * LADDER_RES_MAX;
         let mut x = tanh_approx(input - res * tanh_approx(self.s[3]));
@@ -1384,6 +1391,13 @@ pub struct LittlePhatty {
     /// the modulation source. One sample old by necessity: it modulates
     /// something that can modulate it.
     osc2_previous: f64,
+    /// The two oscillators' pitch exponentials, for the pitch last asked for.
+    /// Unmodulated and settled, a held note's pitch does not move from one
+    /// sample to the next, and neither does its `exp2`.
+    pitch: [Memo<u64, f64>; 2],
+    /// The filter's modulation, as a multiplier on the cutoff, for the
+    /// octaves last asked for: steady through a sustained note.
+    cutoff_octaves: Memo<u64, f64>,
     filter: Ladder,
     filter_env: Envelope,
     volume_env: Envelope,
@@ -1418,6 +1432,8 @@ impl LittlePhatty {
             osc1: Trapezoid::new(),
             osc2: Trapezoid::new(),
             osc2_previous: 0.0,
+            pitch: [Memo::new(); 2],
+            cutoff_octaves: Memo::new(),
             filter: Ladder::new(),
             filter_env: Envelope::new(sr),
             volume_env: Envelope::new(sr),
@@ -1742,8 +1758,11 @@ impl Plugin for LittlePhatty {
 
             let bend = self.bend * if self.bend >= 0.0 { panel.bend_up } else { -panel.bend_down };
             let base = self.glide_note + panel.fine + panel.octave + bend + pitch_mod;
-            let hz1 = 440.0 * ((base - 69.0) / 12.0).exp2() * OCTAVE_FEET[panel.o1_oct];
-            let hz2 = 440.0 * ((base - 69.0 + panel.o2_detune + osc2_mod) / 12.0).exp2()
+            let octaves1 = (base - 69.0) / 12.0;
+            let octaves2 = (base - 69.0 + panel.o2_detune + osc2_mod) / 12.0;
+            let hz1 = 440.0 * self.pitch[0].get(octaves1.to_bits(), || octaves1.exp2())
+                * OCTAVE_FEET[panel.o1_oct];
+            let hz2 = 440.0 * self.pitch[1].get(octaves2.to_bits(), || octaves2.exp2())
                 * OCTAVE_FEET[panel.o2_oct];
             let dt1 = (hz1 / sr).clamp(0.0, 0.45);
             let dt2 = (hz2 / sr).clamp(0.0, 0.45);
@@ -1777,7 +1796,8 @@ impl Plugin for LittlePhatty {
                 + panel.eg_amount * filter_level * EG_AMOUNT_OCTAVES
                 + panel.vel_sens * (f64::from(self.current_velocity) / 127.0) * VELOCITY_OCTAVES
                 + filter_mod;
-            let cutoff = (panel.cutoff * octaves.exp2()).clamp(5.0, cutoff_ceiling);
+            let lift = self.cutoff_octaves.get(octaves.to_bits(), || octaves.exp2());
+            let cutoff = (panel.cutoff * lift).clamp(5.0, cutoff_ceiling);
 
             let filtered =
                 self.filter.process(blocked, cutoff, panel.resonance, panel.poles, sr);

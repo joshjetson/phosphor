@@ -135,6 +135,7 @@ use std::sync::OnceLock;
 use phosphor_plugin::{MidiEvent, ParameterInfo, Plugin, PluginCategory, PluginInfo};
 
 use crate::level::soft_saturate;
+use crate::memo::Memo;
 
 const TWO_PI: f64 = std::f64::consts::TAU;
 const PI: f64 = std::f64::consts::PI;
@@ -967,6 +968,9 @@ fn tanh_approx(x: f64) -> f64 {
 struct Osc {
     phase: f64,
     noise: u32,
+    /// The band-limited copy for the frequency last asked for. A `log2` a
+    /// sample for an answer that only moves when the pitch does.
+    mip: Memo<(u64, u64), usize>,
 }
 
 impl Osc {
@@ -975,7 +979,13 @@ impl Osc {
         // eight voices' worth of them are independent. A single shared source
         // would sum coherently across voices — eight times the amplitude on an
         // eight-note chord rather than the square root of eight.
-        Self { phase: 0.0, noise: seed | 1 }
+        Self { phase: 0.0, noise: seed | 1, mip: Memo::new() }
+    }
+
+    /// [`mip_level`], remembered for as long as the frequency holds still.
+    #[inline]
+    fn mip_level(&mut self, freq: f64, sr: f64) -> usize {
+        self.mip.get((freq.to_bits(), sr.to_bits()), || mip_level(freq, sr))
     }
 
     /// One step of the phase accumulator: where in the cycle it now sits, and
@@ -1002,7 +1012,7 @@ impl Osc {
     #[inline]
     fn tick_blend(&mut self, freq: f64, sr: f64, a: f64, b: f64, mix: f64, bank: &WaveBank) -> f64 {
         let (t, _) = self.advance(freq, sr);
-        let level = mip_level(freq, sr);
+        let level = self.mip_level(freq, sr);
         let first = bank.at(a, level, t);
         if mix <= 0.0 {
             return first;
@@ -1047,7 +1057,7 @@ impl Osc {
                 }
             }
             Shape::Sine => (TWO_PI * t).sin(),
-            _ => bank.at(table_pos, mip_level(freq, sr), t),
+            _ => bank.at(table_pos, self.mip_level(freq, sr), t),
         }
     }
 }
@@ -1643,15 +1653,21 @@ const SELF_OSC_SEED: f64 = 0.05;
 #[derive(Debug, Clone)]
 struct Ladder {
     s: [f64; 4],
+    /// The integrator gain for the cutoff last asked for. It holds still
+    /// whenever the cutoff does — through every sustained note — and so does
+    /// the `tan` behind it.
+    g: Memo<(u64, u64), f64>,
 }
 
 impl Ladder {
     fn new() -> Self {
-        Self { s: [0.0; 4] }
+        Self { s: [0.0; 4], g: Memo::new() }
     }
 
     fn process(&mut self, input: f64, cutoff_norm: f64, resonance: f64, sr: f64) -> f64 {
-        let g = (PI * cutoff_hz(cutoff_norm).min(sr * 0.49) / sr).tan();
+        let g = self.g.get((cutoff_norm.to_bits(), sr.to_bits()), || {
+            (PI * cutoff_hz(cutoff_norm).min(sr * 0.49) / sr).tan()
+        });
         let gg = g / (1.0 + g);
         let res = resonance.clamp(0.0, 1.0) * LADDER_RES_MAX;
         let mut x = tanh_approx(input - res * tanh_approx(self.s[3]));
@@ -2129,6 +2145,9 @@ struct Voice {
     /// it in exactly the same place.
     last_d: f64,
     note: u8,
+    /// [`note_to_freq`] of `note`, worked out once a note rather than once a
+    /// sample.
+    note_hz: Memo<u8, f64>,
     velocity: f64,
     age: u64,
     /// The recipe this note plays on a keymapped patch, resolved once at
@@ -2148,6 +2167,7 @@ impl Voice {
             env: [Envelope::new(sr), Envelope::new(sr)],
             last_d: 0.0,
             note: 255,
+            note_hz: Memo::new(),
             velocity: 0.0,
             age: 0,
             key: None,
@@ -2209,9 +2229,13 @@ impl Voice {
             return 0.0;
         }
         let sr = self.sample_rate;
-        // The recipe, on a keymapped patch. A copy rather than a borrow, so
-        // the oscillators below can still be reached mutably.
-        let key = self.key;
+        let note = self.note;
+        let note_hz = self.note_hz.get(note, || note_to_freq(note));
+        // The recipe, on a keymapped patch. Borrowed rather than copied: the
+        // oscillators below are reached through their own field, so the borrow
+        // does not stand in their way, and a copy is 280 bytes a voice a
+        // sample.
+        let key = self.key.as_ref();
 
         // The time sliders are live on a melodic patch, so a note already
         // sounding follows them. On a keymapped one they are the recipe's and
@@ -2236,7 +2260,7 @@ impl Voice {
         // panel on a melodic one. The recipe's pitch is a frequency rather
         // than a note, because a drum's body is a frequency; keyboard follow
         // is skipped for the same reason, since the note is not a pitch.
-        let oscillators = key.as_ref().map_or(&panel.osc, |k| &k.osc);
+        let oscillators = key.map_or(&panel.osc, |k| &k.osc);
         let vector = key.map_or(panel.vector, |k| k.vector);
         let key_follow = if key.is_some() {
             0.0
@@ -2292,7 +2316,7 @@ impl Voice {
         };
         let width = pulse_width_from(panel.pulse_width + bus[Dest::PulseWidth as usize]);
         let table_shift = bus[Dest::Wave as usize];
-        let base_freq = key.map_or_else(|| note_to_freq(self.note), |k| k.base_hz) * pitch_ratio;
+        let base_freq = key.map_or(note_hz, |k| k.base_hz) * pitch_ratio;
 
         // The sequence clock, and one sample of each of the four cursors.
         //
